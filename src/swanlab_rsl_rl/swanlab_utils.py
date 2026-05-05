@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 from dataclasses import asdict
@@ -12,6 +13,8 @@ from typing import Any
 
 import swanlab
 from torch.utils.tensorboard import SummaryWriter
+
+logger = logging.getLogger(__name__)
 
 
 class SwanLabSummaryWriter(SummaryWriter):
@@ -41,24 +44,29 @@ class SwanLabSummaryWriter(SummaryWriter):
         api_key = os.environ.get("SWANLAB_API_KEY", None)
 
         # 初始化 SwanLab
-        if api_key:
-            # 使用 API key 登录
-            swanlab.login(api_key=api_key)
-            swanlab.init(
-                project=project,
-                workspace=workspace,
-                name=run_name,
-                config={"log_dir": log_dir},
-            )
-        else:
-            # 使用 local 模式（不上传到云端）
-            swanlab.init(
-                project=project,
-                workspace=workspace,
-                name=run_name,
-                config={"log_dir": log_dir},
-                mode="local",
-            )
+        try:
+            if api_key:
+                # 使用 API key 登录
+                swanlab.login(api_key=api_key)
+                swanlab.init(
+                    project=project,
+                    workspace=workspace,
+                    name=run_name,
+                    config={"log_dir": log_dir},
+                )
+            else:
+                # 使用 local 模式（不上传到云端）
+                swanlab.init(
+                    project=project,
+                    workspace=workspace,
+                    name=run_name,
+                    config={"log_dir": log_dir},
+                    mode="local",
+                )
+            self._swanlab_enabled = True
+        except Exception as e:
+            logger.warning(f"SwanLab 初始化失败: {e}")
+            self._swanlab_enabled = False
 
         # 记录已上传的视频文件
         self.logged_videos: set[str] = set()
@@ -70,6 +78,9 @@ class SwanLabSummaryWriter(SummaryWriter):
             env_cfg: 环境配置
             train_cfg: 训练配置
         """
+        if not self._swanlab_enabled:
+            return
+
         config_update = {"train_cfg": train_cfg}
         try:
             config_update["env_cfg"] = env_cfg.to_dict()
@@ -79,7 +90,10 @@ class SwanLabSummaryWriter(SummaryWriter):
             except Exception:
                 config_update["env_cfg"] = str(env_cfg)
 
-        swanlab.config.update(config_update)
+        try:
+            swanlab.config.update(config_update)
+        except Exception as e:
+            logger.warning(f"SwanLab 配置更新失败: {e}")
 
     def add_scalar(
         self,
@@ -98,6 +112,7 @@ class SwanLabSummaryWriter(SummaryWriter):
             walltime: 墙钟时间
             new_style: 是否使用新样式
         """
+        # 始终写入 TensorBoard
         super().add_scalar(
             tag,
             scalar_value,
@@ -105,11 +120,21 @@ class SwanLabSummaryWriter(SummaryWriter):
             walltime=walltime,
             new_style=new_style,
         )
-        swanlab.log({tag: scalar_value}, step=global_step)
+
+        # 尝试写入 SwanLab
+        if self._swanlab_enabled:
+            try:
+                swanlab.log({tag: scalar_value}, step=global_step)
+            except Exception as e:
+                logger.warning(f"SwanLab 日志记录失败: {e}")
 
     def stop(self) -> None:
         """结束 SwanLab run。"""
-        swanlab.finish()
+        if self._swanlab_enabled:
+            try:
+                swanlab.finish()
+            except Exception as e:
+                logger.warning(f"SwanLab 结束失败: {e}")
 
     def save_model(self, model_path: str, it: int) -> None:
         """上传模型 checkpoint 到 SwanLab。
@@ -118,7 +143,13 @@ class SwanLabSummaryWriter(SummaryWriter):
             model_path: 模型文件路径
             it: 迭代次数
         """
-        swanlab.save(model_path)
+        if not self._swanlab_enabled:
+            return
+
+        try:
+            swanlab.save(model_path)
+        except Exception as e:
+            logger.warning(f"SwanLab 模型保存失败: {e}")
 
     def save_file(self, path: str) -> None:
         """上传任意文件到 SwanLab。
@@ -126,7 +157,13 @@ class SwanLabSummaryWriter(SummaryWriter):
         Args:
             path: 文件路径
         """
-        swanlab.save(path)
+        if not self._swanlab_enabled:
+            return
+
+        try:
+            swanlab.save(path)
+        except Exception as e:
+            logger.warning(f"SwanLab 文件保存失败: {e}")
 
     def save_video(self, video: pathlib.Path, it: int) -> None:
         """上传视频到 SwanLab（每个文件只上传一次）。
@@ -135,7 +172,13 @@ class SwanLabSummaryWriter(SummaryWriter):
             video: 视频文件路径
             it: 迭代次数
         """
+        if not self._swanlab_enabled:
+            return
+
         if video.name not in self.logged_videos:
-            # SwanLab 支持视频记录
-            swanlab.log({"video": swanlab.Video(str(video))}, step=it)
-            self.logged_videos.add(video.name)
+            try:
+                # SwanLab 支持视频记录
+                swanlab.log({"video": swanlab.Video(str(video))}, step=it)
+                self.logged_videos.add(video.name)
+            except Exception as e:
+                logger.warning(f"SwanLab 视频保存失败: {e}")
