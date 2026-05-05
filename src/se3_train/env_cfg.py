@@ -25,7 +25,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     scene = SceneCfg(
         terrain=TerrainEntityCfg(terrain_type="plane"),
         entities={"robot": get_serialleg_cfg()},
-        num_envs=1,
+        num_envs=1024,
         env_spacing=3.0,
     )
 

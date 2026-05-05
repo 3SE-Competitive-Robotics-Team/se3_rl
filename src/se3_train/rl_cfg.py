@@ -19,7 +19,7 @@ def se3_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         max_iterations = 5
         logger = "tensorboard"
     else:
-        max_iterations = 2000
+        max_iterations = 5000
         logger = "swanlab"
 
     return RslRlOnPolicyRunnerCfg(
