@@ -1,12 +1,10 @@
-# prek.toml — 提交前钩子配置
-# prek 在 git commit 前自动执行格式化和检查
+# prek.toml - 提交前钩子配置
+# 本仓库只使用本地 hook, 避免额外拉取远端 hook 仓库。
+#:schema https://www.schemastore.org/prek.json
 
-[[hooks]]
-name = "ruff-format"
-cmd = ["uv", "run", "ruff", "format", "."]
-stages = ["pre-commit"]
-
-[[hooks]]
-name = "ruff-check"
-cmd = ["uv", "run", "ruff", "check", ".", "--fix"]
-stages = ["pre-commit"]
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "ruff-format", name = "ruff format", entry = "uv run ruff format .", language = "system", pass_filenames = false, stages = ["pre-commit"] },
+    { id = "ruff-check", name = "ruff check", entry = "uv run ruff check . --fix", language = "system", pass_filenames = false, stages = ["pre-commit"] },
+]
