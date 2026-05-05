@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
-
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 if TYPE_CHECKING:
@@ -18,45 +17,41 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def _upright_factor(projected_gravity_z: torch.Tensor) -> torch.Tensor:
-    """计算直立因子：clamp(-pg_z, 0, 0.7) / 0.7。"""
+    """计算直立因子:clamp(-pg_z, 0, 0.7) / 0.7。"""
     return torch.clamp(-projected_gravity_z, 0.0, 0.7) / 0.7
 
 
 def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
-    """在宽限期内使用 1.0，否则使用直立因子。"""
-    # 宽限期：前 0.5 秒（控制步长 0.005s 下的 100 步）。
+    """在宽限期内使用 1.0,否则使用直立因子。"""
+    # 宽限期:前 0.5 秒(控制步长 0.005s 下的 100 步)。
     grace_steps = 100
     in_grace = env.episode_length_buf < grace_steps
     upright = _upright_factor(projected_gravity_z)
     return torch.where(in_grace, torch.ones_like(upright), upright)
 
 
-def tracking_lin_vel(
-    env: ManagerBasedRlEnv, command_name: str, sigma: float
-) -> torch.Tensor:
-    """x 方向速度跟踪的 exp(-error^2/sigma)，直立门控。"""
+def tracking_lin_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
+    """x 方向速度跟踪的 exp(-error^2/sigma),直立门控。"""
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     lin_vel_x = robot.data.root_link_lin_vel_b[:, 0]
     error = lin_vel_x - cmd[:, 0]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
-    return torch.exp(-error**2 / sigma) * gate
+    return torch.exp(-(error**2) / sigma) * gate
 
 
-def tracking_ang_vel(
-    env: ManagerBasedRlEnv, command_name: str, sigma: float
-) -> torch.Tensor:
-    """偏航角速度跟踪的 exp(-error^2/sigma)，直立门控。"""
+def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
+    """偏航角速度跟踪的 exp(-error^2/sigma),直立门控。"""
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     ang_vel_z = robot.data.root_link_ang_vel_b[:, 2]
     error = ang_vel_z - cmd[:, 1]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
-    return torch.exp(-error**2 / sigma) * gate
+    return torch.exp(-(error**2) / sigma) * gate
 
 
 def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -67,7 +62,7 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """基座 z 方向速度的平方，直立门控。"""
+    """基座 z 方向速度的平方,直立门控。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
@@ -75,7 +70,7 @@ def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """横滚/俯仰角速度平方和，直立门控。"""
+    """横滚/俯仰角速度平方和,直立门控。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
@@ -84,7 +79,7 @@ def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def base_height(env: ManagerBasedRlEnv, target: float) -> torch.Tensor:
-    """exp(-error²/0.05)，直立门控。正权重奖励接近目标高度。"""
+    """exp(-error²/0.05),直立门控。正权重奖励接近目标高度。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
@@ -96,7 +91,7 @@ def base_height(env: ManagerBasedRlEnv, target: float) -> torch.Tensor:
 def leg_torques(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """腿部力矩平方和（排除轮子：索引 0,1,3,4）。"""
+    """腿部力矩平方和(排除轮子:索引 0,1,3,4)。"""
     robot = env.scene[asset_cfg.name]
     torques = robot.data.actuator_force
     leg_ids = [0, 1, 3, 4]
@@ -106,7 +101,7 @@ def leg_torques(
 def leg_dof_acc(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """腿部关节加速度平方和（排除轮子）。"""
+    """腿部关节加速度平方和(排除轮子)。"""
     robot = env.scene[asset_cfg.name]
     acc = robot.data.joint_acc
     leg_ids = [0, 1, 3, 4]
@@ -126,21 +121,19 @@ def leg_power(
 
 def action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
     """当前动作与上一动作差值的平方和。"""
-    return torch.sum(
-        (env.action_manager.action - env.action_manager.prev_action) ** 2, dim=1
-    )
+    return torch.sum((env.action_manager.action - env.action_manager.prev_action) ** 2, dim=1)
 
 
 def stand_still(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """命令 < 0.1 时 |关节位置 - 默认位置| 之和，直立门控。"""
+    """命令 < 0.1 时 |关节位置 - 默认位置| 之和,直立门控。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command("velocity_height")
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    # 仅在站立时惩罚（低速度命令）。
+    # 仅在站立时惩罚(低速度命令)。
     standing = torch.abs(cmd[:, 0]) < 0.1
 
     default_pos = robot.data.default_joint_pos
@@ -154,7 +147,7 @@ def stand_still(
 def joint_pos_penalty(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """关节偏差（L2 范数），站立时放大 5 倍，直立门控。"""
+    """关节偏差(L2 范数),站立时放大 5 倍,直立门控。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command("velocity_height")
     pg_z = robot.data.projected_gravity_b[:, 2]
@@ -162,9 +155,7 @@ def joint_pos_penalty(
 
     default_pos = robot.data.default_joint_pos
     leg_ids = [0, 1, 3, 4]
-    deviation = torch.linalg.norm(
-        robot.data.joint_pos[:, leg_ids] - default_pos[:, leg_ids], dim=1
-    )
+    deviation = torch.linalg.norm(robot.data.joint_pos[:, leg_ids] - default_pos[:, leg_ids], dim=1)
 
     cmd_mag = torch.linalg.norm(cmd[:, :2], dim=1)
     body_vel = torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2], dim=1)
@@ -182,13 +173,13 @@ def joint_pos_penalty(
 def joint_mirror(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """左右关节位置差的平均平方，直立门控。"""
+    """左右关节位置差的平均平方,直立门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    # 左腿：索引 0, 1。右腿：索引 3, 4。
-    # 2 对镜像：(lf0, rf0) 和 (lf1, rf1)。
+    # 左腿:索引 0, 1。右腿:索引 3, 4。
+    # 2 对镜像:(lf0, rf0) 和 (lf1, rf1)。
     diff = robot.data.joint_pos[:, [0, 1]] - robot.data.joint_pos[:, [3, 4]]
     num_pairs = 2
     return torch.sum(diff**2, dim=1) / num_pairs * gate
@@ -197,12 +188,12 @@ def joint_mirror(
 def collision(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """受惩罚的身体接触计数，恢复惩罚门控。"""
+    """受惩罚的身体接触计数,恢复惩罚门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _recovery_penalty_gate(env, pg_z)
 
-    # 惩罚以下部位的接触：base_link(0), lf0_Link(1), lf1_Link(2),
+    # 惩罚以下部位的接触:base_link(0), lf0_Link(1), lf1_Link(2),
     #                       rf0_Link(4), rf1_Link(5)。
     # 与原始 penalize_contacts_on=["lf", "rf", "base"] 一致。
     penalize_bodies = [0, 1, 2, 4, 5]
@@ -217,16 +208,14 @@ def collision(
 
 
 def contact_forces(
-    env: ManagerBasedRlEnv,
-    threshold: float,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+    env: ManagerBasedRlEnv, threshold: float, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """轮子接触力超过阈值的部分，除以 100 归一化，恢复门控。"""
+    """轮子接触力超过阈值的部分,除以 100 归一化,恢复门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _recovery_penalty_gate(env, pg_z)
 
-    # 轮子部位：l_wheel_Link(3), r_wheel_Link(6)。
+    # 轮子部位:l_wheel_Link(3), r_wheel_Link(6)。
     wheel_bodies = [3, 6]
     contact_forces = robot.data.body_external_force
     if contact_forces is None:
@@ -243,7 +232,7 @@ def feet_contact_without_cmd(
     cmd_threshold: float,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """静止时轮子接触，直立门控。"""
+    """静止时轮子接触,直立门控。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command("velocity_height")
     pg_z = robot.data.projected_gravity_b[:, 2]
@@ -251,7 +240,7 @@ def feet_contact_without_cmd(
 
     stationary = torch.abs(cmd[:, 0]) < cmd_threshold
 
-    # 轮子部位：l_wheel_Link(3), r_wheel_Link(6)。
+    # 轮子部位:l_wheel_Link(3), r_wheel_Link(6)。
     wheel_bodies = [3, 6]
     contact_forces = robot.data.body_external_force
     if contact_forces is None:
@@ -265,7 +254,7 @@ def feet_contact_without_cmd(
 def dof_pos_limits(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """关节限位违规惩罚（仅腿部关节：0,1,3,4）。"""
+    """关节限位违规惩罚(仅腿部关节:0,1,3,4)。"""
     robot = env.scene[asset_cfg.name]
     soft_limits = robot.data.soft_joint_pos_limits
     if soft_limits is None:

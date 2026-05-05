@@ -1,6 +1,6 @@
 """速度 + 高度指令生成器。
 
-指令：(lin_vel_x, ang_vel_yaw, height)
+指令:(lin_vel_x, ang_vel_yaw, height)
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
-
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 
 if TYPE_CHECKING:
@@ -40,9 +39,7 @@ class VelocityHeightCommandTerm(CommandTerm):
     def __init__(self, cfg: VelocityHeightCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         self._command = torch.zeros(self.num_envs, 3, device=self.device)
-        self._standing_mask = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
-        )
+        self._standing_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
     @property
     def command(self) -> torch.Tensor:
@@ -60,19 +57,23 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._standing_mask[standing_ids] = True
         self._standing_mask[moving_ids] = False
 
-        # 站立环境：零速度，固定高度。
+        # 站立环境:零速度,固定高度。
         self._command[standing_ids, 0] = 0.0
         self._command[standing_ids, 1] = 0.0
         self._command[standing_ids, 2] = self.cfg.height
 
-        # 运动环境：随机速度，固定高度。
+        # 运动环境:随机速度,固定高度。
         if len(moving_ids) > 0:
-            lin_vel = torch.rand(len(moving_ids), device=self.device) * (
-                self.cfg.lin_vel_x_range[1] - self.cfg.lin_vel_x_range[0]
-            ) + self.cfg.lin_vel_x_range[0]
-            yaw_vel = torch.rand(len(moving_ids), device=self.device) * (
-                self.cfg.ang_vel_yaw_range[1] - self.cfg.ang_vel_yaw_range[0]
-            ) + self.cfg.ang_vel_yaw_range[0]
+            lin_vel = (
+                torch.rand(len(moving_ids), device=self.device)
+                * (self.cfg.lin_vel_x_range[1] - self.cfg.lin_vel_x_range[0])
+                + self.cfg.lin_vel_x_range[0]
+            )
+            yaw_vel = (
+                torch.rand(len(moving_ids), device=self.device)
+                * (self.cfg.ang_vel_yaw_range[1] - self.cfg.ang_vel_yaw_range[0])
+                + self.cfg.ang_vel_yaw_range[0]
+            )
 
             self._command[moving_ids, 0] = lin_vel
             self._command[moving_ids, 1] = yaw_vel
@@ -85,7 +86,7 @@ class VelocityHeightCommandTerm(CommandTerm):
         lin_vel = self._command[:, 0]
         yaw_vel = self._command[:, 1]
 
-        # 将小速度置零（死区）。
+        # 将小速度置零(死区)。
         lin_vel = torch.where(
             moving & (torch.abs(lin_vel) < self.cfg.lin_vel_deadband),
             torch.zeros_like(lin_vel),

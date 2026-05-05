@@ -29,5 +29,6 @@ def _get_array_module(x):
     """根据输入类型返回 numpy 或 torch 模块。"""
     if hasattr(x, "is_cuda"):
         import torch
+
         return torch
     return np

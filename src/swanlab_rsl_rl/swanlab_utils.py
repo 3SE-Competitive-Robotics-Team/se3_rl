@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class SwanLabSummaryWriter(SummaryWriter):
     """SwanLab 的 SummaryWriter 实现。
 
-    继承 TensorBoard SummaryWriter，同时将指标同步到 SwanLab。
+    继承 TensorBoard SummaryWriter,同时将指标同步到 SwanLab。
     """
 
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict[str, Any]) -> None:
@@ -28,7 +28,7 @@ class SwanLabSummaryWriter(SummaryWriter):
 
         Args:
             log_dir: 日志目录路径
-            flush_secs: 刷新间隔（秒）
+            flush_secs: 刷新间隔(秒)
             cfg: 训练配置字典
         """
         super().__init__(log_dir, flush_secs=flush_secs)
@@ -55,7 +55,7 @@ class SwanLabSummaryWriter(SummaryWriter):
                     config={"log_dir": log_dir},
                 )
             else:
-                # 使用 local 模式（不上传到云端）
+                # 使用 local 模式(不上传到云端)
                 swanlab.init(
                     project=project,
                     workspace=workspace,
@@ -166,7 +166,7 @@ class SwanLabSummaryWriter(SummaryWriter):
             logger.warning(f"SwanLab 文件保存失败: {e}")
 
     def save_video(self, video: pathlib.Path, it: int) -> None:
-        """上传视频到 SwanLab（每个文件只上传一次）。
+        """上传视频到 SwanLab(每个文件只上传一次)。
 
         Args:
             video: 视频文件路径

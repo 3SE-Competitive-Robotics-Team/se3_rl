@@ -38,5 +38,6 @@ def compute_velocity(theta1, theta2, theta1_dot, theta2_dot, l1=0.180, l2=0.200,
 def _get_array_module(x):
     if hasattr(x, "is_cuda"):
         import torch
+
         return torch
     return np

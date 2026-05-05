@@ -6,4 +6,4 @@
 from .monkey_patch import patch_rsl_rl_logger
 from .swanlab_utils import SwanLabSummaryWriter
 
-__all__ = ["patch_rsl_rl_logger", "SwanLabSummaryWriter"]
+__all__ = ["SwanLabSummaryWriter", "patch_rsl_rl_logger"]

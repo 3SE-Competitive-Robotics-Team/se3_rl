@@ -15,7 +15,6 @@ def patch_rsl_rl_logger() -> None:
 
     在 rsl_rl 的 Logger.init_logging_writer 方法中添加 swanlab 支持。
     """
-    original_init = rsl_rl_logger.Logger.init_logging_writer
 
     def patched_init_logging_writer(self: Any) -> None:
         """支持 swanlab 的 init_logging_writer 实现。"""
@@ -38,15 +37,11 @@ def patch_rsl_rl_logger() -> None:
             elif self.logger_type == "wandb":
                 from rsl_rl.utils.wandb_utils import WandbSummaryWriter
 
-                self.writer = WandbSummaryWriter(
-                    log_dir=self.log_dir, flush_secs=10, cfg=self.cfg
-                )
+                self.writer = WandbSummaryWriter(log_dir=self.log_dir, flush_secs=10, cfg=self.cfg)
             elif self.logger_type == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
 
-                self.writer = SummaryWriter(
-                    log_dir=self.log_dir, flush_secs=10
-                )
+                self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
             else:
                 raise ValueError(
                     "Logger type not found. Please choose 'swanlab', 'wandb', 'neptune', or 'tensorboard'."

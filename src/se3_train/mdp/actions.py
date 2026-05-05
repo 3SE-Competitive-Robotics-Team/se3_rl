@@ -1,6 +1,6 @@
 """SE3 轮腿机器人的 VMC 动作项。
 
-动作空间为 6D：[theta0_ref_L, l0_ref_L, wheel_vel_ref_L,
+动作空间为 6D:[theta0_ref_L, l0_ref_L, wheel_vel_ref_L,
                 theta0_ref_R, l0_ref_R, wheel_vel_ref_R]
 
 通过 VMC 雅可比将虚拟极坐标空间指令映射为关节力矩。
@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
-
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 
 if TYPE_CHECKING:
@@ -38,7 +37,7 @@ class VMCActionTermCfg(ActionTermCfg):
 
 
 class VMCActionTerm(ActionTerm):
-    """基于 VMC 的动作项，将极坐标空间指令映射为关节力矩。"""
+    """基于 VMC 的动作项,将极坐标空间指令映射为关节力矩。"""
 
     cfg: VMCActionTermCfg
 
@@ -46,9 +45,7 @@ class VMCActionTerm(ActionTerm):
         super().__init__(cfg, env)
 
         self._action_dim = 6
-        self._raw_actions = torch.zeros(
-            self.num_envs, self.action_dim, device=self.device
-        )
+        self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
 
         # PD 增益。
@@ -80,7 +77,7 @@ class VMCActionTerm(ActionTerm):
         """将原始动作缩放为 VMC 参考值。"""
         self._raw_actions[:] = actions
 
-        # 缩放：theta0_ref = action * pi, l0_ref = action * 0.096 + 0.22,
+        # 缩放:theta0_ref = action * pi, l0_ref = action * 0.096 + 0.22,
         # wheel_vel_ref = action * 25.0。
         self._processed_actions[:, 0] = actions[:, 0] * 3.14  # theta0_ref_L
         self._processed_actions[:, 1] = actions[:, 1] * 0.096 + self._l0_offset  # l0_ref_L
@@ -160,7 +157,7 @@ class VMCActionTerm(ActionTerm):
         torque_leg_r = self._kp_theta * (theta0_ref_r - theta0_r) - self._kd_theta * theta0_dot_r
         force_leg_r = self._kp_l0 * (l0_ref_r - L0_r) - self._kd_l0 * L0_dot_r
 
-        # 动态前馈：F_ff = (m*g/2) * max(sin(theta0)*pg_x - cos(theta0)*pg_z, 0)。
+        # 动态前馈:F_ff = (m*g/2) * max(sin(theta0)*pg_x - cos(theta0)*pg_z, 0)。
         pg_x = pg[:, 0]
         pg_z = pg[:, 2]
         ff_l = (self._feedforward_mass * self._g / 2.0) * torch.clamp(
@@ -174,20 +171,16 @@ class VMCActionTerm(ActionTerm):
         total_force_r = force_leg_r + ff_r
 
         # 通过 VMC 雅可比将虚拟力/力矩映射为关节力矩。
-        tau1_l, tau2_l = self._map_vmc_to_joint(
-            total_force_l, torque_leg_l, th1_l, th2_l, L0_l
-        )
-        tau1_r, tau2_r = self._map_vmc_to_joint(
-            total_force_r, torque_leg_r, th1_r, th2_r, L0_r
-        )
+        tau1_l, tau2_l = self._map_vmc_to_joint(total_force_l, torque_leg_l, th1_l, th2_l, L0_l)
+        tau1_r, tau2_r = self._map_vmc_to_joint(total_force_r, torque_leg_r, th1_r, th2_r, L0_r)
 
-        # 轮子力矩：kd * (wheel_vel_ref - wheel_vel)。
+        # 轮子力矩:kd * (wheel_vel_ref - wheel_vel)。
         wheel_vel_l = joint_vel[:, 2]
         wheel_vel_r = joint_vel[:, 5]
         wheel_tau_l = self._wheel_kd * (wheel_vel_ref_l - wheel_vel_l)
         wheel_tau_r = self._wheel_kd * (wheel_vel_ref_r - wheel_vel_r)
 
-        # 组装力矩：[lf0, lf1, l_wheel, rf0, rf1, r_wheel]。
+        # 组装力矩:[lf0, lf1, l_wheel, rf0, rf1, r_wheel]。
         self._torques[:, 0] = tau1_l
         self._torques[:, 1] = tau2_l
         self._torques[:, 2] = wheel_tau_l

@@ -6,7 +6,7 @@ import sys
 
 
 def main() -> None:
-    """训练入口，捕获 KeyboardInterrupt 实现优雅退出。"""
+    """训练入口,捕获 KeyboardInterrupt 实现优雅退出。"""
     sys.argv[0] = "se3-train"
 
     try:
@@ -14,7 +14,7 @@ def main() -> None:
 
         mjlab_train()
     except KeyboardInterrupt:
-        # 优雅退出：完成 swanlab run（如果存在）
+        # 优雅退出:完成 swanlab run(如果存在)
         try:
             import swanlab
 

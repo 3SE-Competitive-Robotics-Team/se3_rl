@@ -19,10 +19,7 @@ def map_virtual_to_joint_torques(force, torque, theta1, theta2, l0, l1=0.180, l2
     """
     xp = _get_array_module(theta1)
 
-    if hasattr(l0, "is_cuda"):
-        safe_l0 = xp.clamp(l0, min=1e-4)
-    else:
-        safe_l0 = xp.clip(l0, 1e-4, None)
+    safe_l0 = xp.clamp(l0, min=0.0001) if hasattr(l0, "is_cuda") else xp.clip(l0, 0.0001, None)
 
     s1 = xp.sin(theta1)
     c1 = xp.cos(theta1)
@@ -59,6 +56,7 @@ def map_virtual_to_joint_torques(force, torque, theta1, theta2, l0, l1=0.180, l2
 def _nan_to_num(x, xp):
     if hasattr(x, "is_cuda"):
         import torch
+
         return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     return xp.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -66,5 +64,6 @@ def _nan_to_num(x, xp):
 def _get_array_module(x):
     if hasattr(x, "is_cuda"):
         import torch
+
         return torch
     return np

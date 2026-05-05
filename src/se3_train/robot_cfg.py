@@ -1,14 +1,11 @@
 from pathlib import Path
 
 import mujoco
-
 from mjlab.actuator import XmlActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
-_MJCF_PATH = (
-    _RESOURCES / "robots" / "serialleg" / "mjcf" / "serialleg_fidelity_cylinder_wheels.xml"
-)
+_MJCF_PATH = _RESOURCES / "robots" / "serialleg" / "mjcf" / "serialleg_fidelity_cylinder_wheels.xml"
 
 
 def get_serialleg_cfg() -> EntityCfg:
