@@ -1,0 +1,62 @@
+[project]
+name = "se3-wheel-leg"
+version = "0.1.0"
+description = "轮腿机器人 MJLab 训练与 sim2sim 验证框架"
+readme = "README.md"
+authors = [
+    { name = "zhongjinlu", email = "zhongjin.lu@mondorobotics.com" }
+]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "mjlab>=1.3.0",
+    "torch>=2.0",
+    "mujoco>=3.8.0",
+    "rerun-sdk>=0.31.4",
+    "scipy>=1.10.0",
+    "numpy>=1.24.0",
+    "swanlab[dashboard]>=0.7.16",
+]
+
+[project.scripts]
+se3-train = "se3_train.cli:main"
+se3-sim2sim = "se3_sim2sim.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.8,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "src"
+module-name = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle 错误
+    "W",   # pycodestyle 警告
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade（强制 3.11+ 语法）
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff 特有规则
+]
+ignore = [
+    "E501",   # 行长度由 formatter 处理
+    "B008",   # 允许函数参数默认值中的函数调用
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
