@@ -1,6 +1,6 @@
 <mujoco model="serialleg_fidelity_cylinder_wheels">
   <compiler angle="radian" meshdir="../meshes" autolimits="true" strippath="false" />
-  <option timestep="0.005" iterations="200" solver="Newton" cone="pyramidal" noslip_iterations="10" njmax="200" />
+  <option timestep="0.005" iterations="200" solver="Newton" cone="pyramidal" noslip_iterations="10" />
   <!-- Softer contacts for recovery: higher dampratio = less bounce, wider solimp = more penetration allowed.
        solref: [timeconst, dampratio] — higher dampratio reduces rebound energy (closer to PhysX behavior).
        solimp: [dmin, dmax, width] — wider range allows more penetration absorption. -->

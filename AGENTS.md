@@ -11,6 +11,9 @@
 ## 核心命令
 
 ```bash
+# Smoke 模式（验证环境，每次修改训练代码后必须运行）
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
+
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
 # 所有训练操作都需要 --env-file .env 以上传指标到 SwanLab
 uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024

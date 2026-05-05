@@ -18,6 +18,23 @@ uv sync
 
 ## 训练命令
 
+### Smoke 模式（验证环境）
+
+修改训练代码后，先运行 smoke 模式验证环境不会崩溃：
+
+```bash
+# CPU smoke 模式（推荐，快速验证）
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
+
+# GPU smoke 模式
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024
+```
+
+**特点**：
+- 仅训练 5 轮
+- 不上传到 SwanLab（使用 tensorboard）
+- 用于验证代码修改不会导致环境崩溃
+
 ### GPU 训练（推荐）
 
 需要 NVIDIA GPU + CUDA 12.4+，推荐环境数 1024，训练约 2-3 小时（RTX 3090/4090）。
