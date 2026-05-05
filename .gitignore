@@ -14,3 +14,6 @@ wheels/
 
 # SwanLab logs
 swanlog/
+
+# Training and smoke run logs
+logs/

@@ -22,11 +22,11 @@ uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 # CPU 训练（仅用于调试，速度极慢）
 uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
 
-# 评估/回放
-uv run se3-play SE3-WheelLegged-Flat --checkpoint-file logs/rsl_rl/se3_wheel_leg/model_1000.pt
+# 评估/回放 + sim2sim 验证（纯 MuJoCo CPU + Rerun，macOS 可运行）
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --max-steps 3000
 
-# sim2sim 验证（纯 MuJoCo CPU，macOS 可运行）
-uv run se3-sim2sim --checkpoint model.pt
+# 无 GUI smoke 验证
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --viewer none --max-steps 200
 
 # 格式化 + lint（必须在提交前执行）
 uv run ruff format .
@@ -50,6 +50,13 @@ Smoke 模式特点：
 - 用于验证代码修改不会导致环境崩溃
 
 确认 smoke 通过后，再运行完整训练。
+
+## 测试策略
+
+- 本实验一般不为单个实现细节添加用于“锁住某些行为”的测试用例
+- 不为 checkpoint key、内部排序、私有 helper 等行为补专门回归测试
+- 当前以 smoke 训练作为主要有效性验证手段
+- 后续需要把 smoke 训练接入 GitHub Actions，但现在不做
 
 ## 强制规范
 
