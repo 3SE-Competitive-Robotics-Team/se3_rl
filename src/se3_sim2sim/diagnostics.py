@@ -95,8 +95,12 @@ def _wheel_collision_diagnostics(model: mujoco.MjModel) -> dict[str, object]:
         mesh_source = None
         if geom_type == "mesh":
             mesh_id = int(model.geom_dataid[gid])
-            mesh_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or f"mesh_{mesh_id}"
-            mesh_source = "visual_stl" if mesh_name.startswith("visual_") else "generated_or_collision"
+            mesh_name = (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id) or f"mesh_{mesh_id}"
+            )
+            mesh_source = (
+                "visual_stl" if mesh_name.startswith("visual_") else "generated_or_collision"
+            )
         geoms.append(
             {
                 "name": name,

@@ -1,9 +1,9 @@
-"""Complete sim2sim workflow without the old fzq script path."""
+"""不依赖旧脚本路径的完整 sim2sim workflow。"""
 
 from __future__ import annotations
 
-import json
 import itertools
+import json
 from pathlib import Path
 
 from .config import RunConfig
@@ -19,6 +19,8 @@ class Sim2SimWorkflow:
         self.cfg = cfg.resolved()
         self.runtime = RuntimeSpec(task=self.cfg.robot.task)
         self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
+        if self.cfg.policy.checkpoint is None:
+            raise RuntimeError("启动 workflow 前必须先解析 policy checkpoint")
         self.policy = PolicyRuntime(
             checkpoint=self.cfg.policy.checkpoint,
             device=self.cfg.policy.device,
@@ -32,7 +34,9 @@ class Sim2SimWorkflow:
         model_diag = self.robot.diagnostics()
         if self.viewer is not None:
             self.viewer.log_model(self.robot.model)
-            self.viewer.log_state(self.robot.model, self.robot.data, step=0, telemetry=self.robot.telemetry())
+            self.viewer.log_state(
+                self.robot.model, self.robot.data, step=0, telemetry=self.robot.telemetry()
+            )
 
         max_steps = int(self.cfg.max_steps)
         step_iter = range(1, max_steps + 1) if max_steps > 0 else itertools.count(1)
@@ -50,7 +54,9 @@ class Sim2SimWorkflow:
                 }
                 samples.append(sample)
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
-                    self.viewer.log_state(self.robot.model, self.robot.data, step=step, telemetry=info)
+                    self.viewer.log_state(
+                        self.robot.model, self.robot.data, step=step, telemetry=info
+                    )
                 if int(self.cfg.print_every) > 0 and step % int(self.cfg.print_every) == 0:
                     line = (
                         f"step={step:05d} time={float(info['time']):.3f} "

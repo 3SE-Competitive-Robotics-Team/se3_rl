@@ -9,7 +9,6 @@ import numpy as np
 
 from .math_utils import quat_wxyz_to_xyzw
 
-
 SIDE_LABELS = ("left", "right")
 ACTION_LABELS = ("left_theta", "left_l0", "left_wheel", "right_theta", "right_l0", "right_wheel")
 CTRL_LABELS = ("left_hip", "left_knee", "left_wheel", "right_hip", "right_knee", "right_wheel")
@@ -56,7 +55,9 @@ class RerunViewer:
 
     def log_model(self, model: mujoco.MjModel) -> None:
         self.body_paths = [self._body_path(model, body_id) for body_id in range(model.nbody)]
-        self.follow_body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.follow_body))
+        self.follow_body_id = int(
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.follow_body)
+        )
         for geom_id in range(model.ngeom):
             if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
                 continue
@@ -67,7 +68,9 @@ class RerunViewer:
             self.geom_paths[geom_id] = path
             self._log_static_geom(model, geom_id, path)
 
-    def log_state(self, model: mujoco.MjModel, data: mujoco.MjData, *, step: int, telemetry: dict[str, object]) -> None:
+    def log_state(
+        self, model: mujoco.MjModel, data: mujoco.MjData, *, step: int, telemetry: dict[str, object]
+    ) -> None:
         rr = self.rr
         rr.set_time("time", duration=float(data.time))
         rr.set_time("step", sequence=int(step))
@@ -99,8 +102,12 @@ class RerunViewer:
         self._log_scalar("/plots/state/tilt_deg", telemetry["tilt_deg"])
         self._log_scalar("/plots/state/fail_tilt_deg", telemetry["fail_tilt_deg"])
         self._log_scalar("/plots/state/reward", telemetry["reward"])
-        self._log_array("/plots/imu/base_ang_vel_body_rad_s", telemetry["base_ang_vel_body"], XYZ_LABELS)
-        self._log_array("/plots/imu/base_ang_vel_world_rad_s", telemetry["base_ang_vel_world"], XYZ_LABELS)
+        self._log_array(
+            "/plots/imu/base_ang_vel_body_rad_s", telemetry["base_ang_vel_body"], XYZ_LABELS
+        )
+        self._log_array(
+            "/plots/imu/base_ang_vel_world_rad_s", telemetry["base_ang_vel_world"], XYZ_LABELS
+        )
         self._log_array("/plots/imu/projected_gravity", telemetry["projected_gravity"], XYZ_LABELS)
 
         self._log_pair("/plots/theta0/actual_rad", telemetry["theta0"])
@@ -155,14 +162,26 @@ class RerunViewer:
         if geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
             rr.log(path, rr.Boxes3D(half_sizes=size[:3], colors=color), static=True)
         elif geom_type == int(mujoco.mjtGeom.mjGEOM_CYLINDER) and hasattr(rr, "Cylinders3D"):
-            rr.log(path, rr.Cylinders3D(radii=float(size[0]), lengths=2.0 * float(size[1]), colors=color), static=True)
+            rr.log(
+                path,
+                rr.Cylinders3D(radii=float(size[0]), lengths=2.0 * float(size[1]), colors=color),
+                static=True,
+            )
         elif geom_type == int(mujoco.mjtGeom.mjGEOM_SPHERE):
-            rr.log(path, rr.Ellipsoids3D(half_sizes=[float(size[0])] * 3, colors=color), static=True)
+            rr.log(
+                path, rr.Ellipsoids3D(half_sizes=[float(size[0])] * 3, colors=color), static=True
+            )
         elif geom_type == int(mujoco.mjtGeom.mjGEOM_MESH):
             mesh_id = int(model.geom_dataid[geom_id])
             vertices, faces = self._mesh(model, mesh_id)
             vertex_colors = np.repeat(color.reshape(1, 4), vertices.shape[0], axis=0)
-            rr.log(path, rr.Mesh3D(vertex_positions=vertices, triangle_indices=faces, vertex_colors=vertex_colors), static=True)
+            rr.log(
+                path,
+                rr.Mesh3D(
+                    vertex_positions=vertices, triangle_indices=faces, vertex_colors=vertex_colors
+                ),
+                static=True,
+            )
         pos = np.asarray(model.geom_pos[geom_id], dtype=np.float32)
         quat = quat_wxyz_to_xyzw(np.asarray(model.geom_quat[geom_id], dtype=np.float32))
         rr.log(path, rr.Transform3D(translation=pos, quaternion=quat), static=True)
@@ -190,7 +209,9 @@ class RerunViewer:
         )
         plots = rrb.Tabs(overview, control, active_tab=0, name="Debug")
         layout = rrb.Horizontal(spatial, plots, column_shares=[0.52, 0.48], name="SE3 sim2sim")
-        return rrb.Blueprint(layout, time_panel, collapse_panels=True, auto_layout=False, auto_views=False)
+        return rrb.Blueprint(
+            layout, time_panel, collapse_panels=True, auto_layout=False, auto_views=False
+        )
 
     @staticmethod
     def _mesh(model: mujoco.MjModel, mesh_id: int) -> tuple[np.ndarray, np.ndarray]:
@@ -199,7 +220,9 @@ class RerunViewer:
         f0 = int(model.mesh_faceadr[mesh_id])
         fn = int(model.mesh_facenum[mesh_id])
         scale = np.asarray(model.mesh_scale[mesh_id], dtype=np.float32).reshape(1, 3)
-        vertices = np.asarray(model.mesh_vert[v0 : v0 + vn], dtype=np.float32).reshape(-1, 3) * scale
+        vertices = (
+            np.asarray(model.mesh_vert[v0 : v0 + vn], dtype=np.float32).reshape(-1, 3) * scale
+        )
         faces = np.asarray(model.mesh_face[f0 : f0 + fn], dtype=np.uint32).reshape(-1, 3)
         return vertices, faces
 

@@ -1,4 +1,4 @@
-"""Runtime config for the SE3 sim2sim workflow."""
+"""SE3 sim2sim workflow 的运行配置。"""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class RobotConfig:
 
 @dataclass(slots=True)
 class PolicyConfig:
-    checkpoint: Path = Path("model_2000.pt")
+    checkpoint: Path | None = None
     device: str = "cpu"
 
 
@@ -75,10 +75,14 @@ class RunConfig:
     fail_tilt_deg: float = 80.0
     fail_height_m: float = 0.12
 
-    def resolved(self, root: Path | None = None) -> "RunConfig":
+    def resolved(self, root: Path | None = None) -> RunConfig:
         base = Path.cwd() if root is None else Path(root)
         self.robot.model_path = _resolve_path(base, self.robot.model_path)
-        self.policy.checkpoint = _resolve_path(base, self.policy.checkpoint)
+        self.policy.checkpoint = (
+            _latest_checkpoint(base)
+            if self.policy.checkpoint is None
+            else _resolve_path(base, self.policy.checkpoint)
+        )
         if self.viewer.record_to_rrd is not None:
             self.viewer.record_to_rrd = _resolve_path(base, self.viewer.record_to_rrd)
         if self.json_output is not None:
@@ -98,6 +102,29 @@ def _resolve_path(base: Path, path: Path) -> Path:
     if path.is_absolute():
         return path.resolve()
     return (base / path).resolve()
+
+
+def _latest_checkpoint(base: Path) -> Path:
+    root = base / "logs" / "rsl_rl" / "se3_wheel_leg"
+    candidates = list(root.glob("*/model_*.pt"))
+    if not candidates:
+        raise FileNotFoundError(
+            "未找到 checkpoint, 请使用 --checkpoint 指定 logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt"
+        )
+    return max(
+        candidates, key=lambda path: (_checkpoint_iteration(path), path.parent.name)
+    ).resolve()
+
+
+def _checkpoint_iteration(path: Path) -> int:
+    stem = path.stem
+    prefix = "model_"
+    if not stem.startswith(prefix):
+        return -1
+    try:
+        return int(stem.removeprefix(prefix))
+    except ValueError:
+        return -1
 
 
 def _stringify_paths(value):

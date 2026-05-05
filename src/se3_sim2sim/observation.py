@@ -49,5 +49,7 @@ class ObservationBuilder:
         arr = np.asarray(obs, dtype=np.float32)
         expected = int(self.runtime.policy.num_obs)
         if arr.shape != (expected,):
-            raise RuntimeError(f"observation shape mismatch: expected {(expected,)}, got {arr.shape}")
+            raise RuntimeError(
+                f"observation shape mismatch: expected {(expected,)}, got {arr.shape}"
+            )
         return np.clip(arr, -self.runtime.clip_observations, self.runtime.clip_observations)

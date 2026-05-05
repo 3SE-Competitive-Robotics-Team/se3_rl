@@ -29,7 +29,9 @@ class VMCKinematics:
         theta0 = np.arctan2(end_x, end_y)
         return l0, theta0
 
-    def velocities(self, theta1, theta2, theta1_dot, theta2_dot, *, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    def velocities(
+        self, theta1, theta2, theta1_dot, theta2_dot, *, dt: float
+    ) -> tuple[np.ndarray, np.ndarray]:
         theta1 = np.asarray(theta1, dtype=np.float64)
         theta2 = np.asarray(theta2, dtype=np.float64)
         theta1_dot = np.asarray(theta1_dot, dtype=np.float64)
@@ -39,7 +41,9 @@ class VMCKinematics:
         theta0_diff = (theta0_next - theta0 + np.pi) % (2.0 * np.pi) - np.pi
         return (l0_next - l0) / dt, theta0_diff / dt
 
-    def state_from_dofs(self, dof_pos: np.ndarray, dof_vel: np.ndarray, *, fd_dt: float) -> tuple[np.ndarray, np.ndarray, VMCState]:
+    def state_from_dofs(
+        self, dof_pos: np.ndarray, dof_vel: np.ndarray, *, fd_dt: float
+    ) -> tuple[np.ndarray, np.ndarray, VMCState]:
         theta1 = np.asarray([dof_pos[0], dof_pos[3]], dtype=np.float64)
         theta2 = np.asarray([dof_pos[1], dof_pos[4]], dtype=np.float64)
         theta1_dot = np.asarray([dof_vel[0], dof_vel[3]], dtype=np.float64)
@@ -71,7 +75,7 @@ class VMCKinematics:
         d_l0_dx = l0_safe**-1 * (self.l1 * np.cos(theta1) - self.l2 * np.sin(theta1 + theta2))
         d_l0_dy = l0_safe**-1 * (self.l1 * np.sin(theta1) + self.l2 * np.cos(theta1 + theta2))
         d_phi_dx = l0_safe**-2 * (self.l1 * np.sin(theta1) + self.l2 * np.cos(theta1 + theta2))
-        d_phi_dy = -l0_safe**-2 * (self.l1 * np.cos(theta1) - self.l2 * np.sin(theta1 + theta2))
+        d_phi_dy = -(l0_safe**-2) * (self.l1 * np.cos(theta1) - self.l2 * np.sin(theta1 + theta2))
 
         j11 = d_l0_dx * dx_dtheta1 + d_l0_dy * dy_dtheta1
         j12 = d_l0_dx * dx_dtheta2 + d_l0_dy * dy_dtheta2

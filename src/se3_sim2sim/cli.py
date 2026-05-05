@@ -1,4 +1,4 @@
-"""CLI for the SE3 sim2sim workflow."""
+"""SE3 sim2sim workflow 的命令行入口。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,17 @@ from pathlib import Path
 
 from .config import PolicyConfig, RobotConfig, RunConfig, ViewerConfig
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SE3 MuJoCo sim2sim workflow")
     robot_defaults = RobotConfig()
-    policy_defaults = PolicyConfig()
     parser.add_argument("--model", type=Path, default=robot_defaults.model_path)
-    parser.add_argument("--checkpoint", type=Path, default=policy_defaults.checkpoint)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Policy checkpoint. Defaults to the latest logs/rsl_rl/se3_wheel_leg/*/model_*.pt.",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--max-steps",

@@ -84,16 +84,25 @@ logs/rsl_rl/se3_wheel_leg/2026-05-05_23-13-57/
 ├── model_100.pt      # 第 100 轮
 ├── model_200.pt      # 第 200 轮
 ├── ...
-├── model_2000.pt     # 第 2000 轮（最终模型）
+├── model_1900.pt     # 第 1900 轮
+├── model_1999.pt     # 默认 2000 轮训练的最终模型
 └── params/           # 配置文件
 ```
 
 ## 评估/回放
 
-训练完成后，使用 checkpoint 文件进行评估：
+项目不使用 `se3-play`。训练完成后，使用自研 `se3-sim2sim` workflow 进行回放和验证，Rerun 负责可视化体验：
 
 ```bash
-uv run se3-play SE3-WheelLegged-Flat --checkpoint-file logs/rsl_rl/se3_wheel_leg/<timestamp>/model_2000.pt
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --max-steps 3000
+```
+
+如果不传 `--checkpoint`，程序会自动选择 `logs/rsl_rl/se3_wheel_leg/` 下编号最高的 `model_*.pt`；编号相同时选择较新的 run。
+
+需要保存 Rerun 回放文件时：
+
+```bash
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --max-steps 3000 --rerun-record replays/se3_wheel_leg.rrd
 ```
 
 ## Sim2Sim 验证
@@ -101,8 +110,10 @@ uv run se3-play SE3-WheelLegged-Flat --checkpoint-file logs/rsl_rl/se3_wheel_leg
 使用 MuJoCo 进行 sim2sim 验证（纯 CPU，macOS 可运行）：
 
 ```bash
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_2000.pt
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --viewer none --max-steps 200 --print-every 20
 ```
+
+训练默认只上传 SwanLab 指标曲线，不开启视频。策略回放、轨迹检查、控制量曲线和可复查的 `.rrd` 文件统一由 `se3-sim2sim` 的 Rerun workflow 产出。
 
 ## 常见问题
 

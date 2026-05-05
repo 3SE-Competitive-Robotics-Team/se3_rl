@@ -37,9 +37,15 @@ class WheelLeggedRobot:
         self.obs = ObservationBuilder(robot_cfg=cfg, runtime=runtime)
 
         self.joint_ids = [self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in runtime.joint_names]
-        self.actuator_ids = [self._id(mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in runtime.actuator_names]
-        self.joint_qpos = np.asarray([self.model.jnt_qposadr[jid] for jid in self.joint_ids], dtype=np.int64)
-        self.joint_qvel = np.asarray([self.model.jnt_dofadr[jid] for jid in self.joint_ids], dtype=np.int64)
+        self.actuator_ids = [
+            self._id(mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in runtime.actuator_names
+        ]
+        self.joint_qpos = np.asarray(
+            [self.model.jnt_qposadr[jid] for jid in self.joint_ids], dtype=np.int64
+        )
+        self.joint_qvel = np.asarray(
+            [self.model.jnt_dofadr[jid] for jid in self.joint_ids], dtype=np.int64
+        )
 
         self.default_dof_pos = as_float64(cfg.default_dof_pos)
         _, _, default_vmc = self.vmc.state_from_dofs(
@@ -112,7 +118,9 @@ class WheelLeggedRobot:
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict[str, object]]:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != (self.runtime.policy.num_actions,):
-            raise ValueError(f"action shape mismatch: expected {(self.runtime.policy.num_actions,)}, got {action.shape}")
+            raise ValueError(
+                f"action shape mismatch: expected {(self.runtime.policy.num_actions,)}, got {action.shape}"
+            )
         self.last_policy_action[:] = action
         action = np.clip(action, -100.0, 100.0)
         self.last_clipped_policy_action[:] = action
@@ -287,8 +295,12 @@ class WheelLeggedRobot:
 
         cos_theta = np.cos(self.theta0)
         sin_theta = np.sin(self.theta0)
-        gravity_along_leg = sin_theta * float(self.projected_gravity[0]) - cos_theta * float(self.projected_gravity[2])
-        feedforward = (float(self.cfg.feedforward_mass) * 9.81 / 2.0) * np.maximum(gravity_along_leg, 0.0)
+        gravity_along_leg = sin_theta * float(self.projected_gravity[0]) - cos_theta * float(
+            self.projected_gravity[2]
+        )
+        feedforward = (float(self.cfg.feedforward_mass) * 9.81 / 2.0) * np.maximum(
+            gravity_along_leg, 0.0
+        )
         total_force = np.nan_to_num(force_leg + feedforward, nan=0.0, posinf=0.0, neginf=0.0)
 
         t1, t2 = self.vmc.map_virtual_to_joint_torques(
@@ -299,7 +311,9 @@ class WheelLeggedRobot:
             l0=self.l0,
         )
         wheel_torque = self.cfg.wheel_kd * wheel_vel_error
-        torques = np.asarray([t1[0], t2[0], wheel_torque[0], t1[1], t2[1], wheel_torque[1]], dtype=np.float64)
+        torques = np.asarray(
+            [t1[0], t2[0], wheel_torque[0], t1[1], t2[1], wheel_torque[1]], dtype=np.float64
+        )
         torques = np.clip(torques, -self.torque_limits, self.torque_limits)
         self.last_ctrl[:] = torques
         return torques
