@@ -36,6 +36,21 @@ uv run ruff check . --fix
 uv run swanlab watch swanlog
 ```
 
+## 开发流程
+
+**每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
+
+```bash
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
+```
+
+Smoke 模式特点：
+- 仅训练 5 轮
+- 不上传到 SwanLab
+- 用于验证代码修改不会导致环境崩溃
+
+确认 smoke 通过后，再运行完整训练。
+
 ## 强制规范
 
 ### 工具链
