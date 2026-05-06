@@ -94,7 +94,7 @@ def leg_torques(
 ) -> torch.Tensor:
     """腿部力矩平方和(排除轮子:索引 0,1,3,4)。"""
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.qfrc_actuator
+    torques = robot.data.actuator_force
     leg_ids = [0, 1, 3, 4]
     return torch.sum(torques[:, leg_ids] ** 2, dim=1)
 
@@ -115,7 +115,7 @@ def leg_power(
     """腿部关节 |力矩 * 速度| 之和。"""
     robot = env.scene[asset_cfg.name]
     leg_ids = [0, 1, 3, 4]
-    torques = robot.data.qfrc_actuator[:, leg_ids]
+    torques = robot.data.actuator_force[:, leg_ids]
     vel = robot.data.joint_vel[:, leg_ids]
     return torch.sum(torch.abs(torques * vel), dim=1)
 
