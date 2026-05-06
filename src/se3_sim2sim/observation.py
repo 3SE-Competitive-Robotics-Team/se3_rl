@@ -40,10 +40,13 @@ class ObservationBuilder:
         obs.extend((theta0_dot * 0.05).tolist())
         obs.extend((l0 * 5.0).tolist())
         obs.extend((l0_dot * 0.25).tolist())
-        # Isaac Gym's wheel position observation has the opposite sign from the
-        # MuJoCo hinge qpos for this MJCF.
-        obs.extend((-dof_pos[[2, 5]]).tolist())
-        obs.extend((dof_vel[[2, 5]] * 0.05).tolist())
+        # 右轮 pos/vel 取反对齐轴方向,与训练环境一致。
+        wheel_pos = dof_pos[[2, 5]].copy()
+        wheel_pos[1] = -wheel_pos[1]
+        wheel_vel = dof_vel[[2, 5]].copy()
+        wheel_vel[1] = -wheel_vel[1]
+        obs.extend(wheel_pos.tolist())
+        obs.extend((wheel_vel * 0.05).tolist())
         obs.extend(np.asarray(action_obs, dtype=np.float64).tolist())
 
         arr = np.asarray(obs, dtype=np.float32)

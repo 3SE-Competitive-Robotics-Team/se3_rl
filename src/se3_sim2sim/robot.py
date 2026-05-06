@@ -279,6 +279,8 @@ class WheelLeggedRobot:
         theta0_error = self._wrap_angle_diff(theta0_ref - self.theta0)
         l0_error = l0_ref - self.l0
         wheel_vel_error = wheel_vel_ref - self.dof_vel[[2, 5]]
+        # 右轮轴方向镜像,速度反馈和力矩输出取反。
+        wheel_vel_error[1] = wheel_vel_ref[1] - (-self.dof_vel[5])
         self.last_theta0_ref_raw[:] = theta0_ref_raw
         self.last_theta0_ref_clipped[:] = theta0_ref_clipped
         self.last_theta0_ref[:] = theta0_ref
@@ -312,7 +314,7 @@ class WheelLeggedRobot:
         )
         wheel_torque = self.cfg.wheel_kd * wheel_vel_error
         torques = np.asarray(
-            [t1[0], t2[0], wheel_torque[0], t1[1], t2[1], wheel_torque[1]], dtype=np.float64
+            [t1[0], t2[0], wheel_torque[0], t1[1], t2[1], -wheel_torque[1]], dtype=np.float64
         )
         torques = np.clip(torques, -self.torque_limits, self.torque_limits)
         self.last_ctrl[:] = torques
