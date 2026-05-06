@@ -22,13 +22,13 @@ if TYPE_CHECKING:
 class VMCActionTermCfg(ActionTermCfg):
     """VMC 动作项的配置。"""
 
-    kp_theta: float = 22.0
-    kd_theta: float = 1.5
-    kp_l0: float = 2000.0
-    kd_l0: float = 29.65
+    kp_theta: float = 10.0
+    kd_theta: float = 5.0
+    kp_l0: float = 800.0
+    kd_l0: float = 7.0
     wheel_kd: float = 0.1
     feedforward_mass: float = 12.61
-    l0_offset: float = 0.22
+    l0_offset: float = 0.24
     l1: float = 0.180
     l2: float = 0.200
 

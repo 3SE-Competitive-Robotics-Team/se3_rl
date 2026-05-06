@@ -193,7 +193,6 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
-        "base_contact": TerminationTermCfg(func=terminations.base_contact, time_out=False),
     }
 
     if play:

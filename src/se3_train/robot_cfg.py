@@ -16,11 +16,11 @@ def get_serialleg_cfg() -> EntityCfg:
         ),
         init_state=EntityCfg.InitialStateCfg(
             joint_pos={
-                "lf0_Joint": 0.5412,
-                "lf1_Joint": 0.3398,
+                "lf0_Joint": 0.6171,
+                "lf1_Joint": 0.2070,
                 "l_wheel_Joint": 0.0,
-                "rf0_Joint": 0.5412,
-                "rf1_Joint": 0.3398,
+                "rf0_Joint": 0.6171,
+                "rf1_Joint": 0.2070,
                 "r_wheel_Joint": 0.0,
             },
             joint_vel={".*": 0.0},
