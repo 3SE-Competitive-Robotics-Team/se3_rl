@@ -89,12 +89,16 @@ def base_height(env: ManagerBasedRlEnv, target: float) -> torch.Tensor:
     return torch.exp(-error / 0.05) * gate
 
 
+def _get_vmc_torques(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """从 VMCActionTerm 获取实际施加的力矩 buffer [num_envs, 6]。"""
+    return env.action_manager._terms["vmc"]._torques
+
+
 def leg_torques(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
     """腿部力矩平方和(排除轮子:索引 0,1,3,4)。"""
-    robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force
+    torques = _get_vmc_torques(env)
     leg_ids = [0, 1, 3, 4]
     return torch.sum(torques[:, leg_ids] ** 2, dim=1)
 
@@ -115,7 +119,7 @@ def leg_power(
     """腿部关节 |力矩 * 速度| 之和。"""
     robot = env.scene[asset_cfg.name]
     leg_ids = [0, 1, 3, 4]
-    torques = robot.data.actuator_force[:, leg_ids]
+    torques = _get_vmc_torques(env)[:, leg_ids]
     vel = robot.data.joint_vel[:, leg_ids]
     return torch.sum(torch.abs(torques * vel), dim=1)
 
