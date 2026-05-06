@@ -139,17 +139,18 @@ def L0_dot_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def wheel_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """轮子关节位置(符号取反),缩放 1.0。"""
+    """轮子关节位置,右轮取反对齐方向。"""
     robot = env.scene["robot"]
-    # 轮子关节:索引 2(左)、5(右)。
-    wheel_pos = robot.data.joint_pos[:, [2, 5]]
-    return -wheel_pos
+    wheel_pos = robot.data.joint_pos[:, [2, 5]].clone()
+    wheel_pos[:, 1] = -wheel_pos[:, 1]
+    return wheel_pos
 
 
 def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """轮子关节速度,缩放 0.05。"""
+    """轮子关节速度,右轮取反对齐方向,缩放 0.05。"""
     robot = env.scene["robot"]
-    wheel_vel = robot.data.joint_vel[:, [2, 5]]
+    wheel_vel = robot.data.joint_vel[:, [2, 5]].clone()
+    wheel_vel[:, 1] = -wheel_vel[:, 1]
     return wheel_vel * 0.05
 
 

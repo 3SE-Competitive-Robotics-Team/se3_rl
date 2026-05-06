@@ -179,10 +179,11 @@ class VMCActionTerm(ActionTerm):
         tau1_r, tau2_r = self._map_vmc_to_joint(total_force_r, torque_leg_r, th1_r, th2_r, L0_r)
 
         # 轮子力矩:kd * (wheel_vel_ref - wheel_vel)。
+        # 右轮轴方向与左轮相反(MJCF axis 相同但安装在 Y 轴两侧),力矩取反。
         wheel_vel_l = joint_vel[:, 2]
-        wheel_vel_r = joint_vel[:, 5]
+        wheel_vel_r = -joint_vel[:, 5]
         wheel_tau_l = self._wheel_kd * (wheel_vel_ref_l - wheel_vel_l)
-        wheel_tau_r = self._wheel_kd * (wheel_vel_ref_r - wheel_vel_r)
+        wheel_tau_r = -(self._wheel_kd * (wheel_vel_ref_r - wheel_vel_r))
 
         # 组装力矩:[lf0, lf1, l_wheel, rf0, rf1, r_wheel]。
         self._torques[:, 0] = tau1_l

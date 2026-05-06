@@ -21,6 +21,8 @@ dependencies = [
 [project.scripts]
 se3-train = "se3_train.cli:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
+se3-joint-viewer = "se3_tools.joint_viewer:main"
+se3-joint-diag = "se3_tools.joint_diag:main"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]
@@ -28,7 +30,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "src"
-module-name = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl"]
+module-name = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl", "se3_tools"]
 
 [tool.uv.sources]
 torch = [
