@@ -29,6 +29,22 @@ build-backend = "uv_build"
 module-root = "src"
 module-name = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl"]
 
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [dependency-groups]
 dev = [
     "ruff>=0.8.0",
