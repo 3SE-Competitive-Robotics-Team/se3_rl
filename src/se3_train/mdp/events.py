@@ -23,7 +23,7 @@ def reset_root_state_full(
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """完整位姿随机化:roll/pitch/yaw 范围 [-pi, pi],z 偏移 [0, 0.2]。"""
+    """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -32,7 +32,6 @@ def reset_root_state_full(
     assert default_root_state is not None
     root_states = default_root_state[env_ids].clone()
 
-    # 随机化位置。
     n = len(env_ids)
     pos = root_states[:, 0:3].clone()
     pos[:, 0] += sample_uniform(
@@ -47,43 +46,22 @@ def reset_root_state_full(
         (n,),
         env.device,
     )
-    pos[:, 2] += sample_uniform(
-        torch.tensor(0.0, device=env.device),
-        torch.tensor(0.2, device=env.device),
-        (n,),
-        env.device,
-    )
     pos[:, 0:3] += env.scene.env_origins[env_ids]
 
-    # 随机化朝向:完整旋转。
-    roll = sample_uniform(
-        torch.tensor(-3.14159, device=env.device),
-        torch.tensor(3.14159, device=env.device),
-        (n,),
-        env.device,
-    )
-    pitch = sample_uniform(
-        torch.tensor(-3.14159, device=env.device),
-        torch.tensor(3.14159, device=env.device),
-        (n,),
-        env.device,
-    )
+    # 仅随机化 yaw,保持直立。
     yaw = sample_uniform(
         torch.tensor(-3.14159, device=env.device),
         torch.tensor(3.14159, device=env.device),
         (n,),
         env.device,
     )
+    roll = torch.zeros(n, device=env.device)
+    pitch = torch.zeros(n, device=env.device)
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     default_quat = root_states[:, 3:7]
     new_quat = quat_mul(default_quat, quat_delta)
 
-    # 速度置零。
     vel = torch.zeros(n, 6, device=env.device)
-
-    root_states[:, 0:3] = pos
-    root_states[:, 3:7] = new_quat
-    root_states[:, 7:13] = vel
 
     asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
     asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
@@ -94,32 +72,14 @@ def reset_joints_vmc(
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """重置关节位置:f0 随机 [-pi, pi],f1 在下限位置。"""
+    """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
     asset: Entity = env.scene[asset_cfg.name]
-    n = len(env_ids)
 
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
-
-    soft_limits = asset.data.soft_joint_pos_limits
-    assert soft_limits is not None
-
-    # f0 关节(索引 0, 3):在 [-pi, pi] 内随机。
-    f0_pos = sample_uniform(
-        torch.tensor(-3.14159, device=env.device),
-        torch.tensor(3.14159, device=env.device),
-        (n,),
-        env.device,
-    )
-    joint_pos[:, 0] = f0_pos
-    joint_pos[:, 3] = f0_pos
-
-    # f1 关节(索引 1, 4):在下限位置。
-    joint_pos[:, 1] = soft_limits[env_ids, 1, 0]
-    joint_pos[:, 4] = soft_limits[env_ids, 4, 0]
 
     # 轮关节(索引 2, 5):归零。
     joint_pos[:, 2] = 0.0
