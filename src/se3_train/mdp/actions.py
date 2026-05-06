@@ -101,15 +101,17 @@ class VMCActionTerm(ActionTerm):
         wheel_vel_ref_r = self._processed_actions[:, 5]
 
         # 当前每条腿的 VMC 状态。
+        # 右腿关节轴方向与左腿镜像。取反后送入 VMC 正运动学。
+        # theta2 存在 +pi/2 的安装偏移(与 clearlab 参考实现一致)。
         th1_l = joint_pos[:, 0]
-        th2_l = joint_pos[:, 1]
+        th2_l = joint_pos[:, 1] + torch.pi / 2
         th1_dot_l = joint_vel[:, 0]
         th2_dot_l = joint_vel[:, 1]
 
-        th1_r = joint_pos[:, 3]
-        th2_r = joint_pos[:, 4]
-        th1_dot_r = joint_vel[:, 3]
-        th2_dot_r = joint_vel[:, 4]
+        th1_r = -joint_pos[:, 3]
+        th2_r = -joint_pos[:, 4] + torch.pi / 2
+        th1_dot_r = -joint_vel[:, 3]
+        th2_dot_r = -joint_vel[:, 4]
 
         # 正运动学计算当前 L0, theta0。
         end_x_l = self._l1 * torch.cos(th1_l) - self._l2 * torch.sin(th1_l + th2_l)
@@ -181,11 +183,12 @@ class VMCActionTerm(ActionTerm):
         wheel_tau_r = self._wheel_kd * (wheel_vel_ref_r - wheel_vel_r)
 
         # 组装力矩:[lf0, lf1, l_wheel, rf0, rf1, r_wheel]。
+        # 右腿力矩取反。补偿镜像安装的轴方向差异。
         self._torques[:, 0] = tau1_l
         self._torques[:, 1] = tau2_l
         self._torques[:, 2] = wheel_tau_l
-        self._torques[:, 3] = tau1_r
-        self._torques[:, 4] = tau2_r
+        self._torques[:, 3] = -tau1_r
+        self._torques[:, 4] = -tau2_r
         self._torques[:, 5] = wheel_tau_r
 
         robot.data.write_ctrl(self._torques)
