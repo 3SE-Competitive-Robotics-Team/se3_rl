@@ -24,15 +24,15 @@ def _compute_vmc(joint_pos: torch.Tensor, joint_vel: torch.Tensor):
     """
     # 左腿。
     th1_l = joint_pos[:, 0]
-    th2_l = joint_pos[:, 1] + torch.pi / 2
+    th2_l = joint_pos[:, 1]
     th1_dot_l = joint_vel[:, 0]
     th2_dot_l = joint_vel[:, 1]
 
-    # 右腿。关节轴方向与左腿镜像。取反对齐后送入 VMC 正运动学。
-    th1_r = -joint_pos[:, 3]
-    th2_r = -joint_pos[:, 4] + torch.pi / 2
-    th1_dot_r = -joint_vel[:, 3]
-    th2_dot_r = -joint_vel[:, 4]
+    # 右腿。
+    th1_r = joint_pos[:, 3]
+    th2_r = joint_pos[:, 4]
+    th1_dot_r = joint_vel[:, 3]
+    th2_dot_r = joint_vel[:, 4]
 
     # 正运动学:末端执行器位置。
     end_x_l = _L1 * torch.cos(th1_l) - _L2 * torch.sin(th1_l + th2_l)
