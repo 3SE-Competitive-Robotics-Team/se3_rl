@@ -48,11 +48,11 @@ class VMCActionTerm(ActionTerm):
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
         self._processed_actions = torch.zeros_like(self._raw_actions)
 
-        # PD 增益。
-        self._kp_theta = cfg.kp_theta
-        self._kd_theta = cfg.kd_theta
-        self._kp_l0 = cfg.kp_l0
-        self._kd_l0 = cfg.kd_l0
+        # PD 增益 — per-env tensor,支持域随机化。
+        self._kp_theta_buf = torch.full((self.num_envs,), cfg.kp_theta, device=self.device)
+        self._kd_theta_buf = torch.full((self.num_envs,), cfg.kd_theta, device=self.device)
+        self._kp_l0_buf = torch.full((self.num_envs,), cfg.kp_l0, device=self.device)
+        self._kd_l0_buf = torch.full((self.num_envs,), cfg.kd_l0, device=self.device)
         self._wheel_kd = cfg.wheel_kd
         self._feedforward_mass = cfg.feedforward_mass
         self._l0_offset = cfg.l0_offset
@@ -124,8 +124,8 @@ class VMCActionTerm(ActionTerm):
         L0_r = torch.sqrt(end_x_r**2 + end_y_r**2)
         theta0_r = torch.atan2(end_x_r, end_y_r)
 
-        # 有限差分速度。
-        fd_dt = 0.005
+        # 有限差分速度。与参考实现对齐,使用 1ms 步长。
+        fd_dt = 0.001
         end_x_l_n = self._l1 * torch.cos(th1_l + th1_dot_l * fd_dt) - self._l2 * torch.sin(
             th1_l + th2_l + (th1_dot_l + th2_dot_l) * fd_dt
         )
@@ -153,11 +153,15 @@ class VMCActionTerm(ActionTerm):
         theta0_dot_r = theta0_diff_r / fd_dt
 
         # 极坐标空间 PD 控制。
-        torque_leg_l = self._kp_theta * (theta0_ref_l - theta0_l) - self._kd_theta * theta0_dot_l
-        force_leg_l = self._kp_l0 * (l0_ref_l - L0_l) - self._kd_l0 * L0_dot_l
+        torque_leg_l = (
+            self._kp_theta_buf * (theta0_ref_l - theta0_l) - self._kd_theta_buf * theta0_dot_l
+        )
+        force_leg_l = self._kp_l0_buf * (l0_ref_l - L0_l) - self._kd_l0_buf * L0_dot_l
 
-        torque_leg_r = self._kp_theta * (theta0_ref_r - theta0_r) - self._kd_theta * theta0_dot_r
-        force_leg_r = self._kp_l0 * (l0_ref_r - L0_r) - self._kd_l0 * L0_dot_r
+        torque_leg_r = (
+            self._kp_theta_buf * (theta0_ref_r - theta0_r) - self._kd_theta_buf * theta0_dot_r
+        )
+        force_leg_r = self._kp_l0_buf * (l0_ref_r - L0_r) - self._kd_l0_buf * L0_dot_r
 
         # 动态前馈:F_ff = (m*g/2) * max(sin(theta0)*pg_x - cos(theta0)*pg_z, 0)。
         pg_x = pg[:, 0]

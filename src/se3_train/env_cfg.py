@@ -9,6 +9,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.viewer import ViewerConfig
@@ -33,6 +34,36 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         decimation=4,
         scene=scene,
     )
+
+    # 碰撞传感器:惩罚躯干和大腿/小腿的接触(base + lf0/lf1 + rf0/rf1)。
+    collision_sensor_cfg = ContactSensorCfg(
+        name="collision_sensor",
+        primary=ContactMatch(
+            mode="body",
+            pattern=r"^(base_link|lf0_Link|lf1_Link|rf0_Link|rf1_Link)$",
+            entity="robot",
+        ),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+
+    # 轮子接触传感器:用于 contact_forces 和 feet_contact_without_cmd。
+    wheel_sensor_cfg = ContactSensorCfg(
+        name="wheel_sensor",
+        primary=ContactMatch(
+            mode="body",
+            pattern=r"^(l_wheel_Link|r_wheel_Link)$",
+            entity="robot",
+        ),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+
+    cfg.scene.sensors = (collision_sensor_cfg, wheel_sensor_cfg)
 
     cfg.observations = {
         "actor": ObservationGroupCfg(
@@ -137,12 +168,16 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "collision": RewardTermCfg(
             func=rewards.collision,
             weight=-2.51,
-            params={"asset_cfg": SceneEntityCfg("robot")},
+            params={"sensor_name": "collision_sensor", "asset_cfg": SceneEntityCfg("robot")},
         ),
         "contact_forces": RewardTermCfg(
             func=rewards.contact_forces,
             weight=-1.07e-3,
-            params={"threshold": 35.0, "asset_cfg": SceneEntityCfg("robot")},
+            params={
+                "threshold": 35.0,
+                "sensor_name": "wheel_sensor",
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
         ),
         "feet_contact_without_cmd": RewardTermCfg(
             func=rewards.feet_contact_without_cmd,
@@ -150,6 +185,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "force_threshold": 1.0,
                 "cmd_threshold": 0.1,
+                "sensor_name": "wheel_sensor",
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
@@ -211,6 +247,11 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 mode="startup",
                 params={"friction_range": (0.2, 1.5), "asset_cfg": SceneEntityCfg("robot")},
             ),
+            "restitution": EventTermCfg(
+                func=events.randomize_restitution,
+                mode="startup",
+                params={"restitution_range": (0.0, 0.5), "asset_cfg": SceneEntityCfg("robot")},
+            ),
             "base_mass": EventTermCfg(
                 func=events.randomize_base_mass,
                 mode="startup",
@@ -235,6 +276,15 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),
+            "vmc_gains": EventTermCfg(
+                func=events.randomize_vmc_gains,
+                mode="startup",
+                params={
+                    "kp_range": (0.5, 2.0),
+                    "kd_range": (0.5, 2.0),
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+            ),
             "motor_torque": EventTermCfg(
                 func=events.randomize_motor_torque,
                 mode="startup",
@@ -247,6 +297,11 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "offset_range": (-0.05, 0.05),
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
+            ),
+            "action_delay": EventTermCfg(
+                func=events.randomize_action_delay,
+                mode="startup",
+                params={"delay_range": (0.0, 0.02), "asset_cfg": SceneEntityCfg("robot")},
             ),
         }
         cfg.episode_length_s = 20.0

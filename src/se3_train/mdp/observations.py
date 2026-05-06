@@ -46,8 +46,8 @@ def _compute_vmc(joint_pos: torch.Tensor, joint_vel: torch.Tensor):
     L0_r = torch.sqrt(end_x_r**2 + end_y_r**2)
     theta0_r = torch.atan2(end_x_r, end_y_r)
 
-    # 有限差分速度(fd_dt = 仿真步长 = 0.005)。
-    fd_dt = 0.005
+    # 有限差分速度(fd_dt = 1ms,与参考实现对齐)。
+    fd_dt = 0.001
     end_x_l_n = _L1 * torch.cos(th1_l + th1_dot_l * fd_dt) - _L2 * torch.sin(
         th1_l + th2_l + (th1_dot_l + th2_dot_l) * fd_dt
     )

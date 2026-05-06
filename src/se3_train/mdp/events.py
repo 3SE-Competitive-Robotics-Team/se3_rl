@@ -399,6 +399,43 @@ def randomize_default_dof_pos(
     asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
 
 
+def randomize_vmc_gains(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    kp_range: tuple[float, float],
+    kd_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """随机化 VMC 虚拟控制增益(kp_theta/kd_theta/kp_l0/kd_l0),与参考实现对齐。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    n = len(env_ids)
+
+    kp_scale = sample_uniform(
+        torch.tensor(kp_range[0], device=env.device),
+        torch.tensor(kp_range[1], device=env.device),
+        (n,),
+        env.device,
+    )
+    kd_scale = sample_uniform(
+        torch.tensor(kd_range[0], device=env.device),
+        torch.tensor(kd_range[1], device=env.device),
+        (n,),
+        env.device,
+    )
+
+    from se3_train.mdp.actions import VMCActionTerm
+
+    for term in env.action_manager._terms.values():
+        if isinstance(term, VMCActionTerm):
+            term._kp_theta_buf[env_ids] = term.cfg.kp_theta * kp_scale
+            term._kd_theta_buf[env_ids] = term.cfg.kd_theta * kd_scale
+            term._kp_l0_buf[env_ids] = term.cfg.kp_l0 * kp_scale
+            term._kd_l0_buf[env_ids] = term.cfg.kd_l0 * kd_scale
+            break
+
+
 def randomize_action_delay(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
