@@ -274,7 +274,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "inertia": EventTermCfg(
                 func=events.randomize_inertia,
                 mode="startup",
-                params={"inertia_range": (0.7, 1.3), "asset_cfg": SceneEntityCfg("robot")},
+                params={"inertia_range": (0.8, 1.2), "asset_cfg": SceneEntityCfg("robot")},
             ),
             "com": EventTermCfg(
                 func=events.randomize_com,
@@ -285,8 +285,8 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 func=events.randomize_pd_gains,
                 mode="startup",
                 params={
-                    "kp_range": (0.5, 2.0),
-                    "kd_range": (0.5, 2.0),
+                    "kp_range": (0.8, 1.2),
+                    "kd_range": (0.8, 1.2),
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),
@@ -295,6 +295,15 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 mode="startup",
                 params={
                     "offset_range": (-0.05, 0.05),
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+            ),
+            "push_robots": EventTermCfg(
+                func=events.push_robots,
+                mode="interval",
+                interval_range_s=(5.0, 6.0),
+                params={
+                    "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),
