@@ -6,12 +6,17 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from se3_shared import JointGroup, ObservationConfig
+
+_OBS_CFG = ObservationConfig()
+_JOINT_NAMES = JointGroup.joint_names()
+
 
 @dataclass(frozen=True, slots=True)
 class PolicyArchitectureSpec:
     policy_class_name: str = "ActorCritic"
-    num_obs: int = 29
-    num_actions: int = 6
+    num_obs: int = _OBS_CFG.num_obs
+    num_actions: int = _OBS_CFG.num_actions
     actor_hidden_dims: tuple[int, ...] = (512, 256, 128)
     critic_hidden_dims: tuple[int, ...] = (512, 256, 128)
     activation: str = "elu"
@@ -37,22 +42,8 @@ class RuntimeSpec:
     task: str = "wheel_legged_joint_pos"
     spec_name: str = "3se/wheel_legged_joint_pos"
     policy: PolicyArchitectureSpec = PolicyArchitectureSpec()
-    joint_names: tuple[str, ...] = (
-        "lf0_Joint",
-        "lf1_Joint",
-        "l_wheel_Joint",
-        "rf0_Joint",
-        "rf1_Joint",
-        "r_wheel_Joint",
-    )
-    actuator_names: tuple[str, ...] = (
-        "lf0_Joint",
-        "lf1_Joint",
-        "l_wheel_Joint",
-        "rf0_Joint",
-        "rf1_Joint",
-        "r_wheel_Joint",
-    )
+    joint_names: tuple[str, ...] = _JOINT_NAMES
+    actuator_names: tuple[str, ...] = _JOINT_NAMES
     observation_terms: tuple[ObservationTermSpec, ...] = (
         ObservationTermSpec("ang_vel", 3),
         ObservationTermSpec("gravity", 3),

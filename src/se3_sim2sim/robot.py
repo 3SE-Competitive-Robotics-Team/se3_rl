@@ -7,17 +7,29 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from se3_shared import JointGroup, Termination
+from se3_shared import RobotConfig as SharedRobotConfig
+
 from .config import RobotConfig
 from .diagnostics import model_diagnostics
 from .math_utils import euler_xyz_to_quat_wxyz, rotate, rotate_inverse
 from .observation import ObservationBuilder
 from .runtime_spec import RuntimeSpec, as_float64
 
+_SHARED_ROBOT = SharedRobotConfig()
+
 
 class WheelLeggedRobot:
-    def __init__(self, *, cfg: RobotConfig, runtime: RuntimeSpec) -> None:
+    def __init__(
+        self,
+        *,
+        cfg: RobotConfig,
+        runtime: RuntimeSpec,
+        termination: Termination | None = None,
+    ) -> None:
         self.cfg = cfg
         self.runtime = runtime
+        self.termination = termination if termination is not None else Termination()
         self.model_path = Path(cfg.model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
@@ -136,7 +148,7 @@ class WheelLeggedRobot:
             "last_action": self.last_action.copy().tolist(),
             "applied_action": self.last_applied_action.copy().tolist(),
             "last_ctrl": self.last_ctrl.copy().tolist(),
-            "fail_tilt_deg": float(self.cfg.fail_tilt_deg),
+            "fail_tilt_deg": float(self.termination.fail_tilt_deg),
         }
 
     def diagnostics(self) -> dict[str, object]:
@@ -164,15 +176,8 @@ class WheelLeggedRobot:
     def _build_model(xml_path: str) -> mujoco.MjModel:
         """加载 MJCF 并程序化添加 motor actuator（MJCF 中已删除 <actuator> 段）。"""
         spec = mujoco.MjSpec.from_file(xml_path)
-        joint_names = [
-            "lf0_Joint",
-            "lf1_Joint",
-            "l_wheel_Joint",
-            "rf0_Joint",
-            "rf1_Joint",
-            "r_wheel_Joint",
-        ]
-        torque_limits = [30.0, 30.0, 3.3, 30.0, 30.0, 3.3]
+        joint_names = JointGroup.joint_names()
+        torque_limits = _SHARED_ROBOT.torque_limits
         for jname, tlim in zip(joint_names, torque_limits, strict=True):
             act = spec.add_actuator()
             act.name = f"{jname}_motor"
@@ -197,18 +202,16 @@ class WheelLeggedRobot:
         """
         scaled = np.asarray(action, dtype=np.float64) * self.action_scale
 
-        # 腿部: q_target = action * scale + q_default
-        leg_default = self.default_dof_pos[[0, 1, 3, 4]]
+        leg_default = self.default_dof_pos[JointGroup.LEGS]
         q_target = scaled[:4] + leg_default
-        q_current = self.dof_pos[[0, 1, 3, 4]]
-        dq_current = self.dof_vel[[0, 1, 3, 4]]
+        q_current = self.dof_pos[JointGroup.LEGS]
+        dq_current = self.dof_vel[JointGroup.LEGS]
         tau_legs = (
             float(self.cfg.leg_kp) * (q_target - q_current) - float(self.cfg.leg_kd) * dq_current
         )
 
-        # 轮子: vel_target = action * scale, tau = kd * (vel_target - vel)
         vel_target = scaled[4:6]
-        vel_current = self.dof_vel[[2, 5]]
+        vel_current = self.dof_vel[JointGroup.WHEELS]
         tau_wheels = float(self.cfg.wheel_kd) * (vel_target - vel_current)
 
         torques = np.asarray(
@@ -229,9 +232,9 @@ class WheelLeggedRobot:
             return True, "invalid_state", False
 
         fall_detected = bool(
-            self.tilt_deg > float(self.cfg.fail_tilt_deg)
-            or float(self.data.qpos[2]) < float(self.cfg.fail_height_m)
+            self.tilt_deg > float(self.termination.fail_tilt_deg)
+            or float(self.data.qpos[2]) < float(self.termination.fail_height_m)
         )
-        if bool(self.cfg.terminate_on_fall) and fall_detected:
+        if bool(self.termination.terminate_on_fall) and fall_detected:
             return True, "fall", True
         return False, "running", fall_detected

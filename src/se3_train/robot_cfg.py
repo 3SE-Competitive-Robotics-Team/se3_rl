@@ -4,8 +4,21 @@ import mujoco
 from mjlab.actuator import BuiltinPositionActuatorCfg, BuiltinVelocityActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
+from se3_shared import JointGroup
+from se3_shared import RobotConfig as SharedRobotConfig
+
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_PATH = _RESOURCES / "robots" / "serialleg" / "mjcf" / "serialleg_fidelity_cylinder_wheels.xml"
+
+_ROBOT_CFG = SharedRobotConfig()
+
+_ALL_JOINT_NAMES = JointGroup.joint_names()
+_LEG_JOINT_NAMES = tuple(
+    name
+    for name in _ALL_JOINT_NAMES
+    if name not in {_ALL_JOINT_NAMES[i] for i in JointGroup.WHEELS}
+)
+_WHEEL_JOINT_NAMES = tuple(_ALL_JOINT_NAMES[i] for i in JointGroup.WHEELS)
 
 
 def get_serialleg_cfg() -> EntityCfg:
@@ -14,27 +27,22 @@ def get_serialleg_cfg() -> EntityCfg:
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 BuiltinPositionActuatorCfg(
-                    target_names_expr=("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint"),
-                    stiffness=40.0,
-                    damping=2.0,
-                    effort_limit=30.0,
+                    target_names_expr=_LEG_JOINT_NAMES,
+                    stiffness=_ROBOT_CFG.leg_kp,
+                    damping=_ROBOT_CFG.leg_kd,
+                    effort_limit=_ROBOT_CFG.torque_limits[JointGroup.LEGS[0]],
                 ),
                 BuiltinVelocityActuatorCfg(
-                    target_names_expr=("l_wheel_Joint", "r_wheel_Joint"),
-                    damping=0.5,
-                    effort_limit=3.3,
+                    target_names_expr=_WHEEL_JOINT_NAMES,
+                    damping=_ROBOT_CFG.wheel_kd,
+                    effort_limit=_ROBOT_CFG.torque_limits[JointGroup.WHEELS[0]],
                 ),
             ),
         ),
         init_state=EntityCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.301),
             joint_pos={
-                "lf0_Joint": 0.6171,
-                "lf1_Joint": 0.2070,
-                "l_wheel_Joint": 0.0,
-                "rf0_Joint": 0.6171,
-                "rf1_Joint": 0.2070,
-                "r_wheel_Joint": 0.0,
+                name: _ROBOT_CFG.default_dof_pos[i] for i, name in enumerate(_ALL_JOINT_NAMES)
             },
             joint_vel={".*": 0.0},
         ),

@@ -18,6 +18,9 @@ wandb/
 # Training and smoke run logs
 logs/
 
+# MuJoCo runtime logs
+MUJOCO_LOG.TXT
+
 # AI tooling
 .sisyphus/
 .opencode/

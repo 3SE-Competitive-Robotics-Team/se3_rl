@@ -33,6 +33,7 @@ class RerunViewer:
         address: str | None = None,
         record_to_rrd: Path | None = None,
         follow_body: str = "base_link",
+        manage_recording: bool = True,
     ) -> None:
         import rerun as rr
         import rerun.blueprint as rrb
@@ -42,15 +43,16 @@ class RerunViewer:
         self.body_paths: list[str] = []
         self.geom_paths: dict[int, str] = {}
         self.follow_body_id = -1
-        blueprint = self._make_blueprint(rrb)
-        rr.init(app_id, spawn=False)
-        if address:
-            rr.connect_grpc(address)
-        elif spawn:
-            rr.spawn(connect=True, detach_process=True)
-        if record_to_rrd is not None:
-            record_to_rrd.parent.mkdir(parents=True, exist_ok=True)
-            rr.save(str(record_to_rrd))
+        blueprint = self._make_blueprint(rrb, follow_body=follow_body)
+        if manage_recording:
+            rr.init(app_id, spawn=False)
+            if address:
+                rr.connect_grpc(address)
+            elif spawn:
+                rr.spawn(connect=True, detach_process=True)
+            if record_to_rrd is not None:
+                record_to_rrd.parent.mkdir(parents=True, exist_ok=True)
+                rr.save(str(record_to_rrd))
         rr.send_blueprint(blueprint, make_active=True, make_default=True)
 
     def log_model(self, model: mujoco.MjModel) -> None:
@@ -163,8 +165,11 @@ class RerunViewer:
         rr.log(path, rr.Transform3D(translation=pos, quaternion=quat), static=True)
 
     @staticmethod
-    def _make_blueprint(rrb):
-        spatial = rrb.Spatial3DView(origin="/world", name="Scene")
+    def _make_blueprint(rrb, *, follow_body: str = "base_link"):
+        eye_controls = rrb.archetypes.EyeControls3D(
+            tracking_entity=f"/world/bodies/{follow_body}",
+        )
+        spatial = rrb.Spatial3DView(origin="/world", name="Scene", eye_controls=eye_controls)
         time_panel = rrb.TimePanel(state="collapsed")
         time_series_view = rrb.TimeSeriesView
 

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from se3_shared import JointGroup, ObservationConfig
+
 from .config import RobotConfig
 from .math_utils import rotate_inverse
 from .runtime_spec import RuntimeSpec
 
-_LEG_IDS = [0, 1, 3, 4]
-_WHEEL_IDS = [2, 5]
+_OBS_CFG = ObservationConfig()
 
 
 class ObservationBuilder:
@@ -33,18 +34,18 @@ class ObservationBuilder:
         base_ang_vel_body = rotate_inverse(base_quat_wxyz, base_ang_vel_world)
         projected_gravity = rotate_inverse(base_quat_wxyz, np.asarray([0.0, 0.0, -1.0]))
 
-        obs.extend((base_ang_vel_body * 0.25).tolist())
+        obs.extend((base_ang_vel_body * _OBS_CFG.ang_vel_scale).tolist())
         obs.extend(projected_gravity.tolist())
         obs.extend((np.asarray(command, dtype=np.float64) * self.commands_scale).tolist())
 
-        leg_pos_rel = dof_pos[_LEG_IDS] - self.default_dof_pos[_LEG_IDS]
+        leg_pos_rel = dof_pos[JointGroup.LEGS] - self.default_dof_pos[JointGroup.LEGS]
         obs.extend(leg_pos_rel.tolist())
 
-        leg_vel = dof_vel[_LEG_IDS] * 0.25
+        leg_vel = dof_vel[JointGroup.LEGS] * _OBS_CFG.leg_vel_scale
         obs.extend(leg_vel.tolist())
 
-        obs.extend(dof_pos[_WHEEL_IDS].tolist())
-        obs.extend((dof_vel[_WHEEL_IDS] * 0.05).tolist())
+        obs.extend(dof_pos[JointGroup.WHEELS].tolist())
+        obs.extend((dof_vel[JointGroup.WHEELS] * _OBS_CFG.wheel_vel_scale).tolist())
 
         obs.extend(np.asarray(action_obs, dtype=np.float64).tolist())
 

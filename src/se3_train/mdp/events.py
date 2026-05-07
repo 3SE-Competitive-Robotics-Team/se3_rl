@@ -12,6 +12,8 @@ from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_from_euler_xyz, quat_mul, sample_uniform
 
+from se3_shared import JointGroup
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -50,8 +52,8 @@ def reset_root_state_full(
 
     # 仅随机化 yaw,保持直立。
     yaw = sample_uniform(
-        torch.tensor(-3.14159, device=env.device),
-        torch.tensor(3.14159, device=env.device),
+        torch.tensor(-torch.pi, device=env.device),
+        torch.tensor(torch.pi, device=env.device),
         (n,),
         env.device,
     )
@@ -81,9 +83,7 @@ def reset_joints(
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
 
-    # 轮关节(索引 2, 5):归零。
-    joint_pos[:, 2] = 0.0
-    joint_pos[:, 5] = 0.0
+    joint_pos[:, JointGroup.WHEELS] = 0.0
 
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
@@ -289,41 +289,6 @@ def randomize_pd_gains(
             ] * kd_scale.squeeze(-1)
 
 
-def randomize_motor_torque(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
-    torque_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> None:
-    """随机化电机扭矩限制。"""
-    if env_ids is None:
-        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
-
-    n = len(env_ids)
-
-    torque_scale = sample_uniform(
-        torch.tensor(torque_range[0], device=env.device),
-        torch.tensor(torque_range[1], device=env.device),
-        (n, 1),
-        env.device,
-    )
-
-    default_forcerange = env.sim.get_default_field("actuator_forcerange")
-    actuator_ids = asset_cfg.actuator_ids
-
-    if isinstance(actuator_ids, slice):
-        env.sim.model.actuator_forcerange[env_ids, :, 0] = default_forcerange[:, 0] * torque_scale
-        env.sim.model.actuator_forcerange[env_ids, :, 1] = default_forcerange[:, 1] * torque_scale
-    else:
-        for aid in actuator_ids:
-            env.sim.model.actuator_forcerange[env_ids, aid, 0] = default_forcerange[
-                aid, 0
-            ] * torque_scale.squeeze(-1)
-            env.sim.model.actuator_forcerange[env_ids, aid, 1] = default_forcerange[
-                aid, 1
-            ] * torque_scale.squeeze(-1)
-
-
 def randomize_default_dof_pos(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -357,35 +322,3 @@ def randomize_default_dof_pos(
         )
 
     asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
-
-
-def randomize_action_delay(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor | None,
-    delay_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> None:
-    """随机化动作延迟(单位:秒)。"""
-    if env_ids is None:
-        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
-
-    _ = env.scene[asset_cfg.name]
-    n = len(env_ids)
-
-    # 将延迟范围从秒转换为步数。
-    control_dt = env.step_dt
-    min_steps = int(delay_range[0] / control_dt)
-    max_steps = int(delay_range[1] / control_dt)
-
-    delay_steps = torch.randint(
-        min_steps,
-        max_steps + 1,
-        (n,),
-        device=env.device,
-        dtype=torch.long,
-    )
-
-    # 存储每个环境的延迟(供动作延迟缓冲区使用,如适用)。
-    if not hasattr(env, "_action_delay_steps"):
-        env._action_delay_steps = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-    env._action_delay_steps[env_ids] = delay_steps
