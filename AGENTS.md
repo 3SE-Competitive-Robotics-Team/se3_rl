@@ -152,6 +152,43 @@ se3_train/
 - 推荐环境数：1024（6 DOF 机器人，4096 过大）
 - 推荐 GPU 显存：8GB+（RTX 3090/4090 训练约 2-3 小时）
 
+## 踩坑记录
+
+### 远程训练进程管理
+
+**问题**：通过 SSH `nohup ... &` 启动训练后，`kill $PID` 杀的是 `uv run` 的 shell wrapper 进程，实际的 Python 训练子进程不会被杀掉。多次"重启"后会出现多个训练进程同时跑，争抢 GPU 且日志混乱。
+
+**正确做法**：
+```bash
+# 杀进程时必须找到实际 python 子进程
+ps aux | grep se3-train | grep python | grep -v grep | awk '{print $2}' | xargs kill
+
+# 或者用 pkill
+pkill -f "se3-train"
+```
+
+### wandb 保存依赖
+
+**问题**：RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
+
+**解决方案**：
+- 无外网环境使用 `WANDB_MODE=offline`（writer 不为 None，checkpoint 正常保存，日志事后 `wandb sync` 上传）
+- 有代理时设置 `HTTP_PROXY=http://... HTTPS_PROXY=http://...`
+- **绝对不要**依赖 wandb 在线模式在网络不稳定的环境跑长时间训练
+
+### checkpoint 文件名排序
+
+**问题**：`model_900.pt` 在字典序中排在 `model_1000.pt` 之后（"9" > "1"），导致 `ls | sort` 或 `ls -t` 给出错误的"最新 checkpoint"。
+
+**正确做法**：
+```bash
+# 按数字排序
+ls model_*.pt | sort -V
+
+# 或者用 find + stat 按时间
+find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
+```
+
 ## 文件结构
 
 ```
