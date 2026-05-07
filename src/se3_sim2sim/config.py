@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import se3_shared
-from se3_shared import Termination
+from se3_shared import ActionDelayConfig, Termination
 
 ViewerMode = Literal["rerun", "none"]
 
@@ -22,7 +22,7 @@ class RobotConfig:
     seed: int = 0
     sim_dt: float = _shared_robot.sim_dt
     control_decimation: int = _shared_robot.control_decimation
-    base_height: float = 0.28
+    base_height: float = 0.301
     command: tuple[float, float, float, float, float] = (0.5, 0.0, 0.0, 0.0, 0.28)
     command_scale: tuple[float, ...] = _shared_obs.command_scale
     default_dof_pos: tuple[float, ...] = _shared_robot.default_dof_pos
@@ -31,7 +31,11 @@ class RobotConfig:
     leg_kp: float = _shared_robot.leg_kp
     leg_kd: float = _shared_robot.leg_kd
     wheel_kd: float = _shared_robot.wheel_kd
-    action_delay_steps: int = 5
+    action_delay: ActionDelayConfig = field(
+        default_factory=lambda: _shared_robot.action_delay.model_copy()
+    )
+    action_delay_steps: int | None = None
+    """兼容旧 CLI 的固定步数延迟入口; 新配置使用 action_delay。"""
 
 
 @dataclass(slots=True)
@@ -70,6 +74,7 @@ class RunConfig:
     def resolved(self, root: Path | None = None) -> RunConfig:
         base = Path.cwd() if root is None else Path(root)
         self.robot.model_path = _resolve_path(base, self.robot.model_path)
+        self._resolve_legacy_action_delay_steps()
         self.policy.checkpoint = (
             _latest_checkpoint(base)
             if self.policy.checkpoint is None
@@ -101,6 +106,19 @@ class RunConfig:
         }
         return _stringify_paths(payload)
 
+    def _resolve_legacy_action_delay_steps(self) -> None:
+        if self.robot.action_delay_steps is None:
+            return
+        delay_steps = max(0, int(self.robot.action_delay_steps))
+        delay_s = delay_steps * float(self.robot.sim_dt)
+        self.robot.action_delay = ActionDelayConfig(
+            enabled=delay_steps > 0,
+            delay_s=delay_s,
+            randomize=False,
+            min_delay_s=delay_s,
+            max_delay_s=delay_s,
+        )
+
 
 def _resolve_path(base: Path, path: Path) -> Path:
     path = Path(path).expanduser()
@@ -111,14 +129,18 @@ def _resolve_path(base: Path, path: Path) -> Path:
 
 def _latest_checkpoint(base: Path) -> Path:
     root = base / "logs" / "rsl_rl" / "se3_wheel_leg"
-    candidates = list(root.glob("*/model_*.pt"))
-    if not candidates:
+    runs = (
+        [run for run in root.iterdir() if run.is_dir() and any(run.glob("model_*.pt"))]
+        if root.exists()
+        else []
+    )
+    if not runs:
         raise FileNotFoundError(
             "未找到 checkpoint, 请使用 --checkpoint 指定 logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt"
         )
-    return max(
-        candidates, key=lambda path: (_checkpoint_iteration(path), path.parent.name)
-    ).resolve()
+    latest_run = max(runs, key=lambda path: (path.stat().st_mtime, path.name))
+    candidates = list(latest_run.glob("model_*.pt"))
+    return max(candidates, key=_checkpoint_iteration).resolve()
 
 
 def _checkpoint_iteration(path: Path) -> int:
@@ -135,6 +157,8 @@ def _checkpoint_iteration(path: Path) -> int:
 def _stringify_paths(value):
     if isinstance(value, Path):
         return str(value)
+    if hasattr(value, "model_dump"):
+        return _stringify_paths(value.model_dump())
     if isinstance(value, dict):
         return {k: _stringify_paths(v) for k, v in value.items()}
     if isinstance(value, list):

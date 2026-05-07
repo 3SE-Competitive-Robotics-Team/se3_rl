@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from se3_shared import ActionDelayConfig
+
 from .config import PolicyConfig, RobotConfig, RunConfig, ViewerConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SE3 MuJoCo sim2sim workflow")
     robot_defaults = RobotConfig()
+    delay_defaults = robot_defaults.action_delay
     parser.add_argument("--model", type=Path, default=robot_defaults.model_path)
     parser.add_argument(
         "--checkpoint",
@@ -60,8 +63,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--action-delay-steps",
         type=int,
-        default=robot_defaults.action_delay_steps,
-        help="Applied action delay in MuJoCo sim steps.",
+        default=None,
+        help="Legacy fixed delay in MuJoCo sim steps. Overrides --action-delay-ms when set.",
+    )
+    parser.add_argument(
+        "--action-delay-ms",
+        type=float,
+        default=delay_defaults.delay_s * 1000.0,
+        help="Nominal action delay in milliseconds.",
+    )
+    parser.add_argument(
+        "--action-delay-min-ms",
+        type=float,
+        default=delay_defaults.min_delay_s * 1000.0,
+        help="Minimum randomized action delay in milliseconds.",
+    )
+    parser.add_argument(
+        "--action-delay-max-ms",
+        type=float,
+        default=delay_defaults.max_delay_s * 1000.0,
+        help="Maximum randomized action delay in milliseconds.",
+    )
+    parser.add_argument(
+        "--action-delay-randomize",
+        dest="action_delay_randomize",
+        action="store_true",
+        default=delay_defaults.randomize,
+        help="Enable per-reset action delay randomization.",
+    )
+    parser.add_argument(
+        "--no-action-delay-randomize",
+        dest="action_delay_randomize",
+        action="store_false",
+        help="Disable action delay randomization and use --action-delay-ms.",
+    )
+    parser.add_argument(
+        "--no-action-delay",
+        action="store_true",
+        help="Disable action delay entirely.",
     )
     parser.add_argument(
         "--leg-kp",
@@ -82,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def config_from_args(args: argparse.Namespace) -> RunConfig:
+    action_delay = ActionDelayConfig(
+        enabled=not bool(args.no_action_delay),
+        delay_s=float(args.action_delay_ms) / 1000.0,
+        randomize=bool(args.action_delay_randomize),
+        min_delay_s=float(args.action_delay_min_ms) / 1000.0,
+        max_delay_s=float(args.action_delay_max_ms) / 1000.0,
+    )
     return RunConfig(
         robot=RobotConfig(
             model_path=args.model,
@@ -89,7 +135,10 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
             command=tuple(float(v) for v in args.command),
-            action_delay_steps=max(0, int(args.action_delay_steps)),
+            action_delay=action_delay,
+            action_delay_steps=(
+                None if args.action_delay_steps is None else max(0, int(args.action_delay_steps))
+            ),
             leg_kp=float(args.leg_kp),
             leg_kd=float(args.leg_kd),
         ),
@@ -127,13 +176,25 @@ def main() -> int:
     robot_cfg = summary["config"]["robot"]
     sim_dt = float(robot_cfg["sim_dt"])
     control_decimation = int(robot_cfg["control_decimation"])
-    action_delay_steps = int(robot_cfg["action_delay_steps"])
+    action_delay_cfg = robot_cfg["action_delay"]
+    if isinstance(action_delay_cfg, dict):
+        delay_enabled = bool(action_delay_cfg["enabled"])
+        delay_randomize = bool(action_delay_cfg["randomize"])
+    else:
+        delay_enabled = False
+        delay_randomize = False
+    action_delay_steps = int(final.get("action_delay_steps", 0)) if final else 0
+    action_delay_s = (
+        float(final.get("action_delay_s", action_delay_steps * sim_dt)) if final else 0.0
+    )
     print("Final summary:")
     print(f"  done_reason={summary['done_reason']}")
+    print(f"  checkpoint={summary['policy']['checkpoint']}")
     print(f"  model_issues={len(summary['model_diagnostics']['issues'])}")
     print(
         f"  sim_dt={sim_dt:.4f}s control_dt={sim_dt * control_decimation:.4f}s "
-        f"action_delay={action_delay_steps * sim_dt * 1000.0:.1f}ms"
+        f"action_delay={action_delay_s * 1000.0:.1f}ms "
+        f"steps={action_delay_steps} enabled={delay_enabled} randomize={delay_randomize}"
     )
     if final:
         print(

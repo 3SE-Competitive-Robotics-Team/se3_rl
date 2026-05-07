@@ -5,7 +5,9 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from .action_delay import ActionDelayConfig
 
 
 class Joint(IntEnum):
@@ -72,6 +74,7 @@ class RobotConfig(BaseModel):
     action_scale: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25, 20.0, 20.0)
     sim_dt: float = 0.002
     control_decimation: int = 5
+    action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
     termination: Termination = Termination()
 
     @property

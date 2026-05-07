@@ -7,7 +7,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from se3_shared import JointGroup, Termination
+from se3_shared import ActionDelayConfig, JointGroup, Termination
 from se3_shared import RobotConfig as SharedRobotConfig
 
 from .config import RobotConfig
@@ -39,6 +39,9 @@ class WheelLeggedRobot:
         if int(cfg.control_decimation) < 1:
             raise ValueError(f"control_decimation must be >= 1, got {cfg.control_decimation}")
         self.model.opt.timestep = float(cfg.sim_dt)
+        self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+        self.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
+        self.model.opt.iterations = 100
         self.data = mujoco.MjData(self.model)
         self.rng = np.random.default_rng(int(cfg.seed))
         self.sim_dt = float(self.model.opt.timestep)
@@ -63,9 +66,13 @@ class WheelLeggedRobot:
         self.last_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
-        self.action_delay_steps = max(0, int(cfg.action_delay_steps))
+        self.action_delay_cfg: ActionDelayConfig = cfg.action_delay
+        self.min_action_delay_steps, self.max_action_delay_steps = (
+            self.action_delay_cfg.step_bounds(self.sim_dt)
+        )
+        self.action_delay_steps = 0
         self.action_fifo = np.zeros(
-            (self.action_delay_steps + 1, runtime.policy.num_actions),
+            (self.max_action_delay_steps + 1, runtime.policy.num_actions),
             dtype=np.float64,
         )
         self.step_count = 0
@@ -87,6 +94,7 @@ class WheelLeggedRobot:
         self.last_policy_action.fill(0.0)
         self.last_clipped_policy_action.fill(0.0)
         self.action_fifo.fill(0.0)
+        self.action_delay_steps = self._sample_action_delay_steps()
         self.last_ctrl.fill(0.0)
         self.step_count = 0
         return self.observation()
@@ -148,6 +156,11 @@ class WheelLeggedRobot:
             "last_action": self.last_action.copy().tolist(),
             "applied_action": self.last_applied_action.copy().tolist(),
             "last_ctrl": self.last_ctrl.copy().tolist(),
+            "action_delay_steps": int(self.action_delay_steps),
+            "action_delay_s": float(
+                self.action_delay_cfg.actual_delay_s(self.action_delay_steps, self.sim_dt)
+            ),
+            "action_delay_config": self.action_delay_cfg.model_dump(),
             "fail_tilt_deg": float(self.termination.fail_tilt_deg),
         }
 
@@ -174,18 +187,58 @@ class WheelLeggedRobot:
 
     @staticmethod
     def _build_model(xml_path: str) -> mujoco.MjModel:
-        """加载 MJCF 并程序化添加 motor actuator（MJCF 中已删除 <actuator> 段）。"""
+        """加载 MJCF 并程序化添加 position/velocity actuator（与训练端 MJLab 一致）。
+
+        训练端 actuator 顺序: 先 leg position（4个），再 wheel velocity（2个）。
+        """
         spec = mujoco.MjSpec.from_file(xml_path)
-        joint_names = JointGroup.joint_names()
-        torque_limits = _SHARED_ROBOT.torque_limits
-        for jname, tlim in zip(joint_names, torque_limits, strict=True):
+
+        leg_joint_names = tuple(JointGroup.joint_names()[i] for i in JointGroup.LEGS)
+        wheel_joint_names = tuple(JointGroup.joint_names()[i] for i in JointGroup.WHEELS)
+
+        # 腿部 position actuators 先创建，和训练端一致。
+        for jname in leg_joint_names:
             act = spec.add_actuator()
             act.name = f"{jname}_motor"
             act.target = jname
             act.trntype = mujoco.mjtTrn.mjTRN_JOINT
-            act.gear = np.array([1.0, 0, 0, 0, 0, 0])
-            act.ctrlrange = np.array([-tlim, tlim])
-            act.ctrllimited = True
+            act.dyntype = mujoco.mjtDyn.mjDYN_NONE
+            act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
+            act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
+            act.gainprm[0] = _SHARED_ROBOT.leg_kp
+            act.biasprm[1] = -_SHARED_ROBOT.leg_kp
+            act.biasprm[2] = -_SHARED_ROBOT.leg_kd
+            act.forcelimited = True
+            act.forcerange[:] = np.array(
+                [
+                    -_SHARED_ROBOT.torque_limits[JointGroup.LEGS[0]],
+                    _SHARED_ROBOT.torque_limits[JointGroup.LEGS[0]],
+                ]
+            )
+            act.ctrllimited = False
+            act.inheritrange = 0.0
+
+        # 轮子 velocity actuators 后创建，和训练端一致。
+        for jname in wheel_joint_names:
+            act = spec.add_actuator()
+            act.name = f"{jname}_motor"
+            act.target = jname
+            act.trntype = mujoco.mjtTrn.mjTRN_JOINT
+            act.dyntype = mujoco.mjtDyn.mjDYN_NONE
+            act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
+            act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
+            act.gainprm[0] = _SHARED_ROBOT.wheel_kd
+            act.biasprm[2] = -_SHARED_ROBOT.wheel_kd
+            act.forcelimited = True
+            act.forcerange[:] = np.array(
+                [
+                    -_SHARED_ROBOT.torque_limits[JointGroup.WHEELS[0]],
+                    _SHARED_ROBOT.torque_limits[JointGroup.WHEELS[0]],
+                ]
+            )
+            act.ctrllimited = False
+            act.inheritrange = 0.0
+
         return spec.compile()
 
     def _refresh_state(self) -> None:
@@ -195,32 +248,25 @@ class WheelLeggedRobot:
         self.projected_gravity = rotate_inverse(self.base_quat, np.asarray([0.0, 0.0, -1.0]))
 
     def _compute_pd_torques(self, action: np.ndarray) -> np.ndarray:
-        """关节位置 PD + 轮子速度控制。
-
-        action[0:4] = 腿部关节位置增量（相对默认位姿）
-        action[4:6] = 轮子速度目标
-        """
+        """计算 actuator ctrl: [leg_pos_target × 4, wheel_vel_target × 2]。"""
         scaled = np.asarray(action, dtype=np.float64) * self.action_scale
 
-        leg_default = self.default_dof_pos[JointGroup.LEGS]
-        q_target = scaled[:4] + leg_default
-        q_current = self.dof_pos[JointGroup.LEGS]
-        dq_current = self.dof_vel[JointGroup.LEGS]
-        tau_legs = (
-            float(self.cfg.leg_kp) * (q_target - q_current) - float(self.cfg.leg_kd) * dq_current
-        )
+        leg_target = scaled[:4] + self.default_dof_pos[JointGroup.LEGS]
+        wheel_vel_target = scaled[4:6]
 
-        vel_target = scaled[4:6]
-        vel_current = self.dof_vel[JointGroup.WHEELS]
-        tau_wheels = float(self.cfg.wheel_kd) * (vel_target - vel_current)
+        ctrl = np.concatenate([leg_target, wheel_vel_target])
+        self.last_ctrl[:] = ctrl
+        return ctrl
 
-        torques = np.asarray(
-            [tau_legs[0], tau_legs[1], tau_wheels[0], tau_legs[2], tau_legs[3], tau_wheels[1]],
-            dtype=np.float64,
+    def _sample_action_delay_steps(self) -> int:
+        if self.min_action_delay_steps == self.max_action_delay_steps:
+            return int(self.min_action_delay_steps)
+        return int(
+            self.rng.integers(
+                int(self.min_action_delay_steps),
+                int(self.max_action_delay_steps) + 1,
+            )
         )
-        torques = np.clip(torques, -self.torque_limits, self.torque_limits)
-        self.last_ctrl[:] = torques
-        return torques
 
     def _termination_status(self) -> tuple[bool, str, bool]:
         invalid_state = not (

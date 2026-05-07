@@ -24,7 +24,7 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from se3_train.mdp import events, observations, rewards, terminations
-from se3_train.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
+from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 from se3_train.mdp.curriculums import commands_vel as curriculum_commands_vel
 from se3_train.mdp.curriculums import push_disturbance as curriculum_push_disturbance
@@ -163,18 +163,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     cfg.actions = {
-        "joint_pos": JointPositionActionCfg(
-            entity_name="robot",
-            actuator_names=["lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint"],
-            scale=0.25,
-            use_default_offset=True,
-        ),
-        "joint_vel": JointVelocityActionCfg(
-            entity_name="robot",
-            actuator_names=["l_wheel_Joint", "r_wheel_Joint"],
-            scale=20.0,
-            use_default_offset=True,
-        ),
+        "delayed_action": SerialLegDelayedActionCfg(entity_name="robot"),
     }
 
     cfg.commands = {

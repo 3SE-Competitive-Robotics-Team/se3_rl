@@ -51,6 +51,8 @@ class Sim2SimWorkflow:
                     "height": float(info["height"]),
                     "tilt_deg": float(info["tilt_deg"]),
                     "reward": float(reward),
+                    "action_delay_steps": float(info["action_delay_steps"]),
+                    "action_delay_s": float(info["action_delay_s"]),
                 }
                 samples.append(sample)
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
