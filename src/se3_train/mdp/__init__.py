@@ -5,6 +5,7 @@
 
 from . import actions as actions
 from . import commands as commands
+from . import curriculums as curriculums
 from . import events as events
 from . import observations as observations
 from . import rewards as rewards
@@ -13,6 +14,7 @@ from . import terminations as terminations
 __all__ = [
     "actions",
     "commands",
+    "curriculums",
     "events",
     "observations",
     "rewards",
