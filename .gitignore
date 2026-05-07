@@ -17,3 +17,7 @@ wandb/
 
 # Training and smoke run logs
 logs/
+
+# AI tooling
+.sisyphus/
+.opencode/
