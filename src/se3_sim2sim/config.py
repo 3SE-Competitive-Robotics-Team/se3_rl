@@ -6,7 +6,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
+import se3_shared
+from se3_shared import Termination
+
 ViewerMode = Literal["rerun", "none"]
+
+_shared_robot = se3_shared.RobotConfig()
+_shared_obs = se3_shared.ObservationConfig()
 
 
 @dataclass(slots=True)
@@ -14,21 +20,18 @@ class RobotConfig:
     model_path: Path = Path("assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml")
     task: str = "wheel_legged_joint_pos"
     seed: int = 0
-    sim_dt: float = 0.005
-    control_decimation: int = 4
+    sim_dt: float = _shared_robot.sim_dt
+    control_decimation: int = _shared_robot.control_decimation
     base_height: float = 0.28
     command: tuple[float, float, float, float, float] = (0.5, 0.0, 0.0, 0.0, 0.28)
-    command_scale: tuple[float, float, float, float, float] = (2.0, 0.25, 5.0, 5.0, 5.0)
-    default_dof_pos: tuple[float, ...] = (0.6171, 0.2070, 0.0, 0.6171, 0.2070, 0.0)
-    action_scale: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25, 20.0, 20.0)
-    torque_limits: tuple[float, ...] = (30.0, 30.0, 3.3, 30.0, 30.0, 3.3)
-    leg_kp: float = 40.0
-    leg_kd: float = 2.0
-    wheel_kd: float = 0.5
-    action_delay_steps: int = 2
-    terminate_on_fall: bool = False
-    fail_tilt_deg: float = 80.0
-    fail_height_m: float = 0.12
+    command_scale: tuple[float, ...] = _shared_obs.command_scale
+    default_dof_pos: tuple[float, ...] = _shared_robot.default_dof_pos
+    action_scale: tuple[float, ...] = _shared_robot.action_scale
+    torque_limits: tuple[float, ...] = _shared_robot.torque_limits
+    leg_kp: float = _shared_robot.leg_kp
+    leg_kd: float = _shared_robot.leg_kd
+    wheel_kd: float = _shared_robot.wheel_kd
+    action_delay_steps: int = 5
 
 
 @dataclass(slots=True)
@@ -59,6 +62,7 @@ class RunConfig:
     print_every: int = 100
     print_debug: bool = False
     json_output: Path | None = None
+    termination: Termination = field(default_factory=Termination)
     terminate_on_fall: bool = False
     fail_tilt_deg: float = 80.0
     fail_height_m: float = 0.12
@@ -75,13 +79,26 @@ class RunConfig:
             self.viewer.record_to_rrd = _resolve_path(base, self.viewer.record_to_rrd)
         if self.json_output is not None:
             self.json_output = _resolve_path(base, self.json_output)
-        self.robot.terminate_on_fall = bool(self.terminate_on_fall)
-        self.robot.fail_tilt_deg = float(self.fail_tilt_deg)
-        self.robot.fail_height_m = float(self.fail_height_m)
+        self.termination = Termination(
+            terminate_on_fall=self.terminate_on_fall,
+            fail_tilt_deg=self.fail_tilt_deg,
+            fail_height_m=self.fail_height_m,
+        )
         return self
 
     def to_dict(self) -> dict[str, object]:
-        payload = asdict(self)
+        payload: dict[str, object] = {
+            "robot": asdict(self.robot),
+            "policy": asdict(self.policy),
+            "viewer": asdict(self.viewer),
+            "max_steps": self.max_steps,
+            "fixed_reset": self.fixed_reset,
+            "randomize_root": self.randomize_root,
+            "print_every": self.print_every,
+            "print_debug": self.print_debug,
+            "json_output": self.json_output,
+            "termination": self.termination.model_dump(),
+        }
         return _stringify_paths(payload)
 
 

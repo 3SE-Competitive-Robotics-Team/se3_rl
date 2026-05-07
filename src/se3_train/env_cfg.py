@@ -42,7 +42,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     cfg = ManagerBasedRlEnvCfg(
-        decimation=4,
+        decimation=5,
         scene=scene,
     )
 
@@ -408,7 +408,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.sim = SimulationCfg(
         nconmax=256,
         njmax=1024,
-        mujoco=MujocoCfg(timestep=0.005),
+        mujoco=MujocoCfg(timestep=0.002),
     )
     cfg.viewer = ViewerConfig()
 

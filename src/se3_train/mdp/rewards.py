@@ -12,6 +12,8 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
+from se3_shared import JointGroup
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -27,7 +29,7 @@ def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
     """在宽限期内使用 1.0,否则使用直立因子。"""
-    grace_steps = 37
+    grace_steps = 74
     upright = _upright_factor(projected_gravity_z)
     in_grace = env.episode_length_buf < grace_steps
     return torch.where(in_grace, torch.ones_like(upright), upright)
@@ -160,8 +162,7 @@ def leg_torques(
 ) -> torch.Tensor:
     """腿部执行器力矩平方和（position actuator 索引 0,1,2,3）。"""
     robot = env.scene[asset_cfg.name]
-    leg_act_ids = [0, 1, 2, 3]
-    torques = robot.data.actuator_force[:, leg_act_ids]
+    torques = robot.data.actuator_force[:, JointGroup.LEG_ACTUATORS]
     return torch.sum(torques**2, dim=1)
 
 
@@ -175,8 +176,7 @@ def wheel_torques(
     max_torque: 轮子电机额定最大力矩 (N·m)。
     """
     robot = env.scene[asset_cfg.name]
-    wheel_act_ids = [4, 5]
-    torques = robot.data.actuator_force[:, wheel_act_ids]
+    torques = robot.data.actuator_force[:, JointGroup.WHEEL_ACTUATORS]
     excess = torch.clamp(torch.abs(torques) - max_torque, min=0.0)
     return torch.sum(excess**2, dim=1)
 
@@ -187,8 +187,7 @@ def leg_dof_acc(
     """腿部关节加速度平方和(排除轮子)。"""
     robot = env.scene[asset_cfg.name]
     acc = robot.data.joint_acc
-    leg_ids = [0, 1, 3, 4]
-    return torch.sum(acc[:, leg_ids] ** 2, dim=1)
+    return torch.sum(acc[:, JointGroup.LEGS] ** 2, dim=1)
 
 
 def leg_power(
@@ -196,10 +195,8 @@ def leg_power(
 ) -> torch.Tensor:
     """腿部关节 |力矩 * 速度| 之和。"""
     robot = env.scene[asset_cfg.name]
-    leg_joint_ids = [0, 1, 3, 4]
-    leg_act_ids = [0, 1, 2, 3]
-    torques = robot.data.actuator_force[:, leg_act_ids]
-    vel = robot.data.joint_vel[:, leg_joint_ids]
+    torques = robot.data.actuator_force[:, JointGroup.LEG_ACTUATORS]
+    vel = robot.data.joint_vel[:, JointGroup.LEGS]
     return torch.sum(torch.abs(torques * vel), dim=1)
 
 
@@ -227,8 +224,9 @@ def stand_still(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    leg_ids = [0, 1, 3, 4]
-    diff = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+    diff = (
+        robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
+    )
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
@@ -329,9 +327,8 @@ def dof_pos_limits(
     if soft_limits is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    leg_ids = [0, 1, 3, 4]
-    pos = robot.data.joint_pos[:, leg_ids]
-    limits = soft_limits[:, leg_ids]
+    pos = robot.data.joint_pos[:, JointGroup.LEGS]
+    limits = soft_limits[:, JointGroup.LEGS]
 
     out_of_limits = -(pos - limits[:, :, 0]).clip(max=0.0)
     out_of_limits += (pos - limits[:, :, 1]).clip(min=0.0)
