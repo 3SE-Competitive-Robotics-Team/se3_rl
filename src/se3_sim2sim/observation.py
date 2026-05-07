@@ -1,4 +1,4 @@
-"""Observation assembly for the 27D joint-space policy input."""
+"""Observation assembly for the 29D joint-space policy input."""
 
 from __future__ import annotations
 

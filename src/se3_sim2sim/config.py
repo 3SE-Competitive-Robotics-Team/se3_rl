@@ -17,8 +17,8 @@ class RobotConfig:
     sim_dt: float = 0.005
     control_decimation: int = 4
     base_height: float = 0.28
-    command: tuple[float, float, float] = (0.5, 0.0, 0.28)
-    command_scale: tuple[float, float, float] = (2.0, 0.25, 5.0)
+    command: tuple[float, float, float, float, float] = (0.5, 0.0, 0.0, 0.0, 0.28)
+    command_scale: tuple[float, float, float, float, float] = (2.0, 0.25, 5.0, 5.0, 5.0)
     default_dof_pos: tuple[float, ...] = (0.6171, 0.2070, 0.0, 0.6171, 0.2070, 0.0)
     action_scale: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25, 20.0, 20.0)
     torque_limits: tuple[float, ...] = (30.0, 30.0, 3.3, 30.0, 30.0, 3.3)

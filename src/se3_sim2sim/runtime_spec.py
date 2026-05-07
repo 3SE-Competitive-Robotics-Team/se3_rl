@@ -10,7 +10,7 @@ import numpy as np
 @dataclass(frozen=True, slots=True)
 class PolicyArchitectureSpec:
     policy_class_name: str = "ActorCritic"
-    num_obs: int = 27
+    num_obs: int = 29
     num_actions: int = 6
     actor_hidden_dims: tuple[int, ...] = (512, 256, 128)
     critic_hidden_dims: tuple[int, ...] = (512, 256, 128)
@@ -56,7 +56,7 @@ class RuntimeSpec:
     observation_terms: tuple[ObservationTermSpec, ...] = (
         ObservationTermSpec("ang_vel", 3),
         ObservationTermSpec("gravity", 3),
-        ObservationTermSpec("commands", 3),
+        ObservationTermSpec("commands", 5),
         ObservationTermSpec("leg_joint_pos", 4),
         ObservationTermSpec("leg_joint_vel", 4),
         ObservationTermSpec("wheel_pos", 2),

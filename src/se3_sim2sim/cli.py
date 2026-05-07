@@ -52,10 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--command",
         type=float,
-        nargs=3,
-        metavar=("LIN_X", "YAW", "HEIGHT"),
+        nargs=5,
+        metavar=("LIN_X", "YAW", "PITCH", "ROLL", "HEIGHT"),
         default=robot_defaults.command,
-        help="Policy command as lin_vel_x yaw_rate height.",
+        help="Policy command as lin_vel_x yaw_rate pitch roll height.",
     )
     parser.add_argument(
         "--action-delay-steps",
