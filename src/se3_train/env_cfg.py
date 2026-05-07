@@ -11,7 +11,13 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.sensor import (
+    ContactMatch,
+    ContactSensorCfg,
+    ObjRef,
+    RingPatternCfg,
+    TerrainHeightSensorCfg,
+)
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
@@ -66,7 +72,17 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         num_slots=1,
     )
 
-    cfg.scene.sensors = (collision_sensor_cfg, wheel_sensor_cfg)
+    base_height_sensor_cfg = TerrainHeightSensorCfg(
+        name="base_height_sensor",
+        frame=ObjRef(type="body", name="base_link", entity="robot"),
+        ray_alignment="yaw",
+        pattern=RingPatternCfg.single_ring(radius=0.05, num_samples=4),
+        max_distance=2.0,
+        include_geom_groups=(0,),
+        reduction="min",
+    )
+
+    cfg.scene.sensors = (collision_sensor_cfg, wheel_sensor_cfg, base_height_sensor_cfg)
 
     actor_terms = {
         "base_ang_vel": ObservationTermCfg(
@@ -158,7 +174,11 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "tracking_height": RewardTermCfg(
             func=rewards.tracking_height,
             weight=2.49,
-            params={"command_name": "velocity_height", "sigma": 0.05},
+            params={
+                "command_name": "velocity_height",
+                "sigma": 0.05,
+                "height_sensor_name": "base_height_sensor",
+            },
         ),
         "upward": RewardTermCfg(func=rewards.upward, weight=0.607),
         "ang_vel_xy": RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.146),
@@ -226,6 +246,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=rewards.feet_contact_without_cmd,
             weight=0.386,
             params={
+                "command_name": "velocity_height",
                 "force_threshold": 1.0,
                 "cmd_threshold": 0.1,
                 "sensor_name": "wheel_sensor",

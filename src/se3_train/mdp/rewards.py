@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
+from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -95,13 +96,21 @@ def tracking_orientation(env: ManagerBasedRlEnv, command_name: str, sigma: float
     return torch.exp(-error_sq / sigma) * gate
 
 
-def tracking_height(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
-    """高度跟踪奖励: exp(-error²/sigma),直立门控。"""
+def tracking_height(
+    env: ManagerBasedRlEnv, command_name: str, sigma: float, height_sensor_name: str
+) -> torch.Tensor:
+    """高度跟踪奖励: exp(-error²/sigma),直立门控。
+
+    使用 TerrainHeightSensor 获取机体离地面的垂直距离（clearance），
+    适用于平地和崎岖地形。
+    """
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
-    height = robot.data.root_link_pos_w[:, 2]
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = sensor.data.heights[:, 0]
     target_height = cmd[:, 4]
     error = torch.square(height - target_height)
     return torch.exp(-error / sigma) * gate
@@ -287,13 +296,14 @@ def contact_forces(
 
 def feet_contact_without_cmd(
     env: ManagerBasedRlEnv,
+    command_name: str,
     force_threshold: float,
     cmd_threshold: float,
     sensor_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """静止时轮子接触,直立门控。"""
-    cmd = env.command_manager.get_command("velocity_height")
+    cmd = env.command_manager.get_command(command_name)
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
