@@ -22,6 +22,8 @@ uv sync
 
 训练需要 Linux + NVIDIA GPU + CUDA；macOS 适合运行 sim2sim、诊断工具和 CPU smoke。
 
+训练指标上传到 Weights & Biases 项目：[se3_wheel_leg](https://wandb.ai/3se-competitive-robotics-team/se3_wheel_leg)。
+
 ## 常用命令
 
 ```bash
@@ -37,7 +39,10 @@ uv run se3-sim2sim --viewer none --max-steps 200
 # 指定 checkpoint 并打开 Rerun
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --max-steps 3000
 
-# 代码格式和 lint
+# 提交前检查（ruff format + ruff check）
+prek run --all-files
+
+# 也可以直接跑底层命令
 uv run ruff format .
 uv run ruff check . --fix
 ```
@@ -55,6 +60,7 @@ uv run se3-sim2sim --no-action-delay
 
 ## 文档
 
+- [How to Start](docs/how_to_start.md)
 - [训练指南](docs/train.md)
 - [GRU 反倒起身训练方案](docs/plan/gru_recovery_training.md)
 - [碰撞模型优化记录](docs/todo/collision_model_optimization.md)
