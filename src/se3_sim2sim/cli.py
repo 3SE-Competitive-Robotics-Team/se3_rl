@@ -3,17 +3,35 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 from se3_shared import ActionDelayConfig
 
-from .config import PolicyConfig, RobotConfig, RunConfig, ViewerConfig
+from .config import (
+    MAX_YAW_RATE_RAD_S,
+    PolicyConfig,
+    RobotConfig,
+    RunConfig,
+    ViewerConfig,
+    YawPidConfig,
+)
+
+
+def _yaw_max_rate(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0.0 or parsed > MAX_YAW_RATE_RAD_S:
+        raise argparse.ArgumentTypeError(
+            f"--yaw-max-rate must be in (0, {MAX_YAW_RATE_RAD_S}], got {parsed}"
+        )
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SE3 MuJoCo sim2sim workflow")
     robot_defaults = RobotConfig()
     delay_defaults = robot_defaults.action_delay
+    yaw_defaults = robot_defaults.yaw_pid
     parser.add_argument("--model", type=Path, default=robot_defaults.model_path)
     parser.add_argument(
         "--checkpoint",
@@ -58,8 +76,31 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=5,
         metavar=("LIN_X", "YAW", "PITCH", "ROLL", "HEIGHT"),
         default=robot_defaults.command,
-        help="Policy command as lin_vel_x yaw_rate pitch roll height.",
+        help="Policy command as lin_vel_x yaw_rate pitch roll height. Yaw slot is overwritten when --yaw-pid is enabled.",
     )
+    parser.add_argument(
+        "--yaw-pid",
+        dest="yaw_pid",
+        action="store_true",
+        default=yaw_defaults.enabled,
+        help="Enable yaw PID control. Enabled by default.",
+    )
+    parser.add_argument(
+        "--no-yaw-pid",
+        dest="yaw_pid",
+        action="store_false",
+        help="Disable yaw PID control and keep the yaw slot from --command.",
+    )
+    parser.add_argument(
+        "--yaw-target-deg",
+        type=float,
+        default=math.degrees(yaw_defaults.target_yaw_rad),
+        help="Target yaw angle in degrees for the yaw PID controller.",
+    )
+    parser.add_argument("--yaw-kp", type=float, default=yaw_defaults.kp)
+    parser.add_argument("--yaw-ki", type=float, default=yaw_defaults.ki)
+    parser.add_argument("--yaw-kd", type=float, default=yaw_defaults.kd)
+    parser.add_argument("--yaw-max-rate", type=_yaw_max_rate, default=yaw_defaults.max_rate)
     parser.add_argument(
         "--action-delay-steps",
         type=int,
@@ -135,6 +176,14 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
             command=tuple(float(v) for v in args.command),
+            yaw_pid=YawPidConfig(
+                enabled=bool(args.yaw_pid),
+                target_yaw_rad=math.radians(float(args.yaw_target_deg)),
+                kp=float(args.yaw_kp),
+                ki=float(args.yaw_ki),
+                kd=float(args.yaw_kd),
+                max_rate=float(args.yaw_max_rate),
+            ),
             action_delay=action_delay,
             action_delay_steps=(
                 None if args.action_delay_steps is None else max(0, int(args.action_delay_steps))

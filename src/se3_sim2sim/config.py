@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -10,9 +11,38 @@ import se3_shared
 from se3_shared import ActionDelayConfig, Termination
 
 ViewerMode = Literal["rerun", "none"]
+MAX_YAW_RATE_RAD_S = 4.0 * math.pi
 
 _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
+
+
+@dataclass(slots=True)
+class YawPidConfig:
+    """yaw 轴闭环控制配置。"""
+
+    enabled: bool = True
+    target_yaw_rad: float = 0.0
+    kp: float = 1.0
+    ki: float = 0.0
+    kd: float = 0.0
+    max_rate: float = 3.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.target_yaw_rad):
+            raise ValueError(f"target_yaw_rad must be finite, got {self.target_yaw_rad}")
+        if not math.isfinite(self.kp):
+            raise ValueError(f"kp must be finite, got {self.kp}")
+        if not math.isfinite(self.ki):
+            raise ValueError(f"ki must be finite, got {self.ki}")
+        if not math.isfinite(self.kd):
+            raise ValueError(f"kd must be finite, got {self.kd}")
+        if not math.isfinite(self.max_rate):
+            raise ValueError(f"max_rate must be finite, got {self.max_rate}")
+        if self.max_rate <= 0.0:
+            raise ValueError(f"max_rate must be positive, got {self.max_rate}")
+        if self.max_rate > MAX_YAW_RATE_RAD_S:
+            raise ValueError(f"max_rate must be <= {MAX_YAW_RATE_RAD_S}, got {self.max_rate}")
 
 
 @dataclass(slots=True)
@@ -31,6 +61,7 @@ class RobotConfig:
     leg_kp: float = _shared_robot.leg_kp
     leg_kd: float = _shared_robot.leg_kd
     wheel_kd: float = _shared_robot.wheel_kd
+    yaw_pid: YawPidConfig = field(default_factory=YawPidConfig)
     action_delay: ActionDelayConfig = field(
         default_factory=lambda: _shared_robot.action_delay.model_copy()
     )

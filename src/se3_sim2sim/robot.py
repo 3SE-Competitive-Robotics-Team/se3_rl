@@ -1,4 +1,4 @@
-"""MuJoCo robot runtime for the SE3 workflow (joint-position control)."""
+"""SE3 sim2sim 的 MuJoCo 机器人运行时。"""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from se3_shared import RobotConfig as SharedRobotConfig
 
 from .config import RobotConfig
 from .diagnostics import model_diagnostics
-from .math_utils import euler_xyz_to_quat_wxyz, rotate, rotate_inverse
+from .math_utils import euler_xyz_to_quat_wxyz, extract_yaw, rotate, rotate_inverse, wrap_angle
 from .observation import ObservationBuilder
 from .runtime_spec import RuntimeSpec, as_float64
+from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
 
@@ -48,6 +49,7 @@ class WheelLeggedRobot:
         self.decimation = int(cfg.control_decimation)
         self.control_dt = self.sim_dt * self.decimation
         self.obs = ObservationBuilder(robot_cfg=cfg, runtime=runtime)
+        self.yaw_pid = YawPidController(cfg.yaw_pid)
 
         self.joint_ids = [self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in runtime.joint_names]
         self.joint_qpos = np.asarray(
@@ -89,6 +91,7 @@ class WheelLeggedRobot:
             roll, pitch, yaw = self.rng.uniform(-0.25, 0.25, size=3)
             self.data.qpos[3:7] = euler_xyz_to_quat_wxyz(float(roll), float(pitch), float(yaw))
         mujoco.mj_forward(self.model, self.data)
+        self._refresh_state()
         self.last_action.fill(0.0)
         self.last_applied_action.fill(0.0)
         self.last_policy_action.fill(0.0)
@@ -96,8 +99,20 @@ class WheelLeggedRobot:
         self.action_fifo.fill(0.0)
         self.action_delay_steps = self._sample_action_delay_steps()
         self.last_ctrl.fill(0.0)
+        yaw_rate_cmd = self.yaw_pid.reset(self.base_yaw)
+        if self.cfg.yaw_pid.enabled:
+            self.command[1] = yaw_rate_cmd
         self.step_count = 0
         return self.observation()
+
+    def update_yaw_command(self) -> float:
+        """按当前 yaw 更新 policy command 中的 yaw 维度。"""
+
+        if not self.cfg.yaw_pid.enabled:
+            return float(self.command[1])
+        self._refresh_state()
+        self.command[1] = self.yaw_pid.update(self.base_yaw, self.control_dt)
+        return float(self.command[1])
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict[str, object]]:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
@@ -139,12 +154,13 @@ class WheelLeggedRobot:
         )
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
-        return {
+        telemetry = {
             "step": int(self.step_count),
             "time": float(self.data.time),
             "height": float(self.data.qpos[2]),
             "tilt_deg": float(self.tilt_deg),
             "pitch_rad": float(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2])),
+            "base_yaw": float(self.base_yaw),
             "reward": float(0.0 if reward is None else reward),
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),
             "base_ang_vel_world": self.base_ang_vel_world.copy().tolist(),
@@ -163,6 +179,12 @@ class WheelLeggedRobot:
             "action_delay_config": self.action_delay_cfg.model_dump(),
             "fail_tilt_deg": float(self.termination.fail_tilt_deg),
         }
+        if self.cfg.yaw_pid.enabled:
+            yaw_pid = self.yaw_pid.telemetry()
+            yaw_pid["current_yaw"] = float(self.base_yaw)
+            yaw_pid["error"] = float(wrap_angle(yaw_pid["target_yaw"] - float(self.base_yaw)))
+            telemetry["yaw_pid"] = yaw_pid
+        return telemetry
 
     def diagnostics(self) -> dict[str, object]:
         return model_diagnostics(self.model)
@@ -178,6 +200,10 @@ class WheelLeggedRobot:
     @property
     def tilt_deg(self) -> float:
         return float(np.degrees(np.arccos(np.clip(-float(self.projected_gravity[2]), -1.0, 1.0))))
+
+    @property
+    def base_yaw(self) -> float:
+        return float(self._base_yaw)
 
     def _id(self, obj_type: mujoco.mjtObj, name: str) -> int:
         idx = mujoco.mj_name2id(self.model, obj_type, name)
@@ -246,6 +272,7 @@ class WheelLeggedRobot:
         self.base_ang_vel_body = self.data.qvel[3:6].copy()
         self.base_ang_vel_world = rotate(self.base_quat, self.base_ang_vel_body)
         self.projected_gravity = rotate_inverse(self.base_quat, np.asarray([0.0, 0.0, -1.0]))
+        self._base_yaw = extract_yaw(self.base_quat)
 
     def _compute_pd_torques(self, action: np.ndarray) -> np.ndarray:
         """计算 actuator ctrl: [leg_pos_target × 4, wheel_vel_target × 2]。"""

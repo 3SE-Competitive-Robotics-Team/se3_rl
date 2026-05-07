@@ -89,6 +89,14 @@ class RerunViewer:
         rr.log("/metrics/height", rr.Scalars(scalars=float(telemetry["height"])))
         rr.log("/metrics/tilt_deg", rr.Scalars(scalars=float(telemetry["tilt_deg"])))
         rr.log("/metrics/reward", rr.Scalars(scalars=float(telemetry["reward"])))
+        yaw_pid = telemetry.get("yaw_pid")
+        if isinstance(yaw_pid, dict):
+            rr.log(
+                "/metrics/yaw_pid/current_yaw", rr.Scalars(scalars=float(yaw_pid["current_yaw"]))
+            )
+            rr.log("/metrics/yaw_pid/target_yaw", rr.Scalars(scalars=float(yaw_pid["target_yaw"])))
+            rr.log("/metrics/yaw_pid/error", rr.Scalars(scalars=float(yaw_pid["error"])))
+            rr.log("/metrics/yaw_pid/command", rr.Scalars(scalars=float(yaw_pid["command"])))
         ctrl = np.asarray(telemetry["last_ctrl"], dtype=np.float64)
         for idx, value in enumerate(ctrl):
             rr.log(f"/metrics/ctrl/{idx}", rr.Scalars(scalars=float(value)))
@@ -104,6 +112,12 @@ class RerunViewer:
         self._log_scalar("/plots/state/tilt_deg", telemetry["tilt_deg"])
         self._log_scalar("/plots/state/fail_tilt_deg", telemetry["fail_tilt_deg"])
         self._log_scalar("/plots/state/reward", telemetry["reward"])
+        yaw_pid = telemetry.get("yaw_pid")
+        if isinstance(yaw_pid, dict):
+            self._log_scalar("/plots/yaw_pid/current_yaw", yaw_pid["current_yaw"])
+            self._log_scalar("/plots/yaw_pid/target_yaw", yaw_pid["target_yaw"])
+            self._log_scalar("/plots/yaw_pid/error", yaw_pid["error"])
+            self._log_scalar("/plots/yaw_pid/command", yaw_pid["command"])
         self._log_array(
             "/plots/imu/base_ang_vel_body_rad_s", telemetry["base_ang_vel_body"], XYZ_LABELS
         )
@@ -175,6 +189,7 @@ class RerunViewer:
 
         overview = rrb.Vertical(
             time_series_view(origin="/plots/state", contents="/plots/state/**", name="Rollout"),
+            time_series_view(origin="/plots/yaw_pid", contents="/plots/yaw_pid/**", name="Yaw PID"),
             time_series_view(origin="/plots/imu", contents="/plots/imu/**", name="IMU"),
             name="Overview",
         )

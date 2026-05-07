@@ -43,6 +43,9 @@ class Sim2SimWorkflow:
         done_reason = "max_steps" if max_steps > 0 else "interrupted"
         try:
             for step in step_iter:
+                if self.cfg.robot.yaw_pid.enabled:
+                    self.robot.update_yaw_command()
+                    obs = self.robot.observation()
                 action = self.policy.act(obs)
                 obs, reward, done, info = self.robot.step(action)
                 sample = {
@@ -66,12 +69,22 @@ class Sim2SimWorkflow:
                         f"reward={float(reward):+.4f}"
                     )
                     if self.cfg.print_debug:
+                        yaw = info.get("yaw_pid")
+                        yaw_debug = ""
+                        if isinstance(yaw, dict):
+                            yaw_debug = (
+                                f" yaw_current={float(yaw['current_yaw']):+.3f}"
+                                f" yaw_target={float(yaw['target_yaw']):+.3f}"
+                                f" yaw_error={float(yaw['error']):+.3f}"
+                                f" yaw_cmd={float(yaw['command']):+.3f}"
+                            )
                         line += (
                             f" dof_pos={self._fmt(info['dof_pos'])}"
                             f" raw_action={self._fmt(info['policy_action_raw'])}"
                             f" action={self._fmt(info['last_action'])}"
                             f" applied={self._fmt(info['applied_action'])}"
                             f" ctrl={self._fmt(info['last_ctrl'])}"
+                            f"{yaw_debug}"
                         )
                     print(line)
                 if done:
