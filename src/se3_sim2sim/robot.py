@@ -21,7 +21,7 @@ class WheelLeggedRobot:
         self.model_path = Path(cfg.model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
-        self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
+        self.model = self._build_model(str(self.model_path))
         if float(cfg.sim_dt) <= 0.0:
             raise ValueError(f"sim_dt must be positive, got {cfg.sim_dt}")
         if int(cfg.control_decimation) < 1:
@@ -35,9 +35,6 @@ class WheelLeggedRobot:
         self.obs = ObservationBuilder(robot_cfg=cfg, runtime=runtime)
 
         self.joint_ids = [self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in runtime.joint_names]
-        self.actuator_ids = [
-            self._id(mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in runtime.actuator_names
-        ]
         self.joint_qpos = np.asarray(
             [self.model.jnt_qposadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
@@ -162,6 +159,29 @@ class WheelLeggedRobot:
         if idx < 0:
             raise ValueError(f"missing {obj_type.name} in MJCF: {name}")
         return int(idx)
+
+    @staticmethod
+    def _build_model(xml_path: str) -> mujoco.MjModel:
+        """加载 MJCF 并程序化添加 motor actuator（MJCF 中已删除 <actuator> 段）。"""
+        spec = mujoco.MjSpec.from_file(xml_path)
+        joint_names = [
+            "lf0_Joint",
+            "lf1_Joint",
+            "l_wheel_Joint",
+            "rf0_Joint",
+            "rf1_Joint",
+            "r_wheel_Joint",
+        ]
+        torque_limits = [30.0, 30.0, 3.3, 30.0, 30.0, 3.3]
+        for jname, tlim in zip(joint_names, torque_limits, strict=True):
+            act = spec.add_actuator()
+            act.name = f"{jname}_motor"
+            act.target = jname
+            act.trntype = mujoco.mjtTrn.mjTRN_JOINT
+            act.gear = np.array([1.0, 0, 0, 0, 0, 0])
+            act.ctrlrange = np.array([-tlim, tlim])
+            act.ctrllimited = True
+        return spec.compile()
 
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
