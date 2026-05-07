@@ -15,6 +15,7 @@ def get_serialleg_cfg() -> EntityCfg:
             actuators=(XmlActuatorCfg(target_names_expr=(".*",)),),
         ),
         init_state=EntityCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.301),
             joint_pos={
                 "lf0_Joint": 0.6171,
                 "lf1_Joint": 0.2070,

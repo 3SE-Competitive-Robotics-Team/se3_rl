@@ -32,7 +32,7 @@
   <worldbody>
     <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1" />
     <light name="spotlight" mode="targetbodycom" target="base_link" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -6 4" cutoff="30" />
-    <body name="base_link" pos="0 0 0.28">
+    <body name="base_link" pos="0 0 0.301">
       <freejoint />
       <inertial pos="-0.01780372 0.01307697 -0.03342401" mass="10.7454126" diaginertia="0.143489521 0.212552576 0.309691433" quat="0.999565642 0.00301777024 0.0243203337 0.0163689112" />
       <geom type="mesh" mesh="generated_base_link_part000" pos="0 0 0" name="base_link_collision_0" contype="1" conaffinity="2" group="0" />

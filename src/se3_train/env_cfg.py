@@ -127,7 +127,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "lin_vel_z": RewardTermCfg(func=rewards.lin_vel_z, weight=-2.52),
         "ang_vel_xy": RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.146),
         "base_height": RewardTermCfg(
-            func=rewards.base_height, weight=2.49, params={"target": 0.28}
+            func=rewards.base_height, weight=2.49, params={"target": 0.301}
         ),
         "leg_torques": RewardTermCfg(
             func=rewards.leg_torques,

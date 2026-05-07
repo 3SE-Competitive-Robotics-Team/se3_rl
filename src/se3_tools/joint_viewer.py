@@ -22,7 +22,7 @@ DEFAULT_JOINT_ANGLES = {
     "r_wheel_Joint": 0.0,
 }
 
-BASE_HEIGHT = 0.28
+BASE_HEIGHT = 0.301
 
 
 def _create_fixed_base_mjcf(source_path: str) -> str:
@@ -37,7 +37,7 @@ def _create_fixed_base_mjcf(source_path: str) -> str:
     xml = xml.replace('damping="0"', 'damping="50"')
 
     xml = xml.replace(
-        '<body name="base_link" pos="0 0 0.28">',
+        '<body name="base_link" pos="0 0 0.301">',
         f'<body name="base_link" pos="0 0 {BASE_HEIGHT}">',
     )
 
