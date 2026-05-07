@@ -91,3 +91,11 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
     if data.force is None:
         return torch.zeros(env.num_envs, 2, device=env.device)
     return torch.norm(data.force, dim=-1)
+
+
+def base_height_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+    """底盘离地高度（多射线取均值），标量（特权信息，critic 专用）。"""
+    from mjlab.sensor import TerrainHeightSensor
+
+    sensor: TerrainHeightSensor = env.scene[sensor_name]
+    return sensor.data.heights

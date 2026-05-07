@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class ObservationConfig(BaseModel):
-    """29D 策略输入的缩放系数，修改一处即两端同步生效。"""
+    """29D actor 策略输入的缩放系数，修改一处即两端同步生效。critic 额外包含特权观测（lin_vel 3D + contact 2D + height 1D）。"""
 
     ang_vel_scale: float = 0.25
     command_scale: tuple[float, ...] = (2.0, 0.25, 5.0, 5.0, 5.0)
