@@ -12,8 +12,8 @@ wheels/
 # Environment variables (contains secrets)
 .env
 
-# SwanLab logs
-swanlog/
+# Wandb logs
+wandb/
 
 # Training and smoke run logs
 logs/

@@ -15,7 +15,7 @@
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-# 所有训练操作都需要 --env-file .env 以上传指标到 SwanLab
+# 所有训练操作都需要 --env-file .env 以上传指标到 wandb
 uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 
@@ -31,9 +31,6 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999
 # 格式化 + lint（必须在提交前执行）
 uv run ruff format .
 uv run ruff check . --fix
-
-# 查看 SwanLab 实验仪表盘
-uv run swanlab watch swanlog
 ```
 
 ## 开发流程
@@ -46,7 +43,7 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-i
 
 Smoke 模式特点：
 - 仅训练 5 轮
-- 不上传到 SwanLab
+- 不上传到 wandb
 - 用于验证代码修改不会导致环境崩溃
 
 确认 smoke 通过后，再运行完整训练。
@@ -170,5 +167,4 @@ se3_wheel_leg/
 │   ├── vmc_kinematics/     # 独立 VMC 运动学包
 │   ├── se3_train/          # MJLab 训练环境
 │   ├── se3_sim2sim/        # sim2sim 验证（从 3se_sim2sim 迁移）
-│   └── swanlab_rsl_rl/     # SwanLab RSL-RL 集成插件
 ```

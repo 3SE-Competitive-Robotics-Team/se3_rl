@@ -14,14 +14,6 @@ def main() -> None:
 
         mjlab_train()
     except KeyboardInterrupt:
-        # 优雅退出:完成 swanlab run(如果存在)
-        try:
-            import swanlab
-
-            swanlab.finish()
-        except Exception:
-            pass
-
         print("\n✓ 训练已停止")
         sys.exit(0)
 

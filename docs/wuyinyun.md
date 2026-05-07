@@ -47,7 +47,7 @@ ssh wuyinyun "whoami && hostname && nvidia-smi --query-gpu=name --format=csv,noh
 
 ## 网络代理
 
-远程机器处于公司内网，**直接访问 PyPI / GitHub 间歇性超时**，但访问 SwanLab 正常（国内）。
+远程机器处于公司内网，**直接访问 PyPI / GitHub 间歇性超时**。
 
 **解决方案：SSH 反向隧道 + 本机直连代理**
 
@@ -136,7 +136,7 @@ ssh wuyinyun "
   mkdir -p ~/project &&
   cd ~/project &&
   git clone git@github.com:XiaoPengYouCode/se3_wheel_leg.git &&
-  echo 'SWANLAB_API_KEY=<your_key>' > ~/project/se3_wheel_leg/.env
+  echo 'WANDB_API_KEY=<your_key>' > ~/project/se3_wheel_leg/.env
 "
 ```
 
@@ -319,11 +319,11 @@ ssh wuyinyun "ps aux | grep se3-train | grep -v grep"
 ssh wuyinyun "kill <PID1> <PID2>"
 ```
 
-### SwanLab 看不到数据
+### Wandb 看不到数据
 
 1. 检查 `.env` 文件是否存在且 key 正确：`ssh wuyinyun "cat ~/project/se3_wheel_leg/.env"`
-2. 检查 swanlog 目录是否有新 run：`ssh wuyinyun "ls ~/project/se3_wheel_leg/swanlog/"`
-3. SwanLab 上传需要访问 `swanlab.cn`，可直连（无需代理）：`ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' https://swanlab.cn"`
+2. 检查 wandb 目录是否有新 run：`ssh wuyinyun "ls ~/project/se3_wheel_leg/wandb/"`
+3. Wandb 上传需要访问 `api.wandb.ai`，需通过代理：`ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 5 https://api.wandb.ai"`
 4. 如果 run 目录存在但控制台没数据，等 1-2 分钟后刷新，上传有延迟。
 
 ### ContactSensor 初始化失败

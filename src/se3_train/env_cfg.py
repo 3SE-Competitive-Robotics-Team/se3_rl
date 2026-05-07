@@ -196,7 +196,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "bad_orientation": TerminationTermCfg(
             func=terminations.bad_orientation_delayed,
             time_out=False,
-            params={"limit_angle": 1.57, "max_steps": 300},
+            params={"limit_angle": 0.5236, "max_steps": 100},
         ),
     }
 

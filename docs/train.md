@@ -32,7 +32,7 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024
 
 **特点**：
 - 仅训练 5 轮
-- 不上传到 SwanLab（使用 tensorboard）
+- 不上传到 wandb（仅本地 tensorboard）
 - 用于验证代码修改不会导致环境崩溃
 
 ### GPU 训练（推荐）
@@ -113,7 +113,7 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --viewer none --max-steps 200 --print-every 20
 ```
 
-训练默认只上传 SwanLab 指标曲线，不开启视频。策略回放、轨迹检查、控制量曲线和可复查的 `.rrd` 文件统一由 `se3-sim2sim` 的 Rerun workflow 产出。
+训练默认只上传 wandb 指标曲线，不开启视频。策略回放、轨迹检查、控制量曲线和可复查的 `.rrd` 文件统一由 `se3-sim2sim` 的 Rerun workflow 产出。
 
 ## 常见问题
 
