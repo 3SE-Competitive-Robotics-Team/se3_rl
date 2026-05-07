@@ -164,10 +164,19 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 
 ### 启动训练（推荐用 tmux 保持会话）
 
+> **注意**：tmux 不会 source `.bashrc`，必须在命令中显式 `export PATH=$HOME/.local/bin:$PATH`。
+> 训练需要 wandb 上传指标，必须带 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量。
+
 ```bash
 ssh wuyinyun "
   source ~/.local/bin/env &&
-  tmux new-session -d -s train 'cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'
+  tmux new-session -d -s train '
+    export PATH=\$HOME/.local/bin:\$PATH
+    export HTTP_PROXY=http://127.0.0.1:17890
+    export HTTPS_PROXY=http://127.0.0.1:17890
+    cd ~/project/se3_wheel_leg &&
+    uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log
+  '
 "
 ```
 
@@ -213,6 +222,16 @@ ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,te
 ---
 
 ## 依赖版本注意事项
+
+### nvshmem
+
+nvshmem 通过本地代理 `127.0.0.1:7897`（Mihomo）重新安装。如果需要重装：
+
+```bash
+ssh wuyinyun "HTTPS_PROXY=http://127.0.0.1:7897 HTTP_PROXY=http://127.0.0.1:7897 pip install nvshmem"
+```
+
+> 此处用的是机器本地的 Mihomo 代理（7897），不是 SSH 隧道（17890）。视网络情况选择可用的代理端口。
 
 ### warp-lang 必须锁定 < 1.13.0
 
@@ -344,5 +363,5 @@ ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu
 pkill -f tinyproxy 2>/dev/null; tinyproxy -c /tmp/tinyproxy.conf; sleep 1; pkill -f "ssh.*17890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:18080 wuyinyun && echo "tunnel ok"
 
 # 一键拉代码重启训练
-ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && tmux kill-session -t train 2>/dev/null; tmux new-session -d -s train 'cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'"
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && tmux kill-session -t train 2>/dev/null; tmux new-session -d -s train 'export PATH=\$HOME/.local/bin:\$PATH && export HTTP_PROXY=http://127.0.0.1:17890 && export HTTPS_PROXY=http://127.0.0.1:17890 && cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'"
 ```
