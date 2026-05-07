@@ -15,7 +15,7 @@ dependencies = [
     "rerun-sdk>=0.31.4",
     "scipy>=1.10.0",
     "numpy>=1.24.0",
-    "swanlab[dashboard]>=0.7.16",
+    "wandb>=0.15.0",
 ]
 
 [project.scripts]
@@ -30,7 +30,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "src"
-module-name = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl", "se3_tools"]
+module-name = ["se3_train", "se3_sim2sim", "vmc_kinematics", "se3_tools"]
 
 [tool.uv.sources]
 torch = [
@@ -74,7 +74,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["se3_train", "se3_sim2sim", "vmc_kinematics", "swanlab_rsl_rl"]
+known-first-party = ["se3_train", "se3_sim2sim", "vmc_kinematics"]
 
 [tool.ruff.format]
 quote-style = "double"

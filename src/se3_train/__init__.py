@@ -2,15 +2,9 @@
 
 from mjlab.tasks.registry import register_mjlab_task
 
-from swanlab_rsl_rl import patch_rsl_rl_logger
-
 from .env_cfg import se3_flat_env_cfg, se3_rough_env_cfg
 from .rl_cfg import se3_ppo_runner_cfg
 
-# 应用 monkey patch 以支持 SwanLab
-patch_rsl_rl_logger()
-
-# 注册任务(smoke 模式通过环境变量 SE3_SMOKE=1 或命令行参数控制)
 register_mjlab_task(
     task_id="SE3-WheelLegged-Flat",
     env_cfg=se3_flat_env_cfg(),

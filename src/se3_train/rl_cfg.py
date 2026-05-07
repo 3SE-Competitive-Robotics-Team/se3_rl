@@ -6,21 +6,13 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 
 def se3_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """生成 PPO 训练配置。
-
-    Args:
-        smoke: 是否使用 smoke 模式(5 轮训练,不上传 SwanLab)
-
-    Returns:
-        RslRlOnPolicyRunnerCfg 实例
-    """
-    # smoke 模式:5 轮,tensorboard logger
+    """生成 PPO 训练配置。"""
     if smoke or os.environ.get("SE3_SMOKE", "0") == "1":
         max_iterations = 5
         logger = "tensorboard"
     else:
         max_iterations = 5000
-        logger = "swanlab"
+        logger = "wandb"
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
