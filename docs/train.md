@@ -2,13 +2,9 @@
 
 ## 环境准备
 
-### 复制机器人模型文件
+### 机器人模型文件
 
-训练和仿真需要机器人的 mesh 文件。从 `wheel-legged-gym` 项目复制：
-
-```bash
-cp -r ../wheel-legged-gym/resources/robots/serialleg/meshes assets/robots/serialleg/
-```
+训练和仿真需要的 MJCF 与 mesh 文件已经放在 `assets/robots/serialleg/`。如果后续重新导出模型，保持 MJCF 中的关节名和 mesh 相对路径不变。
 
 ### 安装依赖
 
@@ -104,6 +100,8 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999
 ```bash
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --max-steps 3000 --rerun-record replays/se3_wheel_leg.rrd
 ```
+
+`replays/` 和 `.rrd` 文件属于本地验证产物，默认不提交。
 
 ## Sim2Sim 验证
 

@@ -228,7 +228,7 @@ ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,te
 nvshmem 通过本地代理 `127.0.0.1:7897`（Mihomo）重新安装。如果需要重装：
 
 ```bash
-ssh wuyinyun "HTTPS_PROXY=http://127.0.0.1:7897 HTTP_PROXY=http://127.0.0.1:7897 pip install nvshmem"
+ssh wuyinyun "HTTPS_PROXY=http://127.0.0.1:7897 HTTP_PROXY=http://127.0.0.1:7897 uv add nvshmem"
 ```
 
 > 此处用的是机器本地的 Mihomo 代理（7897），不是 SSH 隧道（17890）。视网络情况选择可用的代理端口。

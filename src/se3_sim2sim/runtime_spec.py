@@ -40,7 +40,7 @@ class ObservationTermSpec:
 @dataclass(frozen=True, slots=True)
 class RuntimeSpec:
     task: str = "wheel_legged_joint_pos"
-    spec_name: str = "3se/wheel_legged_joint_pos"
+    spec_name: str = "se3/wheel_legged_joint_pos"
     policy: PolicyArchitectureSpec = PolicyArchitectureSpec()
     joint_names: tuple[str, ...] = _JOINT_NAMES
     actuator_names: tuple[str, ...] = _JOINT_NAMES

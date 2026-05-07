@@ -4,9 +4,9 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 3 个 Python 包：`vmc_kinematics`（独立 VMC 模块）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）
+- 4 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）
 - 机器人：6 DOF（左腿 lf0/lf1/l_wheel + 右腿 rf0/rf1/r_wheel）
-- 控制方式：VMC 极坐标空间（L0 腿长、theta0 腿角）→ 关节力矩
+- 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
 ## 核心命令
 
@@ -65,7 +65,7 @@ Smoke 模式特点：
 
 ### 语言
 - **所有注释和 docstring 必须使用中文**
-- 保留技术术语原文（如 VMC、theta0、L0、PPO、MuJoCo）
+- 保留技术术语原文（如 PPO、MuJoCo、MJLab、sim2sim）
 - 代码中的变量名、函数名保持英文
 
 ### Python 规范
@@ -80,11 +80,11 @@ Smoke 模式特点：
 - PR 提交前必须 rebase
 - 示例：
   ```
-  feat(se3_train): 新增 VMC 动作项
+  feat(se3_train): 新增动作延迟配置
 
-  - 实现极坐标空间 PD 控制器
-  - 支持动态前馈重力补偿
-  - 添加力矩限幅和 NaN 防护
+  - 训练端按 reset 采样动作延迟
+  - sim2sim 支持同一套延迟参数
+  - 添加命令行覆盖参数
   ```
 
 ### 可视化
@@ -94,11 +94,11 @@ Smoke 模式特点：
 
 ## 架构关键点
 
-### VMC 控制器（核心设计决策）
-VMC 运动学作为独立包 `vmc_kinematics` 存在，同时被 `se3_train` 和 `se3_sim2sim` 依赖。这样设计的原因：
-1. 训练端（MJLab/torch）和验证端（MuJoCo/numpy）共享同一套运动学公式
-2. 避免公式不一致导致的 sim2sim gap
-3. 所有函数自动适配 numpy/torch（通过 `hasattr(x, "is_cuda")` 分发）
+### 共享配置（核心设计决策）
+`se3_shared` 是训练端和 sim2sim 的单一参数来源，覆盖关节语义、默认姿态、PD 增益、动作缩放、观测维度、控制频率和动作延迟。这样设计的原因：
+1. 训练端和验证端使用同一套机器人常量
+2. 避免动作缩放、默认姿态、控制频率或延迟参数漂移导致 sim2sim gap
+3. 后续添加 GRU、恢复任务或部署导出时，有明确的 runtime contract
 
 ### MJLab 环境结构
 ```
@@ -109,8 +109,8 @@ se3_train/
 ├── robot_cfg.py     # EntityCfg（MJCF + 初始状态）
 ├── cli.py           # 命令行入口
 └── mdp/
-    ├── actions.py   # VMCActionTerm — 自定义动作项
-    ├── observations.py  # 27 维观测
+    ├── actions.py   # SerialLegDelayedAction — 自定义 6D 动作项
+    ├── observations.py  # 29 维 actor 观测
     ├── rewards.py   # 17 个奖励函数
     ├── commands.py  # 速度+高度指令生成器
     ├── events.py    # 域随机化事件
@@ -125,25 +125,28 @@ se3_train/
 - `contact_forces`：超出阈值后除以 100 归一化
 - `joint_mirror`：按镜像对数求平均（`sum / 2`）
 
-### 观测空间（27 维）
+### 观测空间（29 维 actor）
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
-[6:9]   commands × (2.0, 0.25, 5.0)
-[9:11]  theta0（VMC 腿角）
-[11:13] theta0_dot × 0.05
-[13:15] L0（VMC 腿长）× 5.0
-[15:17] L0_dot × 0.25
-[17:19] wheel_pos（取反）
-[19:21] wheel_vel × 0.05
-[21:27] last_actions
+[6:11]  commands × (2.0, 0.25, 5.0, 5.0, 5.0)
+[11:15] leg_joint_pos（相对默认姿态）
+[15:19] leg_joint_vel × 0.25
+[19:21] wheel_pos
+[21:23] wheel_vel × 0.05
+[23:29] last_actions
 ```
+
+critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和 base height 特权观测。
 
 ### 动作空间（6 维）
 ```
-[theta0_ref_L, l0_ref_L, wheel_vel_ref_L, theta0_ref_R, l0_ref_R, wheel_vel_ref_R]
-缩放：theta0 × π, l0 × 0.096 + 0.22, wheel_vel × 25.0
+[lf0, lf1, rf0, rf1, l_wheel, r_wheel]
+腿部：action × 0.25 + default_dof_pos
+轮子：action × 20.0 rad/s
 ```
+
+默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 
 ## 环境限制
 
@@ -201,7 +204,8 @@ se3_wheel_leg/
 ├── assets/robots/serialleg/mjcf/
 │   └── serialleg_fidelity_cylinder_wheels.xml
 ├── src/
-│   ├── vmc_kinematics/     # 独立 VMC 运动学包
+│   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
-│   ├── se3_sim2sim/        # sim2sim 验证（从 3se_sim2sim 迁移）
+│   ├── se3_sim2sim/        # sim2sim 验证
+│   ├── se3_tools/          # 关节诊断和模型查看工具
 ```

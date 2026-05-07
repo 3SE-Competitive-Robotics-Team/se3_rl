@@ -21,6 +21,11 @@ logs/
 # MuJoCo runtime logs
 MUJOCO_LOG.TXT
 
+# Rerun replay files
+replays/
+*.rrd
+
 # AI tooling
 .sisyphus/
 .opencode/
+opencode.json
