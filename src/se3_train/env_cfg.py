@@ -195,7 +195,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=2.49,
             params={
                 "command_name": "velocity_height",
-                "sigma": 0.05,
+                "sigma": 0.005,
                 "height_sensor_name": "base_height_sensor",
             },
         ),
