@@ -12,7 +12,7 @@ def se3_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
     else:
         max_iterations = 5000
-        logger = "wandb"
+        logger = os.environ.get("SE3_LOGGER", "wandb")
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
