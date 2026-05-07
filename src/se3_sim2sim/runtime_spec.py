@@ -34,8 +34,8 @@ class ObservationTermSpec:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSpec:
-    task: str = "wheel_legged_fzqver"
-    spec_name: str = "3se/wheel_legged_fzqver"
+    task: str = "wheel_legged_joint_pos"
+    spec_name: str = "3se/wheel_legged_joint_pos"
     policy: PolicyArchitectureSpec = PolicyArchitectureSpec()
     joint_names: tuple[str, ...] = (
         "lf0_Joint",
@@ -46,21 +46,19 @@ class RuntimeSpec:
         "r_wheel_Joint",
     )
     actuator_names: tuple[str, ...] = (
-        "lf0_act",
-        "lf1_act",
-        "l_wheel_act",
-        "rf0_act",
-        "rf1_act",
-        "r_wheel_act",
+        "lf0_Joint",
+        "lf1_Joint",
+        "l_wheel_Joint",
+        "rf0_Joint",
+        "rf1_Joint",
+        "r_wheel_Joint",
     )
     observation_terms: tuple[ObservationTermSpec, ...] = (
         ObservationTermSpec("ang_vel", 3),
         ObservationTermSpec("gravity", 3),
         ObservationTermSpec("commands", 3),
-        ObservationTermSpec("theta0", 2),
-        ObservationTermSpec("theta0_dot", 2),
-        ObservationTermSpec("L0", 2),
-        ObservationTermSpec("L0_dot", 2),
+        ObservationTermSpec("leg_joint_pos", 4),
+        ObservationTermSpec("leg_joint_vel", 4),
         ObservationTermSpec("wheel_pos", 2),
         ObservationTermSpec("wheel_vel", 2),
         ObservationTermSpec("actions", 6),

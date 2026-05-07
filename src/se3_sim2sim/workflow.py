@@ -65,13 +65,8 @@ class Sim2SimWorkflow:
                     )
                     if self.cfg.print_debug:
                         line += (
-                            f" l0={self._fmt(info['l0'])}"
-                            f" theta0={self._fmt(info['theta0'])}"
+                            f" dof_pos={self._fmt(info['dof_pos'])}"
                             f" raw_action={self._fmt(info['policy_action_raw'])}"
-                            f" theta0_ref_raw={self._fmt(info['theta0_ref_raw'])}"
-                            f" theta0_ref={self._fmt(info['theta0_ref'])}"
-                            f" l0_ref={self._fmt(info['l0_ref'])}"
-                            f" wheel_ref={self._fmt(info['wheel_vel_ref'])}"
                             f" action={self._fmt(info['last_action'])}"
                             f" applied={self._fmt(info['applied_action'])}"
                             f" ctrl={self._fmt(info['last_ctrl'])}"

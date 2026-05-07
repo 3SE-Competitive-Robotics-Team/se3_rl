@@ -1,4 +1,4 @@
-"""Observation assembly for the 27D wheel-legged policy input."""
+"""Observation assembly for the 27D joint-space policy input."""
 
 from __future__ import annotations
 
@@ -8,12 +8,16 @@ from .config import RobotConfig
 from .math_utils import rotate_inverse
 from .runtime_spec import RuntimeSpec
 
+_LEG_IDS = [0, 1, 3, 4]
+_WHEEL_IDS = [2, 5]
+
 
 class ObservationBuilder:
     def __init__(self, *, robot_cfg: RobotConfig, runtime: RuntimeSpec) -> None:
         self.robot_cfg = robot_cfg
         self.runtime = runtime
         self.commands_scale = np.asarray(robot_cfg.command_scale, dtype=np.float64)
+        self.default_dof_pos = np.asarray(robot_cfg.default_dof_pos, dtype=np.float64)
 
     def build(
         self,
@@ -23,10 +27,6 @@ class ObservationBuilder:
         dof_pos: np.ndarray,
         dof_vel: np.ndarray,
         command: np.ndarray,
-        theta0: np.ndarray,
-        theta0_dot: np.ndarray,
-        l0: np.ndarray,
-        l0_dot: np.ndarray,
         action_obs: np.ndarray,
     ) -> np.ndarray:
         obs: list[float] = []
@@ -36,17 +36,16 @@ class ObservationBuilder:
         obs.extend((base_ang_vel_body * 0.25).tolist())
         obs.extend(projected_gravity.tolist())
         obs.extend((np.asarray(command, dtype=np.float64) * self.commands_scale).tolist())
-        obs.extend(theta0.tolist())
-        obs.extend((theta0_dot * 0.05).tolist())
-        obs.extend((l0 * 5.0).tolist())
-        obs.extend((l0_dot * 0.25).tolist())
-        # 右轮 pos/vel 取反对齐轴方向,与训练环境一致。
-        wheel_pos = dof_pos[[2, 5]].copy()
-        wheel_pos[1] = -wheel_pos[1]
-        wheel_vel = dof_vel[[2, 5]].copy()
-        wheel_vel[1] = -wheel_vel[1]
-        obs.extend(wheel_pos.tolist())
-        obs.extend((wheel_vel * 0.05).tolist())
+
+        leg_pos_rel = dof_pos[_LEG_IDS] - self.default_dof_pos[_LEG_IDS]
+        obs.extend(leg_pos_rel.tolist())
+
+        leg_vel = dof_vel[_LEG_IDS] * 0.25
+        obs.extend(leg_vel.tolist())
+
+        obs.extend(dof_pos[_WHEEL_IDS].tolist())
+        obs.extend((dof_vel[_WHEEL_IDS] * 0.05).tolist())
+
         obs.extend(np.asarray(action_obs, dtype=np.float64).tolist())
 
         arr = np.asarray(obs, dtype=np.float32)

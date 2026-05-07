@@ -72,7 +72,7 @@
           <inertial pos="0.00104447 0.00037451 -0.0702541" mass="0.31883211" diaginertia="0.000108575968 0.00214460919 0.00223028484" quat="0.492792214 0.475500192 0.519198251 -0.511359538" />
           <geom type="mesh" mesh="visual_Right_calf_link" pos="0 0 0" name="rf1_Link_collision_0" contype="1" conaffinity="2" group="0" />
           <body name="r_wheel_Link" pos="-0.0029362 -0.02705 -0.19998">
-            <joint name="r_wheel_Joint" type="hinge" axis="0 1 0" damping="0" />
+            <joint name="r_wheel_Joint" type="hinge" axis="0 -1 0" damping="0" />
             <inertial pos="-1.681e-05 0.0066023 -0.00011513" mass="0.2778338" diaginertia="0.00026477 0.000265419546 0.000480800454" quat="0.705228274 0.706252215 0.0439029096 -0.043970727" />
             <geom type="mesh" mesh="visual_Right_wheel_link" pos="0 0 0" name="r_wheel_Link_visual_proxy" contype="0" conaffinity="0" group="1" />
             <!-- Cylinder collision replaces mesh to match Isaac Gym capsule behavior -->
@@ -82,12 +82,5 @@
       </body>
     </body>
   </worldbody>
-  <actuator>
-    <motor name="lf0_act" joint="lf0_Joint" gear="1" ctrllimited="true" ctrlrange="-30 30" />
-    <motor name="lf1_act" joint="lf1_Joint" gear="1" ctrllimited="true" ctrlrange="-30 30" />
-    <motor name="l_wheel_act" joint="l_wheel_Joint" gear="1" ctrllimited="true" ctrlrange="-3.3 3.3" />
-    <motor name="rf0_act" joint="rf0_Joint" gear="1" ctrllimited="true" ctrlrange="-30 30" />
-    <motor name="rf1_act" joint="rf1_Joint" gear="1" ctrllimited="true" ctrlrange="-30 30" />
-    <motor name="r_wheel_act" joint="r_wheel_Joint" gear="1" ctrllimited="true" ctrlrange="-3.3 3.3" />
-  </actuator>
+  <!-- 执行器由 MJLab BuiltinPositionActuatorCfg / BuiltinVelocityActuatorCfg 程序化创建。 -->
 </mujoco>

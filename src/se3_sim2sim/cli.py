@@ -30,13 +30,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--sim-dt",
         type=float,
         default=robot_defaults.sim_dt,
-        help="MuJoCo world timestep in seconds. Default is 0.001 for 1000 Hz.",
+        help="MuJoCo world timestep in seconds. Default is 0.005 for 200 Hz.",
     )
     parser.add_argument(
         "--control-decimation",
         type=int,
         default=robot_defaults.control_decimation,
-        help="Number of MuJoCo steps per policy action. Default 10 gives 100 Hz control at 0.001s sim_dt.",
+        help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
     )
     parser.add_argument("--viewer", choices=["rerun", "none"], default="rerun")
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
@@ -64,10 +64,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Applied action delay in MuJoCo sim steps.",
     )
     parser.add_argument(
-        "--theta-kd",
+        "--leg-kp",
         type=float,
-        default=robot_defaults.theta_kd,
-        help="VMC leg-angle damping gain.",
+        default=robot_defaults.leg_kp,
+        help="Leg joint position PD stiffness.",
+    )
+    parser.add_argument(
+        "--leg-kd",
+        type=float,
+        default=robot_defaults.leg_kd,
+        help="Leg joint position PD damping.",
     )
     parser.add_argument("--terminate-on-fall", action="store_true")
     parser.add_argument("--fail-tilt-deg", type=float, default=80.0)
@@ -84,7 +90,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             control_decimation=int(args.control_decimation),
             command=tuple(float(v) for v in args.command),
             action_delay_steps=max(0, int(args.action_delay_steps)),
-            theta_kd=float(args.theta_kd),
+            leg_kp=float(args.leg_kp),
+            leg_kd=float(args.leg_kd),
         ),
         policy=PolicyConfig(
             checkpoint=args.checkpoint,

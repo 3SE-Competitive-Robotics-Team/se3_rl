@@ -10,7 +10,7 @@ import numpy as np
 from .math_utils import quat_wxyz_to_xyzw
 
 SIDE_LABELS = ("left", "right")
-ACTION_LABELS = ("left_theta", "left_l0", "left_wheel", "right_theta", "right_l0", "right_wheel")
+ACTION_LABELS = ("left_hip", "left_knee", "right_hip", "right_knee", "left_wheel", "right_wheel")
 CTRL_LABELS = ("left_hip", "left_knee", "left_wheel", "right_hip", "right_knee", "right_wheel")
 XYZ_LABELS = ("x", "y", "z")
 ENTITY_COLORS = {
@@ -110,36 +110,12 @@ class RerunViewer:
         )
         self._log_array("/plots/imu/projected_gravity", telemetry["projected_gravity"], XYZ_LABELS)
 
-        self._log_pair("/plots/theta0/actual_rad", telemetry["theta0"])
-        self._log_pair("/plots/theta0/velocity_rad_s", telemetry["theta0_dot"])
-        self._log_pair("/plots/theta0/ref_raw_rad", telemetry["theta0_ref_raw"])
-        self._log_pair("/plots/theta0/ref_clipped_rad", telemetry["theta0_ref_clipped"])
-        self._log_pair("/plots/theta0/ref_applied_rad", telemetry["theta0_ref"])
-        self._log_pair("/plots/theta0/error_rad", telemetry["theta0_error"])
-        theta0_limit = float(telemetry["theta0_ref_limit"])
-        self._log_scalar("/plots/theta0/limit_pos_rad", theta0_limit)
-        self._log_scalar("/plots/theta0/limit_neg_rad", -theta0_limit)
-
-        self._log_pair("/plots/l0/actual_m", telemetry["l0"])
-        self._log_pair("/plots/l0/velocity_m_s", telemetry["l0_dot"])
-        self._log_pair("/plots/l0/ref_raw_m", telemetry["l0_ref_raw"])
-        self._log_pair("/plots/l0/ref_applied_m", telemetry["l0_ref"])
-        self._log_pair("/plots/l0/error_m", telemetry["l0_error"])
-
-        self._log_pair("/plots/wheel/vel_rad_s", telemetry["wheel_vel"])
-        self._log_pair("/plots/wheel/ref_raw_rad_s", telemetry["wheel_vel_ref_raw"])
-        self._log_pair("/plots/wheel/ref_clipped_rad_s", telemetry["wheel_vel_ref_clipped"])
-        self._log_pair("/plots/wheel/ref_applied_rad_s", telemetry["wheel_vel_ref"])
-        self._log_pair("/plots/wheel/error_rad_s", telemetry["wheel_vel_error"])
-        wheel_limit = float(telemetry["wheel_vel_ref_limit"])
-        self._log_scalar("/plots/wheel/ref_limit_pos_rad_s", wheel_limit)
-        self._log_scalar("/plots/wheel/ref_limit_neg_rad_s", -wheel_limit)
+        self._log_array("/plots/dof/pos_rad", telemetry["dof_pos"], CTRL_LABELS)
+        self._log_array("/plots/dof/vel_rad_s", telemetry["dof_vel"], CTRL_LABELS)
 
         self._log_array("/plots/action/raw", telemetry["policy_action_raw"], ACTION_LABELS)
         self._log_array("/plots/action/clipped", telemetry["policy_action_clipped"], ACTION_LABELS)
         self._log_array("/plots/action/obs_raw_clipped", telemetry["last_action"], ACTION_LABELS)
-        self._log_array("/plots/dof/pos_rad", telemetry["dof_pos"], CTRL_LABELS)
-        self._log_array("/plots/dof/vel_rad_s", telemetry["dof_vel"], CTRL_LABELS)
         self._log_array("/plots/ctrl/torque_nm", telemetry["last_ctrl"], CTRL_LABELS)
 
     def _log_scalar(self, path: str, value: object) -> None:
@@ -198,11 +174,8 @@ class RerunViewer:
             name="Overview",
         )
         control = rrb.Grid(
-            time_series_view(origin="/plots/theta0", contents="/plots/theta0/**", name="Theta0"),
-            time_series_view(origin="/plots/l0", contents="/plots/l0/**", name="L0"),
-            time_series_view(origin="/plots/wheel", contents="/plots/wheel/**", name="Wheel"),
-            time_series_view(origin="/plots/action", contents="/plots/action/**", name="Action"),
             time_series_view(origin="/plots/dof", contents="/plots/dof/**", name="DOF"),
+            time_series_view(origin="/plots/action", contents="/plots/action/**", name="Action"),
             time_series_view(origin="/plots/ctrl", contents="/plots/ctrl/**", name="Ctrl"),
             grid_columns=2,
             name="Control",

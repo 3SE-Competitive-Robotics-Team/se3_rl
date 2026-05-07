@@ -15,7 +15,7 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.viewer import ViewerConfig
 
 from se3_train.mdp import events, observations, rewards, terminations
-from se3_train.mdp.actions import VMCActionTermCfg
+from se3_train.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 from se3_train.robot_cfg import get_serialleg_cfg
 
@@ -71,10 +71,8 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "base_ang_vel": ObservationTermCfg(func=observations.base_ang_vel_obs),
                 "projected_gravity": ObservationTermCfg(func=observations.projected_gravity_obs),
                 "commands": ObservationTermCfg(func=observations.commands_obs),
-                "theta0": ObservationTermCfg(func=observations.theta0_obs),
-                "theta0_dot": ObservationTermCfg(func=observations.theta0_dot_obs),
-                "L0": ObservationTermCfg(func=observations.L0_obs),
-                "L0_dot": ObservationTermCfg(func=observations.L0_dot_obs),
+                "leg_joint_pos": ObservationTermCfg(func=observations.leg_joint_pos_obs),
+                "leg_joint_vel": ObservationTermCfg(func=observations.leg_joint_vel_obs),
                 "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
                 "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
                 "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
@@ -87,10 +85,8 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "base_ang_vel": ObservationTermCfg(func=observations.base_ang_vel_obs),
                 "projected_gravity": ObservationTermCfg(func=observations.projected_gravity_obs),
                 "commands": ObservationTermCfg(func=observations.commands_obs),
-                "theta0": ObservationTermCfg(func=observations.theta0_obs),
-                "theta0_dot": ObservationTermCfg(func=observations.theta0_dot_obs),
-                "L0": ObservationTermCfg(func=observations.L0_obs),
-                "L0_dot": ObservationTermCfg(func=observations.L0_dot_obs),
+                "leg_joint_pos": ObservationTermCfg(func=observations.leg_joint_pos_obs),
+                "leg_joint_vel": ObservationTermCfg(func=observations.leg_joint_vel_obs),
                 "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
                 "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
                 "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
@@ -101,8 +97,17 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     cfg.actions = {
-        "vmc": VMCActionTermCfg(
+        "joint_pos": JointPositionActionCfg(
             entity_name="robot",
+            actuator_names=["lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint"],
+            scale=0.25,
+            use_default_offset=True,
+        ),
+        "joint_vel": JointVelocityActionCfg(
+            entity_name="robot",
+            actuator_names=["l_wheel_Joint", "r_wheel_Joint"],
+            scale=20.0,
+            use_default_offset=True,
         ),
     }
 
@@ -212,7 +217,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={"asset_cfg": SceneEntityCfg("robot")},
             ),
             "reset_joints": EventTermCfg(
-                func=events.reset_joints_vmc,
+                func=events.reset_joints,
                 mode="reset",
                 params={"asset_cfg": SceneEntityCfg("robot")},
             ),
@@ -230,22 +235,9 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={"asset_cfg": SceneEntityCfg("robot")},
             ),
             "reset_joints": EventTermCfg(
-                func=events.reset_joints_vmc,
+                func=events.reset_joints,
                 mode="reset",
                 params={"asset_cfg": SceneEntityCfg("robot")},
-            ),
-            "push_robot": EventTermCfg(
-                func=events.push_robots,
-                mode="interval",
-                interval_range_s=(4.0, 4.0),
-                params={
-                    "velocity_range": {
-                        "x": (-4.0, 4.0),
-                        "y": (-4.0, 4.0),
-                        "z": (-1.0, 1.0),
-                    },
-                    "asset_cfg": SceneEntityCfg("robot"),
-                },
             ),
             "friction": EventTermCfg(
                 func=events.randomize_friction,
@@ -281,20 +273,6 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),
-            "vmc_gains": EventTermCfg(
-                func=events.randomize_vmc_gains,
-                mode="startup",
-                params={
-                    "kp_range": (0.5, 2.0),
-                    "kd_range": (0.5, 2.0),
-                    "asset_cfg": SceneEntityCfg("robot"),
-                },
-            ),
-            "motor_torque": EventTermCfg(
-                func=events.randomize_motor_torque,
-                mode="startup",
-                params={"torque_range": (0.7, 1.3), "asset_cfg": SceneEntityCfg("robot")},
-            ),
             "default_dof_pos": EventTermCfg(
                 func=events.randomize_default_dof_pos,
                 mode="startup",
@@ -302,11 +280,6 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "offset_range": (-0.05, 0.05),
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
-            ),
-            "action_delay": EventTermCfg(
-                func=events.randomize_action_delay,
-                mode="startup",
-                params={"delay_range": (0.0, 0.02), "asset_cfg": SceneEntityCfg("robot")},
             ),
         }
         cfg.episode_length_s = 20.0

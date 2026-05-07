@@ -71,6 +71,8 @@ select = [
 ignore = [
     "E501",   # 行长度由 formatter 处理
     "B008",   # 允许函数参数默认值中的函数调用
+    "RUF002", # 允许中文全角标点（项目注释使用中文）
+    "RUF003", # 同上（注释中的全角标点）
 ]
 
 [tool.ruff.lint.isort]
