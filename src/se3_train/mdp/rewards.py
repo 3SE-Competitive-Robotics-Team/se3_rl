@@ -33,19 +33,28 @@ def _recovery_penalty_gate(
 
 
 def tracking_lin_vel(
-    env: ManagerBasedRlEnv, command_name: str, sigma_move: float, sigma_stand: float
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma_move: float,
+    sigma_stand: float,
+    vz_weight: float = 2.0,
 ) -> torch.Tensor:
-    """x 方向速度跟踪,低速时 sigma 收紧(adaptive),直立门控。"""
+    """x 方向速度跟踪,将 v_z 折入同一 exp 核消除目标冲突。
+
+    reward = exp(-(error_x² + vz_weight·v_z²) / sigma)
+    低速时 sigma 收紧(adaptive),直立门控。
+    """
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
-    lin_vel_x = robot.data.root_link_lin_vel_b[:, 0]
-    error = lin_vel_x - cmd[:, 0]
+    lin_vel = robot.data.root_link_lin_vel_b
+    error_x = lin_vel[:, 0] - cmd[:, 0]
+    vz = lin_vel[:, 2]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
     cmd_mag = torch.abs(cmd[:, 0])
     sigma = torch.where(cmd_mag < 0.2, sigma_stand, sigma_move)
-    return torch.exp(-(error**2) / sigma) * gate
+    return torch.exp(-(error_x**2 + vz_weight * vz**2) / sigma) * gate
 
 
 def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
@@ -122,6 +131,21 @@ def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
     return (ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2) * gate
 
 
+def angular_momentum(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """全身角动量范数平方,直立门控。
+
+    使用 MuJoCo subtree_angmom[root_body] 获取整个机器人子树的角动量。
+    对两轮倒立摆尤为重要——腿部激进动作产生的角动量脉冲会直接导致失稳。
+    """
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    gate = _upright_factor(pg_z)
+
+    root_body_id = robot.data.indexing.root_body_id
+    angmom = env.sim.data.subtree_angmom[:, root_body_id]
+    return torch.sum(angmom**2, dim=-1) * gate
+
+
 def leg_torques(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -179,11 +203,15 @@ def stand_still(
     env: ManagerBasedRlEnv,
     command_name: str,
     command_threshold: float = 0.1,
+    default_height: float = 0.27,
+    height_tolerance: float = 40.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """站立时关节偏差平方和(对齐宇树实现)。
+    """站立时关节偏差平方和,高度自适应 sigma。
 
-    仅在速度指令范数 < threshold 时激活惩罚。
+    当 cmd_height 偏离 default_height 时,惩罚自动放松,
+    避免高度指令与姿态惩罚的结构性矛盾。
+    衰减因子: exp(-height_tolerance * (cmd_h - default_h)²)
     """
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
@@ -195,8 +223,12 @@ def stand_still(
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
-    scale = (cmd_norm <= command_threshold).float()
-    return reward * scale * gate
+    vel_scale = (cmd_norm <= command_threshold).float()
+
+    height_deviation = cmd[:, 4] - default_height
+    height_scale = torch.exp(-height_tolerance * height_deviation**2)
+
+    return reward * vel_scale * height_scale * gate
 
 
 def joint_mirror(

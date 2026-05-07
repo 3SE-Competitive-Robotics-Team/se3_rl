@@ -142,6 +142,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "command_name": "velocity_height",
                 "sigma_move": 0.25,
                 "sigma_stand": 0.1,
+                "vz_weight": 2.0,
             },
         ),
         "tracking_ang_vel": RewardTermCfg(
@@ -160,8 +161,11 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"command_name": "velocity_height", "sigma": 0.05},
         ),
         "upward": RewardTermCfg(func=rewards.upward, weight=0.607),
-        "lin_vel_z": RewardTermCfg(func=rewards.lin_vel_z, weight=-2.52),
         "ang_vel_xy": RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.146),
+        "angular_momentum": RewardTermCfg(
+            func=rewards.angular_momentum,
+            weight=-5.0e-5,
+        ),
         "leg_torques": RewardTermCfg(
             func=rewards.leg_torques,
             weight=-2.0e-4,
@@ -178,6 +182,8 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "command_name": "velocity_height",
                 "command_threshold": 0.1,
+                "default_height": 0.27,
+                "height_tolerance": 40.0,
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
