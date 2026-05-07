@@ -1,4 +1,9 @@
-"""SE3 轮腿机器人的观测函数（27D 关节空间）。"""
+"""SE3 轮腿机器人的观测函数。
+
+观测空间:
+- actor: 31D (原 27D + pitch/roll/height cmd 扩展)
+- critic: actor + 特权信息
+"""
 
 from __future__ import annotations
 
@@ -25,9 +30,12 @@ def projected_gravity_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """速度/高度指令,缩放 (2.0, 0.25, 5.0)。"""
+    """速度/姿态/高度指令,缩放 (2.0, 0.25, 5.0, 5.0, 5.0)。
+
+    5 维: [lin_vel_x, ang_vel_yaw, pitch, roll, height]
+    """
     cmd = env.command_manager.get_command("velocity_height")
-    scale = torch.tensor([2.0, 0.25, 5.0], device=cmd.device)
+    scale = torch.tensor([2.0, 0.25, 5.0, 5.0, 5.0], device=cmd.device)
     return cmd * scale
 
 

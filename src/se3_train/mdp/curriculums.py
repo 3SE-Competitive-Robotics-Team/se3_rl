@@ -34,3 +34,30 @@ def commands_vel(
         "lin_vel_x_max": torch.tensor(cfg.lin_vel_x_range[1]),
         "ang_vel_yaw_max": torch.tensor(cfg.ang_vel_yaw_range[1]),
     }
+
+
+def push_disturbance(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    push_stages: list[dict],
+) -> dict[str, torch.Tensor]:
+    """按训练步数逐步增大推扰动强度。
+
+    修改 env 上存储的 push velocity_range 配置。
+    push_stages 格式: [{"step": 0, "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}, ...]
+    """
+    del env_ids
+    step = env.common_step_counter
+    current_max = 0.5
+
+    for stage in push_stages:
+        if step >= stage["step"]:
+            velocity_range = stage["velocity_range"]
+            current_max = max(abs(velocity_range["x"][0]), abs(velocity_range["x"][1]))
+            if hasattr(env, "_push_velocity_range"):
+                env._push_velocity_range = velocity_range
+
+    return {
+        "step_counter": torch.tensor(float(step)),
+        "push_vel_max": torch.tensor(current_max),
+    }

@@ -26,21 +26,25 @@ def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
     """在宽限期内使用 1.0,否则使用直立因子。"""
-    # 宽限期 0.75s,与参考实现对齐:0.75 / (0.005 * 4) = 37 控制步。
     grace_steps = 37
-    in_grace = env.episode_length_buf < grace_steps
     upright = _upright_factor(projected_gravity_z)
+    in_grace = env.episode_length_buf < grace_steps
     return torch.where(in_grace, torch.ones_like(upright), upright)
 
 
-def tracking_lin_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
-    """x 方向速度跟踪的 exp(-error^2/sigma),直立门控。"""
+def tracking_lin_vel(
+    env: ManagerBasedRlEnv, command_name: str, sigma_move: float, sigma_stand: float
+) -> torch.Tensor:
+    """x 方向速度跟踪,低速时 sigma 收紧(adaptive),直立门控。"""
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     lin_vel_x = robot.data.root_link_lin_vel_b[:, 0]
     error = lin_vel_x - cmd[:, 0]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
+
+    cmd_mag = torch.abs(cmd[:, 0])
+    sigma = torch.where(cmd_mag < 0.2, sigma_stand, sigma_move)
     return torch.exp(-(error**2) / sigma) * gate
 
 
@@ -53,6 +57,45 @@ def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) ->
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
     return torch.exp(-(error**2) / sigma) * gate
+
+
+def tracking_orientation(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
+    """pitch/roll 姿态跟踪奖励。
+
+    使用 projected_gravity 提取当前 pitch/roll,与指令中的目标 pitch/roll 计算误差。
+    """
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pg = robot.data.projected_gravity_b
+
+    # 从 projected_gravity 估计 pitch 和 roll。
+    # pg = R^T @ [0,0,-1], 在 body frame 中:
+    #   pitch ≈ asin(pg_x)  (前倾为正)
+    #   roll  ≈ asin(-pg_y) (右倾为正)
+    current_pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
+    current_roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
+
+    target_pitch = cmd[:, 2]
+    target_roll = cmd[:, 3]
+
+    pitch_error = current_pitch - target_pitch
+    roll_error = current_roll - target_roll
+    error_sq = pitch_error**2 + roll_error**2
+
+    gate = _upright_factor(pg[:, 2])
+    return torch.exp(-error_sq / sigma) * gate
+
+
+def tracking_height(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
+    """高度跟踪奖励: exp(-error²/sigma),直立门控。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    gate = _upright_factor(pg_z)
+    height = robot.data.root_link_pos_w[:, 2]
+    target_height = cmd[:, 4]
+    error = torch.square(height - target_height)
+    return torch.exp(-error / sigma) * gate
 
 
 def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -79,16 +122,6 @@ def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
     return (ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2) * gate
 
 
-def base_height(env: ManagerBasedRlEnv, target: float) -> torch.Tensor:
-    """exp(-error²/0.05),直立门控。正权重奖励接近目标高度。"""
-    robot = env.scene["robot"]
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
-    height = robot.data.root_link_pos_w[:, 2]
-    error = torch.square(height - target)
-    return torch.exp(-error / 0.05) * gate
-
-
 def leg_torques(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -97,6 +130,22 @@ def leg_torques(
     leg_act_ids = [0, 1, 2, 3]
     torques = robot.data.actuator_force[:, leg_act_ids]
     return torch.sum(torques**2, dim=1)
+
+
+def wheel_torques(
+    env: ManagerBasedRlEnv,
+    max_torque: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """轮子执行器力矩超出额定值的平方和。
+
+    max_torque: 轮子电机额定最大力矩 (N·m)。
+    """
+    robot = env.scene[asset_cfg.name]
+    wheel_act_ids = [4, 5]
+    torques = robot.data.actuator_force[:, wheel_act_ids]
+    excess = torch.clamp(torch.abs(torques) - max_torque, min=0.0)
+    return torch.sum(excess**2, dim=1)
 
 
 def leg_dof_acc(
@@ -127,49 +176,27 @@ def action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def stand_still(
-    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """命令 < 0.1 时 |关节位置 - 默认位置| 之和,直立门控。"""
+    """站立时关节偏差平方和(对齐宇树实现)。
+
+    仅在速度指令范数 < threshold 时激活惩罚。
+    """
     robot = env.scene[asset_cfg.name]
-    cmd = env.command_manager.get_command("velocity_height")
+    cmd = env.command_manager.get_command(command_name)
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    # 线速度和偏航速度的联合范数 < 0.1 才视为站立,与参考实现对齐。
-    standing = torch.linalg.norm(cmd[:, :2], dim=1) < 0.1
-
-    default_pos = robot.data.default_joint_pos
     leg_ids = [0, 1, 3, 4]
-    deviation = torch.sum(
-        torch.abs(robot.data.joint_pos[:, leg_ids] - default_pos[:, leg_ids]), dim=1
-    )
-    return deviation * gate * standing.float()
+    diff = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+    reward = torch.sum(diff**2, dim=1)
 
-
-def joint_pos_penalty(
-    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
-) -> torch.Tensor:
-    """关节偏差(L2 范数),站立时放大 5 倍,直立门控。"""
-    robot = env.scene[asset_cfg.name]
-    cmd = env.command_manager.get_command("velocity_height")
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
-
-    default_pos = robot.data.default_joint_pos
-    leg_ids = [0, 1, 3, 4]
-    deviation = torch.linalg.norm(robot.data.joint_pos[:, leg_ids] - default_pos[:, leg_ids], dim=1)
-
-    cmd_mag = torch.linalg.norm(cmd[:, :2], dim=1)
-    body_vel = torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2], dim=1)
-    stand_still_scale = 5.0
-    command_threshold = 0.1
-    velocity_threshold = 0.5
-    reward = torch.where(
-        torch.logical_or(cmd_mag > command_threshold, body_vel > velocity_threshold),
-        deviation,
-        stand_still_scale * deviation,
-    )
-    return reward * gate
+    cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    scale = (cmd_norm <= command_threshold).float()
+    return reward * scale * gate
 
 
 def joint_mirror(
@@ -180,8 +207,6 @@ def joint_mirror(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    # 左腿:索引 0, 1。右腿:索引 3, 4。
-    # 2 对镜像:(lf0, rf0) 和 (lf1, rf1)。
     diff = robot.data.joint_pos[:, [0, 1]] - robot.data.joint_pos[:, [3, 4]]
     num_pairs = 2
     return torch.sum(diff**2, dim=1) / num_pairs * gate
@@ -202,7 +227,7 @@ def collision(
     if data.force is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    force_mag = torch.norm(data.force, dim=-1)  # [B, N]
+    force_mag = torch.norm(data.force, dim=-1)
     contact_count = (force_mag > 0.1).float().sum(dim=1)
     return contact_count * gate
 
@@ -223,7 +248,7 @@ def contact_forces(
     if data.force is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    force_mag = torch.norm(data.force, dim=-1)  # [B, N]
+    force_mag = torch.norm(data.force, dim=-1)
     excess = torch.clamp(force_mag - threshold, min=0.0) / 100.0
     return torch.sum(excess, dim=1) * gate
 
@@ -248,7 +273,7 @@ def feet_contact_without_cmd(
     if data.force is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    force_mag = torch.norm(data.force, dim=-1)  # [B, N]
+    force_mag = torch.norm(data.force, dim=-1)
     has_contact = (force_mag > force_threshold).float()
     return torch.sum(has_contact, dim=1) * gate * stationary.float()
 

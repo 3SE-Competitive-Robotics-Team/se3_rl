@@ -21,6 +21,7 @@ from se3_train.mdp import events, observations, rewards, terminations
 from se3_train.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 from se3_train.mdp.curriculums import commands_vel as curriculum_commands_vel
+from se3_train.mdp.curriculums import push_disturbance as curriculum_push_disturbance
 from se3_train.robot_cfg import get_serialleg_cfg
 
 
@@ -39,7 +40,6 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         scene=scene,
     )
 
-    # 碰撞传感器:惩罚躯干和大腿/小腿的接触(base + lf0/lf1 + rf0/rf1)。
     collision_sensor_cfg = ContactSensorCfg(
         name="collision_sensor",
         primary=ContactMatch(
@@ -53,7 +53,6 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         num_slots=1,
     )
 
-    # 轮子接触传感器:用于 contact_forces 和 feet_contact_without_cmd。
     wheel_sensor_cfg = ContactSensorCfg(
         name="wheel_sensor",
         primary=ContactMatch(
@@ -139,28 +138,48 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "tracking_lin_vel": RewardTermCfg(
             func=rewards.tracking_lin_vel,
             weight=2.73,
-            params={"command_name": "velocity_height", "sigma": 0.25},
+            params={
+                "command_name": "velocity_height",
+                "sigma_move": 0.25,
+                "sigma_stand": 0.1,
+            },
         ),
         "tracking_ang_vel": RewardTermCfg(
             func=rewards.tracking_ang_vel,
             weight=1.73,
             params={"command_name": "velocity_height", "sigma": 0.25},
         ),
+        "tracking_orientation": RewardTermCfg(
+            func=rewards.tracking_orientation,
+            weight=2.0,
+            params={"command_name": "velocity_height", "sigma": 0.1},
+        ),
+        "tracking_height": RewardTermCfg(
+            func=rewards.tracking_height,
+            weight=2.49,
+            params={"command_name": "velocity_height", "sigma": 0.05},
+        ),
         "upward": RewardTermCfg(func=rewards.upward, weight=0.607),
         "lin_vel_z": RewardTermCfg(func=rewards.lin_vel_z, weight=-2.52),
         "ang_vel_xy": RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.146),
-        "base_height": RewardTermCfg(
-            func=rewards.base_height, weight=2.49, params={"target": 0.301}
-        ),
         "leg_torques": RewardTermCfg(
             func=rewards.leg_torques,
             weight=-2.0e-4,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        "joint_pos_penalty": RewardTermCfg(
-            func=rewards.joint_pos_penalty,
-            weight=-1.03,
-            params={"asset_cfg": SceneEntityCfg("robot")},
+        "wheel_torques": RewardTermCfg(
+            func=rewards.wheel_torques,
+            weight=-1.0e-4,
+            params={"max_torque": 3.0, "asset_cfg": SceneEntityCfg("robot")},
+        ),
+        "stand_still": RewardTermCfg(
+            func=rewards.stand_still,
+            weight=-1.0,
+            params={
+                "command_name": "velocity_height",
+                "command_threshold": 0.1,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
         ),
         "leg_dof_acc": RewardTermCfg(
             func=rewards.leg_dof_acc,
@@ -172,12 +191,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-1.03e-4,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.0476),
-        "stand_still": RewardTermCfg(
-            func=rewards.stand_still,
-            weight=-1.78,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        ),
+        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.12),
         "joint_mirror": RewardTermCfg(
             func=rewards.joint_mirror,
             weight=-0.179,
@@ -212,7 +226,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "is_terminated": RewardTermCfg(func=mjlab_is_terminated, weight=-200.0),
+        "is_terminated": RewardTermCfg(func=mjlab_is_terminated, weight=-40.0),
     }
 
     cfg.terminations = {
@@ -237,14 +251,38 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                             "ang_vel_yaw_range": (-1.0, 1.0),
                         },
                         {
-                            "step": 3000,
-                            "lin_vel_x_range": (-1.0, 1.0),
-                            "ang_vel_yaw_range": (-3.0, 3.0),
+                            "step": 2000,
+                            "lin_vel_x_range": (-0.8, 0.8),
+                            "ang_vel_yaw_range": (-1.5, 1.5),
+                        },
+                        {
+                            "step": 4000,
+                            "lin_vel_x_range": (-1.2, 1.2),
+                            "ang_vel_yaw_range": (-2.0, 2.0),
                         },
                         {
                             "step": 6000,
                             "lin_vel_x_range": (-1.5, 1.5),
-                            "ang_vel_yaw_range": (-6.0, 6.0),
+                            "ang_vel_yaw_range": (-3.0, 3.0),
+                        },
+                    ],
+                },
+            ),
+            "push_disturbance": CurriculumTermCfg(
+                func=curriculum_push_disturbance,
+                params={
+                    "push_stages": [
+                        {
+                            "step": 0,
+                            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
+                        },
+                        {
+                            "step": 2000,
+                            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+                        },
+                        {
+                            "step": 4000,
+                            "velocity_range": {"x": (-1.5, 1.5), "y": (-1.5, 1.5)},
                         },
                     ],
                 },
