@@ -272,15 +272,15 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "is_terminated": RewardTermCfg(func=mjlab_is_terminated, weight=-40.0),
+        "is_terminated": RewardTermCfg(func=mjlab_is_terminated, weight=-200.0),
     }
 
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
         "bad_orientation": TerminationTermCfg(
-            func=terminations.bad_orientation,
+            func=terminations.bad_orientation_delayed,
             time_out=False,
-            params={"limit_angle": 0.873},
+            params={"limit_angle": 0.5236, "max_steps": 100},
         ),
     }
 
