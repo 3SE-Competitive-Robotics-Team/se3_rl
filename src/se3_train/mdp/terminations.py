@@ -8,6 +8,7 @@ import torch
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+    from mjlab.sensor import ContactSensor
 
 
 def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -43,3 +44,16 @@ class BadOrientationDelayed:
 
 
 bad_orientation_delayed = BadOrientationDelayed()
+
+
+def leg_contact(
+    env: ManagerBasedRlEnv, sensor_name: str, force_threshold: float = 1.0
+) -> torch.Tensor:
+    """腿部 link 接触地面即时终止（膝盖着地 = 非法运动模式）。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    force_mag = torch.norm(data.force, dim=-1)
+    has_contact = (force_mag > force_threshold).any(dim=1)
+    return has_contact

@@ -50,7 +50,20 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         name="collision_sensor",
         primary=ContactMatch(
             mode="body",
-            pattern=r"^(base_link|lf0_Link|lf1_Link|rf0_Link|rf1_Link)$",
+            pattern=r"^(base_link)$",
+            entity="robot",
+        ),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+
+    leg_contact_sensor_cfg = ContactSensorCfg(
+        name="leg_contact_sensor",
+        primary=ContactMatch(
+            mode="body",
+            pattern=r"^(lf0_Link|lf1_Link|rf0_Link|rf1_Link)$",
             entity="robot",
         ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
@@ -94,6 +107,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.scene.sensors = (
         collision_sensor_cfg,
+        leg_contact_sensor_cfg,
         wheel_sensor_cfg,
         base_height_sensor_cfg,
         critic_height_sensor_cfg,
@@ -195,7 +209,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=2.49,
             params={
                 "command_name": "velocity_height",
-                "sigma": 0.005,
+                "sigma": 0.05,
                 "height_sensor_name": "base_height_sensor",
             },
         ),
@@ -282,6 +296,11 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             time_out=False,
             params={"limit_angle": 0.5236, "max_steps": 100},
         ),
+        "leg_contact": TerminationTermCfg(
+            func=terminations.leg_contact,
+            time_out=False,
+            params={"sensor_name": "leg_contact_sensor", "force_threshold": 1.0},
+        ),
     }
 
     if not play:
@@ -293,8 +312,13 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "velocity_stages": [
                         {
                             "step": 0,
-                            "lin_vel_x_range": (-0.5, 0.5),
-                            "ang_vel_yaw_range": (-1.0, 1.0),
+                            "lin_vel_x_range": (0.0, 0.0),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
+                            "step": 1000,
+                            "lin_vel_x_range": (-0.3, 0.3),
+                            "ang_vel_yaw_range": (-0.5, 0.5),
                         },
                         {
                             "step": 2000,
@@ -320,14 +344,22 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "push_stages": [
                         {
                             "step": 0,
-                            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
+                            "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)},
+                        },
+                        {
+                            "step": 1000,
+                            "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)},
                         },
                         {
                             "step": 2000,
-                            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+                            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
                         },
                         {
                             "step": 4000,
+                            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+                        },
+                        {
+                            "step": 6000,
                             "velocity_range": {"x": (-1.5, 1.5), "y": (-1.5, 1.5)},
                         },
                     ],

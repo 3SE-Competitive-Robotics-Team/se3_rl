@@ -72,18 +72,11 @@ def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) ->
 
 
 def tracking_orientation(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
-    """pitch/roll 姿态跟踪奖励。
-
-    使用 projected_gravity 提取当前 pitch/roll,与指令中的目标 pitch/roll 计算误差。
-    """
+    """pitch/roll 姿态跟踪奖励,不门控（始终提供恢复梯度）。"""
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     pg = robot.data.projected_gravity_b
 
-    # 从 projected_gravity 估计 pitch 和 roll。
-    # pg = R^T @ [0,0,-1], 在 body frame 中:
-    #   pitch ≈ asin(pg_x)  (前倾为正)
-    #   roll  ≈ asin(-pg_y) (右倾为正)
     current_pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
     current_roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
 
@@ -94,28 +87,20 @@ def tracking_orientation(env: ManagerBasedRlEnv, command_name: str, sigma: float
     roll_error = current_roll - target_roll
     error_sq = pitch_error**2 + roll_error**2
 
-    gate = _upright_factor(pg[:, 2])
-    return torch.exp(-error_sq / sigma) * gate
+    return torch.exp(-error_sq / sigma)
 
 
 def tracking_height(
     env: ManagerBasedRlEnv, command_name: str, sigma: float, height_sensor_name: str
 ) -> torch.Tensor:
-    """高度跟踪奖励: exp(-error²/sigma),直立门控。
-
-    使用 TerrainHeightSensor 获取机体离地面的垂直距离（clearance），
-    适用于平地和崎岖地形。
-    """
-    robot = env.scene["robot"]
+    """高度跟踪奖励,不门控（始终提供恢复梯度）。"""
     cmd = env.command_manager.get_command(command_name)
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
 
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
     height = sensor.data.heights[:, 0]
     target_height = cmd[:, 4]
     error = torch.square(height - target_height)
-    return torch.exp(-error / sigma) * gate
+    return torch.exp(-error / sigma)
 
 
 def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
