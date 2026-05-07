@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.envs.mdp.rewards import is_terminated as mjlab_is_terminated
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -209,6 +210,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
+        "is_terminated": RewardTermCfg(func=mjlab_is_terminated, weight=-200.0),
     }
 
     cfg.terminations = {
