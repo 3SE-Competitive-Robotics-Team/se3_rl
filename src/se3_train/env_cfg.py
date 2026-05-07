@@ -12,6 +12,7 @@ from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from se3_train.mdp import events, observations, rewards, terminations
@@ -65,32 +66,46 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.scene.sensors = (collision_sensor_cfg, wheel_sensor_cfg)
 
+    actor_terms = {
+        "base_ang_vel": ObservationTermCfg(
+            func=observations.base_ang_vel_obs,
+            noise=Unoise(n_min=-0.2, n_max=0.2),
+        ),
+        "projected_gravity": ObservationTermCfg(
+            func=observations.projected_gravity_obs,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+        ),
+        "commands": ObservationTermCfg(func=observations.commands_obs),
+        "leg_joint_pos": ObservationTermCfg(
+            func=observations.leg_joint_pos_obs,
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+        ),
+        "leg_joint_vel": ObservationTermCfg(
+            func=observations.leg_joint_vel_obs,
+            noise=Unoise(n_min=-1.5, n_max=1.5),
+        ),
+        "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
+        "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
+        "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
+    }
+
+    critic_terms = {
+        **actor_terms,
+        "base_lin_vel": ObservationTermCfg(func=observations.base_lin_vel_obs),
+        "wheel_contact_forces": ObservationTermCfg(
+            func=observations.wheel_contact_force_obs,
+            params={"sensor_name": "wheel_sensor"},
+        ),
+    }
+
     cfg.observations = {
         "actor": ObservationGroupCfg(
-            terms={
-                "base_ang_vel": ObservationTermCfg(func=observations.base_ang_vel_obs),
-                "projected_gravity": ObservationTermCfg(func=observations.projected_gravity_obs),
-                "commands": ObservationTermCfg(func=observations.commands_obs),
-                "leg_joint_pos": ObservationTermCfg(func=observations.leg_joint_pos_obs),
-                "leg_joint_vel": ObservationTermCfg(func=observations.leg_joint_vel_obs),
-                "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
-                "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
-                "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
-            },
+            terms=actor_terms,
             concatenate_terms=True,
             enable_corruption=not play,
         ),
         "critic": ObservationGroupCfg(
-            terms={
-                "base_ang_vel": ObservationTermCfg(func=observations.base_ang_vel_obs),
-                "projected_gravity": ObservationTermCfg(func=observations.projected_gravity_obs),
-                "commands": ObservationTermCfg(func=observations.commands_obs),
-                "leg_joint_pos": ObservationTermCfg(func=observations.leg_joint_pos_obs),
-                "leg_joint_vel": ObservationTermCfg(func=observations.leg_joint_vel_obs),
-                "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
-                "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
-                "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
-            },
+            terms=critic_terms,
             concatenate_terms=True,
             enable_corruption=False,
         ),

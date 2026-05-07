@@ -58,3 +58,23 @@ def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """上一步的 6 个动作。"""
     return env.action_manager.action
+
+
+# --- Critic 特权观测 ---
+
+
+def base_lin_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """基座坐标系下的线速度,3D（特权信息,actor 不可见）。"""
+    robot = env.scene["robot"]
+    return robot.data.root_link_lin_vel_b
+
+
+def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+    """轮子地面接触力标量,2D（特权信息）。"""
+    from mjlab.sensor import ContactSensor
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    return torch.norm(data.force, dim=-1)
