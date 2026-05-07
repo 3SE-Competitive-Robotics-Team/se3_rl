@@ -201,14 +201,8 @@ def leg_power(
 
 
 def action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """动作变化率平方和，除以 dt 实现频率不变。
-
-    公式: Σ(Δa / dt)²
-    配合 scale_rewards_by_dt（乘以 dt）后净效果为 Σ(Δa²/dt)，
-    对同一物理轨迹在任意控制频率下产生相同的每秒惩罚。
-    """
-    delta = env.action_manager.action - env.action_manager.prev_action
-    return torch.sum(delta**2, dim=1) / env.step_dt
+    """当前动作与上一动作差值的平方和。"""
+    return torch.sum((env.action_manager.action - env.action_manager.prev_action) ** 2, dim=1)
 
 
 def stand_still(

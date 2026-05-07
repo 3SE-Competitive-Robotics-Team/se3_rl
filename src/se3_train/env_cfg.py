@@ -236,7 +236,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-1.03e-4,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.0024),
+        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.48),
         "joint_mirror": RewardTermCfg(
             func=rewards.joint_mirror,
             weight=-0.179,
