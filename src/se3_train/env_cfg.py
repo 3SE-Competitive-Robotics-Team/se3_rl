@@ -82,7 +82,22 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         reduction="min",
     )
 
-    cfg.scene.sensors = (collision_sensor_cfg, wheel_sensor_cfg, base_height_sensor_cfg)
+    critic_height_sensor_cfg = TerrainHeightSensorCfg(
+        name="critic_height_sensor",
+        frame=ObjRef(type="body", name="base_link", entity="robot"),
+        ray_alignment="yaw",
+        pattern=RingPatternCfg.single_ring(radius=0.15, num_samples=8),
+        max_distance=2.0,
+        include_geom_groups=(0,),
+        reduction="mean",
+    )
+
+    cfg.scene.sensors = (
+        collision_sensor_cfg,
+        wheel_sensor_cfg,
+        base_height_sensor_cfg,
+        critic_height_sensor_cfg,
+    )
 
     actor_terms = {
         "base_ang_vel": ObservationTermCfg(
@@ -113,6 +128,10 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "wheel_contact_forces": ObservationTermCfg(
             func=observations.wheel_contact_force_obs,
             params={"sensor_name": "wheel_sensor"},
+        ),
+        "base_height": ObservationTermCfg(
+            func=observations.base_height_obs,
+            params={"sensor_name": "critic_height_sensor"},
         ),
     }
 
@@ -217,7 +236,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-1.03e-4,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.12),
+        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.0024),
         "joint_mirror": RewardTermCfg(
             func=rewards.joint_mirror,
             weight=-0.179,
