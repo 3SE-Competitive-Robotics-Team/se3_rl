@@ -15,15 +15,33 @@ def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf >= env.max_episode_length
 
 
-def base_contact(env: ManagerBasedRlEnv, tilt_threshold: float = 1.0) -> torch.Tensor:
-    """当机器人倾斜超过阈值时终止(倒地检测)。
+class BadOrientationDelayed:
+    """倾斜超过阈值连续 max_steps 步才终止(给恢复机会)。"""
 
-    tilt_threshold: projected_gravity_z 的阈值。
-    pg_z = -1 为完全直立, pg_z > 0 为超过 90 度倾倒。
-    默认 tilt_threshold=1.0 意味着 pg_z > -cos(60deg) 时终止,
-    即倾斜超过约 60 度就判定为倒地。
-    """
-    robot = env.scene["robot"]
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    # pg_z < -threshold 表示直立(接近 -1), pg_z > -threshold 表示倒了
-    return pg_z > -0.5
+    def __init__(self) -> None:
+        self._fail_count: torch.Tensor | None = None
+
+    def __call__(
+        self, env: ManagerBasedRlEnv, limit_angle: float = 1.57, max_steps: int = 300
+    ) -> torch.Tensor:
+        if self._fail_count is None:
+            self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        robot = env.scene["robot"]
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        # pg_z = -1 直立, acos(-pg_z) = 倾斜角
+        tilt_angle = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+        bad = tilt_angle > limit_angle
+
+        self._fail_count[bad] += 1
+        self._fail_count[~bad] = 0
+        self._fail_count[env.episode_length_buf <= 1] = 0
+
+        return self._fail_count > max_steps
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._fail_count is not None and env_ids is not None:
+            self._fail_count[env_ids] = 0
+
+
+bad_orientation_delayed = BadOrientationDelayed()
