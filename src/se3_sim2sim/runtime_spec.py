@@ -22,10 +22,17 @@ class PolicyArchitectureSpec:
     activation: str = "elu"
     init_noise_std: float = 1.0
     num_critic_obs: int | None = None
+    rnn_type: str | None = None
+    rnn_hidden_dim: int = 512
+    rnn_num_layers: int = 1
 
     @property
     def is_sequence(self) -> bool:
         return self.policy_class_name == "ActorCriticSequence"
+
+    @property
+    def is_recurrent(self) -> bool:
+        return self.rnn_type is not None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

@@ -1,4 +1,4 @@
-"""MJLab checkpoint 的确定性推理加载器。"""
+"""MJLab checkpoint 的确定性推理加载器，支持 MLP 和 GRU 策略。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ TensorStateDict = dict[str, torch.Tensor]
 
 
 class _EmpiricalNormalizer(nn.Module):
-    """复现 rsl_rl 的 EmpiricalNormalization 推理行为。"""
-
     def __init__(self, num_obs: int, eps: float = 1e-2) -> None:
         super().__init__()
         self.eps = float(eps)
@@ -29,8 +27,6 @@ class _EmpiricalNormalizer(nn.Module):
 
 
 class _DeterministicActor(nn.Module):
-    """只保留 sim2sim 推理需要的 actor 均值网络。"""
-
     def __init__(self, spec: PolicyArchitectureSpec) -> None:
         super().__init__()
         self.obs_normalizer = _EmpiricalNormalizer(spec.num_obs)
@@ -43,6 +39,64 @@ class _DeterministicActor(nn.Module):
     def _build_mlp(spec: PolicyArchitectureSpec) -> nn.Sequential:
         dims = [
             int(spec.num_obs),
+            *[int(dim) for dim in spec.actor_hidden_dims],
+            int(spec.num_actions),
+        ]
+        layers: list[nn.Module] = []
+        for idx in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[idx], dims[idx + 1]))
+            if idx < len(dims) - 2:
+                layers.append(_activation(spec.activation))
+        return nn.Sequential(*layers)
+
+
+class _RNNWrapper(nn.Module):
+    """匹配 rsl_rl 的权重命名: rnn.rnn.weight_ih_l0 → self.rnn.weight_ih_l0。"""
+
+    def __init__(self, input_size: int, hidden_size: int, num_layers: int) -> None:
+        super().__init__()
+        self.rnn = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+
+
+class _DeterministicGRUActor(nn.Module):
+    """GRU 推理：obs_normalizer → GRU → MLP head。
+
+    MLP head 输入维度为 rnn_hidden_dim（非 num_obs）。
+    """
+
+    def __init__(self, spec: PolicyArchitectureSpec) -> None:
+        super().__init__()
+        self.obs_normalizer = _EmpiricalNormalizer(spec.num_obs)
+        self.rnn = _RNNWrapper(
+            input_size=spec.num_obs,
+            hidden_size=spec.rnn_hidden_dim,
+            num_layers=spec.rnn_num_layers,
+        )
+        self.mlp = self._build_mlp(spec)
+        self._hidden_dim = spec.rnn_hidden_dim
+        self._num_layers = spec.rnn_num_layers
+        self._hidden: torch.Tensor | None = None
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        normalized = self.obs_normalizer(obs)
+        # (batch=1, seq=1, obs_dim)
+        rnn_input = normalized.unsqueeze(1)
+        rnn_out, self._hidden = self.rnn.rnn(rnn_input, self._hidden)
+        # rnn_out: (1, 1, hidden_dim) → squeeze to (1, hidden_dim)
+        return self.mlp(rnn_out.squeeze(1))
+
+    def reset_hidden(self, device: torch.device) -> None:
+        self._hidden = torch.zeros(self._num_layers, 1, self._hidden_dim, device=device)
+
+    @staticmethod
+    def _build_mlp(spec: PolicyArchitectureSpec) -> nn.Sequential:
+        dims = [
+            int(spec.rnn_hidden_dim),
             *[int(dim) for dim in spec.actor_hidden_dims],
             int(spec.num_actions),
         ]
@@ -90,9 +144,26 @@ class PolicyRuntime:
             raise NotImplementedError(
                 "SE3 workflow currently supports ActorCritic checkpoints, not sequence checkpoints"
             )
-        self.model = _DeterministicActor(self.spec).to(self.device)
+        if self.spec.is_recurrent:
+            self.model: _DeterministicActor | _DeterministicGRUActor = _DeterministicGRUActor(
+                self.spec
+            ).to(self.device)
+        else:
+            self.model = _DeterministicActor(self.spec).to(self.device)
         self._load_actor_state(self.actor_state_dict)
         self.model.eval()
+        if self.spec.is_recurrent:
+            self.reset()
+
+    @property
+    def policy_type(self) -> str:
+        if self.spec.is_recurrent:
+            return f"gru(hidden={self.spec.rnn_hidden_dim}, layers={self.spec.rnn_num_layers})"
+        return "mlp"
+
+    def reset(self) -> None:
+        if isinstance(self.model, _DeterministicGRUActor):
+            self.model.reset_hidden(self.device)
 
     def act(self, obs: np.ndarray) -> np.ndarray:
         obs = np.asarray(obs, dtype=np.float32).reshape(-1)
@@ -178,6 +249,42 @@ class PolicyRuntime:
         return normalized
 
     @staticmethod
+    def _detect_rnn(state_dict: TensorStateDict) -> tuple[str | None, int, int]:
+        """从 state_dict 中检测 RNN 类型和参数。
+
+        返回 (rnn_type, hidden_dim, num_layers)。无 RNN 时返回 (None, 0, 0)。
+        """
+        rnn_keys = [k for k in state_dict if k.startswith("rnn.")]
+        if not rnn_keys:
+            return None, 0, 0
+
+        # weight_ih_l0 形状: (gate_size * hidden_dim, input_size)
+        # GRU gate_size=3, LSTM gate_size=4
+        ih_key = "rnn.rnn.weight_ih_l0"
+        if ih_key not in state_dict:
+            return None, 0, 0
+
+        gate_hidden = state_dict[ih_key].shape[0]
+        # 检测层数
+        num_layers = 0
+        while f"rnn.rnn.weight_ih_l{num_layers}" in state_dict:
+            num_layers += 1
+
+        # GRU: gate_size=3, LSTM: gate_size=4
+        if gate_hidden % 3 == 0:
+            hidden_dim = gate_hidden // 3
+            rnn_type = "gru"
+        elif gate_hidden % 4 == 0:
+            hidden_dim = gate_hidden // 4
+            rnn_type = "lstm"
+        else:
+            raise ValueError(
+                f"cannot infer RNN type from weight_ih shape: {state_dict[ih_key].shape}"
+            )
+
+        return rnn_type, hidden_dim, num_layers
+
+    @staticmethod
     def _linear_shapes(state_dict: TensorStateDict, prefix: str) -> list[tuple[int, int]]:
         layers: list[tuple[int, tuple[int, int]]] = []
         for key, tensor in state_dict.items():
@@ -198,6 +305,8 @@ class PolicyRuntime:
         actor_state_dict: TensorStateDict,
         critic_state_dict: TensorStateDict | None,
     ) -> PolicyArchitectureSpec:
+        rnn_type, rnn_hidden_dim, rnn_num_layers = self._detect_rnn(actor_state_dict)
+
         actor = self._linear_shapes(actor_state_dict, "mlp")
         critic = (
             self._linear_shapes(critic_state_dict, "mlp") if critic_state_dict is not None else []
@@ -210,15 +319,28 @@ class PolicyRuntime:
             else self.runtime.policy.critic_hidden_dims
         )
         num_critic_obs = int(critic[0][1]) if critic else int(self.runtime.policy.num_obs)
+
+        # 对于 GRU，MLP 第一层输入维度是 rnn_hidden_dim，num_obs 从 normalizer 推断
+        if rnn_type is not None:
+            normalizer_mean = actor_state_dict.get("obs_normalizer._mean")
+            num_obs = (
+                int(normalizer_mean.shape[1]) if normalizer_mean is not None else int(actor[0][1])
+            )
+        else:
+            num_obs = int(actor[0][1])
+
         return PolicyArchitectureSpec(
             policy_class_name="ActorCritic",
-            num_obs=int(actor[0][1]),
+            num_obs=num_obs,
             num_actions=int(actor[-1][0]),
             actor_hidden_dims=tuple(int(out) for out, _ in actor[:-1]),
             critic_hidden_dims=critic_hidden_dims,
             activation=self.runtime.policy.activation,
             init_noise_std=self.runtime.policy.init_noise_std,
             num_critic_obs=num_critic_obs,
+            rnn_type=rnn_type,
+            rnn_hidden_dim=rnn_hidden_dim,
+            rnn_num_layers=rnn_num_layers,
         )
 
     def _resolve_spec(
@@ -233,8 +355,12 @@ class PolicyRuntime:
         resolved = replace(
             spec, num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs
         )
+
+        # MLP shape 验证：GRU 时第一层输入是 rnn_hidden_dim，MLP 时是 num_obs
+        mlp_input_dim = resolved.rnn_hidden_dim if resolved.is_recurrent else resolved.num_obs
+
         actor_expected = self._expected_shapes(
-            [resolved.num_obs, *resolved.actor_hidden_dims, resolved.num_actions]
+            [mlp_input_dim, *resolved.actor_hidden_dims, resolved.num_actions]
         )
         actor_actual = self._linear_shapes(actor_state_dict, "mlp")
         if actor_actual != actor_expected:
@@ -260,14 +386,19 @@ class PolicyRuntime:
                 )
             loadable[key] = value
 
-        missing_mlp = sorted(
-            key for key in model_state if key.startswith("mlp.") and key not in loadable
+        required_prefixes = ("mlp.", "rnn.") if self.spec.is_recurrent else ("mlp.",)
+        missing_required = sorted(
+            key
+            for key in model_state
+            if any(key.startswith(p) for p in required_prefixes) and key not in loadable
         )
-        if missing_mlp:
-            raise ValueError(f"actor checkpoint is missing MLP weights: {missing_mlp}")
+        if missing_required:
+            raise ValueError(f"actor checkpoint is missing weights: {missing_required}")
 
         missing, unexpected = self.model.load_state_dict(loadable, strict=False)
-        required_missing = sorted(key for key in missing if key.startswith("mlp."))
+        required_missing = sorted(
+            key for key in missing if any(key.startswith(p) for p in required_prefixes)
+        )
         if required_missing:
             raise ValueError(f"actor checkpoint is missing required weights: {required_missing}")
         if unexpected:
