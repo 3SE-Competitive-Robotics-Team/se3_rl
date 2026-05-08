@@ -306,22 +306,27 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "step": 500,
-                            "lin_vel_x_range": (-1.0, 1.0),
+                            "lin_vel_x_range": (-0.5, 0.5),
                             "ang_vel_yaw_range": (-0.5, 0.5),
                         },
                         {
                             "step": 1500,
-                            "lin_vel_x_range": (-2.0, 2.0),
-                            "ang_vel_yaw_range": (-1.5, 1.5),
+                            "lin_vel_x_range": (-1.0, 1.0),
+                            "ang_vel_yaw_range": (-1.0, 1.0),
                         },
                         {
                             "step": 2500,
-                            "lin_vel_x_range": (-3.5, 3.5),
-                            "ang_vel_yaw_range": (-2.5, 2.5),
+                            "lin_vel_x_range": (-1.5, 1.5),
+                            "ang_vel_yaw_range": (-2.0, 2.0),
                         },
                         {
                             "step": 3500,
-                            "lin_vel_x_range": (-5.0, 5.0),
+                            "lin_vel_x_range": (-2.0, 2.0),
+                            "ang_vel_yaw_range": (-2.5, 2.5),
+                        },
+                        {
+                            "step": 4500,
+                            "lin_vel_x_range": (-2.5, 2.5),
                             "ang_vel_yaw_range": (-3.0, 3.0),
                         },
                     ],
@@ -337,18 +342,22 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "step": 500,
-                            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
+                            "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)},
                         },
                         {
                             "step": 1500,
-                            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+                            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
                         },
                         {
                             "step": 2500,
-                            "velocity_range": {"x": (-1.5, 1.5), "y": (-1.5, 1.5)},
+                            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
                         },
                         {
                             "step": 3500,
+                            "velocity_range": {"x": (-1.5, 1.5), "y": (-1.5, 1.5)},
+                        },
+                        {
+                            "step": 4500,
                             "velocity_range": {"x": (-2.0, 2.0), "y": (-2.0, 2.0)},
                         },
                     ],
