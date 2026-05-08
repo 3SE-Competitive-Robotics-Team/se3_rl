@@ -76,25 +76,6 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 uv --version
 ```
 
-### 安装 prek
-
-本仓库使用 `prek.toml` 管理提交前检查。它会在提交前运行：
-
-- `uv run ruff format .`
-- `uv run ruff check . --fix`
-
-安装 `prek`：
-
-```bash
-uv tool install prek
-```
-
-确认 `prek` 可用：
-
-```bash
-prek --version
-```
-
 ## 2. 克隆仓库
 
 ```bash
@@ -115,18 +96,34 @@ uv sync
 ```bash
 uv run se3-train --help
 uv run se3-sim2sim --help
+uv run prek --version
 ```
 
-安装本仓库的 Git hook：
+本仓库使用 `prek.toml` 管理提交前检查。`prek` 已经放在 dev 依赖里，`uv sync` 后通过 `uv run prek` 使用。
+
+提交前 hook 会运行：
+
+- `uv run ruff format .`
+- `uv run ruff check . --fix`
+
+把 `prek` 接入 Git：
 
 ```bash
-prek install
+uv run prek install
+```
+
+这一步会安装 `prek` 的 Git shim。之后每次 `git commit` 都会自动对本次提交包含的文件运行 `prek`，新人不需要记住每次手动执行检查。
+
+需要撤销 hook 时：
+
+```bash
+uv run prek uninstall
 ```
 
 第一次提交前，可以手动跑一次全量检查：
 
 ```bash
-prek run --all-files
+uv run prek run --all-files
 ```
 
 如果 hook 修改了文件，先查看差异，再重新暂存和提交：
@@ -285,7 +282,7 @@ uv run se3-sim2sim \
 一次新人入门实验完成，需要同时满足：
 
 - `uv sync` 成功。
-- `prek install` 成功，并且 `prek run --all-files` 通过。
+- `uv run prek install` 成功，并且 `uv run prek run --all-files` 通过。
 - smoke 训练成功结束。
 - W&B 项目页能看到正式训练 run。
 - `logs/rsl_rl/se3_wheel_leg/<timestamp>/` 下生成 checkpoint。
@@ -302,13 +299,17 @@ uv run se3-sim2sim \
 
 ### 找不到 `prek`
 
-先确认 `uv` 可用，然后重新安装：
+先确认已经在仓库根目录执行过：
 
 ```bash
-uv tool install prek
+uv sync
 ```
 
-如果终端仍提示找不到 `prek`，重新打开终端，或检查 `uv tool dir` 对应的可执行文件目录是否在 `PATH` 中。
+本仓库不要求全局安装 `prek`，使用：
+
+```bash
+uv run prek --version
+```
 
 ### 提交时 ruff 自动修改了文件
 

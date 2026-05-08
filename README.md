@@ -18,7 +18,10 @@ src/
 
 ```bash
 uv sync
+uv run prek install
 ```
+
+`uv run prek install` 会把本仓库的提交前检查接入 Git。之后每次 `git commit` 都会自动运行 `prek` hook。
 
 训练需要 Linux + NVIDIA GPU + CUDA；macOS 适合运行 sim2sim、诊断工具和 CPU smoke。
 
@@ -40,7 +43,7 @@ uv run se3-sim2sim --viewer none --max-steps 200
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --max-steps 3000
 
 # 提交前检查（ruff format + ruff check）
-prek run --all-files
+uv run prek run --all-files
 
 # 也可以直接跑底层命令
 uv run ruff format .
