@@ -99,6 +99,7 @@ class Sim2SimWorkflow:
             "policy": {
                 "checkpoint": str(self.policy.checkpoint_path),
                 "iteration": self.policy.iteration,
+                "policy_type": self.policy.policy_type,
                 "spec": self.policy.spec.to_dict(),
             },
             "model_diagnostics": model_diag,

@@ -3,7 +3,7 @@
 from mjlab.tasks.registry import register_mjlab_task
 
 from .env_cfg import se3_flat_env_cfg, se3_rough_env_cfg
-from .rl_cfg import se3_ppo_runner_cfg
+from .rl_cfg import se3_gru_ppo_runner_cfg, se3_ppo_runner_cfg
 
 register_mjlab_task(
     task_id="SE3-WheelLegged-Flat",
@@ -17,4 +17,11 @@ register_mjlab_task(
     env_cfg=se3_rough_env_cfg(),
     play_env_cfg=se3_rough_env_cfg(play=True),
     rl_cfg=se3_ppo_runner_cfg(),
+)
+
+register_mjlab_task(
+    task_id="SE3-WheelLegged-Flat-GRU",
+    env_cfg=se3_flat_env_cfg(),
+    play_env_cfg=se3_flat_env_cfg(play=True),
+    rl_cfg=se3_gru_ppo_runner_cfg(),
 )
