@@ -9,6 +9,7 @@ import numpy as np
 
 from se3_shared import ActionDelayConfig, JointGroup, Termination
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared.motor import DM8009P, M3508_HEXROLL
 
 from .config import RobotConfig
 from .diagnostics import model_diagnostics
@@ -18,6 +19,23 @@ from .runtime_spec import RuntimeSpec, as_float64
 from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
+
+
+def _tn_clip(
+    effort: np.ndarray,
+    velocity: np.ndarray,
+    saturation_effort: float,
+    velocity_limit: float,
+    effort_limit: float,
+) -> np.ndarray:
+    """线性 T-N 包络 clamp — 与 MJLab DcMotorActuatorCfg._clip_effort 一致。"""
+    vel_at_effort_lim = velocity_limit * (1.0 + effort_limit / saturation_effort)
+    vel_clipped = np.clip(velocity, -vel_at_effort_lim, vel_at_effort_lim)
+    top = saturation_effort * (1.0 - vel_clipped / velocity_limit)
+    bottom = saturation_effort * (-1.0 - vel_clipped / velocity_limit)
+    max_eff = np.minimum(top, effort_limit)
+    min_eff = np.maximum(bottom, -effort_limit)
+    return np.clip(effort, min_eff, max_eff)
 
 
 class WheelLeggedRobot:
@@ -213,16 +231,17 @@ class WheelLeggedRobot:
 
     @staticmethod
     def _build_model(xml_path: str) -> mujoco.MjModel:
-        """加载 MJCF 并程序化添加 position/velocity actuator（与训练端 MJLab 一致）。
+        """加载 MJCF 并程序化添加 motor actuator（与训练端 DcMotorActuatorCfg 一致）。
 
-        训练端 actuator 顺序: 先 leg position（4个），再 wheel velocity（2个）。
+        PD 控制在 Python 层计算，T-N 包络 clamp 也在 Python 层执行。
+        MuJoCo actuator 仅作为力矩执行器，不做内部 PD。
+        训练端 actuator 顺序: 先 leg（4个），再 wheel（2个）。
         """
         spec = mujoco.MjSpec.from_file(xml_path)
 
         leg_joint_names = tuple(JointGroup.joint_names()[i] for i in JointGroup.LEGS)
         wheel_joint_names = tuple(JointGroup.joint_names()[i] for i in JointGroup.WHEELS)
 
-        # 腿部 position actuators 先创建，和训练端一致。
         for jname in leg_joint_names:
             act = spec.add_actuator()
             act.name = f"{jname}_motor"
@@ -230,21 +249,13 @@ class WheelLeggedRobot:
             act.trntype = mujoco.mjtTrn.mjTRN_JOINT
             act.dyntype = mujoco.mjtDyn.mjDYN_NONE
             act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
-            act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
-            act.gainprm[0] = _SHARED_ROBOT.leg_kp
-            act.biasprm[1] = -_SHARED_ROBOT.leg_kp
-            act.biasprm[2] = -_SHARED_ROBOT.leg_kd
+            act.biastype = mujoco.mjtBias.mjBIAS_NONE
+            act.gainprm[0] = 1.0
             act.forcelimited = True
-            act.forcerange[:] = np.array(
-                [
-                    -_SHARED_ROBOT.torque_limits[JointGroup.LEGS[0]],
-                    _SHARED_ROBOT.torque_limits[JointGroup.LEGS[0]],
-                ]
-            )
+            act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
-        # 轮子 velocity actuators 后创建，和训练端一致。
         for jname in wheel_joint_names:
             act = spec.add_actuator()
             act.name = f"{jname}_motor"
@@ -252,16 +263,10 @@ class WheelLeggedRobot:
             act.trntype = mujoco.mjtTrn.mjTRN_JOINT
             act.dyntype = mujoco.mjtDyn.mjDYN_NONE
             act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
-            act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
-            act.gainprm[0] = _SHARED_ROBOT.wheel_kd
-            act.biasprm[2] = -_SHARED_ROBOT.wheel_kd
+            act.biastype = mujoco.mjtBias.mjBIAS_NONE
+            act.gainprm[0] = 1.0
             act.forcelimited = True
-            act.forcerange[:] = np.array(
-                [
-                    -_SHARED_ROBOT.torque_limits[JointGroup.WHEELS[0]],
-                    _SHARED_ROBOT.torque_limits[JointGroup.WHEELS[0]],
-                ]
-            )
+            act.forcerange[:] = np.array([-M3508_HEXROLL.rated_torque, M3508_HEXROLL.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
@@ -275,13 +280,41 @@ class WheelLeggedRobot:
         self._base_yaw = extract_yaw(self.base_quat)
 
     def _compute_pd_torques(self, action: np.ndarray) -> np.ndarray:
-        """计算 actuator ctrl: [leg_pos_target × 4, wheel_vel_target × 2]。"""
+        """计算 PD 转矩并应用 T-N 包络 clamp，输出直接写入 data.ctrl。
+
+        与训练端 DcMotorActuatorCfg 行为一致：
+        - 腿部: torque = kp*(pos_target - pos) + kd*(0 - vel), clamp by DM8009P T-N
+        - 轮子: torque = kd*(vel_target - vel), clamp by M3508_HEXROLL T-N
+        """
         scaled = np.asarray(action, dtype=np.float64) * self.action_scale
 
-        leg_target = scaled[:4] + self.default_dof_pos[JointGroup.LEGS]
-        wheel_vel_target = scaled[4:6]
+        dof_pos = self.dof_pos
+        dof_vel = self.dof_vel
 
-        ctrl = np.concatenate([leg_target, wheel_vel_target])
+        leg_target = scaled[:4] + self.default_dof_pos[JointGroup.LEGS]
+        leg_pos_err = leg_target - dof_pos[JointGroup.LEGS]
+        leg_vel = dof_vel[JointGroup.LEGS]
+        leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
+        leg_torque = _tn_clip(
+            leg_torque,
+            leg_vel,
+            DM8009P.stall_torque,
+            DM8009P.no_load_speed,
+            DM8009P.rated_torque,
+        )
+
+        wheel_vel_target = scaled[4:6]
+        wheel_vel = dof_vel[JointGroup.WHEELS]
+        wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
+        wheel_torque = _tn_clip(
+            wheel_torque,
+            wheel_vel,
+            M3508_HEXROLL.stall_torque,
+            M3508_HEXROLL.no_load_speed,
+            M3508_HEXROLL.rated_torque,
+        )
+
+        ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
         return ctrl
 

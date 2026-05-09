@@ -4,13 +4,17 @@
 """
 
 from .action_delay import ActionDelayConfig, delay_seconds_to_steps
+from .motor import DM8009P, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
+    "DM8009P",
+    "M3508_HEXROLL",
     "ActionDelayConfig",
     "Joint",
     "JointGroup",
+    "MotorSpec",
     "ObservationConfig",
     "RobotConfig",
     "Termination",

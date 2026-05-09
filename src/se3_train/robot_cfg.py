@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import mujoco
-from mjlab.actuator import BuiltinPositionActuatorCfg, BuiltinVelocityActuatorCfg
+from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
-from se3_shared import JointGroup
+from se3_shared import DM8009P, M3508_HEXROLL, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
@@ -26,16 +26,21 @@ def get_serialleg_cfg() -> EntityCfg:
         spec_fn=lambda: mujoco.MjSpec.from_file(str(_MJCF_PATH)),
         articulation=EntityArticulationInfoCfg(
             actuators=(
-                BuiltinPositionActuatorCfg(
+                DcMotorActuatorCfg(
                     target_names_expr=_LEG_JOINT_NAMES,
                     stiffness=_ROBOT_CFG.leg_kp,
                     damping=_ROBOT_CFG.leg_kd,
-                    effort_limit=_ROBOT_CFG.torque_limits[JointGroup.LEGS[0]],
+                    saturation_effort=DM8009P.stall_torque,
+                    velocity_limit=DM8009P.no_load_speed,
+                    effort_limit=DM8009P.rated_torque,
                 ),
-                BuiltinVelocityActuatorCfg(
+                DcMotorActuatorCfg(
                     target_names_expr=_WHEEL_JOINT_NAMES,
+                    stiffness=0.0,
                     damping=_ROBOT_CFG.wheel_kd,
-                    effort_limit=_ROBOT_CFG.torque_limits[JointGroup.WHEELS[0]],
+                    saturation_effort=M3508_HEXROLL.stall_torque,
+                    velocity_limit=M3508_HEXROLL.no_load_speed,
+                    effort_limit=M3508_HEXROLL.rated_torque,
                 ),
             ),
         ),

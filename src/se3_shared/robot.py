@@ -8,6 +8,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from .action_delay import ActionDelayConfig
+from .motor import DM8009P, M3508_HEXROLL
 
 
 class Joint(IntEnum):
@@ -69,7 +70,14 @@ class RobotConfig(BaseModel):
     leg_kp: float = 40.0
     leg_kd: float = 2.0
     wheel_kd: float = 0.5
-    torque_limits: tuple[float, ...] = (30.0, 30.0, 3.3, 30.0, 30.0, 3.3)
+    torque_limits: tuple[float, ...] = (
+        DM8009P.rated_torque,
+        DM8009P.rated_torque,
+        M3508_HEXROLL.rated_torque,
+        DM8009P.rated_torque,
+        DM8009P.rated_torque,
+        M3508_HEXROLL.rated_torque,
+    )
     default_dof_pos: tuple[float, ...] = (0.6171, 0.2070, 0.0, 0.6171, 0.2070, 0.0)
     action_scale: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25, 20.0, 20.0)
     sim_dt: float = 0.002

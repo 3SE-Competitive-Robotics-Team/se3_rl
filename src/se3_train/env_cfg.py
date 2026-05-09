@@ -341,23 +341,23 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                             "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)},
                         },
                         {
-                            "step": 500,
+                            "step": 2000,
                             "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)},
                         },
                         {
-                            "step": 1500,
+                            "step": 5000,
                             "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
                         },
                         {
-                            "step": 2500,
+                            "step": 10000,
                             "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
                         },
                         {
-                            "step": 3500,
+                            "step": 20000,
                             "velocity_range": {"x": (-1.5, 1.5), "y": (-1.5, 1.5)},
                         },
                         {
-                            "step": 4500,
+                            "step": 40000,
                             "velocity_range": {"x": (-2.0, 2.0), "y": (-2.0, 2.0)},
                         },
                     ],
