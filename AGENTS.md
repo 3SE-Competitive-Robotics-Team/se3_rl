@@ -88,8 +88,8 @@ Smoke 模式特点：
   ```
 
 ### 可视化
-- **禁止使用 matplotlib 或其他临时可视化方案**
-- 必须使用 `rerun-sdk` 进行所有可视化
+- **动态日志/回放**（sim2sim 轨迹、训练曲线、实时诊断）：必须使用 `rerun-sdk`，禁止 matplotlib
+- **静态分析小工具**（参数曲线、几何示意图、包络线等一次性绘图脚本）：允许使用 matplotlib，放在 `scripts/` 目录，参考 `scripts/plot_tn_envelope.py`
 - 可视化是仓库长期建设的一部分，必须严肃对待
 
 ## 架构关键点
