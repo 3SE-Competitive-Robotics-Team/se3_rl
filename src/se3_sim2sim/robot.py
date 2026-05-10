@@ -239,8 +239,8 @@ class WheelLeggedRobot:
         """
         spec = mujoco.MjSpec.from_file(xml_path)
 
-        leg_joint_names = tuple(JointGroup.joint_names()[i] for i in JointGroup.LEGS)
-        wheel_joint_names = tuple(JointGroup.joint_names()[i] for i in JointGroup.WHEELS)
+        leg_joint_names = ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint")
+        wheel_joint_names = ("l_wheel_Joint", "r_wheel_Joint")
 
         for jname in leg_joint_names:
             act = spec.add_actuator()
@@ -291,9 +291,9 @@ class WheelLeggedRobot:
         dof_pos = self.dof_pos
         dof_vel = self.dof_vel
 
-        leg_target = scaled[:4] + self.default_dof_pos[JointGroup.LEGS]
-        leg_pos_err = leg_target - dof_pos[JointGroup.LEGS]
-        leg_vel = dof_vel[JointGroup.LEGS]
+        leg_target = scaled[:4] + self.default_dof_pos[JointGroup.CTRL_LEGS]
+        leg_pos_err = leg_target - dof_pos[JointGroup.CTRL_LEGS]
+        leg_vel = dof_vel[JointGroup.CTRL_LEGS]
         leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
         leg_torque = _tn_clip(
             leg_torque,
@@ -304,7 +304,7 @@ class WheelLeggedRobot:
         )
 
         wheel_vel_target = scaled[4:6]
-        wheel_vel = dof_vel[JointGroup.WHEELS]
+        wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
         wheel_torque = _tn_clip(
             wheel_torque,

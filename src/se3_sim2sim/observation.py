@@ -38,14 +38,14 @@ class ObservationBuilder:
         obs.extend(projected_gravity.tolist())
         obs.extend((np.asarray(command, dtype=np.float64) * self.commands_scale).tolist())
 
-        leg_pos_rel = dof_pos[JointGroup.LEGS] - self.default_dof_pos[JointGroup.LEGS]
+        leg_pos_rel = dof_pos[JointGroup.CTRL_LEGS] - self.default_dof_pos[JointGroup.CTRL_LEGS]
         obs.extend(leg_pos_rel.tolist())
 
-        leg_vel = dof_vel[JointGroup.LEGS] * _OBS_CFG.leg_vel_scale
+        leg_vel = dof_vel[JointGroup.CTRL_LEGS] * _OBS_CFG.leg_vel_scale
         obs.extend(leg_vel.tolist())
 
-        obs.extend(dof_pos[JointGroup.WHEELS].tolist())
-        obs.extend((dof_vel[JointGroup.WHEELS] * _OBS_CFG.wheel_vel_scale).tolist())
+        obs.extend(dof_pos[JointGroup.CTRL_WHEELS].tolist())
+        obs.extend((dof_vel[JointGroup.CTRL_WHEELS] * _OBS_CFG.wheel_vel_scale).tolist())
 
         obs.extend(np.asarray(action_obs, dtype=np.float64).tolist())
 

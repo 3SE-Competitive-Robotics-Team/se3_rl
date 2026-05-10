@@ -20,6 +20,10 @@ DEFAULT_JOINT_ANGLES = {
     "rf0_Joint": 0.5412,
     "rf1_Joint": 0.3398,
     "r_wheel_Joint": 0.0,
+    "l_drive_bar_Joint": 0.0,
+    "l_coupler_Joint": 0.0,
+    "r_drive_bar_Joint": 0.0,
+    "r_coupler_Joint": 0.0,
 }
 
 BASE_HEIGHT = 0.301
@@ -48,12 +52,14 @@ def _create_fixed_base_mjcf(source_path: str) -> str:
 """
     xml = xml.replace("</worldbody>", mocap_body + "  </worldbody>")
 
-    equality = """
-  <equality>
-    <weld body1="base_link" body2="mocap_target" solref="0.002 1" solimp="0.99 0.99 0.001"/>
-  </equality>
-"""
-    xml = xml.replace("</mujoco>", equality + "</mujoco>")
+    weld = '    <weld body1="base_link" body2="mocap_target" solref="0.002 1" solimp="0.99 0.99 0.001"/>\n'
+    if "<equality>" in xml:
+        xml = xml.replace("<equality>", "<equality>\n" + weld, 1)
+    else:
+        xml = xml.replace(
+            "</mujoco>",
+            "  <equality>\n" + weld + "  </equality>\n</mujoco>",
+        )
 
     tmp_path = source.parent / "_joint_viewer_tmp.xml"
     tmp_path.write_text(xml)

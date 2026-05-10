@@ -305,20 +305,21 @@ def randomize_default_dof_pos(
     offset = sample_uniform(
         torch.tensor(offset_range[0], device=env.device),
         torch.tensor(offset_range[1], device=env.device),
-        (n, asset.num_joints),
+        (n, len(JointGroup.ALL)),
         env.device,
     )
 
     default_joint_pos = asset.data.default_joint_pos.clone()
-    default_joint_pos[env_ids] += offset
+    default_joint_pos[env_ids[:, None], torch.tensor(JointGroup.ALL, device=env.device)] += offset
 
     # 裁剪到关节限制范围内。
     soft_limits = asset.data.soft_joint_pos_limits
     if soft_limits is not None:
-        default_joint_pos[env_ids] = torch.clamp(
-            default_joint_pos[env_ids],
-            soft_limits[env_ids, :, 0],
-            soft_limits[env_ids, :, 1],
+        ctrl_idx = torch.tensor(JointGroup.ALL, device=env.device)
+        default_joint_pos[env_ids[:, None], ctrl_idx] = torch.clamp(
+            default_joint_pos[env_ids[:, None], ctrl_idx],
+            soft_limits[env_ids[:, None], ctrl_idx, 0],
+            soft_limits[env_ids[:, None], ctrl_idx, 1],
         )
 
     asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]

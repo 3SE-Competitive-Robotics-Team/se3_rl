@@ -1,11 +1,12 @@
-"""膝关节弹簧几何关系可视化 — 展示弹簧挂点、连杆和需要提供的参数。
+"""膝关节弹簧与四连杆传动机构可视化。
 
-在机器人初始姿态（default_dof_pos）下绘制单腿侧视图，标注弹簧相关的
-9 个几何/力学参数，帮助从 CAD 或实物中定位测量对象。
+用 MuJoCo FK 计算真实关节位置，保证姿态精确。
+四连杆 ABCD 通过 Freudenstein 闭环方程精确求解，
+P₁/P₂ 分别固连在驱动杆 AB 和小腿上段 CD 上。
 
 用法:
     uv run python scripts/plot_spring_geometry.py
-    uv run python scripts/plot_spring_geometry.py --theta 0.3  # 指定膝关节角度
+    uv run python scripts/plot_spring_geometry.py --theta-hip 0.6171 --theta-knee 0.207
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import argparse
 import matplotlib as mpl
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+import mujoco
 import numpy as np
 
 mpl.rcParams["font.sans-serif"] = [
@@ -25,241 +27,353 @@ mpl.rcParams["font.sans-serif"] = [
 ]
 mpl.rcParams["axes.unicode_minus"] = False
 
+MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
+WHEEL_RADIUS = 0.059
+DEFAULT_HIP = 0.6171
+DEFAULT_KNEE = 0.2070
+KNEE_RANGE = (-0.6, 0.8)
 
-# ============================================================
-# 弹簧几何参数（占位默认值，需要用户从 CAD 提供实际数据）
-# ============================================================
-PARAMS = {
-    "a": 0.014,  # 大腿侧弹簧挂点到坐标原点距离 (m)
-    "alpha": np.deg2rad(5),  # 大腿侧挂点方位角 (rad)
-    "b": 0.015,  # 小腿侧弹簧挂点到膝关节轴距离 (m)
-    "beta": np.deg2rad(35),  # 小腿侧挂点基准角偏移 (rad)
-    "link_l": 0.07,  # 大腿根轴到膝关节轴距离 (m) — 注意：参考实现用 0.07，实际 MJCF 大腿长 0.18
-    "k": 900.0,  # 弹簧刚度 (N/m)
-    "s0": 0.06,  # 弹簧自然长度 (m)
-    "delta_0": 0.004,  # 大腿侧铰链固定长度 (m)
-    "delta_1": 0.0095,  # 小腿侧铰链固定长度 (m)
-}
+# 四连杆参数（占位，需从 CAD 提供）
+L_AB = 0.06
+L_BC = 0.08
+L_CD = 0.04
+L_AD = 0.18
 
-# 连杆长度（从 MJCF）
-THIGH_LENGTH = 0.18  # lf1_Link pos x
-CALF_LENGTH = 0.2  # l_wheel_Link pos z (approx)
+# CD 杆件相对小腿方向的固定偏角（占位，需从 CAD 提供）
+# CD 从膝轴 D 指向连杆铰接点 C，位于小腿"后侧"（朝机身方向）
+# 此角定义为 CD 方向相对于 DW（小腿方向）的偏移，正值 = 逆时针
+PSI_OFFSET = np.deg2rad(-90)
+
+# 四连杆装配构型：+1 或 -1，对应两种闭合模式
+FOURBAR_MODE = +1
+
+# 弹簧挂点（占位）
+L_P1 = 0.014
+L_P2 = 0.015
+ALPHA_EXT = np.deg2rad(5)
+BETA_EXT = np.deg2rad(35)
+
+# 弹簧力学（占位）
+K_SPRING = 900.0
+S0 = 0.06
+DELTA_0 = 0.004
+DELTA_1 = 0.0095
 
 
-def compute_spring_points(
-    theta: float,
-    a: float,
-    alpha: float,
-    b: float,
-    beta: float,
-    link_l: float,
-    **_: float,
-) -> dict[str, np.ndarray]:
-    """计算弹簧几何中的三个关键点坐标。
+def _fourbar_solve_phi(
+    psi: float,
+    l_ab: float,
+    l_bc: float,
+    l_cd: float,
+    l_ad: float,
+    mode: int = +1,
+) -> float:
+    """Freudenstein 半角代换法求解驱动杆角 φ。
 
-    坐标系：原点在大腿根（hip 轴），x 向下（重力方向），y 沿腿展开方向。
-    这里用弹簧模型的局部坐标系（原点 = 弹簧参考点，非 hip 轴）。
+    在大腿局部坐标系中（A 在原点，D 在 [L_AD, 0]），
+    已知小腿上段角 ψ，求驱动杆角 φ。
+    所有角度相对大腿方向（A→D = +x）逆时针为正。
     """
-    p0 = np.array([link_l, 0.0])  # 膝关节轴
-    p1 = np.array([a * np.cos(alpha), a * np.sin(alpha)])  # 大腿侧挂点
-    p2 = np.array(
-        [
-            link_l - b * np.sin(theta + beta),
-            -b * np.cos(theta + beta),
-        ]
-    )  # 小腿侧挂点
-    return {"P0": p0, "P1": p1, "P2": p2}
+    p = 2 * l_ab * (l_cd * np.cos(psi) - l_ad)
+    q = 2 * l_ab * l_cd * np.sin(psi)
+    r = l_bc**2 - l_ab**2 - l_ad**2 - l_cd**2 + 2 * l_ad * l_cd * np.cos(psi)
+
+    disc = p**2 + q**2 - r**2
+    if disc < -1e-3:
+        raise ValueError(f"四连杆超出运动范围: disc={disc:.6f}, psi={np.rad2deg(psi):.1f}°")
+    disc = max(disc, 0.0)
+
+    return float(2 * np.arctan2(q + mode * np.sqrt(disc), p + r))
 
 
-def draw_spring_geometry(theta: float) -> None:
-    """绘制单腿侧视图：连杆 + 弹簧 + 参数标注。"""
-    pts = compute_spring_points(theta, **PARAMS)
-    p0 = pts["P0"]
-    p1 = pts["P1"]
-    p2 = pts["P2"]
+def _mujoco_fk(theta_hip: float, theta_knee: float) -> dict[str, np.ndarray]:
+    """用 MuJoCo 计算精确 body 世界坐标，取 XZ 侧视图。"""
+    model = mujoco.MjModel.from_xml_path(MJCF_PATH)
+    data = mujoco.MjData(model)
+    data.qpos[7:] = [theta_hip, theta_knee, 0.0, theta_hip, theta_knee, 0.0]
+    mujoco.mj_forward(model, data)
 
-    # 弹簧有效长度
+    def xz(body_name: str) -> np.ndarray:
+        bid = model.body(body_name).id
+        pos = data.xpos[bid]
+        return np.array([pos[0], pos[2]])
+
+    a = xz("lf0_Link")
+    d = xz("lf1_Link")
+    w = xz("l_wheel_Link")
+
+    thigh_vec = d - a
+    thigh_angle = np.arctan2(thigh_vec[1], thigh_vec[0])
+    shank_vec = w - d
+    shank_angle = np.arctan2(shank_vec[1], shank_vec[0])
+
+    # ψ：CD 杆件在大腿局部坐标系中的方位角
+    # CD 固连在小腿上，与小腿方向有固定偏角 PSI_OFFSET
+    psi_world = shank_angle + PSI_OFFSET
+    psi_local = psi_world - thigh_angle
+
+    # φ：通过 Freudenstein 闭环方程精确求解驱动杆角
+    phi_local = _fourbar_solve_phi(psi_local, L_AB, L_BC, L_CD, L_AD, FOURBAR_MODE)
+    phi_world = phi_local + thigh_angle
+
+    # B（驱动杆末端）固连在 AB 杆件上
+    b = a + L_AB * np.array([np.cos(phi_world), np.sin(phi_world)])
+    # C（从动铰）固连在 CD 杆件上
+    c = d + L_CD * np.array([np.cos(psi_world), np.sin(psi_world)])
+
+    # P₁ 固连在驱动杆 AB 上，A 侧反向延伸（B 的对侧）
+    p1 = a + L_P1 * np.array([-np.cos(phi_world + ALPHA_EXT), -np.sin(phi_world + ALPHA_EXT)])
+    # P₂ 固连在小腿上段 CD 上，D 侧反向延伸（C 的对侧）
+    p2 = d + L_P2 * np.array([-np.cos(psi_world + BETA_EXT), -np.sin(psi_world + BETA_EXT)])
+
+    # 验证：BC 连杆长度应等于 L_BC
+    bc_err = abs(np.linalg.norm(c - b) - L_BC)
+    if bc_err > 1e-4:
+        print(f"⚠️ 四连杆闭合误差: |BC|={np.linalg.norm(c - b):.4f}, 期望={L_BC}, 误差={bc_err:.6f}")
+
+    return {
+        "A": a,
+        "B": b,
+        "C": c,
+        "D": d,
+        "P1": p1,
+        "P2": p2,
+        "wheel": w,
+        "thigh_angle": thigh_angle,
+        "shank_angle": shank_angle,
+    }
+
+
+def draw(theta_hip: float, theta_knee: float) -> None:
+    """单图：整腿侧视图 + 四连杆 + 弹簧。"""
+    pts = _mujoco_fk(theta_hip, theta_knee)
+    a, b, c, d = pts["A"], pts["B"], pts["C"], pts["D"]
+    p1, p2, w = pts["P1"], pts["P2"], pts["wheel"]
+
     dp = p2 - p1
-    spring_len = np.linalg.norm(dp)
-    s_eff = spring_len - PARAMS["delta_0"] - PARAMS["delta_1"]
-    force = PARAMS["k"] * (PARAMS["s0"] - s_eff)
+    slen = np.linalg.norm(dp)
+    s_eff = slen - DELTA_0 - DELTA_1
+    force = K_SPRING * (S0 - s_eff) if slen > 1e-6 else 0.0
 
-    _fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    _fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     ax.set_aspect("equal")
     ax.set_title(
-        f"膝关节弹簧几何示意图\n"
-        f"θ = {np.rad2deg(theta):.1f}° | 弹簧有效长度 s = {s_eff * 1000:.2f} mm | "
-        f"弹簧力 F = {force:.1f} N",
+        f"SerialLeg 膝关节传动与弹簧 | "
+        f"hip={np.rad2deg(theta_hip):.1f}\u00b0 knee={np.rad2deg(theta_knee):.1f}\u00b0 | "
+        f"F={force:.1f} N",
         fontsize=12,
     )
 
-    origin = np.array([0.0, 0.0])
-
-    # --- 绘制连杆 ---
-    # 大腿杆件：从原点到膝关节轴 P0
+    # 大腿
     ax.plot(
-        [origin[0], p0[0]],
-        [origin[1], p0[1]],
+        [a[0], d[0]],
+        [a[1], d[1]],
         "k-",
-        linewidth=4,
+        linewidth=6,
         solid_capstyle="round",
-        label="大腿杆件",
+        label="大腿",
+        zorder=2,
     )
-
-    # 小腿杆件：从膝关节轴 P0 向下延伸（根据 theta 旋转）
-    calf_end = p0 + np.array(
-        [
-            -0.04 * np.sin(theta + PARAMS["beta"]),
-            -0.04 * np.cos(theta + PARAMS["beta"]),
-        ]
-    )
+    # 小腿
     ax.plot(
-        [p0[0], calf_end[0]],
-        [p0[1], calf_end[1]],
+        [d[0], w[0]],
+        [d[1], w[1]],
         color="0.3",
-        linewidth=4,
+        linewidth=5,
         solid_capstyle="round",
-        label="小腿杆件（局部）",  # noqa: RUF001
+        label="小腿",
+        zorder=2,
     )
-
-    # --- 绘制弹簧（锯齿线） ---
-    n_coils = 8
-    spring_dir = dp / spring_len
-    spring_perp = np.array([-spring_dir[1], spring_dir[0]])
-    coil_amp = 0.003  # 锯齿幅度
-
-    # 弹簧起点（跳过 delta_0）和终点（跳过 delta_1）
-    spring_start = p1 + spring_dir * PARAMS["delta_0"]
-    spring_end = p2 - spring_dir * PARAMS["delta_1"]
-    coil_len = np.linalg.norm(spring_end - spring_start)
-
-    coil_pts = [spring_start]
-    for i in range(1, n_coils * 2 + 1):
-        t = i / (n_coils * 2 + 1)
-        center = spring_start + spring_dir * coil_len * t
-        sign = 1 if i % 2 == 1 else -1
-        coil_pts.append(center + sign * spring_perp * coil_amp)
-    coil_pts.append(spring_end)
-    coil_arr = np.array(coil_pts)
-
-    # 铰链段（直线）
+    # 驱动杆 (AB)
     ax.plot(
-        [p1[0], spring_start[0]],
-        [p1[1], spring_start[1]],
-        "b-",
-        linewidth=1.5,
+        [a[0], b[0]],
+        [a[1], b[1]],
+        color="darkorange",
+        linewidth=3,
+        solid_capstyle="round",
+        label="驱动杆 (AB)",
+        zorder=3,
     )
+    # 连杆 (BC)
     ax.plot(
-        [spring_end[0], p2[0]],
-        [spring_end[1], p2[1]],
-        "b-",
-        linewidth=1.5,
+        [b[0], c[0]],
+        [b[1], c[1]],
+        color="purple",
+        linewidth=3,
+        solid_capstyle="round",
+        label="连杆 (BC)",
+        zorder=3,
     )
-    # 弹簧锯齿
-    ax.plot(coil_arr[:, 0], coil_arr[:, 1], "b-", linewidth=1.5, label="弹簧")
-
-    # --- 绘制关键点 ---
-    point_style = {"zorder": 5, "edgecolors": "k", "linewidths": 1.0}
-    ax.scatter(*origin, s=100, c="black", marker="o", **point_style)
-    ax.scatter(*p0, s=120, c="red", marker="o", **point_style)
-    ax.scatter(*p1, s=80, c="blue", marker="s", **point_style)
-    ax.scatter(*p2, s=80, c="green", marker="s", **point_style)
-
-    # --- 标注点名称 ---
-    ax.annotate(
-        "原点\n(弹簧坐标系)",
-        origin,
-        textcoords="offset points",
-        xytext=(-50, -20),
-        fontsize=9,
-        color="black",
+    # 小腿上段 (CD)
+    ax.plot(
+        [d[0], c[0]],
+        [d[1], c[1]],
+        color="teal",
+        linewidth=3,
+        solid_capstyle="round",
+        label="小腿上段 (CD)",
+        zorder=3,
     )
+
+    # 弹簧锯齿线
+    if slen > 1e-6:
+        n_coils = 12
+        s_dir = dp / slen
+        s_perp = np.array([-s_dir[1], s_dir[0]])
+        amp = 0.005
+        sp_s = p1 + s_dir * DELTA_0
+        sp_e = p2 - s_dir * DELTA_1
+        seg = np.linalg.norm(sp_e - sp_s)
+        coil_pts = [p1, sp_s]
+        for i in range(1, n_coils * 2 + 1):
+            t = i / (n_coils * 2 + 1)
+            ct = sp_s + s_dir * seg * t
+            sign = 1 if i % 2 == 1 else -1
+            coil_pts.append(ct + sign * s_perp * amp)
+        coil_pts.extend([sp_e, p2])
+        carr = np.array(coil_pts)
+        ax.plot(carr[:, 0], carr[:, 1], "b-", linewidth=2, label="弹簧", zorder=4)
+
+    # 轮子
+    wc = mpatches.Circle(w, WHEEL_RADIUS, fill=False, edgecolor="0.5", linewidth=1.5, zorder=2)
+    ax.add_patch(wc)
+    ax.plot(*w, "+", color="0.5", markersize=8, markeredgewidth=1.5)
+
+    # 地面
+    ground_y = w[1] - WHEEL_RADIUS
+    xlims = [min(a[0], d[0], w[0]) - 0.06, max(a[0], d[0], w[0]) + 0.1]
+    ax.plot(xlims, [ground_y, ground_y], "k-", linewidth=2)
+    ax.fill_between(xlims, ground_y - 0.01, ground_y, color="0.85")
+
+    # 铰接点
+    for pt, clr, sz in [(a, "red", 140), (d, "red", 140), (b, "darkorange", 90), (c, "purple", 90)]:
+        ax.scatter(*pt, s=sz, c=clr, zorder=10, edgecolors="k", linewidths=1)
+    ax.scatter(*p1, s=70, c="blue", marker="s", zorder=10, edgecolors="k", linewidths=1)
+    ax.scatter(*p2, s=70, c="green", marker="s", zorder=10, edgecolors="k", linewidths=1)
+
+    # 标注
     ax.annotate(
-        "P₀ 膝关节轴",
-        p0,
+        "A (髋轴)",
+        a,
+        xytext=(10, 5),
         textcoords="offset points",
-        xytext=(10, 10),
         fontsize=9,
         color="red",
         fontweight="bold",
     )
     ax.annotate(
-        "P₁ 大腿侧挂点",
-        p1,
+        "D (膝轴)",
+        d,
+        xytext=(-60, -5),
         textcoords="offset points",
-        xytext=(10, 15),
+        fontsize=9,
+        color="red",
+        fontweight="bold",
+    )
+    ax.annotate(
+        "B",
+        b,
+        xytext=(8, 5),
+        textcoords="offset points",
+        fontsize=9,
+        color="darkorange",
+        fontweight="bold",
+    )
+    ax.annotate(
+        "C",
+        c,
+        xytext=(8, 5),
+        textcoords="offset points",
+        fontsize=9,
+        color="purple",
+        fontweight="bold",
+    )
+    ax.annotate(
+        "P\u2081",
+        p1,
+        xytext=(8, -12),
+        textcoords="offset points",
         fontsize=9,
         color="blue",
         fontweight="bold",
     )
     ax.annotate(
-        "P₂ 小腿侧挂点",
+        "P\u2082",
         p2,
+        xytext=(-20, -12),
         textcoords="offset points",
-        xytext=(10, -20),
         fontsize=9,
         color="green",
         fontweight="bold",
     )
-
-    # --- 标注参数（带尺寸线） ---
-    # 参数 l：原点到 P0
-    _draw_dim_line(ax, origin, p0, "l", offset_y=-0.008, color="red")
-
-    # 参数 a：原点到 P1
-    _draw_dim_line(ax, origin, p1, "a", offset_y=0.006, color="blue")
-
-    # 参数 b：P0 到 P2
-    _draw_dim_line(ax, p0, p2, "b", offset_y=-0.006, color="green")
-
-    # 参数 alpha 角度弧
-    _draw_angle_arc(ax, origin, 0, PARAMS["alpha"], 0.01, "\u03b1", color="blue")
-
-    # 参数 beta 角度弧（从膝关节轴）
-    _draw_angle_arc(
-        ax,
-        p0,
-        -(np.pi / 2 - theta),
-        -(np.pi / 2 - theta - PARAMS["beta"]),
-        0.012,
-        "β",
-        color="green",
+    ax.annotate(
+        f"轮 R={WHEEL_RADIUS * 1000:.0f}mm",
+        w,
+        xytext=(10, 10),
+        textcoords="offset points",
+        fontsize=8,
+        color="0.5",
     )
 
-    # --- 参数表格文字框 ---
-    param_text = (
-        "需要从 CAD/实物提供的参数:\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"  a     = {PARAMS['a'] * 1000:.1f} mm    大腿侧挂点距离\n"
-        f"  \u03b1     = {np.rad2deg(PARAMS['alpha']):.1f}\u00b0      大腿侧挂点角\n"
-        f"  b     = {PARAMS['b'] * 1000:.1f} mm   小腿侧挂点距离\n"
-        f"  \u03b2     = {np.rad2deg(PARAMS['beta']):.1f}\u00b0     小腿侧挂点角\n"
-        f"  l     = {PARAMS['link_l'] * 1000:.1f} mm   关节轴间距\n"
-        f"  k     = {PARAMS['k']:.0f} N/m   弹簧刚度\n"
-        f"  s\u2080    = {PARAMS['s0'] * 1000:.1f} mm   弹簧自然长度\n"
-        f"  \u03b4\u2080    = {PARAMS['delta_0'] * 1000:.1f} mm    大腿侧铰链长\n"
-        f"  \u03b4\u2081    = {PARAMS['delta_1'] * 1000:.1f} mm    小腿侧铰链长\n"
+    # 尺寸标注
+    thigh_len = np.linalg.norm(d - a)
+    shank_len = np.linalg.norm(w - d)
+    ax.annotate(
+        f"{thigh_len * 1000:.0f}mm",
+        (a + d) / 2,
+        xytext=(10, 5),
+        textcoords="offset points",
+        fontsize=8,
+        color="0.4",
     )
-    props = {"boxstyle": "round,pad=0.5", "facecolor": "lightyellow", "alpha": 0.9}
+    ax.annotate(
+        f"{shank_len * 1000:.0f}mm",
+        (d + w) / 2,
+        xytext=(10, 5),
+        textcoords="offset points",
+        fontsize=8,
+        color="0.4",
+    )
+
+    # 参数框
+    info = (
+        f"大腿 = {thigh_len * 1000:.0f} mm\n"
+        f"小腿 = {shank_len * 1000:.0f} mm\n"
+        f"轮 R = {WHEEL_RADIUS * 1000:.0f} mm\n"
+        f"hip\u2080 = {np.rad2deg(DEFAULT_HIP):.1f}\u00b0\n"
+        f"knee\u2080 = {np.rad2deg(DEFAULT_KNEE):.1f}\u00b0\n"
+        f"膝范围 [{np.rad2deg(KNEE_RANGE[0]):.0f}\u00b0, {np.rad2deg(KNEE_RANGE[1]):.0f}\u00b0]\n"
+        "\n"
+        "四连杆 (需 CAD):\n"
+        f"  AB = {L_AB * 1000:.0f} mm\n"
+        f"  BC = {L_BC * 1000:.0f} mm\n"
+        f"  CD = {L_CD * 1000:.0f} mm\n"
+        f"  AD = {L_AD * 1000:.0f} mm\n"
+        f"  ψ_off = {np.rad2deg(PSI_OFFSET):.0f}\u00b0\n"
+        "\n"
+        "弹簧 (需 CAD):\n"
+        f"  a(P\u2081) = {L_P1 * 1000:.1f} mm\n"
+        f"  b(P\u2082) = {L_P2 * 1000:.1f} mm\n"
+        f"  k = {K_SPRING:.0f} N/m\n"
+        f"  s\u2080 = {S0 * 1000:.1f} mm"
+    )
     ax.text(
         0.98,
-        0.02,
-        param_text,
+        0.98,
+        info,
         transform=ax.transAxes,
-        fontsize=8.5,
-        verticalalignment="bottom",
-        horizontalalignment="right",
-        bbox=props,
-        family="sans-serif",
+        fontsize=8,
+        va="top",
+        ha="right",
+        bbox={"boxstyle": "round", "facecolor": "lightyellow", "alpha": 0.9},
     )
 
-    # --- 图例 ---
-    ax.legend(loc="upper left", fontsize=9)
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(-0.02, 0.10)
-    ax.set_ylim(-0.04, 0.03)
+    ax.legend(loc="lower left", fontsize=9)
+    ax.grid(True, alpha=0.2)
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Z (m)")
+    ax.set_xlim(xlims)
+    ax.set_ylim(ground_y - 0.02, max(a[1], b[1]) + 0.04)
 
     plt.tight_layout()
     out_path = "scripts/spring_geometry.png"
@@ -268,81 +382,12 @@ def draw_spring_geometry(theta: float) -> None:
     plt.show()
 
 
-def _draw_dim_line(
-    ax: plt.Axes,
-    start: np.ndarray,
-    end: np.ndarray,
-    label: str,
-    offset_y: float = 0.005,
-    color: str = "gray",
-) -> None:
-    """绘制尺寸标注线。"""
-    mid = (start + end) / 2
-    ax.annotate(
-        "",
-        xy=end + np.array([0, offset_y]),
-        xytext=start + np.array([0, offset_y]),
-        arrowprops={"arrowstyle": "<->", "color": color, "lw": 1.2},
-    )
-    ax.text(
-        mid[0],
-        mid[1] + offset_y + 0.002 * np.sign(offset_y),
-        label,
-        ha="center",
-        va="center",
-        fontsize=10,
-        color=color,
-        fontweight="bold",
-        fontstyle="italic",
-    )
-
-
-def _draw_angle_arc(
-    ax: plt.Axes,
-    center: np.ndarray,
-    angle_start: float,
-    angle_end: float,
-    radius: float,
-    label: str,
-    color: str = "gray",
-) -> None:
-    """绘制角度标注弧。"""
-    arc = mpatches.Arc(
-        center,
-        2 * radius,
-        2 * radius,
-        angle=0,
-        theta1=np.rad2deg(min(angle_start, angle_end)),
-        theta2=np.rad2deg(max(angle_start, angle_end)),
-        color=color,
-        linewidth=1.5,
-    )
-    ax.add_patch(arc)
-    mid_angle = (angle_start + angle_end) / 2
-    label_pos = center + radius * 1.3 * np.array([np.cos(mid_angle), np.sin(mid_angle)])
-    ax.text(
-        label_pos[0],
-        label_pos[1],
-        label,
-        ha="center",
-        va="center",
-        fontsize=10,
-        color=color,
-        fontweight="bold",
-        fontstyle="italic",
-    )
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="膝关节弹簧几何可视化")
-    parser.add_argument(
-        "--theta",
-        type=float,
-        default=0.207,
-        help="膝关节角度 (rad), 默认使用 default_dof_pos 中 lf1 的值 0.207",
-    )
+    parser = argparse.ArgumentParser(description="膝关节传动机构与弹簧可视化")
+    parser.add_argument("--theta-hip", type=float, default=DEFAULT_HIP)
+    parser.add_argument("--theta-knee", type=float, default=DEFAULT_KNEE)
     args = parser.parse_args()
-    draw_spring_geometry(args.theta)
+    draw(args.theta_hip, args.theta_knee)
 
 
 if __name__ == "__main__":

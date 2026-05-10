@@ -12,14 +12,31 @@ from .motor import DM8009P, M3508_HEXROLL
 
 
 class Joint(IntEnum):
-    """SerialLeg 6-DOF 关节语义枚举，值为 MuJoCo 模型中的关节顺序索引。"""
+    """SerialLeg 受控关节语义枚举。
+
+    值为 MJLab joint_pos / joint_vel 张量中的列索引。
+    MuJoCo 全局关节 ID 因四连杆虚拟关节插入而不同，
+    不要将此枚举值直接用于 model.jnt_* 数组。
+
+    MJLab joint_pos 列布局（10 列，含虚拟关节）：
+        0: lf0_Joint       ← LF0
+        1: lf1_Joint       ← LF1
+        2: l_wheel_Joint   ← L_WHEEL
+        3: l_drive_bar_Joint  (虚拟，四连杆曲柄)
+        4: l_coupler_Joint    (虚拟，四连杆连杆)
+        5: rf0_Joint       ← RF0
+        6: rf1_Joint       ← RF1
+        7: r_wheel_Joint   ← R_WHEEL
+        8: r_drive_bar_Joint  (虚拟，四连杆曲柄)
+        9: r_coupler_Joint    (虚拟，四连杆连杆)
+    """
 
     LF0 = 0
     LF1 = 1
     L_WHEEL = 2
-    RF0 = 3
-    RF1 = 4
-    R_WHEEL = 5
+    RF0 = 5
+    RF1 = 6
+    R_WHEEL = 7
 
     @property
     def mjcf_name(self) -> str:
@@ -37,11 +54,17 @@ _MJCF_NAMES: dict[Joint, str] = {
 
 
 class JointGroup:
-    """预定义的关节索引分组，替代散布在各处的魔法索引列表。"""
+    """预定义的关节索引分组，替代散布在各处的魔法索引列表。
+
+    LEGS / WHEELS / ALL 中的值是 MJLab joint_pos (10 维) 的列索引。
+    CTRL_LEGS / CTRL_WHEELS 是受控关节 6 维数组（sim2sim dof_pos、actuator 输出）中的位置索引。
+    LEG_ACTUATORS / WHEEL_ACTUATORS 是 actuator_force (6 维) 的列索引，与关节索引无关。
+    """
 
     LEGS: ClassVar[list[int]] = [Joint.LF0, Joint.LF1, Joint.RF0, Joint.RF1]
     WHEELS: ClassVar[list[int]] = [Joint.L_WHEEL, Joint.R_WHEEL]
-    # 执行器索引与关节索引不同：leg actuators 排在前，wheel 排在后
+    CTRL_LEGS: ClassVar[list[int]] = [0, 1, 3, 4]
+    CTRL_WHEELS: ClassVar[list[int]] = [2, 5]
     LEG_ACTUATORS: ClassVar[list[int]] = [0, 1, 2, 3]
     WHEEL_ACTUATORS: ClassVar[list[int]] = [4, 5]
     ALL: ClassVar[list[int]] = [

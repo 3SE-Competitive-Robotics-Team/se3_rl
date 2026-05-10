@@ -12,7 +12,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
-from se3_shared import JointGroup
+from se3_shared import Joint, JointGroup
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -231,7 +231,10 @@ def joint_mirror(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    diff = robot.data.joint_pos[:, [0, 1]] - robot.data.joint_pos[:, [3, 4]]
+    diff = (
+        robot.data.joint_pos[:, [Joint.LF0, Joint.LF1]]
+        - robot.data.joint_pos[:, [Joint.RF0, Joint.RF1]]
+    )
     num_pairs = 2
     return torch.sum(diff**2, dim=1) / num_pairs * gate
 
