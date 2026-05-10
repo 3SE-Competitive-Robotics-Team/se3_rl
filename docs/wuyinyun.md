@@ -49,9 +49,7 @@ ssh wuyinyun "whoami && hostname && nvidia-smi --query-gpu=name --format=csv,noh
 
 远程机器处于公司内网，**直接访问 PyPI / GitHub 间歇性超时**。
 
-**解决方案：SSH 反向隧道 + 本机直连代理**
-
-公司 WiFi 可直连外网，使用 `tinyproxy` 在本机建一个 HTTP 代理，通过 SSH 反向隧道暴露给远程机器。
+解决方案是用 SSH 反向隧道把本机代理暴露给远程机器，本机 `tinyproxy` 走公司 WiFi 直连外网。
 
 ### 一次性初始化（本机）
 
@@ -135,7 +133,7 @@ ssh wuyinyun "timeout 10 ssh -o ConnectTimeout=8 -T git@github.com 2>&1; echo ex
 ssh wuyinyun "
   mkdir -p ~/project &&
   cd ~/project &&
-  git clone git@github.com:XiaoPengYouCode/se3_wheel_leg.git &&
+  git clone git@github.com:3SE-Competitive-Robotics-Team/se3_wheel_leg.git &&
   echo 'WANDB_API_KEY=<your_key>' > ~/project/se3_wheel_leg/.env
 "
 ```
@@ -298,11 +296,7 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<ste
 
 ### uv sync 下载超时
 
-**现象**：`operation timed out` / `client error (Connect)` 反复出现。
-
-**原因**：PyPI 大文件（torch wheel、cudnn 等）下载不稳定。
-
-**解决**：确保 tinyproxy + SSH 反向隧道已建立，带代理执行 `uv sync`。
+`operation timed out` / `client error (Connect)` 反复出现，原因是 PyPI 大文件（torch wheel、cudnn 等）下载不稳定。确保 tinyproxy + SSH 反向隧道已建立，带代理执行 `uv sync`：
 
 ```bash
 # 检查隧道是否存活
@@ -316,11 +310,13 @@ ssh -f -N -R 17890:127.0.0.1:18080 wuyinyun
 
 ### 训练启动崩溃：`AttributeError: module 'warp' has no attribute 'context'`
 
-**原因**：warp-lang 版本 >= 1.13.0，已被 pyproject.toml 锁定到 1.12.x，通常不会再出现。
+warp-lang 版本 >= 1.13.0，`pyproject.toml` 已锁定到 1.12.x，通常不会再出现。验证版本：
 
-**验证**：`ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip show warp-lang | grep Version"`
+```bash
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip show warp-lang | grep Version"
+```
 
-**修复**：`uv sync`（会自动降级到锁定版本）。
+修复：`uv sync`（会自动降级到锁定版本）。
 
 ### 训练参数名报错：`Unrecognized options: --runner.max-iterations`
 
@@ -328,7 +324,7 @@ ssh -f -N -R 17890:127.0.0.1:18080 wuyinyun
 
 ### `nohup` 后台训练日志为空
 
-`uv run` 内部会再启一个进程，`nohup` 有时无法正确捕获子进程输出。**推荐用 tmux**，完全规避此问题。
+`uv run` 内部会再启一个进程，`nohup` 有时无法正确捕获子进程输出，推荐用 tmux 规避。
 
 ### 多个训练进程并存
 
