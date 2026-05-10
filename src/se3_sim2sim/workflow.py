@@ -54,6 +54,8 @@ class Sim2SimWorkflow:
                     "height": float(info["height"]),
                     "tilt_deg": float(info["tilt_deg"]),
                     "reward": float(reward),
+                    "base_lin_vel_x": float(info["base_lin_vel_x"]),
+                    "wheel_lin_vel": float(info["wheel_lin_vel"]),
                     "action_delay_steps": float(info["action_delay_steps"]),
                     "action_delay_s": float(info["action_delay_s"]),
                 }

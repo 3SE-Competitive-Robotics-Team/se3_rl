@@ -86,6 +86,9 @@ class WheelLeggedRobot:
         self.last_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
+        # 线速度缓存，_refresh_state 更新
+        self.base_lin_vel_world = np.zeros(3, dtype=np.float64)
+        self.base_lin_vel_body = np.zeros(3, dtype=np.float64)
         self.action_delay_cfg: ActionDelayConfig = cfg.action_delay
         self.min_action_delay_steps, self.max_action_delay_steps = (
             self.action_delay_cfg.step_bounds(self.sim_dt)
@@ -172,6 +175,9 @@ class WheelLeggedRobot:
         )
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
+        wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
+        wheel_vel = self.dof_vel[JointGroup.CTRL_WHEELS]  # rad/s，[l, r]
+        wheel_lin_vel = float(np.mean(wheel_vel) * wheel_radius)  # 正向平均线速度 m/s
         telemetry = {
             "step": int(self.step_count),
             "time": float(self.data.time),
@@ -180,6 +186,8 @@ class WheelLeggedRobot:
             "pitch_rad": float(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2])),
             "base_yaw": float(self.base_yaw),
             "reward": float(0.0 if reward is None else reward),
+            "base_lin_vel_x": float(self.base_lin_vel_body[0]),
+            "wheel_lin_vel": wheel_lin_vel,
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),
             "base_ang_vel_world": self.base_ang_vel_world.copy().tolist(),
             "projected_gravity": self.projected_gravity.copy().tolist(),
@@ -274,6 +282,8 @@ class WheelLeggedRobot:
 
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
+        self.base_lin_vel_world = self.data.qvel[0:3].copy()
+        self.base_lin_vel_body = rotate_inverse(self.base_quat, self.base_lin_vel_world)
         self.base_ang_vel_body = self.data.qvel[3:6].copy()
         self.base_ang_vel_world = rotate(self.base_quat, self.base_ang_vel_body)
         self.projected_gravity = rotate_inverse(self.base_quat, np.asarray([0.0, 0.0, -1.0]))
