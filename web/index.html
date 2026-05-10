@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SerialLeg 膝关节机构</title>
+<style>
+:root {
+  --paper: #fff;
+  --ink: #111;
+  --muted: #6c6c6c;
+  --hairline: #d8d8d8;
+  --faint: #f3f3f3;
+  --accent: #e5483f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-serif, Georgia, "Times New Roman", "Noto Serif SC", "Songti SC", serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.page {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 28px;
+  padding: 30px 42px 18px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: 25px;
+  line-height: 1.08;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.masthead .meta {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 18px;
+  align-items: end;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.meta strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 42px;
+  padding: 16px 42px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.control {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  min-width: 0;
+}
+
+.control label {
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.control output {
+  min-width: 72px;
+  text-align: right;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--ink);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--ink);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 6px;
+}
+
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(360px, 1.05fr) minmax(340px, 0.95fr);
+}
+
+.mechanism {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding: 24px 28px 28px 42px;
+  border-right: 1px solid var(--hairline);
+}
+
+.mechanism-stage {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 22px;
+  align-items: stretch;
+}
+
+.height-control {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(230px, 1fr) auto;
+  justify-items: center;
+  align-items: center;
+  padding: 8px 0 10px;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.height-control label {
+  font-size: 13px;
+  color: var(--ink);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.height-control output {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.height-control input[type="range"] {
+  width: 22px;
+  height: 100%;
+  min-height: 230px;
+  writing-mode: vertical-lr;
+  direction: rtl;
+}
+
+.height-control input[type="range"]::-webkit-slider-runnable-track {
+  width: 2px;
+  height: 100%;
+}
+
+.height-control input[type="range"]::-webkit-slider-thumb {
+  margin-top: 0;
+  margin-left: -6px;
+}
+
+.height-control input[type="range"]::-moz-range-track {
+  width: 2px;
+  height: 100%;
+}
+
+.plot-area {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: repeat(3, minmax(150px, 1fr)) repeat(2, minmax(180px, 1fr));
+  border-left: 0;
+}
+
+.tn-zone-continuous { fill: #4caf50; opacity: 0.15; }
+.tn-zone-peak       { fill: #ff9800; opacity: 0.18; }
+.tn-boundary-rated  { stroke: #4caf50; stroke-dasharray: 4 3; stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.tn-boundary-stall  { stroke: #e5483f; stroke-dasharray: 2 3; stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.tn-boundary-vlim   { stroke: #ff9800; stroke-dasharray: 2 3; stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.tn-envelope-fill   { fill: #1a6bb5; opacity: 0.10; }
+.tn-envelope-line   { stroke: #1a6bb5; stroke-width: 1.6; fill: none; vector-effect: non-scaling-stroke; }
+.tn-zone-label      { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 10px; fill: var(--muted); }
+
+.chart {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  padding: 22px 42px 18px 30px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.chart:last-child {
+  border-bottom: 0;
+}
+
+.chart-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: baseline;
+  margin-bottom: 10px;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.chart h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.chart .readout {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#mechanism-svg {
+  min-height: 360px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 22px;
+  padding-top: 14px;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--hairline);
+}
+
+.legend span {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.legend i {
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--ink);
+}
+
+.legend .accent i {
+  border-color: var(--accent);
+}
+
+.note {
+  color: var(--muted);
+}
+
+.axis-label,
+.chart-label {
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  fill: var(--muted);
+}
+
+.point-label,
+.measure-label {
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  fill: var(--muted);
+}
+
+.point-label {
+  fill: var(--ink);
+  font-weight: 650;
+  font-size: 0.016px;
+}
+
+.measure-label {
+  fill: var(--muted);
+  font-size: 0.011px;
+}
+
+.chart-label {
+  font-size: 10px;
+}
+
+.mechanism-line {
+  stroke: var(--ink);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.accent-line {
+  stroke: var(--accent);
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.joint {
+  fill: var(--paper);
+  stroke: var(--ink);
+  vector-effect: non-scaling-stroke;
+}
+
+.joint-accent {
+  fill: var(--paper);
+  stroke: var(--accent);
+  vector-effect: non-scaling-stroke;
+}
+
+.grid-line {
+  stroke: var(--faint);
+  vector-effect: non-scaling-stroke;
+}
+
+.axis-line {
+  stroke: var(--ink);
+  vector-effect: non-scaling-stroke;
+}
+
+.plot-line {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.marker {
+  fill: var(--accent);
+  stroke: var(--paper);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+@media (max-width: 980px) {
+  .masthead,
+  .controls,
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .masthead {
+    align-items: start;
+    padding: 24px 24px 16px;
+  }
+
+  .masthead .meta {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    white-space: normal;
+  }
+
+  .controls {
+    gap: 18px;
+    padding: 16px 24px;
+  }
+
+  .mechanism {
+    min-height: 520px;
+    padding: 22px 24px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .mechanism-stage {
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .plot-area {
+    grid-template-rows: repeat(3, 260px);
+  }
+
+  .chart {
+    padding: 20px 24px 18px;
+  }
+}
+
+@media (max-width: 620px) {
+  .control {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .control output {
+    min-width: 0;
+    text-align: left;
+  }
+
+  .control input {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .masthead .meta {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .mechanism {
+    min-height: 430px;
+  }
+
+  .mechanism-stage {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .height-control {
+    grid-template-rows: auto minmax(180px, 1fr) auto;
+  }
+
+  .height-control input[type="range"] {
+    min-height: 180px;
+  }
+}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="masthead">
+    <h1>SerialLeg 膝关节机构</h1>
+    <div class="meta" aria-live="polite">
+      <span>弹簧力<strong id="meta-force">0.0 N</strong></span>
+      <span>膝力矩<strong id="meta-torque">0.000 N·m</strong></span>
+      <span>传动比<strong id="meta-ratio">0.00</strong></span>
+      <span>髋轴高度<strong id="meta-height">301 mm</strong></span>
+    </div>
+  </header>
+
+  <section class="controls" aria-label="关节角度">
+    <div class="control">
+      <label for="hip-slider">hip / lf0</label>
+      <input id="hip-slider" type="range" min="0" max="1.2" step="0.001" value="0.6171">
+      <output id="hip-value" for="hip-slider">35.4°</output>
+    </div>
+    <div class="control">
+      <label for="knee-slider">knee / lf1</label>
+      <input id="knee-slider" type="range" min="-0.6" max="0.8" step="0.001" value="0.207">
+      <output id="knee-value" for="knee-slider">11.9°</output>
+    </div>
+  </section>
+
+  <section class="workspace">
+    <section class="mechanism" aria-label="腿部机构图">
+      <div class="mechanism-stage">
+        <div class="height-control">
+          <label for="height-slider">height</label>
+          <input id="height-slider" type="range" min="0.197" max="0.363" step="0.001" value="0.301">
+          <output id="height-value" for="height-slider">301 mm</output>
+        </div>
+        <svg id="mechanism-svg" viewBox="-0.30 -0.48 0.70 0.54" role="img" aria-label="SerialLeg 左腿膝关节四连杆和弹簧"></svg>
+      </div>
+      <div class="legend">
+        <span><i></i>腿部与四连杆</span>
+        <span class="accent"><i></i>弹簧</span>
+        <span class="note">地面固定，轮子接地，机身随关节姿态移动</span>
+      </div>
+    </section>
+
+    <section class="plot-area" aria-label="弹簧曲线">
+      <article class="chart">
+        <div class="chart-heading">
+          <h2>弹簧力 F</h2>
+          <span class="readout" id="force-readout">0.0 N</span>
+        </div>
+        <svg id="force-chart" role="img" aria-label="弹簧力随膝关节角度变化曲线"></svg>
+      </article>
+      <article class="chart">
+        <div class="chart-heading">
+          <h2>等效膝关节力矩 τ</h2>
+          <span class="readout" id="torque-readout">0.000 N·m</span>
+        </div>
+        <svg id="torque-chart" role="img" aria-label="等效膝关节力矩随膝关节角度变化曲线"></svg>
+      </article>
+      <article class="chart">
+        <div class="chart-heading">
+          <h2>传动比 dφ/dθ</h2>
+          <span class="readout" id="ratio-readout">0.00</span>
+        </div>
+        <svg id="ratio-chart" role="img" aria-label="四连杆传动比随膝关节角度变化曲线"></svg>
+      </article>
+      <article class="chart">
+        <div class="chart-heading">
+          <h2>T-N 包络 — M3508-Hexroll（轮子）</h2>
+          <span class="readout" style="font-size:11px;color:var(--muted)">stall 3.69 N·m · rated 2.46 N·m</span>
+        </div>
+        <svg id="tn-m3508" role="img" aria-label="M3508-Hexroll T-N 包络线"></svg>
+      </article>
+      <article class="chart">
+        <div class="chart-heading">
+          <h2>T-N 包络 — DM-8009P（腿部关节）</h2>
+          <span class="readout" style="font-size:11px;color:var(--muted)">stall 40 N·m · rated 20 N·m</span>
+        </div>
+        <svg id="tn-dm8009" role="img" aria-label="DM-8009P T-N 包络线"></svg>
+      </article>
+    </section>
+  </section>
+</main>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+
+const MODEL = {
+  baseZ: 0.301,
+  groundZ: 0,
+  wheelAnchorX: 0,
+  lf1Offset: [-0.18, 0],
+  wheelOffset: [-0.0029362, -0.19998],
+  wheelRadius: 0.059,
+  L_AB: 0.06,
+  L_BC: 0.1761458619864261,
+  L_DC: 0.04,
+  L_P1: 0.014,
+  L_P2: 0.015,
+  thighP1Angle: degToRad(104.48818108736647),
+  shankCAngle: degToRad(176.0970924771946),
+  shankP2Angle: degToRad(31.097092477194586),
+  springK: 900,
+  springS0: 0.06,
+  delta0: 0.004,
+  delta1: 0.0095,
+  kneeMin: -0.6,
+  kneeMax: 0.8,
+};
+
+const svg = document.getElementById("mechanism-svg");
+const hipSlider = document.getElementById("hip-slider");
+const kneeSlider = document.getElementById("knee-slider");
+const heightSlider = document.getElementById("height-slider");
+const hipValue = document.getElementById("hip-value");
+const kneeValue = document.getElementById("knee-value");
+const heightValue = document.getElementById("height-value");
+
+const charts = [
+  {
+    id: "force-chart",
+    readout: "force-readout",
+    title: "F",
+    unit: "N",
+    value: (state) => state.spring.force,
+    format: (value) => `${value.toFixed(1)} N`,
+  },
+  {
+    id: "torque-chart",
+    readout: "torque-readout",
+    title: "τ",
+    unit: "N·m",
+    value: (state) => state.torque.total,
+    format: (value) => `${value.toFixed(3)} N·m`,
+  },
+  {
+    id: "ratio-chart",
+    readout: "ratio-readout",
+    title: "dφ/dθ",
+    unit: "",
+    value: (state) => state.ratio,
+    format: (value) => value.toFixed(2),
+  },
+];
+
+function degToRad(deg) {
+  return deg * Math.PI / 180;
+}
+
+function radToDeg(rad) {
+  return rad * 180 / Math.PI;
+}
+
+function add(a, b) {
+  return [a[0] + b[0], a[1] + b[1]];
+}
+
+function sub(a, b) {
+  return [a[0] - b[0], a[1] - b[1]];
+}
+
+function scale(v, s) {
+  return [v[0] * s, v[1] * s];
+}
+
+function len(v) {
+  return Math.hypot(v[0], v[1]);
+}
+
+function cross(a, b) {
+  return a[0] * b[1] - a[1] * b[0];
+}
+
+function rotateMinusY(angle, point) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return [c * point[0] - s * point[1], s * point[0] + c * point[1]];
+}
+
+function unwrapAngle(delta) {
+  let value = delta;
+  while (value > Math.PI) value -= 2 * Math.PI;
+  while (value < -Math.PI) value += 2 * Math.PI;
+  return value;
+}
+
+function pointAt(origin, angle, distance) {
+  return [origin[0] + distance * Math.cos(angle), origin[1] + distance * Math.sin(angle)];
+}
+
+function circleIntersection(a, ra, c, rc, prefer) {
+  const ac = sub(c, a);
+  const d = len(ac);
+  if (d < 1e-9) return null;
+
+  const x = (ra * ra - rc * rc + d * d) / (2 * d);
+  const h2 = ra * ra - x * x;
+  if (h2 < -1e-9) return null;
+
+  const h = Math.sqrt(Math.max(0, h2));
+  const ux = ac[0] / d;
+  const uy = ac[1] / d;
+  const base = [a[0] + ux * x, a[1] + uy * x];
+  const p0 = [base[0] - uy * h, base[1] + ux * h];
+  const p1 = [base[0] + uy * h, base[1] - ux * h];
+  const e0 = len(sub(p0, prefer));
+  const e1 = len(sub(p1, prefer));
+  return e0 <= e1 ? p0 : p1;
+}
+
+function solveFk(hip, knee) {
+  const A = [0, MODEL.baseZ];
+  const D = add(A, rotateMinusY(hip, MODEL.lf1Offset));
+  const W = add(D, rotateMinusY(hip + knee, MODEL.wheelOffset));
+  const thigh = sub(D, A);
+  const thighAngle = Math.atan2(thigh[1], thigh[0]);
+  const shank = sub(W, D);
+  const shankAngle = Math.atan2(shank[1], shank[0]);
+  const C = pointAt(D, shankAngle + MODEL.shankCAngle, MODEL.L_DC);
+  const P1 = pointAt(A, thighAngle + MODEL.thighP1Angle, MODEL.L_P1);
+  const P2 = pointAt(D, shankAngle + MODEL.shankP2Angle, MODEL.L_P2);
+  const preferB = pointAt(A, thighAngle - Math.PI / 2 + knee * 0.8, MODEL.L_AB);
+  const B = circleIntersection(A, MODEL.L_AB, C, MODEL.L_BC, preferB) ?? preferB;
+  const driveAngle = Math.atan2(B[1] - A[1], B[0] - A[0]);
+  const couplerAngle = Math.atan2(C[1] - B[1], C[0] - B[0]);
+
+  return { A, B, C, D, W, P1, P2, thighAngle, shankAngle, driveAngle, couplerAngle };
+}
+
+function groundedPoints(points) {
+  const dx = MODEL.wheelAnchorX - points.W[0];
+  const dz = MODEL.groundZ + MODEL.wheelRadius - points.W[1];
+  const offset = [dx, dz];
+  const move = (point) => add(point, offset);
+
+  return {
+    ...points,
+    A: move(points.A),
+    B: move(points.B),
+    C: move(points.C),
+    D: move(points.D),
+    W: move(points.W),
+    P1: move(points.P1),
+    P2: move(points.P2),
+  };
+}
+
+function bodyHeight(hip, knee) {
+  return groundedPoints(solveFk(hip, knee)).A[1];
+}
+
+function heightRangeForHip(hip) {
+  let min = Infinity;
+  let max = -Infinity;
+  const samples = 160;
+  for (let i = 0; i <= samples; i += 1) {
+    const knee = MODEL.kneeMin + (MODEL.kneeMax - MODEL.kneeMin) * i / samples;
+    const height = bodyHeight(hip, knee);
+    min = Math.min(min, height);
+    max = Math.max(max, height);
+  }
+  return { min, max };
+}
+
+function solveKneeForHeight(hip, targetHeight, preferredKnee) {
+  const samples = 160;
+  const roots = [];
+  let bestKnee = MODEL.kneeMin;
+  let bestError = Infinity;
+  let prevKnee = MODEL.kneeMin;
+  let prevValue = bodyHeight(hip, prevKnee) - targetHeight;
+
+  for (let i = 0; i <= samples; i += 1) {
+    const knee = MODEL.kneeMin + (MODEL.kneeMax - MODEL.kneeMin) * i / samples;
+    const value = bodyHeight(hip, knee) - targetHeight;
+    const error = Math.abs(value);
+    if (error < bestError) {
+      bestError = error;
+      bestKnee = knee;
+    }
+
+    if (i > 0 && prevValue * value <= 0) {
+      let lo = prevKnee;
+      let hi = knee;
+      let loValue = prevValue;
+      for (let j = 0; j < 24; j += 1) {
+        const mid = (lo + hi) / 2;
+        const midValue = bodyHeight(hip, mid) - targetHeight;
+        if (loValue * midValue <= 0) {
+          hi = mid;
+        } else {
+          lo = mid;
+          loValue = midValue;
+        }
+      }
+      roots.push((lo + hi) / 2);
+    }
+
+    prevKnee = knee;
+    prevValue = value;
+  }
+
+  if (roots.length === 0) return bestKnee;
+  return roots.reduce((best, knee) => {
+    return Math.abs(knee - preferredKnee) < Math.abs(best - preferredKnee) ? knee : best;
+  }, roots[0]);
+}
+
+function springState(points) {
+  const dp = sub(points.P2, points.P1);
+  const springLength = len(dp);
+  const effectiveLength = springLength - MODEL.delta0 - MODEL.delta1;
+  const force = MODEL.springK * (MODEL.springS0 - effectiveLength);
+  const unit = springLength > 1e-9 ? scale(dp, 1 / springLength) : [0, 0];
+
+  return { dp, springLength, effectiveLength, force, unit };
+}
+
+function transmissionRatio(hip, knee) {
+  const dt = 1e-4;
+  const left = solveFk(hip, knee - dt).driveAngle;
+  const right = solveFk(hip, knee + dt).driveAngle;
+  return unwrapAngle(right - left) / (2 * dt);
+}
+
+function torqueState(points, spring, ratio) {
+  const forceOnP1 = scale(spring.unit, spring.force);
+  const forceOnP2 = scale(forceOnP1, -1);
+  const driveMoment = cross(sub(points.P1, points.A), forceOnP1);
+  const directMoment = cross(sub(points.P2, points.D), forceOnP2);
+  const mappedDriveMoment = Math.abs(ratio) > 1e-6 ? driveMoment / ratio : 0;
+
+  return {
+    drive: mappedDriveMoment,
+    direct: directMoment,
+    total: mappedDriveMoment + directMoment,
+  };
+}
+
+function modelState(hip, knee) {
+  const points = solveFk(hip, knee);
+  const spring = springState(points);
+  const ratio = transmissionRatio(hip, knee);
+  const torque = torqueState(points, spring, ratio);
+  const worldPoints = groundedPoints(points);
+  return { hip, knee, points, worldPoints, spring, ratio, torque };
+}
+
+function svgEl(tag, attrs = {}, text = "") {
+  const node = document.createElementNS(NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    node.setAttribute(key, String(value));
+  }
+  if (text) node.textContent = text;
+  return node;
+}
+
+function sx(point) {
+  return point[0];
+}
+
+function sy(point) {
+  return -point[1];
+}
+
+function line(parent, a, b, attrs = {}) {
+  parent.appendChild(svgEl("line", {
+    x1: sx(a),
+    y1: sy(a),
+    x2: sx(b),
+    y2: sy(b),
+    ...attrs,
+  }));
+}
+
+function circle(parent, point, radius, attrs = {}) {
+  parent.appendChild(svgEl("circle", {
+    cx: sx(point),
+    cy: sy(point),
+    r: radius,
+    ...attrs,
+  }));
+}
+
+function label(parent, text, point, dx, dy, cls = "point-label") {
+  parent.appendChild(svgEl("text", {
+    x: sx(point) + dx,
+    y: sy(point) + dy,
+    class: cls,
+  }, text));
+}
+
+function springPath(P1, P2) {
+  const start = [sx(P1), sy(P1)];
+  const end = [sx(P2), sy(P2)];
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const total = Math.hypot(dx, dy);
+  if (total < 1e-8) return "";
+
+  const ux = dx / total;
+  const uy = dy / total;
+  const px = -uy;
+  const py = ux;
+  const insetA = Math.min(MODEL.delta0, total * 0.18);
+  const insetB = Math.min(MODEL.delta1, total * 0.18);
+  const coilStart = [start[0] + ux * insetA, start[1] + uy * insetA];
+  const coilEnd = [end[0] - ux * insetB, end[1] - uy * insetB];
+  const coilLength = Math.hypot(coilEnd[0] - coilStart[0], coilEnd[1] - coilStart[1]);
+  const amp = 0.005;
+  const turns = 12;
+  const parts = [`M ${start[0]} ${start[1]}`, `L ${coilStart[0]} ${coilStart[1]}`];
+
+  for (let i = 1; i <= turns * 2; i += 1) {
+    const t = i / (turns * 2 + 1);
+    const sign = i % 2 === 1 ? 1 : -1;
+    const x = coilStart[0] + ux * coilLength * t + px * amp * sign;
+    const y = coilStart[1] + uy * coilLength * t + py * amp * sign;
+    parts.push(`L ${x} ${y}`);
+  }
+
+  parts.push(`L ${coilEnd[0]} ${coilEnd[1]}`, `L ${end[0]} ${end[1]}`);
+  return parts.join(" ");
+}
+
+function drawMechanism(state) {
+  svg.replaceChildren();
+  const p = state.worldPoints;
+  const groundZ = MODEL.groundZ;
+  const groundA = [-0.28, groundZ];
+  const groundB = [0.36, groundZ];
+  const hatch = svgEl("g", {});
+
+  line(svg, groundA, groundB, { class: "mechanism-line", "stroke-width": 1.3 });
+  for (let x = -0.3; x <= 0.22; x += 0.018) {
+    line(hatch, [x, groundZ], [x - 0.012, groundZ - 0.012], {
+      class: "mechanism-line",
+      "stroke-width": 0.45,
+      opacity: 0.35,
+    });
+  }
+  svg.appendChild(hatch);
+
+  line(svg, p.A, p.D, { class: "mechanism-line", "stroke-width": 4.2 });
+  line(svg, p.D, p.W, { class: "mechanism-line", "stroke-width": 3.2 });
+  circle(svg, p.W, MODEL.wheelRadius, { class: "mechanism-line", "stroke-width": 1.25 });
+  line(svg, [p.W[0] - MODEL.wheelRadius * 0.45, p.W[1]], [p.W[0] + MODEL.wheelRadius * 0.45, p.W[1]], {
+    class: "mechanism-line",
+    "stroke-width": 0.8,
+    opacity: 0.55,
+  });
+  line(svg, [p.W[0], p.W[1] - MODEL.wheelRadius * 0.45], [p.W[0], p.W[1] + MODEL.wheelRadius * 0.45], {
+    class: "mechanism-line",
+    "stroke-width": 0.8,
+    opacity: 0.55,
+  });
+
+  line(svg, p.A, p.B, { class: "mechanism-line", "stroke-width": 2 });
+  line(svg, p.B, p.C, { class: "mechanism-line", "stroke-width": 2 });
+  line(svg, p.D, p.C, { class: "mechanism-line", "stroke-width": 2 });
+
+  svg.appendChild(svgEl("path", {
+    d: springPath(p.P1, p.P2),
+    class: "accent-line",
+    "stroke-width": 1.8,
+  }));
+
+  circle(svg, p.A, 0.007, { class: "joint", "stroke-width": 1.6 });
+  circle(svg, p.D, 0.007, { class: "joint", "stroke-width": 1.6 });
+  circle(svg, p.B, 0.0052, { class: "joint", "stroke-width": 1.25 });
+  circle(svg, p.C, 0.0052, { class: "joint", "stroke-width": 1.25 });
+  circle(svg, p.P1, 0.0048, { class: "joint-accent", "stroke-width": 1.4 });
+  circle(svg, p.P2, 0.0048, { class: "joint-accent", "stroke-width": 1.4 });
+
+  label(svg, "A", p.A, 0.009, -0.006);
+  label(svg, "D", p.D, -0.025, 0.003);
+  label(svg, "B", p.B, 0.007, -0.005);
+  label(svg, "C", p.C, 0.007, 0.006);
+  label(svg, "P₁", p.P1, 0.008, 0.01, "point-label");
+  label(svg, "P₂", p.P2, -0.028, 0.012, "point-label");
+  label(svg, "R59", [p.W[0] + MODEL.wheelRadius * 0.72, p.W[1] + MODEL.wheelRadius * 0.25], 0, 0, "measure-label");
+
+  const thighMid = scale(add(p.A, p.D), 0.5);
+  const shankMid = scale(add(p.D, p.W), 0.5);
+  label(svg, `${(len(sub(p.D, p.A)) * 1000).toFixed(0)} mm`, thighMid, 0.008, -0.006, "measure-label");
+  label(svg, `${(len(sub(p.W, p.D)) * 1000).toFixed(0)} mm`, shankMid, 0.01, 0.004, "measure-label");
+}
+
+function sampleSeries(hip, getter) {
+  const samples = [];
+  const count = 161;
+  for (let i = 0; i < count; i += 1) {
+    const t = i / (count - 1);
+    const knee = MODEL.kneeMin + (MODEL.kneeMax - MODEL.kneeMin) * t;
+    const state = modelState(hip, knee);
+    samples.push({ x: radToDeg(knee), y: getter(state), state });
+  }
+  return samples;
+}
+
+function niceDomain(min, max) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [-1, 1];
+  if (Math.abs(max - min) < 1e-9) {
+    const pad = Math.max(Math.abs(max) * 0.2, 1);
+    return [min - pad, max + pad];
+  }
+  const pad = (max - min) * 0.12;
+  return [min - pad, max + pad];
+}
+
+function drawChart(config, state) {
+  const node = document.getElementById(config.id);
+  const box = node.getBoundingClientRect();
+  const width = Math.max(box.width, 320);
+  const height = Math.max(box.height, 130);
+  const margin = { left: 48, right: 16, top: 12, bottom: 30 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+  const data = sampleSeries(state.hip, config.value);
+  const xs = data.map((d) => d.x);
+  const ys = data.map((d) => d.y);
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const [yMin, yMax] = niceDomain(Math.min(...ys), Math.max(...ys));
+  const xScale = (x) => margin.left + (x - xMin) / (xMax - xMin) * innerW;
+  const yScale = (y) => margin.top + (1 - (y - yMin) / (yMax - yMin)) * innerH;
+  const zeroY = yMin < 0 && yMax > 0 ? yScale(0) : null;
+  const path = data.map((d, index) => `${index === 0 ? "M" : "L"} ${xScale(d.x).toFixed(2)} ${yScale(d.y).toFixed(2)}`).join(" ");
+  const currentX = radToDeg(state.knee);
+  const currentY = config.value(state);
+  const ticks = [xMin, (xMin + xMax) / 2, xMax];
+  const yTicks = [yMin, (yMin + yMax) / 2, yMax];
+
+  node.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  node.replaceChildren();
+
+  for (const tick of yTicks) {
+    const y = yScale(tick);
+    node.appendChild(svgEl("line", { x1: margin.left, y1: y, x2: width - margin.right, y2: y, class: "grid-line", "stroke-width": 1 }));
+    node.appendChild(svgEl("text", { x: margin.left - 8, y: y + 3.5, "text-anchor": "end", class: "chart-label" }, formatTick(tick)));
+  }
+
+  if (zeroY !== null) {
+    node.appendChild(svgEl("line", {
+      x1: margin.left,
+      y1: zeroY,
+      x2: width - margin.right,
+      y2: zeroY,
+      class: "axis-line",
+      "stroke-width": 0.75,
+      opacity: 0.5,
+    }));
+  }
+
+  node.appendChild(svgEl("line", { x1: margin.left, y1: margin.top, x2: margin.left, y2: height - margin.bottom, class: "axis-line", "stroke-width": 1 }));
+  node.appendChild(svgEl("line", { x1: margin.left, y1: height - margin.bottom, x2: width - margin.right, y2: height - margin.bottom, class: "axis-line", "stroke-width": 1 }));
+  node.appendChild(svgEl("path", { d: path, class: "plot-line" }));
+
+  const cx = xScale(currentX);
+  const cy = yScale(currentY);
+  node.appendChild(svgEl("line", { x1: cx, y1: margin.top, x2: cx, y2: height - margin.bottom, class: "accent-line", "stroke-width": 0.9, opacity: 0.42 }));
+  node.appendChild(svgEl("circle", { cx, cy, r: 4.8, class: "marker" }));
+
+  for (const tick of ticks) {
+    const x = xScale(tick);
+    node.appendChild(svgEl("text", { x, y: height - 9, "text-anchor": "middle", class: "chart-label" }, `${tick.toFixed(0)}°`));
+  }
+
+  node.appendChild(svgEl("text", { x: width - margin.right, y: margin.top + 12, "text-anchor": "end", class: "chart-label" }, config.unit));
+}
+
+function formatTick(value) {
+  const abs = Math.abs(value);
+  if (abs >= 100) return value.toFixed(0);
+  if (abs >= 10) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+function updateReadouts(state) {
+  hipValue.textContent = `${radToDeg(state.hip).toFixed(1)}°`;
+  kneeValue.textContent = `${radToDeg(state.knee).toFixed(1)}°`;
+  const heightText = `${(state.worldPoints.A[1] * 1000).toFixed(0)} mm`;
+  heightValue.textContent = heightText;
+
+  const force = charts[0].format(state.spring.force);
+  const torque = charts[1].format(state.torque.total);
+  const ratio = charts[2].format(state.ratio);
+  document.getElementById("meta-force").textContent = force;
+  document.getElementById("meta-torque").textContent = torque;
+  document.getElementById("meta-ratio").textContent = ratio;
+  document.getElementById("meta-height").textContent = heightText;
+
+  for (const chart of charts) {
+    document.getElementById(chart.readout).textContent = chart.format(chart.value(state));
+  }
+}
+
+function syncHeightSlider(state) {
+  const range = heightRangeForHip(state.hip);
+  heightSlider.min = range.min.toFixed(3);
+  heightSlider.max = range.max.toFixed(3);
+  heightSlider.value = state.worldPoints.A[1].toFixed(3);
+}
+
+function update(syncHeight = true) {
+  const hip = Number.parseFloat(hipSlider.value);
+  const knee = Number.parseFloat(kneeSlider.value);
+  const state = modelState(hip, knee);
+
+  if (syncHeight) syncHeightSlider(state);
+  updateReadouts(state);
+  drawMechanism(state);
+  for (const chart of charts) drawChart(chart, state);
+}
+
+function updateFromHeight() {
+  const hip = Number.parseFloat(hipSlider.value);
+  const preferredKnee = Number.parseFloat(kneeSlider.value);
+  const targetHeight = Number.parseFloat(heightSlider.value);
+  const knee = solveKneeForHeight(hip, targetHeight, preferredKnee);
+  kneeSlider.value = knee.toFixed(3);
+  update(false);
+}
+
+// ─── T-N 包络图 ───────────────────────────────────────────────────────────────
+
+const MOTORS = {
+  m3508: {
+    name: "M3508-Hexroll",
+    stallTorque: 3.69,    // N·m 输出轴堵转
+    noLoadSpeed: 587.0 * 2.0 * Math.PI / 60.0,  // ≈ 61.5 rad/s
+    ratedTorque: 2.46,   // N·m 连续额定
+  },
+  dm8009: {
+    name: "DM-8009P",
+    stallTorque: 40.0,
+    noLoadSpeed: 160.0 * 2.0 * Math.PI / 60.0,  // ≈ 16.76 rad/s
+    ratedTorque: 20.0,
+  },
+};
+
+/**
+ * 计算 T-N 包络上下界，与 DcMotorActuatorCfg._clip_effort 一致。
+ * @param {object} motor
+ * @param {number} vel  输出轴速度 rad/s
+ * @returns {{ top: number, bottom: number }}
+ */
+function tnClip(motor, vel) {
+  const { stallTorque: sat, noLoadSpeed: vlim, ratedTorque: elim } = motor;
+  const velAtEffortLim = vlim * (1.0 + elim / sat);
+  const vc = Math.max(-velAtEffortLim, Math.min(velAtEffortLim, vel));
+  const top = Math.min(sat * (1.0 - vc / vlim), elim);
+  const bottom = Math.max(sat * (-1.0 - vc / vlim), -elim);
+  return { top, bottom };
+}
+
+function drawTnChart(svgId, motor) {
+  const node = document.getElementById(svgId);
+  const box = node.getBoundingClientRect();
+  const width = Math.max(box.width, 320);
+  const height = Math.max(box.height, 150);
+  const ml = 52, mr = 16, mt = 14, mb = 32;
+  const iw = width - ml - mr;
+  const ih = height - mt - mb;
+
+  const { stallTorque: sat, noLoadSpeed: vlim, ratedTorque: elim } = motor;
+  // x 轴：速度，对称延伸到 ±vlim*1.18
+  const vRange = vlim * 1.18;
+  const N = 300;
+  const vels = Array.from({ length: N }, (_, i) => -vRange + (2 * vRange) * i / (N - 1));
+
+  const tops    = vels.map(v => tnClip(motor, v).top);
+  const bottoms = vels.map(v => tnClip(motor, v).bottom);
+
+  // y 轴范围
+  const yMin = -(sat * 1.08);
+  const yMax =   sat * 1.08;
+
+  const xs = v  => ml + (v - (-vRange)) / (2 * vRange) * iw;
+  const ys = t  => mt + (1 - (t - yMin) / (yMax - yMin)) * ih;
+
+  node.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  node.replaceChildren();
+
+  const el = (tag, attrs, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const app = n => node.appendChild(n);
+
+  // ── 裁剪区域 ──
+  const clipId = `clip-${svgId}`;
+  const defs = el("defs", {});
+  const clipPath = el("clipPath", { id: clipId });
+  clipPath.appendChild(el("rect", { x: ml, y: mt, width: iw, height: ih }));
+  defs.appendChild(clipPath);
+  app(defs);
+
+  const plotG = el("g", { "clip-path": `url(#${clipId})` });
+
+  // ── 域填充 ──
+  // 1. 峰值域（rated < |T| ≤ stall，T-N 线以内）
+  // 用 polygon：沿 top 线走，再沿 rated 线回来（正转矩侧）
+  // 速度范围：|v| <= vlim（T>0 的区间）
+  // 简化：先填整个包络，再用连续域覆盖
+  const buildPath = (ys_arr, dir) => {
+    // dir: "top" or "bottom"
+    return vels.map((v, i) => `${i === 0 ? "M" : "L"} ${xs(v).toFixed(2)} ${ys(ys_arr[i]).toFixed(2)}`).join(" ");
+  };
+
+  // 峰值域（橙色）：T-N 包络内、|T| > rated_torque
+  // 上半：从 top 到 rated
+  const peakTopPath =
+    vels.map((v, i) => `${i === 0 ? "M" : "L"} ${xs(v).toFixed(2)} ${ys(tops[i]).toFixed(2)}`).join(" ") +
+    " L " + xs(vels[N-1]).toFixed(2) + " " + ys(elim).toFixed(2) +
+    " L " + xs(vels[0]).toFixed(2)   + " " + ys(elim).toFixed(2) + " Z";
+  // 下半：rated 到 bottom
+  const peakBotPath =
+    vels.map((v, i) => `${i === 0 ? "M" : "L"} ${xs(v).toFixed(2)} ${ys(-elim).toFixed(2)}`).join(" ") +
+    " L " + xs(vels[N-1]).toFixed(2) + " " + ys(bottoms[N-1]).toFixed(2) +
+    [...vels].reverse().map((v, i) => `L ${xs(v).toFixed(2)} ${ys(bottoms[N-1-i]).toFixed(2)}`).join(" ") + " Z";
+
+  plotG.appendChild(el("path", { d: peakTopPath, class: "tn-zone-peak" }));
+  plotG.appendChild(el("path", { d: peakBotPath, class: "tn-zone-peak" }));
+
+  // 连续域（绿色）：|T| ≤ rated，完整速度范围
+  const contPath =
+    `M ${xs(vels[0]).toFixed(2)} ${ys(elim).toFixed(2)}` +
+    ` L ${xs(vels[N-1]).toFixed(2)} ${ys(elim).toFixed(2)}` +
+    ` L ${xs(vels[N-1]).toFixed(2)} ${ys(-elim).toFixed(2)}` +
+    ` L ${xs(vels[0]).toFixed(2)} ${ys(-elim).toFixed(2)} Z`;
+  plotG.appendChild(el("path", { d: contPath, class: "tn-zone-continuous" }));
+
+  // ── 包络面积填充（蓝色淡） ──
+  const envFill =
+    vels.map((v, i) => `${i === 0 ? "M" : "L"} ${xs(v).toFixed(2)} ${ys(tops[i]).toFixed(2)}`).join(" ") +
+    [...vels].reverse().map((v, i) => `L ${xs(v).toFixed(2)} ${ys(bottoms[N-1-i]).toFixed(2)}`).join(" ") + " Z";
+  plotG.appendChild(el("path", { d: envFill, class: "tn-envelope-fill" }));
+
+  // ── 参考线 ──
+  // rated_torque 水平虚线
+  plotG.appendChild(el("line", { x1: ml, y1: ys(elim),  x2: ml+iw, y2: ys(elim),  class: "tn-boundary-rated" }));
+  plotG.appendChild(el("line", { x1: ml, y1: ys(-elim), x2: ml+iw, y2: ys(-elim), class: "tn-boundary-rated" }));
+  // stall_torque 水平虚线
+  plotG.appendChild(el("line", { x1: ml, y1: ys(sat),   x2: ml+iw, y2: ys(sat),   class: "tn-boundary-stall" }));
+  plotG.appendChild(el("line", { x1: ml, y1: ys(-sat),  x2: ml+iw, y2: ys(-sat),  class: "tn-boundary-stall" }));
+  // no_load_speed 竖线
+  plotG.appendChild(el("line", { x1: xs(vlim),  y1: mt, x2: xs(vlim),  y2: mt+ih, class: "tn-boundary-vlim" }));
+  plotG.appendChild(el("line", { x1: xs(-vlim), y1: mt, x2: xs(-vlim), y2: mt+ih, class: "tn-boundary-vlim" }));
+
+  // ── 包络上下界线 ──
+  const topPath    = buildPath(tops, "top");
+  const bottomPath = buildPath(bottoms, "bottom");
+  plotG.appendChild(el("path", { d: topPath,    class: "tn-envelope-line" }));
+  plotG.appendChild(el("path", { d: bottomPath, class: "tn-envelope-line" }));
+
+  // ── 域标注 ──
+  const labelX = xs(vlim * 0.38);
+  plotG.appendChild(el("text", { x: labelX, y: ys(elim * 0.5),  "text-anchor": "middle", class: "tn-zone-label" }, "连续运行"));
+  plotG.appendChild(el("text", { x: labelX, y: ys(sat * 0.88),  "text-anchor": "middle", class: "tn-zone-label" }, "峰值"));
+
+  app(plotG);
+
+  // ── 坐标轴 ──
+  app(el("line", { x1: ml, y1: mt, x2: ml, y2: mt+ih, class: "axis-line", "stroke-width": 1 }));
+  app(el("line", { x1: ml, y1: mt+ih, x2: ml+iw, y2: mt+ih, class: "axis-line", "stroke-width": 1 }));
+
+  // 零线
+  const z0 = ys(0);
+  app(el("line", { x1: ml, y1: z0, x2: ml+iw, y2: z0, class: "axis-line", "stroke-width": 0.6, opacity: 0.4 }));
+  const x0 = xs(0);
+  app(el("line", { x1: x0, y1: mt, x2: x0, y2: mt+ih, class: "axis-line", "stroke-width": 0.6, opacity: 0.4 }));
+
+  // ── 刻度 ──
+  // x 轴：-vlim, 0, +vlim
+  for (const v of [-vlim, 0, vlim]) {
+    const x = xs(v);
+    const lbl = Math.abs(v) < 1 ? "0" : `${v > 0 ? "+" : ""}${v.toFixed(0)}`;
+    app(el("text", { x, y: mt+ih+12, "text-anchor": "middle", class: "chart-label" }, lbl));
+  }
+  app(el("text", { x: ml+iw, y: mt+ih+12, "text-anchor": "end", class: "chart-label" }, "rad/s"));
+
+  // y 轴：-stall, -rated, 0, +rated, +stall
+  for (const t of [-sat, -elim, 0, elim, sat]) {
+    const y = ys(t);
+    const lbl = t === 0 ? "0" : `${t > 0 ? "+" : ""}${t.toFixed(0)}`;
+    app(el("text", { x: ml-6, y: y+3.5, "text-anchor": "end", class: "chart-label" }, lbl));
+    // 格栅
+    app(el("line", { x1: ml, y1: y, x2: ml+iw, y2: y, class: "grid-line", "stroke-width": 1 }));
+  }
+  app(el("text", { x: ml+4, y: mt+10, "text-anchor": "start", class: "chart-label" }, "N·m"));
+}
+
+function drawAllTnCharts() {
+  drawTnChart("tn-m3508", MOTORS.m3508);
+  drawTnChart("tn-dm8009", MOTORS.dm8009);
+}
+
+window.addEventListener("resize", () => {
+  window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => { update(); drawAllTnCharts(); }, 50);
+});
+
+window.addEventListener("load", drawAllTnCharts);
+drawAllTnCharts();
+
+</script>
+</body>
+</html>

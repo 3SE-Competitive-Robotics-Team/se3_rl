@@ -456,7 +456,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.scale_rewards_by_dt = True
     cfg.sim = SimulationCfg(
         nconmax=256,
-        njmax=1024,
+        njmax=1040,
         mujoco=MujocoCfg(timestep=0.002),
     )
     cfg.viewer = ViewerConfig()

@@ -41,13 +41,20 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
     heights = np.asarray([s["height"] for s in samples], dtype=np.float64)
     tilts = np.asarray([s["tilt_deg"] for s in samples], dtype=np.float64)
     rewards = np.asarray([s["reward"] for s in samples], dtype=np.float64)
-    return {
+    result: dict[str, object] = {
         "samples": len(samples),
         "height": _stats(heights),
         "tilt_deg": _stats(tilts),
         "reward": _stats(rewards),
-        "final": samples[-1],
     }
+    if "base_lin_vel_x" in samples[0]:
+        base_vx = np.asarray([s["base_lin_vel_x"] for s in samples], dtype=np.float64)
+        result["base_lin_vel_x"] = _stats(base_vx)
+    if "wheel_lin_vel" in samples[0]:
+        wheel_vx = np.asarray([s["wheel_lin_vel"] for s in samples], dtype=np.float64)
+        result["wheel_lin_vel"] = _stats(wheel_vx)
+    result["final"] = samples[-1]
+    return result
 
 
 def _names(model: mujoco.MjModel, obj_type: mujoco.mjtObj, count: int) -> list[str]:

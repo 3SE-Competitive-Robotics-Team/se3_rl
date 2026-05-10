@@ -13,12 +13,8 @@ _MJCF_PATH = _RESOURCES / "robots" / "serialleg" / "mjcf" / "serialleg_fidelity_
 _ROBOT_CFG = SharedRobotConfig()
 
 _ALL_JOINT_NAMES = JointGroup.joint_names()
-_LEG_JOINT_NAMES = tuple(
-    name
-    for name in _ALL_JOINT_NAMES
-    if name not in {_ALL_JOINT_NAMES[i] for i in JointGroup.WHEELS}
-)
-_WHEEL_JOINT_NAMES = tuple(_ALL_JOINT_NAMES[i] for i in JointGroup.WHEELS)
+_WHEEL_JOINT_NAMES = ("l_wheel_Joint", "r_wheel_Joint")
+_LEG_JOINT_NAMES = tuple(n for n in _ALL_JOINT_NAMES if n not in set(_WHEEL_JOINT_NAMES))
 
 
 def get_serialleg_cfg() -> EntityCfg:
