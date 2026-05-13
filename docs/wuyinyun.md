@@ -14,7 +14,7 @@
 | 主机名 | pntlgaolhyg69qw |
 | 仓库路径 | `~/project/se3_wheel_leg` |
 | uv 路径 | `~/.local/bin/uv`（需 `source ~/.local/bin/env` 激活） |
-| tmux | 可用，训练用 tmux 会话持久化 |
+| zellij | 可用，训练用 zellij 会话持久化 |
 
 ---
 
@@ -160,22 +160,25 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 
 ## 训练管理
 
-### 启动训练（推荐用 tmux 保持会话）
+### 启动训练（推荐用 zellij 保持会话）
 
-> **注意**：tmux 不会 source `.bashrc`，必须在命令中显式 `export PATH=$HOME/.local/bin:$PATH`。
+> **注意**：zellij 不会 source `.bashrc`，必须在命令中显式 `export PATH=$HOME/.local/bin:$PATH`。
 > 训练需要 wandb 上传指标，必须带 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量。
 
 ```bash
-ssh wuyinyun "
+# 一次性安装 zellij（需代理）
+ssh wuyinyun "HTTPS_PROXY=http://127.0.0.1:17890 HTTP_PROXY=http://127.0.0.1:17890 bash <(curl -L https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz | tar xz -C ~/.local/bin/ zellij)"
+
+# 启动后台训练会话（两步：先建会话，再在其中运行命令）
+ssh wuyinyun "zellij attach --create-background train"
+ssh wuyinyun "zellij --session train action run -- bash -c '
+  export PATH=\$HOME/.local/bin:\$PATH
+  export HTTP_PROXY=http://127.0.0.1:17890
+  export HTTPS_PROXY=http://127.0.0.1:17890
+  cd ~/project/se3_wheel_leg &&
   source ~/.local/bin/env &&
-  tmux new-session -d -s train '
-    export PATH=\$HOME/.local/bin:\$PATH
-    export HTTP_PROXY=http://127.0.0.1:17890
-    export HTTPS_PROXY=http://127.0.0.1:17890
-    cd ~/project/se3_wheel_leg &&
-    uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log
-  '
-"
+  uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log
+'"
 ```
 
 ### 查看训练日志
@@ -192,22 +195,22 @@ ssh wuyinyun "tail -50 /tmp/train.log"
 
 ```bash
 ssh wuyinyun "ps aux | grep se3-train | grep -v grep"
-ssh wuyinyun "tmux ls"
+ssh wuyinyun "zellij list-sessions"
 ```
 
 ### 停止训练
 
 ```bash
-ssh wuyinyun "tmux kill-session -t train"
+ssh wuyinyun "zellij kill-session train"
 ```
 
-### 进入训练 tmux 会话（交互调试）
+### 进入训练 zellij 会话（交互调试）
 
 ```bash
 ssh wuyinyun
 # 进入后：
-tmux attach -t train
-# 退出但保持会话：Ctrl+B 然后 D
+zellij attach train
+# 退出但保持会话：Ctrl+O 然后 D
 ```
 
 ### 查看 GPU 状态
@@ -324,7 +327,7 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip sh
 
 ### `nohup` 后台训练日志为空
 
-`uv run` 内部会再启一个进程，`nohup` 有时无法正确捕获子进程输出，推荐用 tmux 规避。
+`uv run` 内部会再启一个进程，`nohup` 有时无法正确捕获子进程输出，推荐用 zellij 规避。
 
 ### 多个训练进程并存
 
@@ -353,11 +356,11 @@ ssh wuyinyun "kill <PID1> <PID2>"
 
 ```bash
 # 一键检查机器状态
-ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu --format=csv,noheader && tmux ls 2>/dev/null && tail -3 /tmp/train*.log 2>/dev/null | grep -E 'iteration|reward|ETA'"
+ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu --format=csv,noheader && zellij list-sessions 2>/dev/null && tail -3 /tmp/train*.log 2>/dev/null | grep -E 'iteration|reward|ETA'"
 
 # 一键重建代理隧道
 pkill -f tinyproxy 2>/dev/null; tinyproxy -c /tmp/tinyproxy.conf; sleep 1; pkill -f "ssh.*17890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:18080 wuyinyun && echo "tunnel ok"
 
 # 一键拉代码重启训练
-ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && tmux kill-session -t train 2>/dev/null; tmux new-session -d -s train 'export PATH=\$HOME/.local/bin:\$PATH && export HTTP_PROXY=http://127.0.0.1:17890 && export HTTPS_PROXY=http://127.0.0.1:17890 && cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'"
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && zellij kill-session train 2>/dev/null; zellij attach --create-background train && zellij --session train action run -- bash -c 'export PATH=\$HOME/.local/bin:\$PATH && export HTTP_PROXY=http://127.0.0.1:17890 && export HTTPS_PROXY=http://127.0.0.1:17890 && source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'"
 ```

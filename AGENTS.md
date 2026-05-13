@@ -201,6 +201,22 @@ ls model_*.pt | sort -V
 find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 ```
 
+## 远程训练机运维 Skill
+
+涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
+
+**触发条件**（满足其一即加载）：
+- 提到远程训练机、GPU 机器、云机器、wuyinyun、无影云、阿里云、腾讯云
+- 需要建立 SSH 连接、代理隧道、反向隧道
+- 需要启动、停止、监控训练进程
+- 需要查看训练日志、wandb 数据
+- 需要拉取 checkpoint 到本地
+- 需要在远程机器执行 uv sync / git pull
+- 询问 zellij 会话管理
+
+各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
+当前已注册：`wuyinyun`（无影云 RTX 5880）。
+
 ## 文件结构
 
 ```
