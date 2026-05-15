@@ -5,9 +5,15 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+    types: [opened, synchronize, reopened, labeled]
 
 jobs:
   ci:
+    # 仅当 push 事件、信任作者的 PR、或有 ci-approved 标签的 PR 时运行
+    if: |
+      github.event_name == 'push' ||
+      github.event.pull_request.user.login == 'XiaoPengYouCode' ||
+      contains(github.event.pull_request.labels.*.name, 'ci-approved')
     runs-on: ubuntu-latest
 
     steps:
