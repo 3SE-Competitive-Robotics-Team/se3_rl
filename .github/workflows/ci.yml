@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 MuJoCo headless 系统依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libegl1-mesa-dev \
+            libgl1-mesa-dri \
+            libosmesa6-dev
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      - name: 缓存虚拟环境
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py311-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py311-
+
+      - name: 缓存 ruff
+        uses: actions/cache@v4
+        with:
+          path: .ruff_cache
+          key: ruff-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: 安装依赖
+        run: uv sync
+
+      - name: Format 检查
+        run: uv run ruff format . --check
+
+      - name: Lint 检查
+        run: uv run ruff check .
+
+      - name: Smoke 测试
+        run: SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
