@@ -10,35 +10,40 @@
 
 ## 核心命令
 
+本仓库用 [just](https://github.com/casey/just) 统一命令入口（`justfile`）。运行 `just` 查看所有命令。
+
 ```bash
-# Smoke 模式（验证环境，每次修改训练代码后必须运行）
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
+just check       # 环境健康检查（Python / GPU / W&B / prek）
+just setup       # uv sync + prek install
+just smoke       # CPU smoke 验证（5 轮，不上传 W&B）
+just smoke-gpu   # GPU smoke 验证
+just fmt         # ruff 格式化
+just lint        # ruff lint + 自动修复
+just check-code  # 格式化 + lint（提交前执行）
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-# 所有训练操作都需要 --env-file .env 以上传指标到 wandb
-uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
+just train       # 平地训练，1024 envs
+just train-rough # 崎岖地形训练，1024 envs
+just train-cpu   # CPU 调试训练（极慢）
 
-# CPU 训练（仅用于调试，速度极慢）
-uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
+# 评估 / sim2sim（纯 MuJoCo CPU + Rerun，macOS 可运行）
+just sim                          # 自动选 checkpoint，Rerun 可视化
+just sim-ckpt <checkpoint>        # 指定 checkpoint
+just sim-headless                 # 无 GUI 快速验证
+just sim-headless-ckpt <ckpt>     # 指定 checkpoint，无 GUI
 
-# 评估/回放 + sim2sim 验证（纯 MuJoCo CPU + Rerun，macOS 可运行）
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --max-steps 3000
-
-# 无 GUI smoke 验证
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_1999.pt --viewer none --max-steps 200
-
-# 格式化 + lint（必须在提交前执行）
-uv run ruff format .
-uv run ruff check . --fix
+# 清理
+just clean       # 清理 logs/ wandb/ replays/
 ```
+
+如需自定义参数，仍可直接用原始 `uv run` 命令（见 `justfile` 内对应配方）。
 
 ## 开发流程
 
 **每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
+just smoke
 ```
 
 Smoke 模式特点：
