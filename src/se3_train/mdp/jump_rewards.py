@@ -73,6 +73,26 @@ def _wheel_bottom_height(
     return torch.min(wheel_bottom_h, dim=1).values
 
 
+def _wheel_alignment_error(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    center_lead_gain: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """计算左右轮前后对齐误差的共享几何核。"""
+    robot = env.scene[asset_cfg.name]
+    body_ids = _wheel_body_ids(env, asset_cfg)
+    wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
+
+    com_x = robot.data.root_link_pos_w[:, 0]
+    vx = robot.data.root_link_lin_vel_w[:, 0]
+    ideal_x = com_x + float(center_lead_gain) * vx
+
+    dist_l = torch.abs(wheel_xy[:, 0, 0] - ideal_x)
+    dist_r = torch.abs(wheel_xy[:, 1, 0] - ideal_x)
+    mean_dist = (dist_l + dist_r) / 2.0
+    return ideal_x, dist_l, dist_r, mean_dist
+
+
 def _update_pretrain_max_heights(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1106,6 +1126,64 @@ def wheel_distance_regularization(
     return penalty * stage_scale
 
 
+def flat_wheel_center_alignment_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    contact_sensor_name: str,
+    contact_force_threshold: float = 1.0,
+    low_speed_threshold: float = 0.10,
+    center_lead_gain: float = 0.03,
+    center_tolerance: float = 0.05,
+    max_penalty: float = 4.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段轮前后对齐惩罚。
+
+    这里和落地稳定性使用同一套几何语法：左右轮分别对齐到
+    ideal_x = COM_x + k * vx。平地只是在低速静站时激活，落地则在
+    landing 相位激活。两者共享同一个几何核，避免一处改动另一处漏掉。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
+        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
+    )
+
+    sensor: ContactSensor = env.scene[contact_sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+    has_contact = in_contact.any(dim=1)
+
+    _ideal_x, dist_l, dist_r, mean_dist = _wheel_alignment_error(
+        env,
+        asset_cfg,
+        center_lead_gain,
+    )
+    penalty = torch.clamp(
+        (mean_dist / float(center_tolerance)) ** 2,
+        max=float(max_penalty),
+    )
+    active = (~jump_flag) & low_speed & has_contact
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_center_error_m": _mean_on_mask(mean_dist, active),
+                "Jump/diag_flat_wheel_center_penalty": _mean_on_mask(penalty, active),
+                "Jump/diag_flat_wheel_center_contact_ratio": float(
+                    has_contact.float().mean().item()
+                ),
+                "Jump/diag_flat_wheel_center_left_error_m": _mean_on_mask(dist_l, active),
+                "Jump/diag_flat_wheel_center_right_error_m": _mean_on_mask(dist_r, active),
+            }
+        )
+
+    return penalty * active.float()
+
+
 def jump_wheel_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1853,25 +1931,7 @@ def jump_landing_stability_penalty(
     # 只在真正从高处落下时才激活（vz < min_landing_vz）
     landing_active = jump_flag & in_contact & (vz < float(min_landing_vz))
 
-    # COM 状态
-    com_x = robot.data.root_link_pos_w[:, 0]  # [N]
-    vx = robot.data.root_link_lin_vel_w[:, 0]  # [N]
-
-    # 理想前后位置（两个轮子相同，都应对齐到 COM + k * vx）
-    k = float(k_gain)
-    ideal_x = com_x + k * vx  # [N]
-
-    # 实际轮子位置 [N, 2, 2] — (左, 右) × (x, y)
-    body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
-
-    # 每个轮子单独算：理想 = [ideal_x, 实际侧向位置]
-    left_ideal = torch.stack([ideal_x, wheel_xy[:, 0, 1]], dim=1)  # [N, 2]
-    right_ideal = torch.stack([ideal_x, wheel_xy[:, 1, 1]], dim=1)  # [N, 2]
-
-    dist_l = torch.abs(wheel_xy[:, 0, 0] - left_ideal[:, 0])  # [N] 左轮 |Δx|
-    dist_r = torch.abs(wheel_xy[:, 1, 0] - right_ideal[:, 0])  # [N] 右轮 |Δx|
-    mean_dist = (dist_l + dist_r) / 2.0
+    _, dist_l, dist_r, mean_dist = _wheel_alignment_error(env, asset_cfg, k_gain)
 
     tol = float(tolerance)
     excess = torch.clamp(mean_dist - tol, min=0.0)
@@ -1885,6 +1945,8 @@ def jump_landing_stability_penalty(
                 "Jump/diag_landing_active_ratio": _mean_on_mask(
                     landing_active.float(), torch.ones_like(landing_active)
                 ),
+                "Jump/diag_landing_left_ideal_dist_m": _mean_on_mask(dist_l, landing_active),
+                "Jump/diag_landing_right_ideal_dist_m": _mean_on_mask(dist_r, landing_active),
             }
         )
 
