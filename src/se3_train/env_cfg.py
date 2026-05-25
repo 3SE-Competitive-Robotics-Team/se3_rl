@@ -40,6 +40,7 @@ from se3_train.mdp.jump_rewards import (
     action_smoothness_no_jump,
     feet_contact_without_cmd_no_jump,
     flat_base_height_penalty_no_jump,
+    flat_base_lin_vel_z_no_jump,
     flat_orientation_l2_no_jump,
     flat_wheel_center_alignment_no_jump,
     flat_wheel_ground_slip_no_jump,
@@ -289,6 +290,15 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "command_name": "velocity_height",
                 "height_sensor_name": "base_height_sensor",
                 "sigma": 0.05,
+            },
+        ),
+        "flat_base_lin_vel_z": RewardTermCfg(
+            func=flat_base_lin_vel_z_no_jump,
+            weight=-1.5,
+            params={
+                "command_name": "velocity_height",
+                "low_speed_threshold": 0.10,
+                "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
         "bad_tilt": RewardTermCfg(

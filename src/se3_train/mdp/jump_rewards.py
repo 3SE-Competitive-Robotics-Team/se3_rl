@@ -1565,6 +1565,42 @@ def flat_wheel_ground_slip_no_jump(
     return penalty * active.float()
 
 
+def flat_base_lin_vel_z_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    low_speed_threshold: float = 0.10,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段基座竖直速度惩罚。
+
+    直接压制 base_link 在 z 方向的小幅上下振荡，避免策略学出“高度大体对
+    但一直抖、偶尔小跳”的平地姿态。只在非跳跃且低速时激活，跳跃阶段完全
+    豁免，避免干扰起跳和落地的竖直动量。
+    """
+    from se3_train.mdp.rewards import lin_vel_z
+
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
+        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
+    )
+
+    robot = env.scene[asset_cfg.name]
+    vz = robot.data.root_link_lin_vel_b[:, 2]
+    penalty = lin_vel_z(env)
+
+    active = (~jump_flag) & low_speed
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_base_vz_raw": _mean_on_mask(torch.abs(vz), active),
+                "Jump/diag_flat_base_vz_penalty": _mean_on_mask(penalty, active),
+            }
+        )
+
+    return penalty * active.float()
+
+
 def flat_base_height_penalty_no_jump(
     env: ManagerBasedRlEnv,
     command_name: str,
