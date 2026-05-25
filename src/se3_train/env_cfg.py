@@ -682,12 +682,16 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # 追加跳跃观测
     _apply_jump_observations(cfg)
 
-    # PreTrain 不使用参考轨迹 RSI;只保留 jump_flag、目标高度和固定长度单次动作窗口。
-    cfg.commands["velocity_height"].jump_height_range = (
+    # PreTrain 平地段固定为 0.22m 蹲姿；跳跃目标高度仍单独采样，避免把站高误当成跳高。
+    cfg.commands["velocity_height"].height_range = (
         _DEFAULT_STANDING_HEIGHT,
         _DEFAULT_STANDING_HEIGHT,
     )
-    cfg.commands["velocity_height"].standing_height_range = _STANDING_HEIGHT_RANGE
+    cfg.commands["velocity_height"].standing_height_range = (
+        _DEFAULT_STANDING_HEIGHT,
+        _DEFAULT_STANDING_HEIGHT,
+    )
+    cfg.commands["velocity_height"].jump_height_range = (0.1, 0.3)
     cfg.commands["velocity_height"].rsi_takeoff_prob = 0.0
     cfg.commands["velocity_height"].rsi_random_frame = False
     cfg.commands["velocity_height"].jump_cool_down_steps = 100
