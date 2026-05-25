@@ -1713,3 +1713,73 @@ def jump_takeoff_horizontal_penalty(
 
     active = jump_flag & phase_takeoff & taking_off
     return penalty * active.float()
+
+
+def jump_landing_stability_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str = "wheel_sensor",
+    wheel_radius: float = 0.059,
+    contact_force_threshold: float = 1.0,
+    k_gain: float = 0.03,
+    tolerance: float = 0.05,
+    max_penalty: float = 4.0,
+    landing_window_frames: int = 8,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """落地稳定性惩罚：轮子触地点接近理想落点以减小冲击力矩。
+
+    物理直觉：落地瞬间若轮子触地点偏离理想位置，地面反力会产生绕 COM 的力矩，
+    迫使轮子滑移来抵消。惩罚轮子实际触地点与理想落点的距离，给策略明确的
+    "轮子应该放在哪"的梯度方向。
+
+    理想落点 = COM_xy + k_gain * v_xy
+    - COM_xy: 质心水平位置
+    - v_xy: COM 水平速度（带速度起跳时，轮子应沿速度方向偏移）
+    - k_gain: 物理比例系数（COM-轮子垂距 / g 相关，~0.03）
+
+    激活：轮子着地 且 COM 下降段（vz < 0）且 jump_flag=1
+    惩罚：两轮到理想落点的平均距离超过 tolerance 后线性增长
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = (force_mag > float(contact_force_threshold)).any(dim=1)
+
+    robot = env.scene[asset_cfg.name]
+    vz = robot.data.root_link_lin_vel_w[:, 2]
+    landing_active = jump_flag & in_contact & (vz < 0.0)
+
+    # COM 位置和速度
+    com_xy = robot.data.root_link_pos_w[:, :2]
+    v_xy = robot.data.root_link_lin_vel_w[:, :2]
+
+    # 理想轮子落点：COM + k * v_xy（带速度起跳时沿速度方向偏移）
+    k = float(k_gain)
+    ideal_xy = com_xy + k * v_xy
+
+    # 实际轮子位置（左右轮 body 中心）
+    body_ids = _wheel_body_ids(env, asset_cfg)
+    wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
+
+    # 每个轮子到理想落点的距离
+    dist = torch.norm(wheel_xy - ideal_xy.unsqueeze(1), dim=2)  # [num_envs, 2]
+    mean_dist = dist.mean(dim=1)
+
+    tol = float(tolerance)
+    excess = torch.clamp(mean_dist - tol, min=0.0)
+    penalty = torch.clamp(excess / tol, max=float(max_penalty))
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update({
+            "Jump/diag_landing_ideal_dist_m": _mean_on_mask(mean_dist, landing_active),
+            "Jump/diag_landing_stability_raw": _mean_on_mask(penalty, landing_active),
+        })
+
+    return penalty * landing_active.float()

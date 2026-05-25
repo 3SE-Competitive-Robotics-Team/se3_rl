@@ -48,6 +48,7 @@ from se3_train.mdp.jump_rewards import (
     jump_joint_mirror,
     jump_landing_base_height_penalty,
     jump_landing_horizontal_motion_penalty,
+    jump_landing_stability_penalty,
     jump_landing_recovery,
     jump_leg_contact_penalty,
     jump_orientation,
@@ -895,6 +896,21 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "base_speed_scale": 0.25,
             "wheel_speed_scale": 0.35,
             "max_penalty": 9.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    cfg.rewards["jump_landing_stability"] = RewardTermCfg(
+        func=jump_landing_stability_penalty,
+        weight=-4.0,
+        params={
+            "command_name": "velocity_height",
+            "sensor_name": "wheel_sensor",
+            "wheel_radius": 0.059,
+            "contact_force_threshold": 1.0,
+            "k_gain": 0.03,
+            "tolerance": 0.05,
+            "max_penalty": 4.0,
+            "landing_window_frames": 8,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
