@@ -23,7 +23,7 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     ang_vel_yaw_range: tuple[float, float] = (-3.0, 3.0)
     pitch_range: tuple[float, float] = (-0.2, 0.2)
     roll_range: tuple[float, float] = (-0.1, 0.1)
-    height_range: tuple[float, float] = (0.22, 0.32)
+    height_range: tuple[float, float] = (0.20, 0.32)
     lin_vel_deadband: float = 0.1
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1

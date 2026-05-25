@@ -87,6 +87,18 @@ class RerunViewer:
                 ),
             )
         rr.log("/metrics/height", rr.Scalars(scalars=float(telemetry["height"])))
+        rr.log(
+            "/metrics/wheel_clearance",
+            rr.Scalars(scalars=float(telemetry.get("wheel_clearance", 0.0))),
+        )
+        rr.log(
+            "/metrics/wheel_clearance_left",
+            rr.Scalars(scalars=float(telemetry.get("wheel_clearance_left", 0.0))),
+        )
+        rr.log(
+            "/metrics/wheel_clearance_right",
+            rr.Scalars(scalars=float(telemetry.get("wheel_clearance_right", 0.0))),
+        )
         rr.log("/metrics/tilt_deg", rr.Scalars(scalars=float(telemetry["tilt_deg"])))
         rr.log("/metrics/reward", rr.Scalars(scalars=float(telemetry["reward"])))
         yaw_pid = telemetry.get("yaw_pid")
@@ -108,7 +120,18 @@ class RerunViewer:
             disconnect()
 
     def _log_2d_plots(self, telemetry: dict[str, object]) -> None:
+        self._log_scalar("/plots/height/base_link_m", telemetry["height"])
+        self._log_scalar(
+            "/plots/height/left_wheel_clearance_m",
+            telemetry.get("wheel_clearance_left", 0.0),
+        )
+        self._log_scalar(
+            "/plots/height/right_wheel_clearance_m",
+            telemetry.get("wheel_clearance_right", 0.0),
+        )
+
         self._log_scalar("/plots/state/height_m", telemetry["height"])
+        self._log_scalar("/plots/state/wheel_clearance_m", telemetry.get("wheel_clearance", 0.0))
         self._log_scalar("/plots/state/tilt_deg", telemetry["tilt_deg"])
         self._log_scalar("/plots/state/fail_tilt_deg", telemetry["fail_tilt_deg"])
         self._log_scalar("/plots/state/reward", telemetry["reward"])
@@ -193,6 +216,11 @@ class RerunViewer:
             time_series_view(origin="/plots/imu", contents="/plots/imu/**", name="IMU"),
             name="Overview",
         )
+        height = time_series_view(
+            origin="/plots/height",
+            contents="/plots/height/**",
+            name="Height",
+        )
         control = rrb.Grid(
             time_series_view(origin="/plots/dof", contents="/plots/dof/**", name="DOF"),
             time_series_view(origin="/plots/action", contents="/plots/action/**", name="Action"),
@@ -200,7 +228,7 @@ class RerunViewer:
             grid_columns=2,
             name="Control",
         )
-        plots = rrb.Tabs(overview, control, active_tab=0, name="Debug")
+        plots = rrb.Tabs(overview, height, control, active_tab=0, name="Debug")
         layout = rrb.Horizontal(spatial, plots, column_shares=[0.52, 0.48], name="SE3 sim2sim")
         return rrb.Blueprint(
             layout, time_panel, collapse_panels=True, auto_layout=False, auto_views=False

@@ -100,8 +100,8 @@ just clean       # 清理 logs/ wandb/ replays/
 如需自定义参数，仍可直接使用 `uv run`：
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None
-uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --max-steps 3000
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --viewer none --max-steps 200

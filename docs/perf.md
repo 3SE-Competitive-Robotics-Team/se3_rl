@@ -17,7 +17,7 @@
 训练命令：
 
 ```bash
-uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 512 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 512 --gpu-ids None
 ```
 
 训练配置：

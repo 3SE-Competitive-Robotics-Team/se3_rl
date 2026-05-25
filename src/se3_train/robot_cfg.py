@@ -41,7 +41,7 @@ def get_serialleg_cfg() -> EntityCfg:
             ),
         ),
         init_state=EntityCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.301),
+            pos=(0.0, 0.0, _ROBOT_CFG.default_base_height),
             joint_pos={
                 name: _ROBOT_CFG.default_dof_pos[i] for i, name in enumerate(_ALL_JOINT_NAMES)
             },

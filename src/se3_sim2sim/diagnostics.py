@@ -53,6 +53,39 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
     if "wheel_lin_vel" in samples[0]:
         wheel_vx = np.asarray([s["wheel_lin_vel"] for s in samples], dtype=np.float64)
         result["wheel_lin_vel"] = _stats(wheel_vx)
+    if "wheel_clearance" in samples[0]:
+        wheel_clearance = np.asarray([s["wheel_clearance"] for s in samples], dtype=np.float64)
+        result["wheel_clearance"] = _stats(wheel_clearance)
+    if "wheel_clearance_left" in samples[0]:
+        left_clearance = np.asarray([s["wheel_clearance_left"] for s in samples], dtype=np.float64)
+        result["wheel_clearance_left"] = _stats(left_clearance)
+    if "wheel_clearance_right" in samples[0]:
+        right_clearance = np.asarray(
+            [s["wheel_clearance_right"] for s in samples], dtype=np.float64
+        )
+        result["wheel_clearance_right"] = _stats(right_clearance)
+        if "wheel_clearance_left" in samples[0]:
+            left_clearance = np.asarray(
+                [s["wheel_clearance_left"] for s in samples], dtype=np.float64
+            )
+            result["wheel_clearance_abs_diff"] = _stats(np.abs(left_clearance - right_clearance))
+    for key in (
+        "roll_deg",
+        "pitch_deg",
+        "yaw_deg",
+        "roll_rate_rad_s",
+        "pitch_rate_rad_s",
+        "yaw_rate_rad_s",
+        "action_delta_l2",
+        "action_delta_max_abs",
+        "action_delta_sq_sum",
+        "applied_action_delta_l2",
+        "applied_action_delta_max_abs",
+        "applied_action_delta_sq_sum",
+    ):
+        if key in samples[0]:
+            values = np.asarray([s[key] for s in samples], dtype=np.float64)
+            result[key] = _stats(values)
     result["final"] = samples[-1]
     return result
 

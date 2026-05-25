@@ -1,0 +1,4 @@
+interface:
+  display_name: "RL Tuning"
+  short_description: "Diagnose and fix RL training issues"
+  default_prompt: "Help me diagnose why my reward is not converging"

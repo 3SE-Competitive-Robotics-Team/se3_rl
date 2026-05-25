@@ -23,69 +23,51 @@ user-invocable: true
 ## 网络代理架构
 
 远程训练机处于内网，无法直接访问 PyPI / GitHub / wandb。
-解决方案：**SSH 反向隧道把本机 tinyproxy 代理暴露给远程机器。**
+解决方案：**SSH 反向隧道把本机已有的 HTTP 代理（端口 7890）直接暴露给远程机器。**
 
 ```
-本机 tinyproxy (127.0.0.1:18080)
+本机 HTTP 代理 (127.0.0.1:7890)   ← 系统级科学上网，Python 进程维护
         │
-        └── SSH -R 17890:127.0.0.1:18080 → 远程机器 (127.0.0.1:17890)
+        └── SSH -R 17890:127.0.0.1:7890 → 远程机器 (127.0.0.1:17890)
 ```
 
-> 端口约定：本机 tinyproxy 监听 **18080**，远程隧道落点 **17890**。
-> 如机器有本地代理（如 Mihomo），可能有其他端口（见各机器备忘录）。
+> 端口约定：本机代理监听 **7890**，远程隧道落点 **17890**。
 
-### 一次性初始化（本机）
+### 验证本机代理可用
 
 ```bash
-brew install tinyproxy
-
-cat > /tmp/tinyproxy.conf << 'EOF'
-Port 18080
-Listen 127.0.0.1
-Timeout 600
-Allow 127.0.0.1
-LogLevel Critical
-EOF
+lsof -i :7890 | grep LISTEN
+curl -s -o /dev/null -w "%{http_code}" --proxy http://127.0.0.1:7890 --max-time 8 https://api.wandb.ai
 ```
 
-### 每次会话前：建立隧道
+### 建立 / 重建隧道
 
 ```bash
-# 替换 <alias> 为机器 SSH 别名（如 wuyinyun）
+pkill -f "ssh.*17890.*7890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:7890 wuyinyun && echo "tunnel ok"
 
-# 1. 启动本机代理
-pkill -f tinyproxy 2>/dev/null
-tinyproxy -c /tmp/tinyproxy.conf
-sleep 1
-
-# 2. 验证本机代理正常
-curl -s -o /dev/null -w "%{http_code}" --proxy http://127.0.0.1:18080 https://pypi.org/simple/
-# 期望: 200
-
-# 3. 建立反向隧道
-pkill -f "ssh.*17890.*18080" 2>/dev/null
-ssh -f -N -R 17890:127.0.0.1:18080 <alias>
-
-# 4. 验证远程可用
-ssh <alias> "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 5 https://pypi.org/simple/"
-# 期望: 200
-```
-
-### 一键重建隧道
-
-```bash
-# 替换 <alias>
-pkill -f tinyproxy 2>/dev/null; tinyproxy -c /tmp/tinyproxy.conf; sleep 1; pkill -f "ssh.*17890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:18080 <alias> && echo "tunnel ok"
+# 验证远程可用（404 = 正常）
+ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 8 https://api.wandb.ai"
 ```
 
 ---
 
 ## 项目部署
 
+### 源码同步规则
+
+**源码变更必须通过 git 协同到远程训练机，禁止用 `rsync` / `scp` / 手工复制直接覆盖源码文件。**
+
+正确流程：
+1. 本地完成修改、验证、提交到当前分支。
+2. `git push` 推送分支。
+3. 远程训练机执行 `git fetch`，再 `git switch` / `git pull --ff-only` 更新到该提交。
+
+只有 checkpoint、日志、回放、导出的分析产物允许用 `rsync` 拉取或上传；源码一律走 git，保证远程训练 run 可追溯到明确 commit。
+
 ### 首次部署
 
 ```bash
-ssh <alias> "
+ssh wuyinyun "
   mkdir -p ~/project &&
   cd ~/project &&
   git clone git@github.com:3SE-Competitive-Robotics-Team/se3_wheel_leg.git &&
@@ -96,84 +78,103 @@ ssh <alias> "
 ### 安装 / 更新依赖
 
 ```bash
-# 首次安装（torch cu128 + cudnn 约 3GB，需代理，5-10 分钟）
-ssh <alias> "
-  source ~/.local/bin/env &&
-  cd ~/project/se3_wheel_leg &&
-  HTTPS_PROXY=http://127.0.0.1:17890 HTTP_PROXY=http://127.0.0.1:17890 uv sync 2>&1 | tail -5
-"
+# 首次安装（需代理，5-10 分钟）
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && \
+  HTTPS_PROXY=http://127.0.0.1:17890 HTTP_PROXY=http://127.0.0.1:17890 uv sync 2>&1 | tail -5"
 
 # 更新代码 + 依赖
-ssh <alias> "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && uv sync 2>&1 | tail -3"
-```
-
-### 安装 zellij（首次）
-
-```bash
-ssh <alias> "HTTPS_PROXY=http://127.0.0.1:17890 HTTP_PROXY=http://127.0.0.1:17890 \
-  bash <(curl -L https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz \
-  | tar xz -C ~/.local/bin/ zellij)"
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && uv sync 2>&1 | tail -3"
 ```
 
 ---
 
 ## 训练管理
 
-> **重要**：zellij 不会 source `.bashrc`，必须在命令中显式设置 `PATH`。
-> wandb 上传需要代理，必须带 `HTTP_PROXY`/`HTTPS_PROXY`。
+> **强制规范**：
+> - **所有训练必须在 tmux session 里启动**，禁止使用 `nohup` 或裸 SSH 后台。
+>   tmux 采用 client-server 架构，`new-session -d` 完全不需要 PTY，SSH 断开后 session 和训练进程继续存活。
+> - **禁止使用 `WANDB_MODE=offline`**，所有训练必须 wandb 在线可观测。
+>   wandb 网络问题时，正确做法是检查并重建 tunnel，而不是切 offline。
 
-### 启动训练
+### env 数量规则
+
+| 时段 | num_envs | 说明 |
+|---|---|---|
+| 夜间（22:00-08:00 CST） | **4096** | 无人使用，充分利用 GPU |
+| 白天（08:00-22:00 CST） | **1024** | 保留响应余量 |
+
+启动前先检查远程时间：`ssh wuyinyun "date '+%H:%M %Z'"`
+
+### 常用任务名
+
+| 任务 | 说明 |
+|---|---|
+| `SE3-WheelLegged-Flat-GRU` | GRU 行走基模（优先训练，作为跳跃 pretrain 的起点） |
+| `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练（依赖 GRU 行走基模） |
+| `SE3-WheelLegged-Jump-GRU` | 跳跃精细训练（依赖 PreTrain checkpoint） |
+| `SE3-WheelLegged-Flat` | MLP 行走（已有基模 `*_mlp.pt`，一般不需要重新训） |
+
+### 启动训练（标准流程）
 
 ```bash
-# 两步：先建后台会话，再在其中执行训练命令
-ssh <alias> "zellij attach --create-background train"
-ssh <alias> "zellij --session train action run -- bash -c '
-  export PATH=\$HOME/.local/bin:\$PATH
-  export HTTP_PROXY=http://127.0.0.1:17890
-  export HTTPS_PROXY=http://127.0.0.1:17890
-  cd ~/project/se3_wheel_leg &&
-  source ~/.local/bin/env &&
-  uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log
-'"
+ssh wuyinyun "bash -s" << 'ENDSSH'
+WANDB_KEY=$(grep WANDB_API_KEY ~/project/se3_wheel_leg/.env | cut -d= -f2-)
+
+# 清理同名旧 session
+tmux kill-session -t train 2>/dev/null
+
+# 创建新 session（detached，不需要 PTY）
+tmux new-session -d -s train -x 220 -y 50
+
+# 注入环境变量和训练命令
+tmux send-keys -t train "export HTTP_PROXY=http://127.0.0.1:17890" Enter
+tmux send-keys -t train "export HTTPS_PROXY=http://127.0.0.1:17890" Enter
+tmux send-keys -t train "export WANDB_API_KEY=${WANDB_KEY}" Enter
+tmux send-keys -t train "export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\$LD_LIBRARY_PATH" Enter
+tmux send-keys -t train "source ~/.local/bin/env" Enter
+tmux send-keys -t train "cd ~/project/se3_wheel_leg" Enter
+tmux send-keys -t train "uv run --env-file .env se3-train <TASK_NAME> --env.scene.num-envs <NUM_ENVS>" Enter
+
+tmux list-sessions
+ENDSSH
 ```
 
-### 查看日志
+### 查看训练状态
 
 ```bash
-ssh <alias> "tail -f /tmp/train.log"          # 实时跟踪
-ssh <alias> "tail -50 /tmp/train.log"         # 最新状态
+# 查看 session 最新输出
+ssh wuyinyun "tmux capture-pane -t train -p | tail -30"
+
+# 列出所有 session
+ssh wuyinyun "tmux list-sessions"
+
+# GPU 状态
+ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader"
 ```
 
-### 查看训练进程
+### attach 进入 session 交互查看（人工）
 
 ```bash
-ssh <alias> "ps aux | grep se3-train | grep -v grep"
-ssh <alias> "zellij list-sessions"
+ssh wuyinyun -t "tmux attach -t train"
+# 退出但保持 session：Ctrl+B 然后 D
 ```
 
 ### 停止训练
 
 ```bash
-ssh <alias> "zellij kill-session train"
-# 确保进程真正终止（uv run 会启子进程，kill 会话不够时用）
-ssh <alias> "pkill -f 'se3-train'"
+# 发送 Ctrl+C 终止训练进程
+ssh wuyinyun "tmux send-keys -t train C-c"
+sleep 3
+
+# 确保 Python 子进程也终止（uv run 会 fork）
+ssh wuyinyun "pkill -f 'se3-train'"
+
+# 关闭 session
+ssh wuyinyun "tmux kill-session -t train"
 ```
 
-### 进入会话交互调试
-
-```bash
-ssh <alias>
-# 进入后：
-zellij attach train
-# 退出但保持会话：Ctrl+O 然后 D
-```
-
-### GPU 状态
-
-```bash
-ssh <alias> "nvidia-smi"
-ssh <alias> "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader"
-```
+> `kill $PID` 只杀 `uv run` 的 shell wrapper，实际 Python 训练子进程不会终止。
+> 多次"重启"后会有多个训练进程争抢 GPU，务必用 `pkill -f 'se3-train'`。
 
 ---
 
@@ -182,110 +183,80 @@ ssh <alias> "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,tem
 ### 查看训练 run
 
 ```bash
-ssh <alias> "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/"
+ssh wuyinyun "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/"
 ```
 
 ### 查看某 run 的 checkpoints
 
 ```bash
 TIMESTAMP=<timestamp>
-ssh <alias> "ls ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/ | grep model | sort -V | tail -5"
+ssh wuyinyun "ls ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/ | grep model | sort -V | tail -5"
 ```
+
+> checkpoint 文件名按数字排序，`sort -V` 才正确，`sort` 会把 `model_900.pt` 排在 `model_1000.pt` 后面。
 
 ### 拉取 checkpoint 到本地
 
 ```bash
-TIMESTAMP=$(ssh <alias> "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/ | head -1")
-CKPT=model_4400.pt   # 替换为目标 checkpoint
+TIMESTAMP=$(ssh wuyinyun "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/ | head -1")
+CKPT=model_5000.pt
 
 mkdir -p logs/rsl_rl/se3_wheel_leg/$TIMESTAMP
-scp <alias>:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/$CKPT \
-    logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/
+rsync -avz --progress \
+  wuyinyun:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/$CKPT \
+  logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/
 ```
 
-> checkpoint 文件名按数字而非字典序排序，`sort -V` 才正确，`sort` 会把 `model_900.pt` 排在 `model_1000.pt` 后面。
+### base model 资产管理
 
----
-
-## 本地 sim2sim 验证
+训练完成后，将最终 checkpoint 存入 `assets/base_model/` 并用后缀标注架构：
 
 ```bash
-# 带 rerun 可视化
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt --max-steps 3000
-
-# 无头模式
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt --viewer none --max-steps 200
+TIMESTAMP=$(ssh wuyinyun "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/ | head -1")
+rsync -avz wuyinyun:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/model_5000.pt \
+  assets/base_model/model_5000_gru.pt
+git add assets/base_model/model_5000_gru.pt
+git commit -m "chore(assets): 存入 GRU 行走基模 model_5000_gru.pt"
+git push
 ```
 
----
-
-## 快速备忘（替换 `<alias>`）
-
-```bash
-# 一键检查机器状态
-ssh <alias> "nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu --format=csv,noheader && zellij list-sessions 2>/dev/null && tail -3 /tmp/train*.log 2>/dev/null | grep -E 'iteration|reward|ETA'"
-
-# 一键重建隧道
-pkill -f tinyproxy 2>/dev/null; tinyproxy -c /tmp/tinyproxy.conf; sleep 1; pkill -f "ssh.*17890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:18080 <alias> && echo "tunnel ok"
-
-# 一键拉代码重启训练
-ssh <alias> "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && \
-  zellij kill-session train 2>/dev/null; \
-  zellij attach --create-background train && \
-  zellij --session train action run -- bash -c '\
-    export PATH=\$HOME/.local/bin:\$PATH && \
-    export HTTP_PROXY=http://127.0.0.1:17890 && \
-    export HTTPS_PROXY=http://127.0.0.1:17890 && \
-    source ~/.local/bin/env && \
-    cd ~/project/se3_wheel_leg && \
-    uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log\
-  '"
-```
+| 文件名规范 | 说明 |
+|---|---|
+| `model_*_mlp.pt` | MLP 行走基模 |
+| `model_*_gru.pt` | GRU 行走基模（跳跃训练的起点） |
 
 ---
 
 ## 常见问题
 
-### uv sync 下载超时
+### wandb 网络问题排查
+
+**规则：禁止使用 `WANDB_MODE=offline`，所有训练必须 wandb 在线可观测。**
 
 ```bash
-# 检查隧道是否存活
-ssh <alias> "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 3 https://pypi.org/simple/"
+# 验证远程能否访问 wandb（404 = 正常，000 = 不通）
+ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 8 https://api.wandb.ai"
 
-# 不通则重建隧道（见上方一键命令）
+# 不通则重建隧道
+pkill -f "ssh.*17890.*7890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:7890 wuyinyun && echo "tunnel ok"
 ```
 
-### wandb 看不到数据
-
-1. 检查 `.env`：`ssh <alias> "cat ~/project/se3_wheel_leg/.env"`
-2. 检查 wandb run 目录：`ssh <alias> "ls ~/project/se3_wheel_leg/wandb/"`
-3. 检查 wandb 可达性：`ssh <alias> "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 5 https://api.wandb.ai"`
-4. **关键陷阱**：wandb 初始化失败时 `writer=None`，RSL-RL 不会保存任何 checkpoint，但训练日志正常打印，极难察觉。无外网时改用 `WANDB_MODE=offline`。
+**关键陷阱**：wandb 初始化失败时 `writer=None`，RSL-RL 不会保存任何 checkpoint，但训练日志正常打印，极难察觉。
+`WANDB_API_KEY` 必须在 tmux session 里显式 export，不能只靠 `--env-file .env`。
 
 ### 多个训练进程并存
 
 ```bash
-ssh <alias> "ps aux | grep se3-train | grep -v grep"
-ssh <alias> "kill <PID1> <PID2>"
-# 或
-ssh <alias> "pkill -f 'se3-train'"
+ssh wuyinyun "ps aux | grep se3-train | grep -v grep"
+ssh wuyinyun "pkill -f 'se3-train'"
 ```
 
-> `kill $PID` 只杀 `uv run` 的 shell wrapper，实际 Python 进程不会终止。多次"重启"后会有多个训练进程争抢 GPU。
-
-### 训练崩溃：`AttributeError: module 'warp' has no attribute 'context'`
-
-warp-lang >= 1.13.0，`pyproject.toml` 已锁定 `<1.13.0`。验证：
+### uv sync 卡住
 
 ```bash
-ssh <alias> "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip show warp-lang | grep Version"
+ssh wuyinyun "ps aux | grep 'uv sync' | grep -v grep"
+ssh wuyinyun "pkill -f 'uv sync'"
 ```
-
-修复：`ssh <alias> "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv sync"`
-
-### nohup 后台日志为空
-
-`uv run` 内部再启子进程，`nohup` 无法可靠捕获输出。改用 zellij。
 
 ---
 

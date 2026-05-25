@@ -13,6 +13,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
 from se3_shared import Joint, JointGroup
+from se3_train.mdp.contact_utils import finite_contact_force_norm
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -71,8 +72,13 @@ def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) ->
     return torch.exp(-(error**2) / sigma) * gate
 
 
-def tracking_orientation(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
-    """pitch/roll 姿态跟踪奖励,不门控（始终提供恢复梯度）。"""
+def tracking_orientation_l2(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """pitch/roll 姿态 L2 惩罚，提供 Tron 风格的持续回正梯度。
+
+    L2 惩罚会随误差平方增长，小倾斜也有明确负反馈。行走任务保留 pitch/roll
+    指令语义，惩罚相对目标姿态的误差；跳跃任务中 pitch/roll 指令固定为 0，
+    因此等价于 flat orientation L2。
+    """
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     pg = robot.data.projected_gravity_b
@@ -80,14 +86,9 @@ def tracking_orientation(env: ManagerBasedRlEnv, command_name: str, sigma: float
     current_pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
     current_roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
 
-    target_pitch = cmd[:, 2]
-    target_roll = cmd[:, 3]
-
-    pitch_error = current_pitch - target_pitch
-    roll_error = current_roll - target_roll
-    error_sq = pitch_error**2 + roll_error**2
-
-    return torch.exp(-error_sq / sigma)
+    pitch_error = current_pitch - cmd[:, 2]
+    roll_error = current_roll - cmd[:, 3]
+    return pitch_error**2 + roll_error**2
 
 
 def tracking_height(
@@ -103,11 +104,25 @@ def tracking_height(
     return torch.exp(-error / sigma)
 
 
-def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """直立因子:倒地=0,直立=1。"""
+def bad_tilt(
+    env: ManagerBasedRlEnv,
+    soft_limit_deg: float = 12.0,
+    hard_limit_deg: float = 35.0,
+    max_penalty: float = 4.0,
+) -> torch.Tensor:
+    """坏姿态 barrier 惩罚。
+
+    小倾斜由 tracking_orientation_l2 处理；超过 soft_limit 后快速加重惩罚，
+    避免策略把明显歪斜当成可接受状态。
+    """
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    return _upright_factor(pg_z)
+    tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+    soft = torch.deg2rad(torch.tensor(float(soft_limit_deg), device=env.device))
+    hard = torch.deg2rad(torch.tensor(float(hard_limit_deg), device=env.device))
+    span = torch.clamp(hard - soft, min=1.0e-6)
+    excess = torch.clamp((tilt - soft) / span, min=0.0)
+    return torch.clamp(excess**2, max=float(max_penalty))
 
 
 def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -254,7 +269,7 @@ def collision(
     if data.force is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    force_mag = torch.norm(data.force, dim=-1)
+    force_mag = finite_contact_force_norm(data.force)
     contact_count = (force_mag > 0.1).float().sum(dim=1)
     return contact_count * gate
 
@@ -275,7 +290,7 @@ def contact_forces(
     if data.force is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    force_mag = torch.norm(data.force, dim=-1)
+    force_mag = finite_contact_force_norm(data.force)
     excess = torch.clamp(force_mag - threshold, min=0.0) / 100.0
     return torch.sum(excess, dim=1) * gate
 
@@ -301,7 +316,7 @@ def feet_contact_without_cmd(
     if data.force is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    force_mag = torch.norm(data.force, dim=-1)
+    force_mag = finite_contact_force_norm(data.force)
     has_contact = (force_mag > force_threshold).float()
     return torch.sum(has_contact, dim=1) * gate * stationary.float()
 
