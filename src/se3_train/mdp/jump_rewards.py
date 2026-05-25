@@ -1722,24 +1722,23 @@ def jump_landing_stability_penalty(
     wheel_radius: float = 0.059,
     contact_force_threshold: float = 1.0,
     k_gain: float = 0.03,
-    tolerance: float = 0.05,
-    max_penalty: float = 4.0,
-    landing_window_frames: int = 8,
+    tolerance: float = 0.10,
+    max_penalty: float = 9.0,
+    min_landing_vz: float = -0.3,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """落地稳定性惩罚：轮子触地点接近理想落点以减小冲击力矩。
+    """落地稳定性惩罚：左右轮分别计算理想落点。
 
     物理直觉：落地瞬间若轮子触地点偏离理想位置，地面反力会产生绕 COM 的力矩，
-    迫使轮子滑移来抵消。惩罚轮子实际触地点与理想落点的距离，给策略明确的
-    "轮子应该放在哪"的梯度方向。
+    迫使轮子滑移来抵消。
 
-    理想落点 = COM_xy + k_gain * v_xy
-    - COM_xy: 质心水平位置
-    - v_xy: COM 水平速度（带速度起跳时，轮子应沿速度方向偏移）
-    - k_gain: 物理比例系数（COM-轮子垂距 / g 相关，~0.03）
+    每个轮子独立计算理想落点：
+    - ideal_x = COM_x + k_gain * vx（两个轮子相同的前后方向目标）
+    - ideal_y = 轮子当前侧向位置（几何固定，不可优化）
+    - 轮子只有一个沿矢状面的旋转自由度，侧向位置由机身决定
 
-    激活：轮子着地 且 COM 下降段（vz < 0）且 jump_flag=1
-    惩罚：两轮到理想落点的平均距离超过 tolerance 后线性增长
+    激活条件：轮子着地 且 COM 下降段 vz < min_landing_vz 且 jump_flag=1
+    惩罚：|actual_x - ideal_x| 左右轮各自计算后取平均
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -1754,23 +1753,30 @@ def jump_landing_stability_penalty(
 
     robot = env.scene[asset_cfg.name]
     vz = robot.data.root_link_lin_vel_w[:, 2]
-    landing_active = jump_flag & in_contact & (vz < 0.0)
 
-    # COM 位置和速度
-    com_xy = robot.data.root_link_pos_w[:, :2]
-    v_xy = robot.data.root_link_lin_vel_w[:, :2]
+    # 只在真正从高处落下时才激活（vz < min_landing_vz）
+    landing_active = jump_flag & in_contact & (vz < float(min_landing_vz))
 
-    # 理想轮子落点：COM + k * v_xy（带速度起跳时沿速度方向偏移）
+    # COM 状态
+    com_x = robot.data.root_link_pos_w[:, 0]      # [N]
+    com_y = robot.data.root_link_pos_w[:, 1]      # [N]
+    vx = robot.data.root_link_lin_vel_w[:, 0]     # [N]
+
+    # 理想前后位置（两个轮子相同，都应对齐到 COM + k * vx）
     k = float(k_gain)
-    ideal_xy = com_xy + k * v_xy
+    ideal_x = com_x + k * vx  # [N]
 
-    # 实际轮子位置（左右轮 body 中心）
+    # 实际轮子位置 [N, 2, 2] — (左, 右) × (x, y)
     body_ids = _wheel_body_ids(env, asset_cfg)
     wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
 
-    # 每个轮子到理想落点的距离
-    dist = torch.norm(wheel_xy - ideal_xy.unsqueeze(1), dim=2)  # [num_envs, 2]
-    mean_dist = dist.mean(dim=1)
+    # 每个轮子单独算：理想 = [ideal_x, 实际侧向位置]
+    left_ideal = torch.stack([ideal_x, wheel_xy[:, 0, 1]], dim=1)   # [N, 2]
+    right_ideal = torch.stack([ideal_x, wheel_xy[:, 1, 1]], dim=1)  # [N, 2]
+
+    dist_l = torch.abs(wheel_xy[:, 0, 0] - left_ideal[:, 0])   # [N] 左轮 |Δx|
+    dist_r = torch.abs(wheel_xy[:, 1, 0] - right_ideal[:, 0])  # [N] 右轮 |Δx|
+    mean_dist = (dist_l + dist_r) / 2.0
 
     tol = float(tolerance)
     excess = torch.clamp(mean_dist - tol, min=0.0)
@@ -1780,6 +1786,9 @@ def jump_landing_stability_penalty(
         env.extras["log"].update({
             "Jump/diag_landing_ideal_dist_m": _mean_on_mask(mean_dist, landing_active),
             "Jump/diag_landing_stability_raw": _mean_on_mask(penalty, landing_active),
+            "Jump/diag_landing_active_ratio": _mean_on_mask(
+                landing_active.float(), torch.ones_like(landing_active)
+            ),
         })
 
     return penalty * landing_active.float()

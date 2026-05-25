@@ -909,8 +909,8 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold": 1.0,
             "k_gain": 0.03,
             "tolerance": 0.05,
-            "max_penalty": 4.0,
-            "landing_window_frames": 8,
+            "max_penalty": 9.0,
+            "min_landing_vz": -0.3,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
