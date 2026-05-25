@@ -901,7 +901,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["jump_landing_stability"] = RewardTermCfg(
         func=jump_landing_stability_penalty,
-        weight=-2.0,
+        weight=-3.0,
         params={
             "command_name": "velocity_height",
             "sensor_name": "wheel_sensor",
