@@ -1425,6 +1425,102 @@ def idle_wheel_motion_penalty_no_jump(
     return penalty * active.float()
 
 
+def flat_wheel_ground_slip_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    wheel_radius: float = 0.059,
+    contact_force_threshold: float = 1.0,
+    longitudinal_scale: float = 0.28,
+    lateral_scale: float = 0.20,
+    max_penalty: float = 9.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段轮地滑移惩罚。
+
+    直接约束接地轮的滚动速度和机身速度一致，防止策略在平地阶段用
+    "轮子空转 + 机身慢滑" 的方式骗过速度跟踪。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = ~jump_flag
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+
+    robot = env.scene[asset_cfg.name]
+    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+
+    base_vel_b = robot.data.root_link_lin_vel_b
+    forward_slip = wheel_forward_speed - base_vel_b[:, 0].unsqueeze(1)
+    lateral_slip = base_vel_b[:, 1].unsqueeze(1).expand_as(forward_slip)
+
+    penalty_per_wheel = (forward_slip / float(longitudinal_scale)) ** 2 + (
+        lateral_slip / float(lateral_scale)
+    ) ** 2
+    penalty = torch.sum(penalty_per_wheel * in_contact.float(), dim=1)
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+    active = flat & in_contact.any(dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_ground_slip_raw": _mean_on_mask(penalty, active),
+                "Jump/diag_flat_wheel_ground_slip_contact_ratio": float(
+                    in_contact.any(dim=1).float().mean().item()
+                ),
+            }
+        )
+
+    return penalty * active.float()
+
+
+def flat_base_height_penalty_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    sigma: float = 0.05,
+) -> torch.Tensor:
+    """平地段 base 高度惩罚。
+
+    直接惩罚 base height 偏离当前 command height 的平方误差。
+    这比只靠 tracking_height 的正奖励更明确，方便把平地站高收敛到
+    我们指定的随机区间内。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = ~jump_flag
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = sensor.data.heights[:, 0]
+    target_height = cmd[:, 4]
+    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_base_height_error_m": _mean_on_mask(
+                    torch.abs(height - target_height), flat
+                ),
+                "Jump/diag_flat_base_height_penalty": _mean_on_mask(penalty, flat),
+            }
+        )
+
+    return penalty * flat.float()
+
+
 def action_smoothness_no_jump(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1758,9 +1854,8 @@ def jump_landing_stability_penalty(
     landing_active = jump_flag & in_contact & (vz < float(min_landing_vz))
 
     # COM 状态
-    com_x = robot.data.root_link_pos_w[:, 0]      # [N]
-    com_y = robot.data.root_link_pos_w[:, 1]      # [N]
-    vx = robot.data.root_link_lin_vel_w[:, 0]     # [N]
+    com_x = robot.data.root_link_pos_w[:, 0]  # [N]
+    vx = robot.data.root_link_lin_vel_w[:, 0]  # [N]
 
     # 理想前后位置（两个轮子相同，都应对齐到 COM + k * vx）
     k = float(k_gain)
@@ -1771,10 +1866,10 @@ def jump_landing_stability_penalty(
     wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
 
     # 每个轮子单独算：理想 = [ideal_x, 实际侧向位置]
-    left_ideal = torch.stack([ideal_x, wheel_xy[:, 0, 1]], dim=1)   # [N, 2]
+    left_ideal = torch.stack([ideal_x, wheel_xy[:, 0, 1]], dim=1)  # [N, 2]
     right_ideal = torch.stack([ideal_x, wheel_xy[:, 1, 1]], dim=1)  # [N, 2]
 
-    dist_l = torch.abs(wheel_xy[:, 0, 0] - left_ideal[:, 0])   # [N] 左轮 |Δx|
+    dist_l = torch.abs(wheel_xy[:, 0, 0] - left_ideal[:, 0])  # [N] 左轮 |Δx|
     dist_r = torch.abs(wheel_xy[:, 1, 0] - right_ideal[:, 0])  # [N] 右轮 |Δx|
     mean_dist = (dist_l + dist_r) / 2.0
 
@@ -1783,12 +1878,14 @@ def jump_landing_stability_penalty(
     penalty = torch.clamp(excess / tol, max=float(max_penalty))
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update({
-            "Jump/diag_landing_ideal_dist_m": _mean_on_mask(mean_dist, landing_active),
-            "Jump/diag_landing_stability_raw": _mean_on_mask(penalty, landing_active),
-            "Jump/diag_landing_active_ratio": _mean_on_mask(
-                landing_active.float(), torch.ones_like(landing_active)
-            ),
-        })
+        env.extras["log"].update(
+            {
+                "Jump/diag_landing_ideal_dist_m": _mean_on_mask(mean_dist, landing_active),
+                "Jump/diag_landing_stability_raw": _mean_on_mask(penalty, landing_active),
+                "Jump/diag_landing_active_ratio": _mean_on_mask(
+                    landing_active.float(), torch.ones_like(landing_active)
+                ),
+            }
+        )
 
     return penalty * landing_active.float()

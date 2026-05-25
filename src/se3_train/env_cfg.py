@@ -39,7 +39,9 @@ from se3_train.mdp.jump_rewards import (
     action_rate_no_jump,
     action_smoothness_no_jump,
     feet_contact_without_cmd_no_jump,
+    flat_base_height_penalty_no_jump,
     flat_orientation_l2_no_jump,
+    flat_wheel_ground_slip_no_jump,
     idle_wheel_motion_penalty_no_jump,
     jump_action_mirror,
     jump_ang_vel_xy,
@@ -48,8 +50,8 @@ from se3_train.mdp.jump_rewards import (
     jump_joint_mirror,
     jump_landing_base_height_penalty,
     jump_landing_horizontal_motion_penalty,
-    jump_landing_stability_penalty,
     jump_landing_recovery,
+    jump_landing_stability_penalty,
     jump_leg_contact_penalty,
     jump_orientation,
     jump_pre_takeoff_stillness,
@@ -85,6 +87,9 @@ from se3_train.mdp.jump_traj_tracking import (
 )
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 from se3_train.robot_cfg import get_serialleg_cfg
+
+_DEFAULT_STANDING_HEIGHT = 0.22
+_STANDING_HEIGHT_RANGE = (0.20, 0.32)
 
 
 def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -240,6 +245,8 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "velocity_height": JumpCommandCfg(
             resampling_time_range=(5.0, 5.0),
             jump_prob=0.0,  # 行走任务不触发跳跃
+            height_range=_STANDING_HEIGHT_RANGE,
+            standing_height_range=_STANDING_HEIGHT_RANGE,
         ),
     }
 
@@ -274,10 +281,19 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "height_sensor_name": "base_height_sensor",
             },
         ),
+        "flat_base_height": RewardTermCfg(
+            func=flat_base_height_penalty_no_jump,
+            weight=-8.0,
+            params={
+                "command_name": "velocity_height",
+                "height_sensor_name": "base_height_sensor",
+                "sigma": 0.05,
+            },
+        ),
         "bad_tilt": RewardTermCfg(
             func=rewards.bad_tilt,
-            weight=-4.0,
-            params={"soft_limit_deg": 12.0, "hard_limit_deg": 35.0, "max_penalty": 4.0},
+            weight=-6.0,
+            params={"soft_limit_deg": 10.0, "hard_limit_deg": 30.0, "max_penalty": 4.0},
         ),
         "ang_vel_xy": RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.146),
         "angular_momentum": RewardTermCfg(
@@ -300,7 +316,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "command_name": "velocity_height",
                 "command_threshold": 0.1,
-                "default_height": 0.26,
+                "default_height": _DEFAULT_STANDING_HEIGHT,
                 "height_tolerance": 40.0,
                 "asset_cfg": SceneEntityCfg("robot"),
             },
@@ -337,6 +353,20 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "threshold": 35.0,
                 "sensor_name": "wheel_sensor",
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "flat_wheel_ground_slip": RewardTermCfg(
+            func=flat_wheel_ground_slip_no_jump,
+            weight=-8.0,
+            params={
+                "command_name": "velocity_height",
+                "sensor_name": "wheel_sensor",
+                "wheel_radius": 0.059,
+                "contact_force_threshold": 1.0,
+                "longitudinal_scale": 0.28,
+                "lateral_scale": 0.20,
+                "max_penalty": 9.0,
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
@@ -628,7 +658,11 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     _apply_jump_observations(cfg)
 
     # PreTrain 不使用参考轨迹 RSI;只保留 jump_flag、目标高度和固定长度单次动作窗口。
-    cfg.commands["velocity_height"].jump_height_range = (0.1, 0.3)
+    cfg.commands["velocity_height"].jump_height_range = (
+        _DEFAULT_STANDING_HEIGHT,
+        _DEFAULT_STANDING_HEIGHT,
+    )
+    cfg.commands["velocity_height"].standing_height_range = _STANDING_HEIGHT_RANGE
     cfg.commands["velocity_height"].rsi_takeoff_prob = 0.0
     cfg.commands["velocity_height"].rsi_random_frame = False
     cfg.commands["velocity_height"].jump_cool_down_steps = 100
@@ -652,7 +686,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "command_name": "velocity_height",
             "command_threshold": 0.1,
-            "default_height": 0.26,
+            "default_height": _DEFAULT_STANDING_HEIGHT,
             "height_tolerance": 40.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -835,7 +869,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=220.0,
         params={
             "command_name": "velocity_height",
-            "base_height_offset": 0.26,
+            "base_height_offset": _DEFAULT_STANDING_HEIGHT,
             "wheel_radius": 0.059,
             "relative_tolerance": 0.45,
             "falloff_ratio": 0.25,
@@ -1000,7 +1034,6 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # 跳跃概率课程(不在 play 模式下运行)
     if not play:
-
         cfg.curriculum["jump_prob"] = CurriculumTermCfg(
             func=jump_prob_curriculum,
             params={
@@ -1362,7 +1395,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "command_name": "velocity_height",
             "sigma_vxy": 0.4,
             "sigma_h": 0.08,
-            "target_height": 0.26,
+            "target_height": _DEFAULT_STANDING_HEIGHT,
             "height_sensor_name": "base_height_sensor",
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -1373,7 +1406,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "command_name": "velocity_height",
             "height_sensor_name": "base_height_sensor",
-            "target_height": 0.26,
+            "target_height": _DEFAULT_STANDING_HEIGHT,
             "tolerance": 0.035,
             "scale": 0.06,
         },
