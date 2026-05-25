@@ -7,7 +7,6 @@
 from . import actions as actions
 from . import commands as commands
 from . import curriculums as curriculums
-from . import efgcl_stabilizer as efgcl_stabilizer
 from . import events as events
 from . import jump_commands as jump_commands
 from . import jump_curriculums as jump_curriculums
@@ -21,7 +20,6 @@ __all__ = [
     "actions",
     "commands",
     "curriculums",
-    "efgcl_stabilizer",
     "events",
     "jump_commands",
     "jump_curriculums",

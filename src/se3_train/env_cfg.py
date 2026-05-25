@@ -27,11 +27,8 @@ from se3_train.mdp import events, observations, rewards, terminations
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.mdp.curriculums import commands_vel as curriculum_commands_vel
 from se3_train.mdp.curriculums import push_disturbance as curriculum_push_disturbance
-from se3_train.mdp.efgcl_stabilizer import apply_efgcl_jump_guidance
 from se3_train.mdp.jump_commands import JumpCommandCfg
 from se3_train.mdp.jump_curriculums import (
-    efgcl_spotting_curriculum,
-    efgcl_takeoff_curriculum,
     jump_height_curriculum,
     jump_pretrain_constraint_weight_curriculum,
     jump_prob_curriculum,
@@ -153,8 +150,8 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         reduction="min",
     )
 
-    # 轮子离地高度传感器：从左轮 body 向下打射线，测量真实轮子离地距离
-    # 用于 jump_wheel_clr_tracking，防止策略通过收腿套利 base_link 高度
+    # 轮子离地高度传感器:从左轮 body 向下打射线,测量真实轮子离地距离
+    # 用于 jump_wheel_clr_tracking,防止策略通过收腿套利 base_link 高度
     wheel_height_sensor_cfg = TerrainHeightSensorCfg(
         name="wheel_height_sensor",
         frame=ObjRef(type="body", name="l_wheel_Link", entity="robot"),
@@ -261,7 +258,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=1.73,
             params={"command_name": "velocity_height", "sigma": 0.25},
         ),
-        # 姿态相关项只使用惩罚语义：偏离目标姿态扣分，明显倾斜加重扣分。
+        # 姿态相关项只使用惩罚语义:偏离目标姿态扣分,明显倾斜加重扣分。
         "tracking_orientation_l2": RewardTermCfg(
             func=rewards.tracking_orientation_l2,
             weight=-12.0,
@@ -353,9 +350,9 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        # 业界标准：移除显式 termination 惩罚，改用 alive reward 隐式机制
-        # 摔倒 → episode 结束 → 损失后续所有 alive 累积（隐式 penalty ~= alive * remaining_steps）
-        # ETH/Unitree/CMU 所有框架 termination weight = 0，这是行业共识
+        # 业界标准:移除显式 termination 惩罚,改用 alive reward 隐式机制
+        # 摔倒 → episode 结束 → 损失后续所有 alive 累积(隐式 penalty ~= alive * remaining_steps)
+        # ETH/Unitree/CMU 所有框架 termination weight = 0,这是行业共识
         "is_alive": RewardTermCfg(func=mjlab_is_alive, weight=1.0),
     }
 
@@ -509,7 +506,7 @@ def se3_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 func=events.randomize_pd_gains,
                 mode="startup",
                 params={
-                    "kp_range": (0.9, 1.1),  # 收窄：配合 stall_torque 上限，避免 kp 偏软时振荡跪地
+                    "kp_range": (0.9, 1.1),  # 收窄:配合 stall_torque 上限,避免 kp 偏软时振荡跪地
                     "kd_range": (0.9, 1.1),
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
@@ -562,7 +559,7 @@ def se3_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 
 # ---------------------------------------------------------------------------
-# 跳跃环境：公共辅助函数
+# 跳跃环境:公共辅助函数
 # ---------------------------------------------------------------------------
 
 
@@ -571,9 +568,9 @@ def _apply_jump_command(
     jump_prob: float = 0.0,
     jump_height_range: tuple[float, float] = (0.1, 0.3),
 ) -> None:
-    """将 velocity_height 指令替换为 JumpCommandTerm（扩展 8 维）。
+    """将 velocity_height 指令替换为 JumpCommandTerm(扩展 8 维)。
 
-    保留所有速度/姿态/高度配置，仅升级指令类型。
+    保留所有速度/姿态/高度配置,仅升级指令类型。
     参考阶段和总帧数从共享轨迹库读取。
     """
     cfg.commands = {
@@ -588,9 +585,9 @@ def _apply_jump_command(
 
 
 def _apply_jump_observations(cfg: ManagerBasedRlEnvCfg) -> None:
-    """在观测中追加 3 维跳跃指令（jump_flag, jump_target_height, jump_phase）。
+    """在观测中追加 3 维跳跃指令(jump_flag, jump_target_height, jump_phase)。
 
-    actor 从 31 维扩展到 32 维（+jump_phase）；critic 同步扩展。
+    actor 从 31 维扩展到 32 维(+jump_phase);critic 同步扩展。
     """
     jump_obs_term = ObservationTermCfg(func=observations.jump_commands_obs)
 
@@ -604,23 +601,22 @@ def _apply_jump_observations(cfg: ManagerBasedRlEnvCfg) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 阶段1：SE3-WheelLegged-Jump-PreTrain-GRU
+# 阶段1:SE3-WheelLegged-Jump-PreTrain-GRU
 # ---------------------------------------------------------------------------
 
 
 def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """跳跃预训练环境配置（从行走 checkpoint fine-tune）。
+    """跳跃预训练环境配置(从行走 checkpoint fine-tune)。
 
-    在行走环境基础上叠加：
-    - JumpCommandTerm（8 维指令）
-    - EFGCL 论文式固定时间窗起跳外力（1.0s → 1.1s）
-    - 稀疏高度奖励：轮组最大高度和 base 最大高度接近目标
+    在行走环境基础上叠加:
+    - JumpCommandTerm(8 维指令)
+    - 稀疏高度奖励:轮组最大高度和 base 最大高度接近目标
     - 轻量姿态、左右对称和关节限位约束
     - 膝关节冲击终止
     """
     cfg = se3_flat_env_cfg(play=play)
 
-    # 跳跃任务先学习起跳和落地本体能力；通用 push 扰动留到后续鲁棒性阶段。
+    # 跳跃任务先学习起跳和落地本体能力;通用 push 扰动留到后续鲁棒性阶段。
     cfg.events.pop("push_robots", None)
     cfg.curriculum.pop("push_disturbance", None)
 
@@ -630,14 +626,14 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # 追加跳跃观测
     _apply_jump_observations(cfg)
 
-    # PreTrain 不使用参考轨迹 RSI；只保留 jump_flag、目标高度和固定长度单次动作窗口。
+    # PreTrain 不使用参考轨迹 RSI;只保留 jump_flag、目标高度和固定长度单次动作窗口。
     cfg.commands["velocity_height"].jump_height_range = (0.1, 0.3)
     cfg.commands["velocity_height"].rsi_takeoff_prob = 0.0
     cfg.commands["velocity_height"].rsi_random_frame = False
     cfg.commands["velocity_height"].jump_cool_down_steps = 100
 
     # jump_flag=1 时屏蔽与起跳冲突的行走奖励
-    # tracking_lin_vel 里有 vz² 惩罚会压制起跳，必须在 jump_flag=1 时清零
+    # tracking_lin_vel 里有 vz2 惩罚会压制起跳,必须在 jump_flag=1 时清零
     cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
         func=tracking_lin_vel_no_jump,
         weight=2.73,
@@ -648,7 +644,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "vz_weight": 2.0,
         },
     )
-    # stand_still 惩罚腿部偏离默认位置，会阻止起跳动作
+    # stand_still 惩罚腿部偏离默认位置,会阻止起跳动作
     cfg.rewards["stand_still"] = RewardTermCfg(
         func=stand_still_no_jump,
         weight=-1.0,
@@ -660,7 +656,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # 力矩上限已放开至 stall_torque(40 N·m)，起跳瞬间峰值力矩若被惩罚会压制起跳
+    # 力矩上限已放开至 stall_torque(40 N·m),起跳瞬间峰值力矩若被惩罚会压制起跳
     # jump_flag=1 时豁免 leg_torques 和 leg_power 惩罚
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=leg_torques_no_jump,
@@ -679,7 +675,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # tracking_height 与跳跃轨迹 pose tracking 梯度相反，jump_flag=1 时必须清零
+    # tracking_height 与跳跃轨迹 pose tracking 梯度相反,jump_flag=1 时必须清零
     cfg.rewards["tracking_height"] = RewardTermCfg(
         func=tracking_height_no_jump,
         weight=2.49,
@@ -690,7 +686,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 偏航速度跟踪：起跳/飞行期姿态变化正常，不应持续惩罚
+    # 偏航速度跟踪:起跳/飞行期姿态变化正常,不应持续惩罚
     cfg.rewards["tracking_ang_vel"] = RewardTermCfg(
         func=tracking_ang_vel_no_jump,
         weight=1.73,
@@ -708,7 +704,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={"command_name": "velocity_height"},
     )
 
-    # action_rate：jump 期保持上一轮成功配置，flat/idle 期额外压低动作抖动。
+    # action_rate:jump 期保持上一轮成功配置,flat/idle 期额外压低动作抖动。
     cfg.rewards["action_rate"] = RewardTermCfg(
         func=action_rate_no_jump,
         weight=-0.48,
@@ -803,15 +799,13 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={"command_name": "velocity_height"},
     )
 
-    # PreTrain 的高度成功信号很稀疏；稳定惩罚收敛后，策略容易停在“稳但不跳”。
-    # 这里保留密集主动起跳信号，但不奖励下蹲本身，避免策略陷入“主动蹲住”的局部最优。
-    # EFGCL 起跳辅助覆盖 jump 样本时，任务进度奖励仍可保留，动作 shaping 只评价蹬起效果。
+    # PreTrain 的高度成功信号很稀疏；稳定惩罚收敛后，策略容易停在"稳但不跳"。
+    # 这里保留密集主动起跳信号，但不奖励下蹲本身，避免策略陷入"主动蹲住"的局部最优。
     cfg.rewards["jump_takeoff_impulse"] = RewardTermCfg(
         func=jump_takeoff_impulse,
         weight=16.0,
         params={
             "command_name": "velocity_height",
-            "require_unassisted": False,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -820,7 +814,6 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=55.0,
         params={
             "command_name": "velocity_height",
-            "require_unassisted": False,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -833,7 +826,6 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "min_vz_ratio": 0.45,
             "progress_power": 1.0,
             "tracking_mix": 0.4,
-            "require_unassisted": False,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -927,11 +919,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "landing_scale": 1.0,
         },
     )
-    # PreTrain 必须把“主动蹬地”和“机身直立姿态”一起学掉。EFGCL 外力只改造
-    # 状态分布，不给策略正确动作答案；动作质量仍由奖励函数评价。上一版只在
-    # PostTrain 收姿态，导致策略先固化成 pitch 偏斜起跳，再靠轨迹和姿态惩罚补救，
-    # sim2sim 中仍会在空中/落地出现 30° 以上 pitch。这里在预训练阶段加入空中
-    # tilt 约束和角速度约束，让价值函数更早区分“竖直起跳”和“姿态偏斜起跳”。
+    # PreTrain 必须把"主动蹬地"和"机身直立姿态"一起学掉。
     cfg.rewards["jump_tilt_barrier"] = RewardTermCfg(
         func=jump_tilt_barrier,
         weight=-4.0,
@@ -982,7 +970,7 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # 跳跃阶段不再用腿部接触传感器终止 episode；真实接触只作为日志留档。
+    # 跳跃阶段不再用腿部接触传感器终止 episode;真实接触只作为日志留档。
     cfg.terminations["leg_contact"] = TerminationTermCfg(
         func=terminations.leg_contact,
         time_out=False,
@@ -994,38 +982,9 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 跳跃概率课程（不在 play 模式下运行）
+    # 跳跃概率课程(不在 play 模式下运行)
     if not play:
-        cfg.events["efgcl_jump_guidance"] = EventTermCfg(
-            func=apply_efgcl_jump_guidance,
-            mode="step",
-            params={
-                "command_name": "velocity_height",
-                # EFGCL 论文式 Jump 外力：固定 1.0s-1.1s 时间窗，按目标高度前馈计算。
-                "max_takeoff_force_n": 260.0,
-                "takeoff_assist_start_s": 1.0,
-                "takeoff_assist_end_s": 1.1,
-                "policy_dt_s": 0.01,
-                "takeoff_assist_duration_s": 0.10,
-                "takeoff_assist_force_fraction": 0.5,
-                "min_unassisted_takeoff_probe_ratio": 0.0,
-                "min_ref_takeoff_vz": 0.05,
-                "takeoff_success_vz_ratio": 0.35,
-                "takeoff_success_min_vz": 0.2,
-                "stiffness_nm": 1.2,
-                "damping_nms": 0.08,
-                "max_torque_nm": 0.8,
-                # 只用于 EFGCL 撤辅助课程：外力不参与策略输入和主动起跳奖励，
-                # 该阈值控制价值函数先看到足够多“跳起且直立”的状态分布。
-                "success_tilt_limit_deg": 15.0,
-                # EFGCL 撤辅助必须等到策略产生真实向上速度，避免 RSI 空中帧把辅助过早撤光。
-                "success_vz_threshold": 0.2,
-                "success_height_tolerance": 0.10,
-                "base_height_offset": 0.26,
-                "wheel_radius": 0.059,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        )
+
         cfg.curriculum["jump_prob"] = CurriculumTermCfg(
             func=jump_prob_curriculum,
             params={
@@ -1043,73 +1002,50 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "ramp_iters": 650,
             },
         )
-        cfg.curriculum["efgcl_spotting"] = CurriculumTermCfg(
-            func=efgcl_spotting_curriculum,
-            params={
-                "success_threshold": 0.2,
-                "decay_step": 0.005,
-                "initial_scale": 1.0,
-                "min_iters": 300,
-            },
-        )
-        cfg.curriculum["efgcl_takeoff"] = CurriculumTermCfg(
-            func=efgcl_takeoff_curriculum,
-            params={
-                "success_threshold": 0.3,
-                "decay_step": 0.005,
-                "initial_scale": 1.0,
-                "min_iters": 300,
-            },
-        )
 
     return cfg
 
 
 # ---------------------------------------------------------------------------
-# 阶段2：SE3-WheelLegged-Jump-GRU
+# 阶段2:SE3-WheelLegged-Jump-GRU
 # ---------------------------------------------------------------------------
 
 
 def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """跳跃精细训练环境配置（从 PreTrain checkpoint fine-tune）。
+    """跳跃精细训练环境配置(从 PreTrain checkpoint fine-tune)。
 
-    在 PreTrain 基础上替换为精细奖励集：
+    在 PreTrain 基础上替换为精细奖励集:
     - 降权保留 PreTrain 起跳信号
     - 新增参考轨迹 tracking、真实离地高度、姿态/对称/着陆专项约束
-    - 新增目标高度课程（[0.1,0.3] → [0.1,0.6]）
+    - 新增目标高度课程([0.1,0.3] → [0.1,0.6])
     """
     cfg = se3_jump_pretrain_env_cfg(play=play)
 
-    # EFGCL 只用于 PreTrain 早期姿态探索，Fine-tune 和 sim2sim 不带外部辅助。
-    cfg.events.pop("efgcl_airborne_upright_spotting", None)
-    cfg.events.pop("efgcl_jump_guidance", None)
-    cfg.curriculum.pop("efgcl_spotting", None)
-    cfg.curriculum.pop("efgcl_takeoff", None)
     cfg.rewards.pop("jump_pretrain_height_success", None)
     cfg.rewards.pop("jump_pretrain_wheel_clearance_progress", None)
 
-    # fine-tune 保持中等跳跃占比，避免完整 tracking 重新压过行走梯度。
+    # fine-tune 保持中等跳跃占比,避免完整 tracking 重新压过行走梯度。
     _apply_jump_command(cfg, jump_prob=0.12)
     _apply_jump_observations(cfg)
     cfg.commands["velocity_height"].rsi_takeoff_prob = 1.0  # fine-tune 全量使用轨迹起点初始化
 
     # -------------------------------------------------------------------------
-    # 跳跃奖励体系（Fine-tune 阶段完整配置）
-    # 设计原则：
-    #   轨迹 tracking（3项）负责时序引导，覆盖高度/速度/关节角三个维度
-    #   真实离地高度只在 apex 附近评价，避免惩罚合法上升过程
-    #   补充约束负责 tracking 未覆盖的维度：姿态、对称性、轮速、落地力
-    #   地面期：只保留低权重主动起跳信号，避免遗忘，同时不压过轨迹目标
+    # 跳跃奖励体系(Fine-tune 阶段完整配置)
+    # 设计原则:
+    #   轨迹 tracking(3项)负责时序引导,覆盖高度/速度/关节角三个维度
+    #   真实离地高度只在 apex 附近评价,避免惩罚合法上升过程
+    #   补充约束负责 tracking 未覆盖的维度:姿态、对称性、轮速、落地力
+    #   地面期:只保留低权重主动起跳信号,避免遗忘,同时不压过轨迹目标
     # -------------------------------------------------------------------------
 
-    # --- 地面期：保留主动起跳信号 ---
+    # --- 地面期:保留主动起跳信号 ---
     #
-    # 2026-05-21 试验记录：
-    # 1. 只保留低权重 takeoff_drive/vz_tracking 时，PostTrain 会很快把
-    #    max_airborne_vz 从 1.4m/s 压到 0.6m/s，得到“稳定但跳不高”的策略。
-    # 2. 只恢复中等起跳权重仍不够；base pose tracking 的 xy/rot 分项会让
-    #    “稳定低跳”拿到较高分数。这里把起跳奖励恢复到 PreTrain 量级，
-    #    同时让 pose tracking 由 z 高度主导，再由对称/姿态项收动作质量。
+    # 2026-05-21 试验记录:
+    # 1. 只保留低权重 takeoff_drive/vz_tracking 时,PostTrain 会很快把
+    #    max_airborne_vz 从 1.4m/s 压到 0.6m/s,得到"稳定但跳不高"的策略。
+    # 2. 只恢复中等起跳权重仍不够;base pose tracking 的 xy/rot 分项会让
+    #    "稳定低跳"拿到较高分数。这里把起跳奖励恢复到 PreTrain 量级,
+    #    同时让 pose tracking 由 z 高度主导,再由对称/姿态项收动作质量。
 
     cfg.rewards["jump_takeoff_drive"] = RewardTermCfg(
         func=jump_takeoff_drive,
@@ -1154,7 +1090,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # jump_vel_encourage 极小权重保留，仅防止 airborne 期完全无信号。
+    # jump_vel_encourage 极小权重保留,仅防止 airborne 期完全无信号。
     # 主要垂直速度目标由 traj_vz 负责。
     cfg.rewards["jump_vel_encourage"] = RewardTermCfg(
         func=jump_vel_encourage,
@@ -1162,7 +1098,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={"command_name": "velocity_height", "weight_scale": 1.0},
     )
 
-    # PreTrain 继承的膝关节过伸惩罚，tracking 不覆盖关节限位
+    # PreTrain 继承的膝关节过伸惩罚,tracking 不覆盖关节限位
     cfg.rewards["jump_dof_pos_limits_strict"] = RewardTermCfg(
         func=jump_dof_pos_limits_strict,
         weight=-2.0,
@@ -1172,8 +1108,8 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # Fine-tune 专用动作平滑：起跳段保留蹬地自由度，空中/落地加重惩罚。
-    # PreTrain 仍使用默认弱 action_rate，避免早期主动起跳被过早压制。
+    # Fine-tune 专用动作平滑:起跳段保留蹬地自由度,空中/落地加重惩罚。
+    # PreTrain 仍使用默认弱 action_rate,避免早期主动起跳被过早压制。
     cfg.rewards["jump_action_rate"] = RewardTermCfg(
         func=action_rate_jump,
         weight=-0.04,
@@ -1188,18 +1124,18 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     # -----------------------------------------------------------------------
-    # 轨迹 tracking 奖励（核心，覆盖完整跳跃时序）
-    # 构型维度：base_link 6DoF pose + 4 个腿部关节角。
-    # 速度维度：保留 vz tracking 作为起跳/落地节奏约束。
-    # 轨迹库使用 0.1-0.6m 六条轨迹；每条 ±0.10m 匹配窗口覆盖低到中高度课程。
-    # 奖励函数按 jump_target_height 选择最近轨迹，并对高度/速度做小幅缩放。
+    # 轨迹 tracking 奖励(核心,覆盖完整跳跃时序)
+    # 构型维度:base_link 6DoF pose + 4 个腿部关节角。
+    # 速度维度:保留 vz tracking 作为起跳/落地节奏约束。
+    # 轨迹库使用 0.1-0.6m 六条轨迹;每条 ±0.10m 匹配窗口覆盖低到中高度课程。
+    # 奖励函数按 jump_target_height 选择最近轨迹,并对高度/速度做小幅缩放。
     # -----------------------------------------------------------------------
     _TRAJ_PATHS = DEFAULT_JUMP_TRAJ_PATHS
     _TRAJ_HEIGHTS = DEFAULT_JUMP_TRAJ_HEIGHTS
-    _HEIGHT_TOL = 0.10  # 单条轨迹高度匹配容忍带（±0.10m）
+    _HEIGHT_TOL = 0.10  # 单条轨迹高度匹配容忍带(±0.10m)
 
-    # base_link 6DoF pose tracking：xyz + roll/pitch/yaw。
-    # 轨迹文件不含 base_quat，因此姿态参考定义为 reset 后 yaw 不变、roll/pitch 直立。
+    # base_link 6DoF pose tracking:xyz + roll/pitch/yaw。
+    # 轨迹文件不含 base_quat,因此姿态参考定义为 reset 后 yaw 不变、roll/pitch 直立。
     # reset 随机 xy/yaw 会在 reset 事件里缓存为每个 env 的参考零点。
     cfg.rewards["traj_base_pose_6d"] = RewardTermCfg(
         func=traj_base_pose_6d_tracking,
@@ -1215,13 +1151,13 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "rot_weight": 0.10,
             "traj_target_heights": _TRAJ_HEIGHTS,
             "height_match_tol": _HEIGHT_TOL,
-            "grounded_weight": 0.05,  # 接地期极小权重，只给准备姿态弱引导，防止站着不动拿满分
+            "grounded_weight": 0.05,  # 接地期极小权重,只给准备姿态弱引导,防止站着不动拿满分
         },
     )
 
-    # 垂直速度 tracking：阶段相关 std 的 exp 正奖励
+    # 垂直速度 tracking:阶段相关 std 的 exp 正奖励
     # 保证起跳加速度节奏、飞行抛物线速度和着陆缓冲速度都符合参考。
-    # 这里使用正奖励而不是 L1 扣分，减少早期“低速贴轨迹”的保守解。
+    # 这里使用正奖励而不是 L1 扣分,减少早期"低速贴轨迹"的保守解。
     cfg.rewards["traj_vz"] = RewardTermCfg(
         func=traj_vz_tracking,
         weight=3.0,
@@ -1237,8 +1173,8 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 关节角 tracking：exp 形状，覆盖蹲/展/收腿/缓冲时序
-    # sigma=0.15rad（约 8.6°），精度适中，不过分约束策略微调自由度
+    # 关节角 tracking:exp 形状,覆盖蹲/展/收腿/缓冲时序
+    # sigma=0.15rad(约 8.6°),精度适中,不过分约束策略微调自由度
     cfg.rewards["traj_joint_pos"] = RewardTermCfg(
         func=traj_joint_pos_tracking,
         weight=5.0,
@@ -1253,15 +1189,15 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "traj_target_heights": _TRAJ_HEIGHTS,
             "height_match_tol": _HEIGHT_TOL,
             "asset_cfg": SceneEntityCfg("robot"),
-            "grounded_weight": 0.05,  # 接地期极小权重，防止站着不动拿满分
+            "grounded_weight": 0.05,  # 接地期极小权重,防止站着不动拿满分
         },
     )
 
     # -----------------------------------------------------------------------
-    # 补充约束（tracking 未覆盖的维度）
+    # 补充约束(tracking 未覆盖的维度)
     # -----------------------------------------------------------------------
 
-    # 真实轮子离地高度：只在参考 apex 附近对齐 jump_target_height。
+    # 真实轮子离地高度:只在参考 apex 附近对齐 jump_target_height。
     # 完整上升/下降时序由 traj_base_pose_6d 和 traj_vz 负责。
     cfg.rewards["jump_wheel_clr_tracking"] = RewardTermCfg(
         func=jump_wheel_clr_tracking,
@@ -1275,9 +1211,9 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 姿态：pitch+roll L2 惩罚。严格 pitch 回正只放在 jump_flag=0 的平地段；
-    # 一旦进入跳跃窗口，grounded/preload、takeoff、air、landing 都使用跳跃自己的
-    # 温和阶段约束，避免把主动伸腿速度压掉。
+    # 姿态:pitch+roll L2 惩罚。严格 pitch 回正只放在 jump_flag=0 的平地段;
+    # 一旦进入跳跃窗口,grounded/preload、takeoff、air、landing 都使用跳跃自己的
+    # 温和阶段约束,避免把主动伸腿速度压掉。
     cfg.rewards["jump_orientation"] = RewardTermCfg(
         func=jump_orientation,
         weight=-6.0,
@@ -1290,10 +1226,10 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "landing_scale": 0.8,
         },
     )
-    # tilt barrier：sim2sim sweep 显示 pitch 在 20° 左右已经影响观感和落地，
-    # 但上一轮训练在 quality_weight_progress=0 时 vz 已经跌破 1.2m/s，说明早期
-    # barrier 不能太早抢起跳梯度；从 18° 开始介入，把更强姿态修正留给后期课程。
-    # 这比直接降低 bad_orientation 终止阈值更平滑，不会截断早期探索。
+    # tilt barrier:sim2sim sweep 显示 pitch 在 20° 左右已经影响观感和落地,
+    # 但上一轮训练在 quality_weight_progress=0 时 vz 已经跌破 1.2m/s,说明早期
+    # barrier 不能太早抢起跳梯度;从 18° 开始介入,把更强姿态修正留给后期课程。
+    # 这比直接降低 bad_orientation 终止阈值更平滑,不会截断早期探索。
     cfg.rewards["jump_tilt_barrier"] = RewardTermCfg(
         func=jump_tilt_barrier,
         weight=-1.0,
@@ -1306,7 +1242,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 角速度：与姿态惩罚配合抑制空中翻滚
+    # 角速度:与姿态惩罚配合抑制空中翻滚
     cfg.rewards["jump_ang_vel_xy"] = RewardTermCfg(
         func=jump_ang_vel_xy,
         weight=-1.0,
@@ -1318,7 +1254,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={"command_name": "velocity_height"},
     )
 
-    # 左右关节对称性：tracking 参考角虽然对称，但显式惩罚更直接
+    # 左右关节对称性:tracking 参考角虽然对称,但显式惩罚更直接
     cfg.rewards["jump_joint_mirror"] = RewardTermCfg(
         func=jump_joint_mirror,
         weight=-12.0,
@@ -1333,9 +1269,9 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # 显式轮距：学习 Tron1 的 pen_feet_distance 设计，用几何距离直接约束双轮。
-    # SerialLeg 默认站立左右轮距约 0.433m，因此这里约束 0.40~0.46m，同时惩罚
-    # 前后错位，解决“两个轮一前一后”这类 joint_mirror 看不准的问题。
+    # 显式轮距:学习 Tron1 的 pen_feet_distance 设计,用几何距离直接约束双轮。
+    # SerialLeg 默认站立左右轮距约 0.433m,因此这里约束 0.40~0.46m,同时惩罚
+    # 前后错位,解决"两个轮一前一后"这类 joint_mirror 看不准的问题。
     cfg.rewards["wheel_distance"] = RewardTermCfg(
         func=wheel_distance_regularization,
         weight=-5.0,
@@ -1361,7 +1297,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={"command_name": "velocity_height"},
     )
 
-    # 空中轮速：抑制陀螺效应，tracking 不约束轮子
+    # 空中轮速:抑制陀螺效应,tracking 不约束轮子
     cfg.rewards["jump_wheel_vel"] = RewardTermCfg(
         func=jump_wheel_vel,
         weight=-0.02,
@@ -1379,7 +1315,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 着陆力对称性：tracking 无力的维度
+    # 着陆力对称性:tracking 无力的维度
     cfg.rewards["landing_symmetry"] = RewardTermCfg(
         func=landing_symmetry,
         weight=-1.5,
@@ -1389,7 +1325,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # jump_flag=1 时关闭 feet_contact_without_cmd，防止蹲着不跳也能拿分
+    # jump_flag=1 时关闭 feet_contact_without_cmd,防止蹲着不跳也能拿分
     cfg.rewards["feet_contact_without_cmd"] = RewardTermCfg(
         func=feet_contact_without_cmd_no_jump,
         weight=0.386,
@@ -1402,7 +1338,7 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 落地恢复：landing 阶段奖励水平静止和高度回归站立位
+    # 落地恢复:landing 阶段奖励水平静止和高度回归站立位
     cfg.rewards["jump_landing_recovery"] = RewardTermCfg(
         func=jump_landing_recovery,
         weight=6.0,
@@ -1426,14 +1362,14 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "scale": 0.06,
         },
     )
-    # PostTrain 起跳前静止 + 起跳时水平惩罚（权重比 PreTrain 更大，要求更严格）
+    # PostTrain 起跳前静止 + 起跳时水平惩罚(权重比 PreTrain 更大,要求更严格)
     cfg.rewards["jump_pre_takeoff_stillness"] = RewardTermCfg(
         func=jump_pre_takeoff_stillness,
         weight=8.0,
         params={
             "command_name": "velocity_height",
             "sigma_vxy": 0.35,
-            "stillness_window_steps": 40,  # 只在 jump_flag 后前 40 步（0.4s）奖励静止，超过必须起跳
+            "stillness_window_steps": 40,  # 只在 jump_flag 后前 40 步(0.4s)奖励静止,超过必须起跳
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -1447,8 +1383,8 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 目标高度课程（fine-tune 阶段扩大范围）
-    # 同时覆盖继承自 pretrain 的 jump_prob 课程：fine-tune 从 iter=0 使用 0.12。
+    # 目标高度课程(fine-tune 阶段扩大范围)
+    # 同时覆盖继承自 pretrain 的 jump_prob 课程:fine-tune 从 iter=0 使用 0.12。
     if not play:
         cfg.curriculum["jump_prob"] = CurriculumTermCfg(
             func=jump_prob_curriculum,

@@ -31,7 +31,6 @@ _G = 9.81
 
 # 成功起跳阈值：vz > 1.0 m/s，对应约 5cm 以上跳跃。
 _VZ_SUCCESS_THRESHOLD = 1.0
-_EFGCL_TAKEOFF_ASSISTED_MASK_ATTR = "_efgcl_takeoff_assisted_mask"
 _TAKEOFF_DIAG_EMA_ATTR = "_jump_takeoff_diag_ema"
 
 
@@ -101,7 +100,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
     指令维度：[vx, ωz, pitch, roll, h, jump_flag, jump_target_height, jump_phase]（8 维）
 
-    jump_stage 来自参考轨迹帧，是跳跃奖励、EFGCL 和窗口生命周期的唯一阶段来源。
+    jump_stage 来自参考轨迹帧，是跳跃奖励和窗口生命周期的唯一阶段来源。
     """
 
     cfg: JumpCommandCfg
@@ -191,7 +190,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
         参考 base vz 转正只出现在 stance 最后 3-6 帧，作为奖励门控会让主动蹬地
         梯度过于稀疏。这里保留 vz 阈值的相位含义，同时保证 stance 末端至少
-        覆盖 min_window_steps 帧，让奖励和 EFGCL 前馈力有足够作用时间。
+        覆盖 min_window_steps 帧，让奖励有足够作用时间。
         """
         start_step = self._traj_library.takeoff_window_start_step_for(
             self._command[:, 6], min_vz, min_window_steps
@@ -404,14 +403,8 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         jump_flag: torch.Tensor,
         vz_w: torch.Tensor,
     ) -> dict[str, float]:
-        """诊断无辅助蹬地窗口内的奖励稀疏度和惩罚量级。"""
-        assisted_mask = getattr(self._env, _EFGCL_TAKEOFF_ASSISTED_MASK_ATTR, None)
-        if not isinstance(assisted_mask, torch.Tensor) or assisted_mask.shape != jump_flag.shape:
-            assisted_mask = torch.zeros_like(jump_flag)
-
-        unassisted = ~assisted_mask
+        """诊断蹬地窗口内的奖励稀疏度和惩罚量级。"""
         takeoff_window = jump_flag & self.reference_takeoff_active()
-        unassisted_takeoff = takeoff_window & unassisted
 
         h_target = self._command[:, 6]
         vz_ref = ideal_takeoff_vel(h_target).clamp_min(0.1)
@@ -448,7 +441,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
         vel = robot.data.root_link_lin_vel_w
         vxy_sq = vel[:, 0] ** 2 + vel[:, 1] ** 2
-        horizontal_active = unassisted_takeoff & (vz_w > 0.2 * vz_ref)
+        horizontal_active = takeoff_window & (vz_w > 0.2 * vz_ref)
         horizontal_penalty = 1.0 - torch.exp(-vxy_sq / (0.25**2))
 
         soft_limits = robot.data.soft_joint_pos_limits
@@ -460,54 +453,45 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
             knee_limit_penalty = torch.sum(-(pos - limits[:, :, 0]).clamp(max=0.0), dim=1)
 
         takeoff_total = takeoff_window.float().sum().clamp_min(1.0)
-        unassisted_total = unassisted_takeoff.float().sum().clamp_min(1.0)
         current_metrics = {
-            "Jump/diag_takeoff_unassisted_ratio": float(
-                (unassisted_takeoff.float().sum() / takeoff_total).item()
-            ),
-            "Jump/diag_takeoff_unassisted_env_ratio": float(
-                unassisted_takeoff.float().mean().item()
-            ),
             "Jump/diag_takeoff_positive_vz_ratio": float(
-                ((unassisted_takeoff & (vz_w > 0.0)).float().sum() / unassisted_total).item()
+                ((takeoff_window & (vz_w > 0.0)).float().sum() / takeoff_total).item()
             ),
-            "Jump/diag_takeoff_vz_progress": _mean_on_mask(vz_progress, unassisted_takeoff),
+            "Jump/diag_takeoff_vz_progress": _mean_on_mask(vz_progress, takeoff_window),
             "Jump/diag_takeoff_vz_tracking_reward": _mean_on_mask(
                 vz_tracking_reward,
-                unassisted_takeoff,
+                takeoff_window,
             ),
-            "Jump/diag_takeoff_impulse_reward": _mean_on_mask(impulse_reward, unassisted_takeoff),
-            "Jump/diag_takeoff_action_rate_raw": _mean_on_mask(action_rate, unassisted_takeoff),
-            "Jump/diag_takeoff_pitch_deg": _mean_on_mask(pitch_deg, unassisted_takeoff),
-            "Jump/diag_takeoff_roll_deg": _mean_on_mask(roll_deg, unassisted_takeoff),
-            "Jump/diag_takeoff_tilt_deg": _mean_on_mask(tilt_deg, unassisted_takeoff),
-            "Jump/diag_takeoff_ang_vel_xy_sq": _mean_on_mask(ang_vel_xy_sq, unassisted_takeoff),
-            "Jump/diag_takeoff_yaw_error_sq": _mean_on_mask(yaw_error_sq, unassisted_takeoff),
+            "Jump/diag_takeoff_impulse_reward": _mean_on_mask(impulse_reward, takeoff_window),
+            "Jump/diag_takeoff_action_rate_raw": _mean_on_mask(action_rate, takeoff_window),
+            "Jump/diag_takeoff_pitch_deg": _mean_on_mask(pitch_deg, takeoff_window),
+            "Jump/diag_takeoff_roll_deg": _mean_on_mask(roll_deg, takeoff_window),
+            "Jump/diag_takeoff_tilt_deg": _mean_on_mask(tilt_deg, takeoff_window),
+            "Jump/diag_takeoff_ang_vel_xy_sq": _mean_on_mask(ang_vel_xy_sq, takeoff_window),
+            "Jump/diag_takeoff_yaw_error_sq": _mean_on_mask(yaw_error_sq, takeoff_window),
             "Jump/diag_takeoff_horizontal_penalty": _mean_on_mask(
                 horizontal_penalty,
                 horizontal_active,
             ),
             "Jump/diag_takeoff_knee_limit_penalty": _mean_on_mask(
                 knee_limit_penalty,
-                unassisted_takeoff,
+                takeoff_window,
             ),
         }
 
         sample_masks = {
-            "Jump/diag_takeoff_unassisted_ratio": takeoff_window,
-            "Jump/diag_takeoff_unassisted_env_ratio": takeoff_window,
-            "Jump/diag_takeoff_positive_vz_ratio": unassisted_takeoff,
-            "Jump/diag_takeoff_vz_progress": unassisted_takeoff,
-            "Jump/diag_takeoff_vz_tracking_reward": unassisted_takeoff,
-            "Jump/diag_takeoff_impulse_reward": unassisted_takeoff,
-            "Jump/diag_takeoff_action_rate_raw": unassisted_takeoff,
-            "Jump/diag_takeoff_pitch_deg": unassisted_takeoff,
-            "Jump/diag_takeoff_roll_deg": unassisted_takeoff,
-            "Jump/diag_takeoff_tilt_deg": unassisted_takeoff,
-            "Jump/diag_takeoff_ang_vel_xy_sq": unassisted_takeoff,
-            "Jump/diag_takeoff_yaw_error_sq": unassisted_takeoff,
+            "Jump/diag_takeoff_positive_vz_ratio": takeoff_window,
+            "Jump/diag_takeoff_vz_progress": takeoff_window,
+            "Jump/diag_takeoff_vz_tracking_reward": takeoff_window,
+            "Jump/diag_takeoff_impulse_reward": takeoff_window,
+            "Jump/diag_takeoff_action_rate_raw": takeoff_window,
+            "Jump/diag_takeoff_pitch_deg": takeoff_window,
+            "Jump/diag_takeoff_roll_deg": takeoff_window,
+            "Jump/diag_takeoff_tilt_deg": takeoff_window,
+            "Jump/diag_takeoff_ang_vel_xy_sq": takeoff_window,
+            "Jump/diag_takeoff_yaw_error_sq": takeoff_window,
             "Jump/diag_takeoff_horizontal_penalty": horizontal_active,
-            "Jump/diag_takeoff_knee_limit_penalty": unassisted_takeoff,
+            "Jump/diag_takeoff_knee_limit_penalty": takeoff_window,
         }
         ema_metrics = getattr(self, _TAKEOFF_DIAG_EMA_ATTR, None)
         if not isinstance(ema_metrics, dict):

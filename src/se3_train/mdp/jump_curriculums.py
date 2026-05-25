@@ -3,10 +3,8 @@
 课程：
 1. jump_prob_curriculum：调度 JumpCommandTerm 的每步启动概率 jump_prob（0 → final_prob）
 2. jump_height_curriculum：阶段2 fine-tune 扩大目标高度范围（[0.1,0.3] → [0.1,0.6]）
-3. efgcl_takeoff_curriculum：按主动起跳速度成功率衰减 EFGCL 起跳外力
-4. efgcl_spotting_curriculum：按空中直立成功率衰减 EFGCL 辅助力矩
-5. jump_quality_weight_curriculum：PostTrain 先保起跳，再逐步加强 tracking/姿态/yaw/对称约束
-6. jump_pretrain_constraint_weight_curriculum：PreTrain 先学主动起跳，再逐步收紧坏行为惩罚
+3. jump_quality_weight_curriculum：PostTrain 先保起跳，再逐步加强 tracking/姿态/yaw/对称约束
+4. jump_pretrain_constraint_weight_curriculum：PreTrain 先学主动起跳，再逐步收紧坏行为惩罚
 """
 
 from __future__ import annotations
@@ -25,12 +23,6 @@ from se3_train.mdp.jump_commands import JumpCommandTerm
 _GRU_STEPS_PER_ENV = 64
 
 _JUMP_CURRICULUM_STEP_BASE_ATTR = "_jump_curriculum_step_base"
-_EFGCL_ASSIST_SCALE_ATTR = "_efgcl_assist_scale"
-_EFGCL_SUCCESS_EMA_ATTR = "_efgcl_upright_success_ema"
-_EFGCL_LAST_DECAY_ITER_ATTR = "_efgcl_last_decay_iter"
-_EFGCL_TAKEOFF_ASSIST_SCALE_ATTR = "_efgcl_takeoff_assist_scale"
-_EFGCL_TAKEOFF_SUCCESS_EMA_ATTR = "_efgcl_takeoff_success_ema"
-_EFGCL_TAKEOFF_LAST_DECAY_ITER_ATTR = "_efgcl_takeoff_last_decay_iter"
 
 
 def _current_iter(env: ManagerBasedRlEnv) -> int:
@@ -245,78 +237,3 @@ def jump_pretrain_constraint_weight_curriculum(
             logs[f"{term_name}_weight"] = applied
 
     return logs
-
-
-def efgcl_spotting_curriculum(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor,
-    success_threshold: float = 0.6,
-    decay_step: float = 0.01,
-    initial_scale: float = 1.0,
-    min_scale: float = 0.0,
-    min_iters: int = 0,
-) -> dict[str, Any]:
-    """EFGCL 辅助力矩课程：空中直立成功率达标后逐步减小辅助强度。
-
-    success rate 由 efgcl_stabilizer 在 step event 中维护，定义为：
-    jump_flag=1 且参考空中阶段且 vz 达标且倾角低于阈值的比例。
-    min_iters 用于保留早期辅助，避免 RSI 注入样本让辅助在主动起跳学会前撤光。
-    """
-    del env_ids
-
-    current_iter = _current_iter(env)
-    assist_scale = float(getattr(env, _EFGCL_ASSIST_SCALE_ATTR, initial_scale))
-    success_ema = getattr(env, _EFGCL_SUCCESS_EMA_ATTR, None)
-    success_rate = 0.0 if success_ema is None else float(success_ema.item())
-
-    last_decay_iter = int(getattr(env, _EFGCL_LAST_DECAY_ITER_ATTR, -1))
-    if (
-        current_iter >= min_iters
-        and current_iter != last_decay_iter
-        and success_rate >= success_threshold
-    ):
-        assist_scale = max(min_scale, assist_scale - decay_step)
-        setattr(env, _EFGCL_LAST_DECAY_ITER_ATTR, current_iter)
-
-    setattr(env, _EFGCL_ASSIST_SCALE_ATTR, assist_scale)
-    return {
-        "efgcl_assist_scale": assist_scale,
-        "efgcl_upright_success_rate": success_rate,
-    }
-
-
-def efgcl_takeoff_curriculum(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor,
-    success_threshold: float = 0.3,
-    decay_step: float = 0.005,
-    initial_scale: float = 1.0,
-    min_scale: float = 0.0,
-    min_iters: int = 300,
-) -> dict[str, Any]:
-    """EFGCL 起跳外力课程：主动起跳速度成功率达标后逐步减小辅助强度。
-
-    success rate 由 efgcl_stabilizer 在 step event 中维护，定义为：
-    jump_flag=1 且参考蹬地向上段且实际 vz 达到目标速度比例的 EMA。
-    """
-    del env_ids
-
-    current_iter = _current_iter(env)
-    assist_scale = float(getattr(env, _EFGCL_TAKEOFF_ASSIST_SCALE_ATTR, initial_scale))
-    success_ema = getattr(env, _EFGCL_TAKEOFF_SUCCESS_EMA_ATTR, None)
-    success_rate = 0.0 if success_ema is None else float(success_ema.item())
-
-    last_decay_iter = int(getattr(env, _EFGCL_TAKEOFF_LAST_DECAY_ITER_ATTR, -1))
-    if (
-        current_iter >= min_iters
-        and current_iter != last_decay_iter
-        and success_rate >= success_threshold
-    ):
-        assist_scale = max(min_scale, assist_scale - decay_step)
-        setattr(env, _EFGCL_TAKEOFF_LAST_DECAY_ITER_ATTR, current_iter)
-
-    setattr(env, _EFGCL_TAKEOFF_ASSIST_SCALE_ATTR, assist_scale)
-    return {
-        "efgcl_takeoff_assist_scale": assist_scale,
-        "efgcl_takeoff_success_rate": success_rate,
-    }

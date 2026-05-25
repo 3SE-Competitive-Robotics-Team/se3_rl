@@ -1,8 +1,8 @@
 """跳跃专属奖励函数。
 
-分两个阶段使用：
-- PreTrain 阶段：地面主动起跳 + 目标高度条件化 + 轻姿态/限位约束
-- Fine-tune 阶段：参考轨迹 tracking + 真实离地高度 + 空中/着陆质量约束
+分两个阶段使用:
+- PreTrain 阶段:地面主动起跳 + 目标高度条件化 + 轻姿态/限位约束
+- Fine-tune 阶段:参考轨迹 tracking + 真实离地高度 + 空中/着陆质量约束
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
-_EFGCL_TAKEOFF_ASSISTED_MASK_ATTR = "_efgcl_takeoff_assisted_mask"
 _PRETRAIN_MAX_BASE_HEIGHT_ATTR = "_jump_pretrain_max_base_height"
 _PRETRAIN_MAX_WHEEL_HEIGHT_ATTR = "_jump_pretrain_max_wheel_height"
 _PRETRAIN_PREV_JUMP_FLAG_ATTR = "_jump_pretrain_prev_jump_flag"
@@ -40,22 +39,10 @@ def _get_jump_term(env: ManagerBasedRlEnv, command_name: str) -> JumpCommandTerm
 
 
 def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
-    """计算掩码内均值；无样本时返回 0。"""
+    """计算掩码内均值;无样本时返回 0。"""
     if mask.any():
         return float(value[mask].mean().item())
     return 0.0
-
-
-def _unassisted_efgcl_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """返回未被 EFGCL 起跳外力辅助的 env 掩码。
-
-    PreTrain 里 EFGCL 辅助样本只负责扩展状态分布。主动起跳正奖励必须来自
-    无辅助样本，避免策略把外力产生的向上速度或被外力撑住的动作当成自身信用。
-    """
-    mask = getattr(env, _EFGCL_TAKEOFF_ASSISTED_MASK_ATTR, None)
-    if isinstance(mask, torch.Tensor) and mask.shape == (env.num_envs,):
-        return ~mask
-    return torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
 
 
 def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
@@ -67,7 +54,7 @@ def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[i
     robot = env.scene[asset_cfg.name]
     body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
     if len(body_ids) != 2:
-        raise RuntimeError(f"必须找到左右轮 body，实际找到: {body_names}")
+        raise RuntimeError(f"必须找到左右轮 body,实际找到: {body_names}")
     setattr(env, attr_name, body_ids)
     return body_ids
 
@@ -131,7 +118,7 @@ def _fixed_time_mask(env: ManagerBasedRlEnv, term: JumpCommandTerm, start_s: flo
 
 
 # ---------------------------------------------------------------------------
-# 阶段1（PreTrain）奖励
+# 阶段1(PreTrain)奖励
 # ---------------------------------------------------------------------------
 
 
@@ -147,12 +134,12 @@ def jump_pretrain_height_success(
     wheel_weight: float = 0.5,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """EFGCL PreTrain 稀疏高度奖励。
+    """PreTrain 稀疏高度奖励。
 
     PreTrain 不做精确高度匹配，只判断发力结果是否进入宽容忍带。
 
-    高度相对误差在 relative_tolerance 内视为及格并给满分；超出后按误差
-    超出量平滑衰减。这样 0.2m/0.3m 目标不会被固定 0.1m 弱跳误判为及格，
+    高度相对误差在 relative_tolerance 内视为及格并给满分;超出后按误差
+    超出量平滑衰减。这样 0.2m/0.3m 目标不会被固定 0.1m 弱跳误判为及格,
     也不会在已经接近目标时继续逼策略做精确高度控制。
     """
     term = _get_jump_term(env, command_name)
@@ -205,11 +192,11 @@ def jump_pretrain_wheel_clearance_progress(
     progress_power: float = 1.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """PreTrain 轮底离地结果进度奖励，使用 ±relative_tolerance 宽窗口。
+    """PreTrain 轮底离地结果进度奖励,使用 ±relative_tolerance 宽窗口。
 
     该项只看跳跃窗口内左右轮底的最大离地高度。低于及格下界时按进度给连续
-    信用；进入 ±45% 窗口后满分；超过上界后平滑衰减。这样 PreTrain 的轮高
-    仍是宽容忍窗口语义，同时比稀疏成功奖励更早给到轮底离地结果信用。
+    信用;进入 ±45% 窗口后满分;超过上界后平滑衰减。这样 PreTrain 的轮高
+    仍是宽容忍窗口语义,同时比稀疏成功奖励更早给到轮底离地结果信用。
     """
     term = _get_jump_term(env, command_name)
     jump_flag, _, max_wheel_h = _update_pretrain_max_heights(
@@ -263,8 +250,8 @@ def jump_pre_takeoff_wheel_lift_penalty(
 ) -> torch.Tensor:
     """起跳前轮子提前离地惩罚。
 
-    正常跳跃应先接地蓄力，再在起跳段离地。若 preload 阶段轮子先小幅抬起，
-    策略会绕开发力，把“提前收腿”当成起跳准备动作。该项只在参考蓄力阶段激活，
+    正常跳跃应先接地蓄力,再在起跳段离地。若 preload 阶段轮子先小幅抬起,
+    策略会绕开发力,把"提前收腿"当成起跳准备动作。该项只在参考蓄力阶段激活,
     对超过阈值的轮底离地高度扣分。
     """
     cmd = env.command_manager.get_command(command_name)
@@ -295,13 +282,13 @@ def jump_vel_encourage(
     command_name: str,
     weight_scale: float = 1.0,
 ) -> torch.Tensor:
-    """跳跃奖励：参考空中阶段奖励 vz，防止地面期 vz 套利。
+    """跳跃奖励:参考空中阶段奖励 vz,防止地面期 vz 套利。
 
-    RSI 配套设计：
+    RSI 配套设计:
     - reset_root_state_full 给 jump_flag=1 的 episode 注入 vz 初速度
     - reset_joints 同时设置空中收腿姿态
-    - 策略从 reference stage=1（airborne）开始，立刻拿到此奖励
-    - 地面期 vz 无奖励（策略通过探索和 RSI 体验学会自主起跳）
+    - 策略从 reference stage=1(airborne)开始,立刻拿到此奖励
+    - 地面期 vz 无奖励(策略通过探索和 RSI 体验学会自主起跳)
     """
 
     robot = env.scene["robot"]
@@ -311,8 +298,8 @@ def jump_vel_encourage(
     term = _get_jump_term(env, command_name)
     in_air = term.jump_stage == 1
 
-    # reference 空中阶段奖励正向 vz，下降段不额外惩罚。
-    active = jump_flag & in_air & _unassisted_efgcl_mask(env)
+    # reference 空中阶段奖励正向 vz,下降段不额外惩罚。
+    active = jump_flag & in_air
     return torch.clamp(vz_w, min=0.0) * active.float() * weight_scale
 
 
@@ -324,8 +311,8 @@ def jump_leg_contact_penalty(
 ) -> torch.Tensor:
     """跳跃窗口腿部触地惩罚。
 
-    PreTrain 中腿部接触不再硬终止，避免早期探索被秒杀；但触地必须进入
-    reward，防止策略把“深蹲到腿碰地”当成可行跳跃前置动作。
+    PreTrain 中腿部接触不再硬终止,避免早期探索被秒杀;但触地必须进入
+    reward,防止策略把"深蹲到腿碰地"当成可行跳跃前置动作。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -344,37 +331,36 @@ def jump_takeoff_drive(
     env: ManagerBasedRlEnv,
     command_name: str,
     min_ref_takeoff_vz: float = 0.05,
-    require_unassisted: bool = True,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """起跳驱动奖励：在参考蹬地期奖励质心向上速度，解决地面期梯度断链。
+    """起跳驱动奖励:在参考蹬地期奖励质心向上速度,解决地面期梯度断链。
 
     【为什么用质心 vz 而不是腿部关节速度】
-    原实现奖励关节速度负分量（伸腿方向），可被"原地抖腿"hack：
-    抖腿时关节速度正负交替，负分量均值非零，策略无需真正起跳即可套利。
-    质心 vz > 0 只有一种来源：身体整体向上运动（真实起跳）。
-    原地震荡时 vz 均值为 0，无法套利。
+    原实现奖励关节速度负分量(伸腿方向),可被"原地抖腿"hack:
+    抖腿时关节速度正负交替,负分量均值非零,策略无需真正起跳即可套利。
+    质心 vz > 0 只有一种来源:身体整体向上运动(真实起跳)。
+    原地震荡时 vz 均值为 0,无法套利。
 
     【激活条件】
-    - jump_flag=1（有跳跃指令）
-    - reference takeoff 子相位（grounded 且参考 vz 已进入上升段）
-    - vz > 0（质心已经向上运动，奖励蹬腿有效果的那一帧）
+    - jump_flag=1(有跳跃指令)
+    - reference takeoff 子相位(grounded 且参考 vz 已进入上升段)
+    - vz > 0(质心已经向上运动,奖励蹬腿有效果的那一帧)
 
-    jump_stage 由 reference motion 时间推进，蹬地辅助项只覆盖上升蹬地段。
+    jump_stage 由 reference motion 时间推进,蹬地辅助项只覆盖上升蹬地段。
     """
     from se3_train.mdp.jump_commands import JumpCommandTerm
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
-    # reference 子相位门控：只在 grounded 内的上升蹬地段激活。
+    # reference 子相位门控:只在 grounded 内的上升蹬地段激活。
     term = env.command_manager.get_term(command_name)
     if isinstance(term, JumpCommandTerm):
         phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
     else:
         phase_takeoff = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
 
-    # 质心向上速度：按目标起跳速度归一化，避免 0.05m/s 与 1.4m/s 获得近似声量。
+    # 质心向上速度:按目标起跳速度归一化,避免 0.05m/s 与 1.4m/s 获得近似声量。
     robot = env.scene[asset_cfg.name]
     vz_w = robot.data.root_link_lin_vel_w[:, 2]
     h_target = cmd[:, 6]
@@ -382,8 +368,6 @@ def jump_takeoff_drive(
     takeoff_signal = torch.clamp(vz_w / vz_ref, min=0.0, max=1.0)
 
     active = jump_flag & phase_takeoff
-    if require_unassisted:
-        active = active & _unassisted_efgcl_mask(env)
     return takeoff_signal * active.float()
 
 
@@ -393,13 +377,11 @@ def jump_takeoff_impulse(
     min_knee_extension_vel: float = 0.0,
     min_ref_takeoff_vz: float = 0.05,
     min_ref_knee_extension_vel: float = 0.05,
-    require_unassisted: bool = True,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """地面蹬起冲量奖励：按参考伸膝时序奖励膝关节伸展速度。
 
-    参考轨迹进入蹬地伸展段后才激活，让策略明确学习“什么时候伸腿”。
-    EFGCL 只负责改造状态分布；本项只在无辅助样本上给主动伸膝信用。
+    参考轨迹进入蹬地伸展段后才激活，让策略明确学习"什么时候伸腿"。
     """
     from se3_train.mdp.jump_commands import JumpCommandTerm
 
@@ -425,8 +407,6 @@ def jump_takeoff_impulse(
     target_extension_vel = torch.clamp(ref_extension_vel, min=min_ref_knee_extension_vel)
     extension_tracking = torch.clamp(extension_vel / target_extension_vel, min=0.0, max=1.0)
     active = jump_flag & phase_takeoff
-    if require_unassisted:
-        active = active & _unassisted_efgcl_mask(env)
     return extension_tracking * active.float()
 
 
@@ -438,21 +418,20 @@ def jump_takeoff_vz_tracking(
     min_ref_takeoff_vz: float = 0.05,
     progress_power: float = 1.0,
     tracking_mix: float = 0.6,
-    require_unassisted: bool = True,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """地面起跳速度目标奖励：低速给进度引导，高速做目标速度 tracking。
+    """地面起跳速度目标奖励:低速给进度引导,高速做目标速度 tracking。
 
     旧版在 `vz > min_vz_ratio * vz_ref` 后才激活。当前策略只能产生
-    0.02~0.11m/s，低于 0.1m 目标高度的激活阈值，因此速度目标奖励长期为 0。
-    这里改成两段式：
-    - 低于阈值：奖励 `(vz / vz_ref)^p`，从 0 开始提供密集探索梯度
-    - 高于阈值：混合进 exp tracking，继续推动接近目标起跳速度
+    0.02~0.11m/s,低于 0.1m 目标高度的激活阈值,因此速度目标奖励长期为 0。
+    这里改成两段式:
+    - 低于阈值:奖励 `(vz / vz_ref)^p`,从 0 开始提供密集探索梯度
+    - 高于阈值:混合进 exp tracking,继续推动接近目标起跳速度
 
-    2026-05-21 PostTrain 经验：
-    旧版 L1 tracking 在 tolerance 较宽时会让 1.0m/s 弱跳也拿到较高奖励，
+    2026-05-21 PostTrain 经验:
+    旧版 L1 tracking 在 tolerance 较宽时会让 1.0m/s 弱跳也拿到较高奖励,
     PPO 会逐步把 1.4m/s 起跳收敛成 1.0m/s 稳定弱跳。这里提高阈值并加入
-    progress_power，让弱跳仍有梯度，但分数明显低于接近目标起跳速度的样本。
+    progress_power,让弱跳仍有梯度,但分数明显低于接近目标起跳速度的样本。
     """
     from se3_train.mdp.jump_commands import JumpCommandTerm
 
@@ -480,8 +459,6 @@ def jump_takeoff_vz_tracking(
 
     reward = torch.where(vz_w < threshold, progress_reward, mixed_tracking)
     active = jump_flag & phase_takeoff
-    if require_unassisted:
-        active = active & _unassisted_efgcl_mask(env)
     return reward * active.float()
 
 
@@ -490,9 +467,9 @@ def jump_dof_pos_limits_strict(
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """起跳/飞行阶段对膝关节（lf1/rf1）下限方向额外惩罚，防止过伸。
+    """起跳/飞行阶段对膝关节(lf1/rf1)下限方向额外惩罚,防止过伸。
 
-    jump_flag=1 时激活。与 dof_pos_limits 不同，此惩罚只看下限方向，
+    jump_flag=1 时激活。与 dof_pos_limits 不同,此惩罚只看下限方向,
     权重在 env_cfg 里独立控制。
     """
     cmd = env.command_manager.get_command(command_name)
@@ -503,7 +480,7 @@ def jump_dof_pos_limits_strict(
     if soft_limits is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    # 只看膝关节：JointGroup.LEGS 中索引 1/3（lf1/rf1）
+    # 只看膝关节:JointGroup.LEGS 中索引 1/3(lf1/rf1)
     knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
     pos = robot.data.joint_pos[:, knee_indices]
     limits = soft_limits[:, knee_indices]
@@ -524,19 +501,19 @@ def jump_orientation(
     air_scale: float = 1.0,
     landing_scale: float = 0.8,
 ) -> torch.Tensor:
-    """跳跃阶段姿态惩罚：同时惩罚 pitch（pg_x）和 roll（pg_y）的平方和。
+    """跳跃阶段姿态惩罚:同时惩罚 pitch(pg_x)和 roll(pg_y)的平方和。
 
-    旧版只惩罚 roll（pg_y），导致起跳时前后倾斜（pitch）无约束，
-    引起视角抖动和落地不稳。轮腿机器人跳跃时 pitch 和 roll 都需要控制：
-    - pitch（pg_x）：前后倾，起跳蹬力方向偏斜时产生
-    - roll（pg_y）：左右倾，两腿不对称时产生
-    2026-05-21 sim2sim sweep 显示 roll 最大只有约 2.6°，tilt 主要来自
+    旧版只惩罚 roll(pg_y),导致起跳时前后倾斜(pitch)无约束,
+    引起视角抖动和落地不稳。轮腿机器人跳跃时 pitch 和 roll 都需要控制:
+    - pitch(pg_x):前后倾,起跳蹬力方向偏斜时产生
+    - roll(pg_y):左右倾,两腿不对称时产生
+    2026-05-21 sim2sim sweep 显示 roll 最大只有约 2.6°,tilt 主要来自
     pitch 约 20°。因此 Fine-tune 可用 pitch_weight 单独加重前后点头。
 
-    使用平方惩罚而不是 abs 惩罚：轻微起跳扰动更温和，大倾角会被
-    jump_tilt_barrier 额外放大。只要 jump_flag=1，就使用跳跃自己的阶段约束；
-    严格平地 pitch 约束只属于 jump_flag=0 的行走/静站段。takeoff_scale 保持中等值，
-    避免真正蹬地窗口被压死；真正不能过早启用的是 hard barrier，而不是连续 L2 回正梯度。
+    使用平方惩罚而不是 abs 惩罚:轻微起跳扰动更温和,大倾角会被
+    jump_tilt_barrier 额外放大。只要 jump_flag=1,就使用跳跃自己的阶段约束;
+    严格平地 pitch 约束只属于 jump_flag=0 的行走/静站段。takeoff_scale 保持中等值,
+    避免真正蹬地窗口被压死;真正不能过早启用的是 hard barrier,而不是连续 L2 回正梯度。
     """
     robot = env.scene["robot"]
     pg = robot.data.projected_gravity_b
@@ -570,7 +547,7 @@ def jump_orientation(
         stage_scale,
     )
 
-    # projected_gravity_b: x 对应 pitch，y 对应 roll。
+    # projected_gravity_b: x 对应 pitch,y 对应 roll。
     penalty = float(pitch_weight) * pg[:, 0] ** 2 + float(roll_weight) * pg[:, 1] ** 2
     return penalty * stage_scale * jump_flag.float()
 
@@ -583,11 +560,11 @@ def jump_tilt_barrier(
     landing_scale: float = 0.5,
     max_penalty: float = 4.0,
 ) -> torch.Tensor:
-    """跳跃姿态分段强惩罚：轻微 tilt 不管，大 tilt 快速加重。
+    """跳跃姿态分段强惩罚:轻微 tilt 不管,大 tilt 快速加重。
 
-    jump_orientation 提供连续的小姿态梯度；本项负责 25° 以上的明显空中倾斜。
-    它是软硬之间的 barrier：不会像终止一样直接截断 episode，但 35°~45° 的
-    样本会明显扣分，避免策略长期接受大 tilt 来换高度 tracking。
+    jump_orientation 提供连续的小姿态梯度;本项负责 25° 以上的明显空中倾斜。
+    它是软硬之间的 barrier:不会像终止一样直接截断 episode,但 35°~45° 的
+    样本会明显扣分,避免策略长期接受大 tilt 来换高度 tracking。
     """
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
@@ -624,7 +601,7 @@ def jump_ang_vel_xy(
     env: ManagerBasedRlEnv,
     command_name: str,
 ) -> torch.Tensor:
-    """飞行阶段横滚/俯仰角速度平方和，抑制空中翻滚。
+    """飞行阶段横滚/俯仰角速度平方和,抑制空中翻滚。
 
     仅在 reference flight 阶段激活。
     """
@@ -645,10 +622,10 @@ def jump_ang_vel_z(
     env: ManagerBasedRlEnv,
     command_name: str,
 ) -> torch.Tensor:
-    """跳跃窗口 yaw 角速度跟踪惩罚，抑制起跳和空中拧腰。
+    """跳跃窗口 yaw 角速度跟踪惩罚,抑制起跳和空中拧腰。
 
-    yaw 漂移主要来自起跳左右动作不对称，等到空中再惩罚已经偏晚。
-    因此该项在完整 jump_flag 窗口激活，并跟踪 command[1]，让 sim2sim 的
+    yaw 漂移主要来自起跳左右动作不对称,等到空中再惩罚已经偏晚。
+    因此该项在完整 jump_flag 窗口激活,并跟踪 command[1],让 sim2sim 的
     yaw PID 信号在跳跃期间也能进入训练目标。
     """
     robot = env.scene["robot"]
@@ -666,11 +643,11 @@ def jump_wheel_counterspin(
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """跳跃窗口左右轮差速惩罚，减少空中绕 yaw 轴反扭矩。
+    """跳跃窗口左右轮差速惩罚,减少空中绕 yaw 轴反扭矩。
 
-    MJCF 中左右轮 joint axis 相反：左轮是 +Y，右轮是 -Y。因此在 joint
-    广义速度坐标里，左右轮异号更接近平移，同号会制造明显 yaw 扭转。
-    该项惩罚左右广义轮速之和，保留策略用异号轮速做落地恢复的自由度。
+    MJCF 中左右轮 joint axis 相反:左轮是 +Y,右轮是 -Y。因此在 joint
+    广义速度坐标里,左右轮异号更接近平移,同号会制造明显 yaw 扭转。
+    该项惩罚左右广义轮速之和,保留策略用异号轮速做落地恢复的自由度。
     """
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
@@ -694,11 +671,11 @@ def jump_wheel_ground_slip(
 ) -> torch.Tensor:
     """接地轮滑移惩罚。
 
-    轮子接地时，轮缘滚动速度应接近机身前向速度，机身侧向速度也应接近 0。
-    只要出现明显切向滑移，就按坏行为扣分；该项不奖励更大的轮地反力。
+    轮子接地时,轮缘滚动速度应接近机身前向速度,机身侧向速度也应接近 0。
+    只要出现明显切向滑移,就按坏行为扣分;该项不奖励更大的轮地反力。
 
     MJCF 中左右轮 joint axis 相反。广义速度里左轮 `+w`、右轮 `-w` 才表示
-    同向前滚，因此右轮滚动速度取负号。
+    同向前滚,因此右轮滚动速度取负号。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -767,8 +744,8 @@ def jump_landing_horizontal_motion_penalty(
 ) -> torch.Tensor:
     """落地阶段水平运动惩罚。
 
-    落地后继续向前滚，即使轮缘速度与机身速度匹配，也属于原地跳任务的坏行为。
-    因此该项直接惩罚 landing 阶段的机身水平速度和接地轮滚动速度，而不是奖励
+    落地后继续向前滚,即使轮缘速度与机身速度匹配,也属于原地跳任务的坏行为。
+    因此该项直接惩罚 landing 阶段的机身水平速度和接地轮滚动速度,而不是奖励
     滚动匹配效率。
     """
     cmd = env.command_manager.get_command(command_name)
@@ -825,13 +802,13 @@ def jump_action_mirror(
     env: ManagerBasedRlEnv,
     command_name: str,
 ) -> torch.Tensor:
-    """跳跃窗口动作镜像惩罚，直接压制左右腿目标分叉和轮子同号拧腰。"""
+    """跳跃窗口动作镜像惩罚,直接压制左右腿目标分叉和轮子同号拧腰。"""
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
     action = env.action_manager.action
 
     leg_mirror = (action[:, 0] - action[:, 2]) ** 2 + (action[:, 1] - action[:, 3]) ** 2
-    # 左右轮 joint axis 相反，同号广义轮速更容易制造 yaw 扭转。
+    # 左右轮 joint axis 相反,同号广义轮速更容易制造 yaw 扭转。
     wheel_yaw = (action[:, 4] + action[:, 5]) ** 2
     return (leg_mirror + 0.5 * wheel_yaw) * jump_flag.float()
 
@@ -841,11 +818,11 @@ def landing_symmetry(
     command_name: str,
     sensor_name: str,
 ) -> torch.Tensor:
-    """着陆阶段左右轮力对称性惩罚，减少偏载着陆。
+    """着陆阶段左右轮力对称性惩罚,减少偏载着陆。
 
     penalty = |F_left - F_right| / (F_left + F_right + 1)
 
-    仅在 landing stage（2）时激活。
+    仅在 landing stage(2)时激活。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -875,7 +852,7 @@ def tracking_lin_vel_no_jump(
     sigma_stand: float,
     vz_weight: float = 2.0,
 ) -> torch.Tensor:
-    """jump_flag=1 时关闭速度跟踪奖励，避免 vz² 惩罚压制起跳。"""
+    """jump_flag=1 时关闭速度跟踪奖励,避免 vz2 惩罚压制起跳。"""
     from se3_train.mdp.rewards import tracking_lin_vel
 
     cmd = env.command_manager.get_command(command_name)
@@ -895,11 +872,11 @@ def leg_torques_no_jump(
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """jump_flag=1 时关闭腿部力矩惩罚，允许起跳时输出峰值力矩。
+    """jump_flag=1 时关闭腿部力矩惩罚,允许起跳时输出峰值力矩。
 
-    力矩上限已从 rated_torque(20 N·m) 放开到 stall_torque(40 N·m)，
-    若保留 leg_torques 惩罚，策略在起跳瞬间会被高额惩罚压制峰值力矩输出。
-    jump_flag=1 时清零，jump_flag=0 时正常惩罚（保持行走效率约束）。
+    力矩上限已从 rated_torque(20 N·m) 放开到 stall_torque(40 N·m),
+    若保留 leg_torques 惩罚,策略在起跳瞬间会被高额惩罚压制峰值力矩输出。
+    jump_flag=1 时清零,jump_flag=0 时正常惩罚(保持行走效率约束)。
     """
     from se3_train.mdp.rewards import leg_torques
 
@@ -914,10 +891,10 @@ def leg_power_no_jump(
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """jump_flag=1 时关闭腿部功率惩罚，允许起跳时高功率输出。
+    """jump_flag=1 时关闭腿部功率惩罚,允许起跳时高功率输出。
 
-    与 leg_torques_no_jump 配套：起跳瞬间高力矩 × 高速度 = 高功率，
-    若不豁免 leg_power，峰值功率惩罚会同样压制起跳动作。
+    与 leg_torques_no_jump 配套:起跳瞬间高力矩 × 高速度 = 高功率,
+    若不豁免 leg_power,峰值功率惩罚会同样压制起跳动作。
     """
     from se3_train.mdp.rewards import leg_power
 
@@ -928,7 +905,7 @@ def leg_power_no_jump(
 
 
 # ---------------------------------------------------------------------------
-# 新增：轮子离地高度、左右对称性、空中轮速约束
+# 新增:轮子离地高度、左右对称性、空中轮速约束
 # ---------------------------------------------------------------------------
 
 
@@ -942,20 +919,20 @@ def jump_wheel_clr_tracking(
     falloff_ratio: float = 0.10,
     apex_ref_vz_window: float = 0.35,
 ) -> torch.Tensor:
-    """参考 apex 附近的轮子离地高度跟踪，相对误差超出容忍带后扣分。
+    """参考 apex 附近的轮子离地高度跟踪,相对误差超出容忍带后扣分。
 
-    轮子离地高度 = 轮子 body 到地面的距离（wheel_height_sensor 测量值）。
-    目标 = jump_target_height（指令中的目标跳跃高度）。
+    轮子离地高度 = 轮子 body 到地面的距离(wheel_height_sensor 测量值)。
+    目标 = jump_target_height(指令中的目标跳跃高度)。
 
-    Fine-tune 负责精确高度控制：相对误差在 relative_tolerance 内不扣分，
-    超出后按相对超出量平滑扣分。默认 15%，对应用户定义的精调及格带。
+    Fine-tune 负责精确高度控制:相对误差在 relative_tolerance 内不扣分,
+    超出后按相对超出量平滑扣分。默认 15%,对应用户定义的精调及格带。
 
     只在参考垂直速度接近 0 的 apex 窗口激活。直接在整个上升段跟踪最终高度
-    会惩罚合法的刚离地阶段，和逐帧轨迹 tracking 产生时序冲突。
+    会惩罚合法的刚离地阶段,和逐帧轨迹 tracking 产生时序冲突。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
-    h_target = cmd[:, 6]  # 目标跳跃高度（轮子离地）
+    h_target = cmd[:, 6]  # 目标跳跃高度(轮子离地)
 
     term = _get_jump_term(env, command_name)
     in_air = term.jump_stage == 1
@@ -994,13 +971,13 @@ def jump_joint_mirror(
     landing_scale: float = 2.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """跳跃窗口左右关节对称性惩罚：起跳 + 空中 + 着陆阶段激活。
+    """跳跃窗口左右关节对称性惩罚:起跳 + 空中 + 着陆阶段激活。
 
-    惩罚 lf0-rf0 和 lf1-rf1 的加权差值平方和，抑制左右腿不对称动作。
-    行走时已有 joint_mirror（weight=-0.179），但跳跃时需要更强的对称约束。
+    惩罚 lf0-rf0 和 lf1-rf1 的加权差值平方和,抑制左右腿不对称动作。
+    行走时已有 joint_mirror(weight=-0.179),但跳跃时需要更强的对称约束。
 
-    激活条件：jump_flag=1。蹬地发生在 stage 0 末尾，必须从起跳前就约束；
-    起跳和空中阶段权重更高，专门压制 sim2sim 中的双腿分叉。
+    激活条件:jump_flag=1。蹬地发生在 stage 0 末尾,必须从起跳前就约束;
+    起跳和空中阶段权重更高,专门压制 sim2sim 中的双腿分叉。
     """
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
@@ -1052,15 +1029,15 @@ def wheel_distance_regularization(
     max_penalty: float = 4.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """显式轮距约束：约束左右轮横向间距，并惩罚前后错位。
+    """显式轮距约束:约束左右轮横向间距,并惩罚前后错位。
 
-    Tron1 的 pen_feet_distance 是直接约束脚间距；SerialLeg 之前只靠
-    joint_mirror 间接约束，无法直接发现“两个轮一前一后”的站立姿态。
-    这里在 base 坐标系下计算左右轮中心差：
-    - y 方向：横向轮距，默认站立约 0.433m，因此约束在 0.40~0.46m
-    - x 方向：前后错位，超过 0.03m 后惩罚
+    Tron1 的 pen_feet_distance 是直接约束脚间距;SerialLeg 之前只靠
+    joint_mirror 间接约束,无法直接发现"两个轮一前一后"的站立姿态。
+    这里在 base 坐标系下计算左右轮中心差:
+    - y 方向:横向轮距,默认站立约 0.433m,因此约束在 0.40~0.46m
+    - x 方向:前后错位,超过 0.03m 后惩罚
 
-    非跳跃低速站立和跳跃全阶段都会激活；高速行走期不激活，避免限制步态调整。
+    非跳跃低速站立和跳跃全阶段都会激活;高速行走期不激活,避免限制步态调整。
     """
     robot = env.scene[asset_cfg.name]
     body_ids = _wheel_body_ids(env, asset_cfg)
@@ -1134,13 +1111,13 @@ def jump_wheel_vel(
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """空中阶段轮速惩罚：抑制策略用轮速补偿姿态或做无效旋转。
+    """空中阶段轮速惩罚:抑制策略用轮速补偿姿态或做无效旋转。
 
-    sim2sim 数据显示轮速在空中持续加速（l_wheel=+34, r_wheel=-79 rad/s），
-    策略通过异号大轮速产生陀螺效应来维持姿态，而不是靠腿部正确起跳。
-    惩罚空中期轮速平方和，迫使策略用更纯粹的腿部动作控制姿态。
+    sim2sim 数据显示轮速在空中持续加速(l_wheel=+34, r_wheel=-79 rad/s),
+    策略通过异号大轮速产生陀螺效应来维持姿态,而不是靠腿部正确起跳。
+    惩罚空中期轮速平方和,迫使策略用更纯粹的腿部动作控制姿态。
 
-    激活条件：jump_flag=1 且 stage==1（airborne）。
+    激活条件:jump_flag=1 且 stage==1(airborne)。
     """
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
@@ -1167,7 +1144,7 @@ def feet_contact_without_cmd_no_jump(
     """jump_flag=1 时关闭 feet_contact_without_cmd 奖励。
 
     原奖励在「无速度指令且轮子接地」时给正奖励。
-    当 jump_flag=1 时，机器人坐在地面蹲健就能拥有这个奖励，会鼓励「蹲着不动」而非起跳。
+    当 jump_flag=1 时,机器人坐在地面蹲健就能拥有这个奖励,会鼓励「蹲着不动」而非起跳。
     """
     from se3_train.mdp.rewards import feet_contact_without_cmd
 
@@ -1192,7 +1169,7 @@ def stand_still_no_jump(
     height_tolerance: float = 40.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """jump_flag=1 时关闭站立静止惩罚，允许起跳时腿部大幅运动。"""
+    """jump_flag=1 时关闭站立静止惩罚,允许起跳时腿部大幅运动。"""
     from se3_train.mdp.rewards import stand_still
 
     cmd = env.command_manager.get_command(command_name)
@@ -1218,11 +1195,11 @@ def standing_joint_mirror_no_jump(
     low_speed_floor: float = 0.08,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """静站期左右腿镜像惩罚，压制左右轮前后错位。
+    """静站期左右腿镜像惩罚,压制左右轮前后错位。
 
-    sim2sim 中观察到静站时左右轮沿机身 x 方向错开，根因表现为左右髋关节
-    角度不对称。该项只在非跳跃时激活，低速和静站给强约束，避免硬阈值导致
-    静站样本太稀疏；jump_flag=1 时完全关闭，避免限制起跳蹲展动作。
+    sim2sim 中观察到静站时左右轮沿机身 x 方向错开,根因表现为左右髋关节
+    角度不对称。该项只在非跳跃时激活,低速和静站给强约束,避免硬阈值导致
+    静站样本太稀疏;jump_flag=1 时完全关闭,避免限制起跳蹲展动作。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -1247,7 +1224,7 @@ def standing_joint_mirror_no_jump(
 
 
 # ---------------------------------------------------------------------------
-# 行走奖励 jump 门控补充：tracking_height、tracking_ang_vel、action_rate
+# 行走奖励 jump 门控补充:tracking_height、tracking_ang_vel、action_rate
 # ---------------------------------------------------------------------------
 
 
@@ -1257,10 +1234,10 @@ def tracking_height_no_jump(
     sigma: float,
     height_sensor_name: str,
 ) -> torch.Tensor:
-    """jump_flag=1 时关闭行走高度跟踪奖励，避免与跳跃轨迹 pose tracking 正面冲突。
+    """jump_flag=1 时关闭行走高度跟踪奖励,避免与跳跃轨迹 pose tracking 正面冲突。
 
-    tracking_height 在 jump_flag=1 时惩罚 base_z 偏离行走默认高度（0.26m），
-    而跳跃轨迹在起跳段要求 base_z 明显升高，两者梯度完全相反。
+    tracking_height 在 jump_flag=1 时惩罚 base_z 偏离行走默认高度(0.26m),
+    而跳跃轨迹在起跳段要求 base_z 明显升高,两者梯度完全相反。
     """
     from se3_train.mdp.rewards import tracking_height
 
@@ -1282,7 +1259,7 @@ def tracking_ang_vel_no_jump(
 ) -> torch.Tensor:
     """jump_flag=1 时关闭偏航速度跟踪奖励。
 
-    起跳/飞行期偏航变化是正常的，不应持续惩罚。
+    起跳/飞行期偏航变化是正常的,不应持续惩罚。
     """
     from se3_train.mdp.rewards import tracking_ang_vel
 
@@ -1298,7 +1275,7 @@ def tracking_orientation_l2_no_jump(
 ) -> torch.Tensor:
     """jump_flag=1 时关闭行走期姿态 L2 惩罚。
 
-    跳跃阶段由 jump_orientation / jump_tilt_barrier 负责姿态质量；行走和静站阶段
+    跳跃阶段由 jump_orientation / jump_tilt_barrier 负责姿态质量;行走和静站阶段
     使用 L2 惩罚提供持续回正梯度。
     """
     from se3_train.mdp.rewards import tracking_orientation_l2
@@ -1316,7 +1293,7 @@ def flat_orientation_l2_no_jump(
     """平地段 Unitree 风格直立姿态 L2 惩罚。
 
     直接惩罚 projected_gravity 在机身 x/y 方向的平方和。机身完全直立时
-    x/y 为 0；只要出现 pitch 或 roll 偏离，就会产生连续负反馈。
+    x/y 为 0;只要出现 pitch 或 roll 偏离,就会产生连续负反馈。
     """
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
@@ -1355,10 +1332,10 @@ def action_rate_no_jump(
     moving_scale: float = 1.0,
     max_penalty: float = 80.0,
 ) -> torch.Tensor:
-    """jump_flag=1 时关闭 action_rate 惩罚，并在 flat idle 期加强平滑。
+    """jump_flag=1 时关闭 action_rate 惩罚,并在 flat idle 期加强平滑。
 
-    起跳的核心是 action 突变（蹲→展腿），action_rate 惩罚会直接压制这个动作。
-    flat idle 期没有动作突变需求，额外压低动作变化，避免站立/低速段抖动。
+    起跳的核心是 action 突变(蹲→展腿),action_rate 惩罚会直接压制这个动作。
+    flat idle 期没有动作突变需求,额外压低动作变化,避免站立/低速段抖动。
     """
     from se3_train.mdp.rewards import action_rate
 
@@ -1398,8 +1375,8 @@ def idle_wheel_motion_penalty_no_jump(
 ) -> torch.Tensor:
     """静止期轮组运动惩罚。
 
-    flat idle 期的目标是原地不动。只惩罚 action_rate 会让策略学到慢速来回滚轮；
-    该项直接惩罚接地轮滚动速度和机身水平速度，避免站立时轮组前后抖动。
+    flat idle 期的目标是原地不动。只惩罚 action_rate 会让策略学到慢速来回滚轮;
+    该项直接惩罚接地轮滚动速度和机身水平速度,避免站立时轮组前后抖动。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -1458,9 +1435,9 @@ def action_smoothness_no_jump(
 ) -> torch.Tensor:
     """平地段二阶动作平滑惩罚。
 
-    参考 Tron1 的 ActionSmoothnessPenalty。action_rate 只惩罚一阶变化，周期性
-    前后抖动仍可能以较小一阶变化存在；二阶项直接惩罚动作曲率，压制来回抽动。
-    jump_flag=1 时关闭，保留起跳动作自由度。
+    参考 Tron1 的 ActionSmoothnessPenalty。action_rate 只惩罚一阶变化,周期性
+    前后抖动仍可能以较小一阶变化存在;二阶项直接惩罚动作曲率,压制来回抽动。
+    jump_flag=1 时关闭,保留起跳动作自由度。
     """
     action = env.action_manager.action
     prev = getattr(env, _ACTION_SMOOTH_PREV_ATTR, None)
@@ -1516,16 +1493,16 @@ def action_rate_jump(
     landing_scale: float = 1.2,
     max_penalty: float = 80.0,
 ) -> torch.Tensor:
-    """jump_flag=1 时保留阶段化动作变化惩罚，压制高频抖动。
+    """jump_flag=1 时保留阶段化动作变化惩罚,压制高频抖动。
 
-    起跳需要从蹲到展的动作变化，不能用行走期同等 action_rate 惩罚。
-    2026-05-21 sim2sim sweep 显示动作尖峰主要集中在跳跃窗口内，最大
-    action_delta_sq_sum 超过 200。这里按参考阶段缩放：
-    - preload/grounded：弱惩罚，只压无意义抖动
-    - takeoff：最弱惩罚，保留蹬地动作自由度
-    - air/landing：强惩罚，压制空中抽动和落地瞬间动作跳变
+    起跳需要从蹲到展的动作变化,不能用行走期同等 action_rate 惩罚。
+    2026-05-21 sim2sim sweep 显示动作尖峰主要集中在跳跃窗口内,最大
+    action_delta_sq_sum 超过 200。这里按参考阶段缩放:
+    - preload/grounded:弱惩罚,只压无意义抖动
+    - takeoff:最弱惩罚,保留蹬地动作自由度
+    - air/landing:强惩罚,压制空中抽动和落地瞬间动作跳变
 
-    max_penalty 用于截断极端样本，避免少量尖峰主导 PPO 更新。
+    max_penalty 用于截断极端样本,避免少量尖峰主导 PPO 更新。
     """
     from se3_train.mdp.rewards import action_rate
 
@@ -1576,14 +1553,14 @@ def jump_pre_takeoff_stillness(
     max_ref_preload_vz: float = 0.05,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """起跳前水平静止奖励：在下降蓄力子相位鼓励水平速度归零。
+    """起跳前水平静止奖励:在下降蓄力子相位鼓励水平速度归零。
 
-    设计目标：让机器人先原地静止再起跳，而不是边走边跳。
-    奖励形式：exp(-vxy² / sigma_vxy²)，静止时为 1，vxy=sigma_vxy 时约 0.37。
+    设计目标:让机器人先原地静止再起跳,而不是边走边跳。
+    奖励形式:exp(-vxy2 / sigma_vxy2),静止时为 1,vxy=sigma_vxy 时约 0.37。
 
-    激活限制：
-    - jump_flag=1 + reference preload（grounded 且参考 vz 尚未上升）
-    - 另加 stillness_window_steps 时间窗口限制：jump 窗口开始后的前 N 步才有奖励，超过则决策必须起跳。
+    激活限制:
+    - jump_flag=1 + reference preload(grounded 且参考 vz 尚未上升)
+    - 另加 stillness_window_steps 时间窗口限制:jump 窗口开始后的前 N 步才有奖励,超过则决策必须起跳。
     """
     from se3_train.mdp.jump_commands import JumpCommandTerm
 
@@ -1610,10 +1587,10 @@ def jump_pre_takeoff_stillness(
 def _landing_recovery_reward(
     stillness: torch.Tensor, height_recovery: torch.Tensor
 ) -> torch.Tensor:
-    """落地恢复奖励的组合方式：加权和，让两项各自独立传梯度。
+    """落地恢复奖励的组合方式:加权和,让两项各自独立传梯度。
 
-    乘积形式在高度未恢复时 height_recovery≈0，会阻断 stillness 梯度传播；
-    加权和确保静止和高度恢复各自都有梯度，不会互相屏蔽。
+    乘积形式在高度未恢复时 height_recovery≈0,会阻断 stillness 梯度传播;
+    加权和确保静止和高度恢复各自都有梯度,不会互相屏蔽。
     """
     return 0.6 * stillness + 0.4 * height_recovery
 
@@ -1627,12 +1604,12 @@ def jump_landing_recovery(
     height_sensor_name: str = "base_height_sensor",
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """落地恢复奖励：landing 阶段同时奖励水平速度归零和高度回到站立位。
+    """落地恢复奖励:landing 阶段同时奖励水平速度归零和高度回到站立位。
 
-    设计目标：落地后机器人停在原地，而不是继续滑行或倒地。
-    奖励 = stillness × height_recovery：两项同时为好才拿满分。
+    设计目标:落地后机器人停在原地,而不是继续滑行或倒地。
+    奖励 = stillness × height_recovery:两项同时为好才拿满分。
 
-    激活阶段：reference landing。真实腿部接触只用于日志留档，不参与奖励阶段判断。
+    激活阶段:reference landing。真实腿部接触只用于日志留档,不参与奖励阶段判断。
     """
 
     from se3_train.mdp.jump_commands import JumpCommandTerm
@@ -1660,7 +1637,7 @@ def jump_landing_recovery(
     h_err_sq = (h - target_height) ** 2
     height_recovery = torch.exp(-h_err_sq / (sigma_h**2))
 
-    # 加权和替代乘积：两项独立传梯度，防止高度未恢复时阻断水平静止梯度传播
+    # 加权和替代乘积:两项独立传梯度,防止高度未恢复时阻断水平静止梯度传播
     return _landing_recovery_reward(stillness, height_recovery) * active.float()
 
 
@@ -1675,8 +1652,8 @@ def jump_landing_base_height_penalty(
     """落地阶段 base 高度显式惩罚。
 
     Tron1 使用高权重 pen_base_height 直接惩罚低身位。SerialLeg 跳跃过程不能
-    全程固定 base 高度，否则会和起跳高度 tracking 冲突；因此只在 landing 阶段
-    要求回到站立高度，防止落地后蹲太深或趴低。
+    全程固定 base 高度,否则会和起跳高度 tracking 冲突;因此只在 landing 阶段
+    要求回到站立高度,防止落地后蹲太深或趴低。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
@@ -1702,15 +1679,15 @@ def jump_takeoff_horizontal_penalty(
     min_ref_takeoff_vz: float = 0.05,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """起跳时水平速度惩罚：在上升蹬地子相位惩罚水平速度，强制垂直起跳。
+    """起跳时水平速度惩罚:在上升蹬地子相位惩罚水平速度,强制垂直起跳。
 
-    设计目标：策略必须先停下来再蹬腿，而不是带着水平动量起跳。
-    激活条件与 jump_takeoff_drive 相同（reference takeoff + jump_flag=1），
-    但进一步要求 vz > 0（已经开始蹬起）时才惩罚水平速度。
-    这样不会惩罚下降蓄力阶段，只惩罚「边跑边跳」的瞬间。
+    设计目标:策略必须先停下来再蹬腿,而不是带着水平动量起跳。
+    激活条件与 jump_takeoff_drive 相同(reference takeoff + jump_flag=1),
+    但进一步要求 vz > 0(已经开始蹬起)时才惩罚水平速度。
+    这样不会惩罚下降蓄力阶段,只惩罚「边跑边跳」的瞬间。
 
-    返回正惩罚值，env_cfg 中使用负权重。
-    惩罚形式：1 - exp(-vxy² / sigma²)，水平速度为 0 时惩罚 0，越快惩罚越大。
+    返回正惩罚值,env_cfg 中使用负权重。
+    惩罚形式:1 - exp(-vxy2 / sigma2),水平速度为 0 时惩罚 0,越快惩罚越大。
     """
     from se3_train.mdp.jump_commands import JumpCommandTerm
 
@@ -1730,7 +1707,7 @@ def jump_takeoff_horizontal_penalty(
     vz_ref = ideal_takeoff_vel(h_target)
     vxy_sq = vel[:, 0] ** 2 + vel[:, 1] ** 2
 
-    # 只在已经蹬出一部分向上速度时才惩罚水平速度，不干扰早期蓄力/蹬地探索
+    # 只在已经蹬出一部分向上速度时才惩罚水平速度,不干扰早期蓄力/蹬地探索
     taking_off = vz > (min_vz_ratio * vz_ref)
     penalty = 1.0 - torch.exp(-vxy_sq / (sigma_vxy**2))
 
