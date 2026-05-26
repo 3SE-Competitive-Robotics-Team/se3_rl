@@ -72,6 +72,26 @@ train-cpu:
 
 # ---- 评估 / 回放 ----
 
+# ---- mjlab play（行走 / 跳跃，原生 viewer）----
+
+# mjlab play 行走回放（自动选最新 checkpoint，本地 viewer）
+play:
+    uv run se3-play SE3-WheelLegged-Flat-GRU --num-envs 1
+
+# mjlab play 行走回放（指定 checkpoint）
+# 用法: just play-ckpt logs/.../model_4999.pt
+play-ckpt checkpoint:
+    uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+
+# mjlab play 跳跃回放（自动选最新 checkpoint，本地 viewer）
+play-jump:
+    uv run se3-play SE3-WheelLegged-Jump-GRU --num-envs 1
+
+# mjlab play 跳跃回放（指定 checkpoint）
+# 用法: just play-jump-ckpt logs/.../model_4999.pt
+play-jump-ckpt checkpoint:
+    uv run se3-play SE3-WheelLegged-Jump-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+
 # ---- sim2sim（行走模型）—— 默认跑 walk-sweep 历程 ----
 
 # sim2sim 回放（自动选最新 checkpoint，Rerun，walk-sweep 历程）
