@@ -114,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
+    parser.add_argument(
+        "--rerun-memory-limit",
+        default="1GB",
+        help="Rerun viewer 内存上限。默认 1GB,超过后由 Rerun 丢弃最老数据。",
+    )
     parser.add_argument("--no-rerun-spawn", action="store_true")
     parser.add_argument("--viewer-log-every", type=int, default=1)
     parser.add_argument("--print-every", type=int, default=100)
@@ -306,6 +311,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             spawn=not bool(args.no_rerun_spawn),
             address=args.rerun_address,
             record_to_rrd=args.rerun_record,
+            memory_limit=str(args.rerun_memory_limit),
             log_every=max(1, int(args.viewer_log_every)),
         ),
         max_steps=int(args.max_steps),

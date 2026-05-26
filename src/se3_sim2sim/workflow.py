@@ -285,6 +285,7 @@ class Sim2SimWorkflow:
             spawn=bool(self.cfg.viewer.spawn),
             address=self.cfg.viewer.address,
             record_to_rrd=self.cfg.viewer.record_to_rrd,
+            memory_limit=self.cfg.viewer.memory_limit,
             follow_body=self.cfg.viewer.follow_body,
         )
 

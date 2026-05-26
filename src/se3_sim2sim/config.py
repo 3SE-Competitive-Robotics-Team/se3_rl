@@ -153,6 +153,7 @@ class ViewerConfig(BaseModel):
     spawn: bool = True
     address: str | None = None
     record_to_rrd: Path | None = None
+    memory_limit: str = "1GB"
     log_every: int = 1
     follow_body: str = "base_link"
 

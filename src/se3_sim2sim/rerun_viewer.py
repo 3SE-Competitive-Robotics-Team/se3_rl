@@ -32,6 +32,7 @@ class RerunViewer:
         spawn: bool = True,
         address: str | None = None,
         record_to_rrd: Path | None = None,
+        memory_limit: str = "1GB",
         follow_body: str = "base_link",
         manage_recording: bool = True,
     ) -> None:
@@ -49,7 +50,12 @@ class RerunViewer:
             if address:
                 rr.connect_grpc(address)
             elif spawn:
-                rr.spawn(connect=True, detach_process=True)
+                rr.spawn(
+                    connect=True,
+                    detach_process=True,
+                    memory_limit=memory_limit,
+                    server_memory_limit=memory_limit,
+                )
             if record_to_rrd is not None:
                 record_to_rrd.parent.mkdir(parents=True, exist_ok=True)
                 rr.save(str(record_to_rrd))
