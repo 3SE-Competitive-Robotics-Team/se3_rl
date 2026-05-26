@@ -10,14 +10,41 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.utils.lab_api.math import quat_from_euler_xyz, quat_mul, sample_uniform
+from mjlab.utils.lab_api.math import (
+    euler_xyz_from_quat,
+    quat_from_euler_xyz,
+    quat_mul,
+    sample_uniform,
+)
 
 from se3_shared import JointGroup
+from se3_train.mdp.jump_commands import JumpCommandTerm
+from se3_train.mdp.jump_trajectories import (
+    DEFAULT_JUMP_TRAJ_HEIGHTS,
+    DEFAULT_JUMP_TRAJ_PATHS,
+    JumpTrajLibrary,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+def _pre_resample_jump_command_for_reset(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str = "velocity_height",
+) -> None:
+    """在 reset 写状态前预采样跳跃指令，保证 RSI 读取新 episode 的 jump_flag。"""
+    if not hasattr(env, "command_manager"):
+        return
+    try:
+        term = env.command_manager.get_term(command_name)
+    except Exception:
+        return
+    if isinstance(term, JumpCommandTerm):
+        term.pre_resample_for_reset(env_ids)
 
 
 def reset_root_state_full(
@@ -28,6 +55,8 @@ def reset_root_state_full(
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    _pre_resample_jump_command_for_reset(env, env_ids)
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -65,8 +94,90 @@ def reset_root_state_full(
 
     vel = torch.zeros(n, 6, device=env.device)
 
+    # jump_flag=1 的 episode：从参考轨迹初始化。
+    #
+    # 设计原则：
+    #   - PreTrain 可从随机参考帧开始，覆盖起跳、空中和落地状态分布
+    #   - 注入参考帧的 base_pos_z、base_vel、q_ref、q_vel，确保状态与参考相位一致
+    #   - 起点帧存入 env._rsi_traj_frame[env_ids] 供 reset_joints 读取
+    #   - rsi_takeoff_prob < 1.0 时，部分 jump episode 回退到预蹲姿态，仅用于显式消融
+    if hasattr(env, "command_manager"):
+        try:
+            term = env.command_manager.get_term("velocity_height")
+            rsi_takeoff_prob = (
+                term.cfg.rsi_takeoff_prob if isinstance(term, JumpCommandTerm) else 1.0
+            )
+            cmd = env.command_manager.get_command("velocity_height")
+            jump_mask = cmd[env_ids, 5] > 0.5
+            if jump_mask.any():
+                # 决定哪些 env 使用轨迹起点初始化（非全量时随机跳过部分）
+                rsi_mask = jump_mask
+                if rsi_takeoff_prob < 1.0:
+                    rand = torch.rand(len(env_ids), device=env.device)
+                    rsi_mask = jump_mask & (rand < rsi_takeoff_prob)
+
+                # 初始化轨迹起点帧缓存（供 reset_joints 读取）
+                if not hasattr(env, "_rsi_traj_frame"):
+                    env._rsi_traj_frame = torch.full(
+                        (env.num_envs,), -1, dtype=torch.long, device=env.device
+                    )
+                env._rsi_traj_frame[env_ids] = -1  # 默认不做 RSI
+
+                if rsi_mask.any():
+                    # 按 jump_target_height 最近邻匹配轨迹，可从随机帧初始化。
+                    traj_paths = (
+                        term.cfg.traj_paths
+                        if isinstance(term, JumpCommandTerm)
+                        else DEFAULT_JUMP_TRAJ_PATHS
+                    )
+                    traj_heights = (
+                        term.cfg.traj_target_heights
+                        if isinstance(term, JumpCommandTerm)
+                        else DEFAULT_JUMP_TRAJ_HEIGHTS
+                    )
+                    library = JumpTrajLibrary.get(traj_paths, traj_heights, str(env.device))
+                    h_targets = cmd[env_ids[rsi_mask], 6]
+                    n_rsi = rsi_mask.sum().item()
+                    frame_rsi = torch.zeros(n_rsi, dtype=torch.long, device=env.device)
+                    if isinstance(term, JumpCommandTerm) and term.cfg.rsi_random_frame:
+                        max_step = library.n_steps_for(h_targets) - 1
+                        phase_lo, phase_hi = term.cfg.rsi_frame_phase_range
+                        lo_step = torch.clamp((max_step.float() * phase_lo).round().long(), min=0)
+                        hi_step = torch.clamp(
+                            (max_step.float() * phase_hi).round().long(),
+                            min=0,
+                        )
+                        hi_step = torch.maximum(lo_step, hi_step)
+                        rand = torch.rand(n_rsi, device=env.device)
+                        frame_rsi = (
+                            (lo_step.float() + rand * (hi_step - lo_step).float()).round().long()
+                        )
+
+                    ref_pos, ref_vel, _, _, _, _ = library.gather(h_targets, frame_rsi)
+
+                    # 写入参考线速度和 base 高度；xy 位置仍用当前 env 原点附近的小随机偏移。
+                    vel[rsi_mask, 0:3] = ref_vel
+                    pos[rsi_mask, 2] = ref_pos[:, 2] + env.scene.env_origins[env_ids][rsi_mask, 2]
+
+                    # 缓存帧号供 reset_joints 使用，并同步 command 里的参考相位。
+                    env._rsi_traj_frame[env_ids[rsi_mask]] = frame_rsi
+                    if isinstance(term, JumpCommandTerm):
+                        term.set_reference_frame(env_ids[rsi_mask], frame_rsi)
+        except Exception:
+            pass
+
     asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
     asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
+
+    # 6DoF base tracking 需要以 reset 后的随机 xy/yaw 为参考零点。
+    # 直接跟世界系 x=0/yaw=0 会和 reset_root_state_full 的随机化冲突。
+    if not hasattr(env, "_jump_pose_ref_pos_w"):
+        env._jump_pose_ref_pos_w = torch.zeros((env.num_envs, 3), device=env.device)
+    if not hasattr(env, "_jump_pose_ref_yaw"):
+        env._jump_pose_ref_yaw = torch.zeros(env.num_envs, device=env.device)
+    _, _, yaw_ref = euler_xyz_from_quat(new_quat)
+    env._jump_pose_ref_pos_w[env_ids] = pos
+    env._jump_pose_ref_yaw[env_ids] = yaw_ref
 
 
 def reset_joints(
@@ -84,6 +195,64 @@ def reset_joints(
     joint_vel = torch.zeros_like(joint_pos)
 
     joint_pos[:, JointGroup.WHEELS] = 0.0
+
+    # jump_flag=1 的 episode：RSI 关节角——从参考轨迹对应帧注入
+    # reset_root_state_full 已缓存帧号到 env._rsi_traj_frame，供此处读取
+    # 确保关节角与注入的 base_pos_z/base_vel_z 对应，初始状态在轨迹流形上
+    # 若缓存不存在（非 RSI 帧或行走 episode），回退到固定预蹲姿态
+    _jump_hip_fallback = 0.85  # rad，无轨迹数据时的回退预蹲髋角
+    _jump_knee_fallback = 0.55  # rad，无轨迹数据时的回退预蹲膝角
+    if hasattr(env, "command_manager"):
+        try:
+            cmd = env.command_manager.get_command("velocity_height")
+            jump_mask = cmd[env_ids, 5] > 0.5
+            if jump_mask.any():
+                rsi_frames = getattr(env, "_rsi_traj_frame", None)
+                # rsi_done_local：local index 中已从轨迹注入关节角的位置（用于计算回退 mask）
+                rsi_done_mask = torch.zeros(len(env_ids), dtype=torch.bool, device=env.device)
+
+                if rsi_frames is not None:
+                    frames = rsi_frames[env_ids]
+                    rsi_done_mask = jump_mask & (frames >= 0)
+                    if rsi_done_mask.any():
+                        term = env.command_manager.get_term("velocity_height")
+                        traj_paths = (
+                            term.cfg.traj_paths
+                            if isinstance(term, JumpCommandTerm)
+                            else DEFAULT_JUMP_TRAJ_PATHS
+                        )
+                        traj_heights = (
+                            term.cfg.traj_target_heights
+                            if isinstance(term, JumpCommandTerm)
+                            else DEFAULT_JUMP_TRAJ_HEIGHTS
+                        )
+                        library = JumpTrajLibrary.get(traj_paths, traj_heights, str(env.device))
+                        h_targets = cmd[env_ids[rsi_done_mask], 6]
+                        _, _, q_ref, q_vel, _, _ = library.gather(h_targets, frames[rsi_done_mask])
+                        # q_ref/q_vel: [lf0, lf1, lw, rf0, rf1, rw]
+                        joint_pos[rsi_done_mask, JointGroup.LEGS[0]] = q_ref[:, 0]
+                        joint_pos[rsi_done_mask, JointGroup.LEGS[1]] = q_ref[:, 1]
+                        joint_pos[rsi_done_mask, JointGroup.LEGS[2]] = q_ref[:, 3]
+                        joint_pos[rsi_done_mask, JointGroup.LEGS[3]] = q_ref[:, 4]
+                        joint_vel[rsi_done_mask, JointGroup.LEGS[0]] = q_vel[:, 0]
+                        joint_vel[rsi_done_mask, JointGroup.LEGS[1]] = q_vel[:, 1]
+                        joint_vel[rsi_done_mask, JointGroup.LEGS[2]] = q_vel[:, 3]
+                        joint_vel[rsi_done_mask, JointGroup.LEGS[3]] = q_vel[:, 4]
+
+                # 未做 RSI 的 jump env 默认保持站立姿态。
+                # 只有显式启用部分 RSI 时，未注入的样本才回退到预蹲姿态做消融。
+                term = env.command_manager.get_term("velocity_height")
+                use_fallback_squat = not (
+                    isinstance(term, JumpCommandTerm) and term.cfg.rsi_takeoff_prob <= 0.0
+                )
+                fallback_mask = jump_mask & ~rsi_done_mask & use_fallback_squat
+                if fallback_mask.any():
+                    joint_pos[fallback_mask, JointGroup.LEGS[0]] = _jump_hip_fallback
+                    joint_pos[fallback_mask, JointGroup.LEGS[1]] = _jump_knee_fallback
+                    joint_pos[fallback_mask, JointGroup.LEGS[2]] = _jump_hip_fallback
+                    joint_pos[fallback_mask, JointGroup.LEGS[3]] = _jump_knee_fallback
+        except Exception:
+            pass
 
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 

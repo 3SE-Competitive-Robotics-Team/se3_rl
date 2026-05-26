@@ -23,7 +23,8 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     ang_vel_yaw_range: tuple[float, float] = (-3.0, 3.0)
     pitch_range: tuple[float, float] = (-0.2, 0.2)
     roll_range: tuple[float, float] = (-0.1, 0.1)
-    height_range: tuple[float, float] = (0.22, 0.32)
+    height_range: tuple[float, float] = (0.20, 0.32)
+    standing_height_range: tuple[float, float] = (0.20, 0.32)
     lin_vel_deadband: float = 0.1
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1
@@ -63,12 +64,18 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._standing_mask[standing_ids] = True
         self._standing_mask[moving_ids] = False
 
-        # 站立环境:零速度,默认姿态,默认高度。
+        # 站立环境:零速度,默认姿态,按站立高度范围采样。
         self._command[standing_ids, 0] = 0.0
         self._command[standing_ids, 1] = 0.0
         self._command[standing_ids, 2] = 0.0  # pitch = 0
         self._command[standing_ids, 3] = 0.0  # roll = 0
-        self._command[standing_ids, 4] = (self.cfg.height_range[0] + self.cfg.height_range[1]) / 2.0
+        if len(standing_ids) > 0:
+            standing_height = (
+                torch.rand(len(standing_ids), device=self.device)
+                * (self.cfg.standing_height_range[1] - self.cfg.standing_height_range[0])
+                + self.cfg.standing_height_range[0]
+            )
+            self._command[standing_ids, 4] = standing_height
 
         # 运动环境:随机速度 + 随机姿态 + 随机高度。
         if len(moving_ids) > 0:

@@ -319,7 +319,7 @@ class SpringConfig:
 
 ## 验证标准
 
-1. **Smoke 测试通过**：加入弹簧后 `SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None` 正常完成
+1. **Smoke 测试通过**：加入弹簧后 `SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None` 正常完成
 2. **力矩曲线合理**：θ ∈ [-π/4, π/4] 范围内力矩单调、量级在 ±2 N·m 以内
 3. **sim2sim 一致性**：训练端和 sim2sim 端在同一 θ 序列下力矩误差 < 1e-6
 4. **训练收敛**：flat 任务 2000 iter 后 reward 不低于无弹簧 baseline 的 90%

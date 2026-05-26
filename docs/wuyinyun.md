@@ -177,7 +177,7 @@ ssh wuyinyun "zellij --session train action run -- bash -c '
   export HTTPS_PROXY=http://127.0.0.1:17890
   cd ~/project/se3_wheel_leg &&
   source ~/.local/bin/env &&
-  uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log
+  uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log
 '"
 ```
 
@@ -362,5 +362,5 @@ ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,temperature.gpu
 pkill -f tinyproxy 2>/dev/null; tinyproxy -c /tmp/tinyproxy.conf; sleep 1; pkill -f "ssh.*17890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:18080 wuyinyun && echo "tunnel ok"
 
 # 一键拉代码重启训练
-ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && zellij kill-session train 2>/dev/null; zellij attach --create-background train && zellij --session train action run -- bash -c 'export PATH=\$HOME/.local/bin:\$PATH && export HTTP_PROXY=http://127.0.0.1:17890 && export HTTPS_PROXY=http://127.0.0.1:17890 && source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'"
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && zellij kill-session train 2>/dev/null; zellij attach --create-background train && zellij --session train action run -- bash -c 'export PATH=\$HOME/.local/bin:\$PATH && export HTTP_PROXY=http://127.0.0.1:17890 && export HTTPS_PROXY=http://127.0.0.1:17890 && source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024 2>&1 | tee /tmp/train.log'"
 ```

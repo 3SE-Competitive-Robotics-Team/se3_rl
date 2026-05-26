@@ -102,6 +102,23 @@ wheels = [
 ]
 
 [[package]]
+name = "casadi"
+version = "3.7.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/92/62/1e98662024915ecb09c6894c26a3f497f4afa66570af3f53db4651fc45f1/casadi-3.7.2.tar.gz", hash = "sha256:b4d7bd8acdc4180306903ae1c9eddaf41be2a3ae2fa7154c57174ae64acdc60d", size = 6053600, upload-time = "2025-09-10T10:05:49.521Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/01/d5e3058775ec8e24a01eb74d36099493b872536ef9e39f1e49624b977778/casadi-3.7.2-cp311-none-macosx_10_13_x86_64.macosx_10_13_intel.whl", hash = "sha256:f43b0562d05a5e6e81f1885fc4ae426c382e36eebfd8d27f1baff6052178a9b0", size = 47115880, upload-time = "2025-09-10T07:52:24.399Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/cf/4af27e010d599a5419129d34fdde41637029a1cca2a40bef0965d6d52228/casadi-3.7.2-cp311-none-macosx_11_0_arm64.whl", hash = "sha256:70add3334b437b60a9bc0f864d094350f1a4fcbf9e8bafec870b61aed64674df", size = 42293337, upload-time = "2025-09-10T08:03:32.556Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/4c/d1a50cc840103e00effcbaf8e911b6b3fb6ba2c8f4025466f524854968ed/casadi-3.7.2-cp311-none-manylinux2014_aarch64.whl", hash = "sha256:392d3367a4b33cf223013dad8122a0e549da40b1702a5375f82f85b563e5c0cf", size = 47277175, upload-time = "2025-09-10T08:04:08.811Z" },
+    { url = "https://files.pythonhosted.org/packages/be/29/6e5714d124e6ddafbccc3ed774ca603081caa1175c7f0e1c52484184dfb3/casadi-3.7.2-cp311-none-manylinux2014_i686.whl", hash = "sha256:2ce09e0ced6df33048dccd582b5cfa2c9ff5193b12858b2584078afc17761905", size = 72438460, upload-time = "2025-09-10T08:05:02.769Z" },
+    { url = "https://files.pythonhosted.org/packages/23/32/ac1f3999273aa4aae48516f6f4b7b267e0cc70d8527866989798cb81312f/casadi-3.7.2-cp311-none-manylinux2014_x86_64.whl", hash = "sha256:5086799a46d10ba884b72fd02c21be09dae52cbc189272354a5d424791b55f37", size = 75574474, upload-time = "2025-09-10T08:06:00.709Z" },
+    { url = "https://files.pythonhosted.org/packages/68/78/7fd10709504c1757f70db3893870a891fcb9f1ec9f05e8ef2e3f3b9d7e2f/casadi-3.7.2-cp311-none-win_amd64.whl", hash = "sha256:72aa5727417d781ed216f16b5e93c6ddca5db27d83b0015a729e8ad570cdc465", size = 50994144, upload-time = "2025-09-10T08:06:42.384Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.4.22"
 source = { registry = "https://pypi.org/simple" }
@@ -1850,6 +1867,7 @@ name = "se3-wheel-leg"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "casadi" },
     { name = "mjlab" },
     { name = "mujoco" },
     { name = "numpy" },
@@ -1872,6 +1890,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "casadi" },
     { name = "mjlab", specifier = "==1.3.0" },
     { name = "mujoco", specifier = "==3.8.0" },
     { name = "numpy", specifier = "==2.4.4" },

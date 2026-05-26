@@ -72,23 +72,61 @@ train-cpu:
 
 # ---- 评估 / 回放 ----
 
-# sim2sim 回放（自动选择最新 checkpoint，Rerun 可视化）
-sim:
-    uv run se3-sim2sim --max-steps 3000
+# ---- mjlab play（行走 / 跳跃，原生 viewer）----
 
-# sim2sim 指定 checkpoint 回放（Rerun 可视化）
+# mjlab play 行走回放（自动选最新 checkpoint，本地 viewer）
+play:
+    uv run se3-play SE3-WheelLegged-Flat-GRU --num-envs 1
+
+# mjlab play 行走回放（指定 checkpoint）
+# 用法: just play-ckpt logs/.../model_4999.pt
+play-ckpt checkpoint:
+    uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+
+# mjlab play 跳跃回放（自动选最新 checkpoint，本地 viewer）
+play-jump:
+    uv run se3-play SE3-WheelLegged-Jump-GRU --num-envs 1
+
+# mjlab play 跳跃回放（指定 checkpoint）
+# 用法: just play-jump-ckpt logs/.../model_4999.pt
+play-jump-ckpt checkpoint:
+    uv run se3-play SE3-WheelLegged-Jump-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+
+# ---- sim2sim（行走模型）—— 默认跑 walk-sweep 历程 ----
+
+# sim2sim 回放（自动选最新 checkpoint，Rerun，walk-sweep 历程）
+sim:
+    uv run se3-sim2sim --max-steps 3000 --course walk-sweep
+
+# sim2sim 指定 checkpoint（Rerun，walk-sweep 历程）
 # 用法: just sim-ckpt logs/.../model_4999.pt
 sim-ckpt checkpoint:
-    uv run se3-sim2sim --checkpoint {{checkpoint}} --max-steps 3000
+    uv run se3-sim2sim --checkpoint {{checkpoint}} --max-steps 3000 --course walk-sweep
 
 # sim2sim 无 GUI 快速验证（自动选最新 checkpoint）
 sim-headless:
-    uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20
+    uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 
 # sim2sim 无 GUI 验证（指定 checkpoint）
 # 用法: just sim-headless-ckpt logs/.../model_4999.pt
 sim-headless-ckpt checkpoint:
-    uv run se3-sim2sim --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20
+    uv run se3-sim2sim --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+
+# ---- sim2sim（跳跃模型） —— 默认跑 jump-sweep 历程 ----
+
+# sim2sim 跳跃回放（自动选最新 checkpoint，Rerun，jump-sweep 历程）
+sim-jump:
+    uv run se3-sim2sim --max-steps 5000 --course jump-sweep
+
+# sim2sim 指定 checkpoint 跳跃回放（Rerun，jump-sweep 历程）
+# 用法: just sim-jump-ckpt logs/.../model_4999.pt
+sim-jump-ckpt checkpoint:
+    uv run se3-sim2sim --checkpoint {{checkpoint}} --max-steps 5000 --course jump-sweep
+
+# sim2sim 跳跃无 GUI 快速验证（指定 checkpoint）
+# 用法: just sim-jump-headless-ckpt logs/.../model_4999.pt
+sim-jump-headless-ckpt checkpoint:
+    uv run se3-sim2sim --checkpoint {{checkpoint}} --viewer none --max-steps 5000 --print-every 50 --course jump-sweep
 
 # ---- 清理 ----
 

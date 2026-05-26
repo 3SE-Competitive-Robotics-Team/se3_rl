@@ -12,12 +12,15 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import JointGroup, ObservationConfig
+from se3_train.mdp.contact_utils import contact_force_nonfinite_env_mask, finite_contact_force_norm
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 # 模块级观测配置，作为缩放系数的单一来源
 _OBS_CFG = ObservationConfig()
+_WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR = "_wheel_contact_force_nonfinite_total"
+_WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR = "_wheel_contact_force_sample_total"
 
 
 def base_ang_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -35,11 +38,12 @@ def projected_gravity_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """速度/姿态/高度指令,缩放 (2.0, 0.25, 5.0, 5.0, 5.0)。
 
-    5 维: [lin_vel_x, ang_vel_yaw, pitch, roll, height]
+    取前 5 维: [lin_vel_x, ang_vel_yaw, pitch, roll, height]
+    兼容跳跃任务（8 维指令），跳跃扩展维度由 jump_commands_obs 单独输出。
     """
     cmd = env.command_manager.get_command("velocity_height")
     scale = torch.tensor(list(_OBS_CFG.command_scale), device=cmd.device)
-    return cmd * scale
+    return cmd[:, :5] * scale
 
 
 def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -90,7 +94,27 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
     data = sensor.data
     if data.force is None:
         return torch.zeros(env.num_envs, 2, device=env.device)
-    return torch.norm(data.force, dim=-1)
+    _record_wheel_contact_force_nonfinite(env, data.force)
+    return finite_contact_force_norm(data.force)
+
+
+def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.Tensor) -> None:
+    """累计 wheel contact force 的非有限值触发次数，并写入训练日志。"""
+    nonfinite_envs = int(contact_force_nonfinite_env_mask(force).sum().item())
+    total = int(getattr(env, _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR, 0)) + nonfinite_envs
+    samples = int(getattr(env, _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR, 0)) + env.num_envs
+    setattr(env, _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR, total)
+    setattr(env, _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR, samples)
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Debug/wheel_contact_force_nonfinite_last_envs": nonfinite_envs,
+                "Debug/wheel_contact_force_nonfinite_total_envs": total,
+                "Debug/wheel_contact_force_obs_total_envs": samples,
+                "Debug/wheel_contact_force_nonfinite_rate": total / max(samples, 1),
+            }
+        )
 
 
 def base_height_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
@@ -99,3 +123,21 @@ def base_height_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
 
     sensor: TerrainHeightSensor = env.scene[sensor_name]
     return sensor.data.heights
+
+
+def jump_commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """跳跃指令观测，3D：[jump_flag, jump_target_height, jump_phase]。
+
+    jump_flag:          0/1，本 episode 是否触发跳跃
+    jump_target_height: 目标跳跃高度（m），范围 0.1~0.6
+    jump_phase:         0→1 连续相位，从参考轨迹第 0 帧开始按 motion 时间推进
+
+    要求指令必须为 8 维（JumpCommandTerm），否则直接报错。
+    """
+    cmd = env.command_manager.get_command("velocity_height")
+    if cmd.shape[1] != 8:
+        raise ValueError(
+            f"jump_commands_obs 要求 8 维指令 (JumpCommandTerm),"
+            f" 实际得到 {cmd.shape[1]} 维。请将 velocity_height 指令替换为 JumpCommandCfg。"
+        )
+    return cmd[:, 5:8]

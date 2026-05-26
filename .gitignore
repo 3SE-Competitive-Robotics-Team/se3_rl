@@ -29,3 +29,4 @@ replays/
 .sisyphus/
 .opencode/
 opencode.json
+.DS_Store

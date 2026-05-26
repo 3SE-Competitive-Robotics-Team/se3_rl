@@ -6,6 +6,7 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
+from scipy.optimize import least_squares
 
 from se3_shared import ActionDelayConfig, JointGroup, Termination
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -53,10 +54,7 @@ class WheelLeggedRobot:
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
         self.model = self._build_model(str(self.model_path))
-        if float(cfg.sim_dt) <= 0.0:
-            raise ValueError(f"sim_dt must be positive, got {cfg.sim_dt}")
-        if int(cfg.control_decimation) < 1:
-            raise ValueError(f"control_decimation must be >= 1, got {cfg.control_decimation}")
+        # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
         self.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
@@ -76,6 +74,8 @@ class WheelLeggedRobot:
         self.joint_qvel = np.asarray(
             [self.model.jnt_dofadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
+        self._passive_fourbar_qpos = self._passive_fourbar_qpos_indices()
+        self._fourbar_site_pairs = self._fourbar_site_pair_indices()
 
         self.default_dof_pos = as_float64(cfg.default_dof_pos)
         self.action_scale = as_float64(cfg.action_scale)
@@ -107,6 +107,7 @@ class WheelLeggedRobot:
         self.data.qpos[3:7] = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.data.qvel[0:6] = 0.0
         self.data.qpos[self.joint_qpos] = self.default_dof_pos
+        self._project_fourbar_constraints()
         self.data.qvel[self.joint_qvel] = 0.0
         if (not fixed) or randomize_root:
             roll, pitch, yaw = self.rng.uniform(-0.25, 0.25, size=3)
@@ -177,14 +178,35 @@ class WheelLeggedRobot:
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
         wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
         wheel_vel = self.dof_vel[JointGroup.CTRL_WHEELS]  # rad/s，[l, r]
-        wheel_lin_vel = float(np.mean(wheel_vel) * wheel_radius)  # 正向平均线速度 m/s
+        # 左右轮 joint axis 相反，前进速度对应广义轮速 l-r，而不是 l+r。
+        wheel_lin_vel = float(0.5 * (wheel_vel[0] - wheel_vel[1]) * wheel_radius)
+
+        # 轮子最低点离地高度：轮子中心 z - 轮子半径
+        # 反映实际离地间隙，跳跃时比 baselink 高度更直观
+        l_wheel_z = float(self.data.body("l_wheel_Link").xpos[2])
+        r_wheel_z = float(self.data.body("r_wheel_Link").xpos[2])
+        wheel_clearance_l = l_wheel_z - wheel_radius  # 左轮最低点离地高度
+        wheel_clearance_r = r_wheel_z - wheel_radius  # 右轮最低点离地高度
+        wheel_clearance = min(wheel_clearance_l, wheel_clearance_r)  # 取两轮最低
+
         telemetry = {
             "step": int(self.step_count),
             "time": float(self.data.time),
-            "height": float(self.data.qpos[2]),
+            "height": float(self.data.qpos[2]),  # baselink z 高度
+            "wheel_clearance": float(wheel_clearance),  # 轮子最低点离地高度
+            "wheel_clearance_left": float(wheel_clearance_l),  # 左轮最低点离地高度
+            "wheel_clearance_right": float(wheel_clearance_r),  # 右轮最低点离地高度
             "tilt_deg": float(self.tilt_deg),
+            "roll_rad": float(np.arctan2(-self.projected_gravity[1], -self.projected_gravity[2])),
             "pitch_rad": float(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2])),
             "base_yaw": float(self.base_yaw),
+            "roll_deg": float(
+                np.degrees(np.arctan2(-self.projected_gravity[1], -self.projected_gravity[2]))
+            ),
+            "pitch_deg": float(
+                np.degrees(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2]))
+            ),
+            "yaw_deg": float(np.degrees(self.base_yaw)),
             "reward": float(0.0 if reward is None else reward),
             "base_lin_vel_x": float(self.base_lin_vel_body[0]),
             "wheel_lin_vel": wheel_lin_vel,
@@ -280,6 +302,63 @@ class WheelLeggedRobot:
 
         return spec.compile()
 
+    def _passive_fourbar_qpos_indices(self) -> np.ndarray:
+        """返回四连杆被动关节在 qpos 中的位置。"""
+        names = (
+            "l_drive_bar_Joint",
+            "l_coupler_Joint",
+            "r_drive_bar_Joint",
+            "r_coupler_Joint",
+        )
+        indices: list[int] = []
+        for name in names:
+            jid = self._id(mujoco.mjtObj.mjOBJ_JOINT, name)
+            indices.append(int(self.model.jnt_qposadr[jid]))
+        return np.asarray(indices, dtype=np.int64)
+
+    def _fourbar_site_pair_indices(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        """返回左右四连杆闭环约束的 site 对。"""
+        pairs = (
+            ("l_fourbar_end", "l_fourbar_target"),
+            ("r_fourbar_end", "r_fourbar_target"),
+        )
+        result: list[tuple[int, int]] = []
+        for end_name, target_name in pairs:
+            end_id = self._id(mujoco.mjtObj.mjOBJ_SITE, end_name)
+            target_id = self._id(mujoco.mjtObj.mjOBJ_SITE, target_name)
+            result.append((end_id, target_id))
+        return (result[0], result[1])
+
+    def _project_fourbar_constraints(self) -> None:
+        """把四连杆被动关节投影到闭环位姿。
+
+        MJCF 的被动四连杆关节默认是 0，但受控髋/膝默认位姿不是闭环位姿。
+        如果 reset 后直接 `mj_forward`，MuJoCo equality constraint 会从约 2cm
+        残差开始求解，第一秒就能把机身推成明显倾斜。这里在动力学开始前
+        只调整被动关节，让两个 connect site 对齐。
+        """
+        if self._passive_fourbar_qpos.size == 0:
+            return
+
+        def residual(values: np.ndarray) -> np.ndarray:
+            self.data.qpos[self._passive_fourbar_qpos] = values
+            mujoco.mj_forward(self.model, self.data)
+            diffs: list[np.ndarray] = []
+            for end_id, target_id in self._fourbar_site_pairs:
+                diffs.append(self.data.site_xpos[end_id] - self.data.site_xpos[target_id])
+            return np.concatenate(diffs)
+
+        initial = self.data.qpos[self._passive_fourbar_qpos].copy()
+        solution = least_squares(
+            residual,
+            initial,
+            xtol=1.0e-12,
+            ftol=1.0e-12,
+            gtol=1.0e-12,
+            max_nfev=100,
+        )
+        self.data.qpos[self._passive_fourbar_qpos] = solution.x
+
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
         self.base_lin_vel_world = self.data.qvel[0:3].copy()
@@ -296,12 +375,14 @@ class WheelLeggedRobot:
         - 腿部: torque = kp*(pos_target - pos) + kd*(0 - vel), clamp by DM8009P T-N
         - 轮子: torque = kd*(vel_target - vel), clamp by M3508_HEXROLL T-N
         """
-        scaled = np.asarray(action, dtype=np.float64) * self.action_scale
+        action = np.asarray(action, dtype=np.float64)
 
         dof_pos = self.dof_pos
         dof_vel = self.dof_vel
 
-        leg_target = scaled[:4] + self.default_dof_pos[JointGroup.CTRL_LEGS]
+        leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
+        leg_default = self.default_dof_pos[JointGroup.CTRL_LEGS]
+        leg_target = action[:4] * leg_scale + leg_default
         leg_pos_err = leg_target - dof_pos[JointGroup.CTRL_LEGS]
         leg_vel = dof_vel[JointGroup.CTRL_LEGS]
         leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
@@ -313,7 +394,8 @@ class WheelLeggedRobot:
             DM8009P.rated_torque,
         )
 
-        wheel_vel_target = scaled[4:6]
+        wheel_scale = self.action_scale[JointGroup.WHEEL_ACTUATORS]
+        wheel_vel_target = action[4:6] * wheel_scale
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
         wheel_torque = _tn_clip(
@@ -324,6 +406,7 @@ class WheelLeggedRobot:
             M3508_HEXROLL.rated_torque,
         )
 
+        # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。
         ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
         return ctrl

@@ -17,13 +17,17 @@ dependencies = [
     "numpy==2.4.4",
     "wandb==0.26.1",
     "pydantic==2.13.4",
+    "casadi",
 ]
 
 [project.scripts]
 se3-train = "se3_train.cli:main"
+se3-play = "se3_train.play:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
+se3-jump-to = "se3_jump_to.cli:main"
+se3-jump-to-replay = "se3_jump_to.replay:main"
 
 [build-system]
 requires = ["uv_build==0.11.8"]
@@ -73,6 +77,7 @@ select = [
 ignore = [
     "E501",   # 行长度由 formatter 处理
     "B008",   # 允许函数参数默认值中的函数调用
+    "RUF001", # 允许中文全角标点（字符串字面量，如 help 文本）
     "RUF002", # 允许中文全角标点（项目注释使用中文）
     "RUF003", # 同上（注释中的全角标点）
 ]

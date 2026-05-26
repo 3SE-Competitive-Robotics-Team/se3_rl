@@ -4,9 +4,51 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 4 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）
+- 5 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）
 - 机器人：6 DOF（左腿 lf0/lf1/l_wheel + 右腿 rf0/rf1/r_wheel）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
+
+## 术语表 (Glossary)
+
+对话时出现的训练诊断指标统一在此解释。新接触的术语首次出现时应括注中文全称。
+
+### 跳跃诊断指标 (wandb — Jump/*)
+
+- `diag_mean_airborne_vz`：空中平均垂直速度（m/s），越大跳得越高
+- `diag_max_airborne_vz`：空中最大垂直速度峰值（m/s）
+- `diag_jump_success_rate`：空中且 vz > 成功阈值（1.0 m/s）的 env 比例
+- `diag_tilt_airborne_deg`：**空中姿态倾斜角（度）**，腾空阶段机身相对竖直方向的平均倾角。由 `acos(-projected_gravity_z)` 计算，0°=完全直立，>15° 通常表示 RSI 注入或域随机化过强导致空中不稳
+- `diag_complete_jumps`：完整走完 grounded→air→landing→grounded 的跳跃次数（每 iter 均值）
+- `diag_active_takeoffs`：策略主动蹬腿离地（非 RSI 注入）的次数（每 iter 均值）
+- `diag_rsi_takeoffs`：RSI 参考轨迹注入触发的蹬腿离地次数（每 iter 均值）
+- `diag_active_success_rate`：主动蹬腿中飞行高度达标的比例
+- `diag_active_takeoff_ratio_per_jump_flag`：jump_flag=1 的 env 中采取主动蹬腿的比例
+- `leg_contact_walk`：jump_flag=0（行走阶段）的 env 中腿部有地面接触的比例，正常应接近 0。轮足机器人接地点是轮子，腿部触地属于结构性异常姿态
+- `leg_contact_jump`：jump_flag=1（跳跃阶段）的 env 中腿部有地面接触的比例，空中应接近 0
+- `leg_contact_rsi`：RSI 注入窗口期（前 debounce+2 步）腿部接触比例，排查 RSI 过早触地
+- `leg_contact_landing`：跳跃 landing 阶段（stage==2）腿部接触比例，校准落地时序
+- `leg_contact_termination`：因非预期腿部触地导致 episode 终止的比例
+
+### 跳跃状态机阶段
+
+- `grounded`：双脚着地 / 行走阶段
+- `air`：腾空飞行阶段
+- `landing`：落地缓冲阶段
+
+### 状态估计
+
+- `projected_gravity`：机身坐标系下的重力方向投影（3 维），z 分量 -1=完全直立、+1=完全倒置
+- `base_ang_vel`：机身角速度
+- `base_lin_vel`：机身线速度（critic 特权观测）
+- `command`：指令向量 [vx, vy, vyaw, base_height, jump_target_height]
+
+### 训练/仿真术语
+
+- `RSI`（Reference State Initialization）：用参考轨迹的关节位置+角速度+姿态初始化 episode 初始状态，用于跳跃任务的状态分布扩展
+- `domain randomization`（域随机化）：训练时随机扰动质量、摩擦、PD 增益等参数，提升策略鲁棒性
+- `sim2sim gap`：训练仿真器（MJLab/MuJoCo-Warp）与验证仿真器（原生 MuJoCo）之间的行为差异
+- `privileged observation`：训练时 critic 可见但 actor 不可见的观测（如 base 线速度、接触力、base 高度），部署时不可用
+- `EFGCL`（External Force Guided Curriculum Learning）：训练早期通过外部物理辅助让策略经历成功状态，再按成功率逐步撤掉辅助。本仓库当前用于跳跃 PreTrain 的空中姿态 spotting，详见 `docs/efgcl_spotting.md`。
 
 ## 核心命令
 
@@ -38,12 +80,29 @@ just clean       # 清理 logs/ wandb/ replays/
 
 如需自定义参数，仍可直接用原始 `uv run` 命令（见 `justfile` 内对应配方）。
 
+跳跃任务专用命令（just 暂未封装，直接用 uv run）：
+
+```bash
+# 跳跃训练
+uv run --env-file .env se3-train SE3-WheelLegged-Jump-PreTrain-GRU --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-Jump-GRU --env.scene.num-envs 1024
+
+# 跳跃参考轨迹生成
+uv run se3-jump-to --height 0.4 --output assets/trajectories/jump_0.4m.npz
+uv run se3-jump-to --height 0.6 --output assets/trajectories/jump_0.6m.npz
+
+# 跳跃 sim2sim 验证（每隔 5s 触发一次原地跳跃）
+uv run se3-sim2sim --checkpoint <ckpt> --jump-interval-s 5.0 --jump-target-height 0.4
+```
+
 ## 开发流程
 
 **每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
 
 ```bash
 just smoke
+# 修改了跳跃相关代码时用这条：
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
 
 Smoke 模式特点：
@@ -55,12 +114,21 @@ Smoke 模式特点：
 
 ## 测试策略
 
-- 本实验一般不为单个实现细节添加用于“锁住某些行为”的测试用例
+- 本实验一般不为单个实现细节添加用于"锁住某些行为"的测试用例
 - 不为 checkpoint key、内部排序、私有 helper 等行为补专门回归测试
 - 当前以 smoke 训练作为主要有效性验证手段
 - 后续需要把 smoke 训练接入 GitHub Actions，但现在不做
 
 ## 强制规范
+
+### 第一性原理与长期主义
+- **追问根因，不接受临时对策。** 遇到问题先问「为什么会发生」，而不是「怎么绕过去」。能用一行 workaround 掩盖的问题，往往在三步后变成更难修的 bug。
+- **解法必须能活过下一个迭代。** 评估任何修改时，问自己：「如果任务数量翻倍、训练时长翻倍、换一块硬件，这个方案还成立吗？」成立才做，不成立就找根本解。
+- **不为短期指标牺牲结构。** 奖励权重调参、域随机化范围微调是合理的工程手段；但绕过物理约束、用 magic number 修复奇怪行为、在不理解原因的情况下改超参——这些都是技术债，必须在合并前消除。
+- **临时对策的唯一合法形式是带删除日期的注释。** 如果某段代码是权宜之计，必须在注释里写明「为什么是临时的」和「什么条件下删除」，否则视为永久方案，按永久标准审查。
+
+### 错误处理
+- Don't fight errors! Whenever you encounter the same error twice, research the web and find 3-5 possible ways to fix it. Then choose the most efficient solution and implement it.
 
 ### 工具链
 - **禁止直接使用 python/pip**，所有操作必须通过 `uv` 执行
@@ -117,29 +185,37 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 ### MJLab 环境结构
 ```
 se3_train/
-├── __init__.py      # register_mjlab_task 注册任务
+├── __init__.py      # register_mjlab_task 注册 4 个任务
 ├── env_cfg.py       # ManagerBasedRlEnvCfg 工厂函数
 ├── rl_cfg.py        # PPO 超参数（Optuna 调优值）
 ├── robot_cfg.py     # EntityCfg（MJCF + 初始状态）
 ├── cli.py           # 命令行入口
 └── mdp/
-    ├── actions.py   # SerialLegDelayedAction — 自定义 6D 动作项
-    ├── observations.py  # 29 维 actor 观测
-    ├── rewards.py   # 17 个奖励函数
-    ├── commands.py  # 速度+高度指令生成器
-    ├── events.py    # 域随机化事件
-    └── terminations.py  # 仅有超时终止
+    ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
+    ├── observations.py     # 32 维 actor 观测（含跳跃扩展）
+    ├── rewards.py          # 行走奖励函数
+    ├── jump_rewards.py     # 跳跃专属奖励函数
+    ├── commands.py         # 速度+高度指令生成器
+    ├── jump_commands.py    # 跳跃指令 + 状态机（JumpCommandTerm，8 维）
+    ├── curriculums.py      # 行走课程
+    ├── jump_curriculums.py # 跳跃课程（jump_prob 动态调度）
+    ├── efgcl_stabilizer.py # EFGCL 空中姿态 spotting 辅助（仅 PreTrain）
+    ├── jump_traj_tracking.py  # 参考轨迹跟踪奖励
+    ├── events.py           # 域随机化事件 + RSI 轨迹注入
+    └── terminations.py     # 超时终止 + 腿部接触终止
 ```
 
-### 奖励函数与原始实现的对齐
-奖励函数经过逐一比对，已与原始 Isaac Gym 实现（`wheel_legged_fzqver.py`）完全对齐。关键公式差异点：
-- `base_height`：使用 `exp(-err²/0.05)` 指数衰减（非线性绝对误差）
-- `joint_pos_penalty`：使用 L2 范数（`torch.linalg.norm`，非 L2 平方）
-- `collision`：惩罚 body 包含 base（indices 0,1,2,4,5），力阈值 0.1N
-- `contact_forces`：超出阈值后除以 100 归一化
-- `joint_mirror`：按镜像对数求平均（`sum / 2`）
+### 跳跃轨迹优化结构
+```
+se3_jump_to/
+├── cli.py      # se3-jump-to 命令行入口，生成 assets/trajectories/*.npz
+├── kinematics.py  # SerialLeg FK/IK
+└── replay.py   # se3-jump-to-replay 回放入口
+```
 
-### 观测空间（29 维 actor）
+轨迹文件字段：`base_pos`、`base_vel`、`q_ref`、`q_vel`（关节角速度，用于 RSI）、`t_stance`、`dt` 等。
+
+### 观测空间（32 维 actor）
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
@@ -149,6 +225,8 @@ se3_train/
 [19:21] wheel_pos
 [21:23] wheel_vel × 0.05
 [23:29] last_actions
+[29:32] jump_commands  [jump_flag, jump_target_height, jump_phase]
+                        jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
 
 critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和 base height 特权观测。
@@ -162,11 +240,42 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 
+## RL 训练调优 Skill
+
+**触发条件**（满足其一即加载 `.agents/skills/rl-tuning/SKILL.md`）：
+- 训练不收敛、奖励停滞或持续下降
+- 策略行为不符合预期（跳不高、走路抖动、高度偏低、跪地）
+- 需要分析为什么某个能力学不会
+- 发现奖励函数 bug 或门控失效
+- 需要设计或修改奖励权重、课程、RSI
+- 需要判断某次修改是否真正生效
+- 需要从 wandb 指标推断根因
+
+**已验证案例库**：`.agents/skills/rl-tuning/references/symptom-to-hypothesis.md`（持续追加）
+
+---
+
+## 远程训练机运维 Skill
+
+涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
+
+**触发条件**（满足其一即加载）：
+- 提到远程训练机、GPU 机器、云机器、wuyinyun、无影云、阿里云、腾讯云
+- 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
+- 需要启动、停止、监控训练进程
+- 需要查看训练日志、wandb 数据
+- 需要拉取 checkpoint 到本地
+- 需要在远程机器执行 uv sync / git pull
+- 询问 tmux 会话管理
+
+各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
+当前已注册：`wuyinyun`（无影云 RTX 5880）。
+
 ## 环境限制
 
 - **训练**：仅支持 Linux + NVIDIA GPU（CUDA 12.4+）
 - **评估/sim2sim**：支持 macOS、Linux、Windows (WSL)
-- 推荐环境数：1024（6 DOF 机器人，4096 过大）
+- 推荐环境数：1024（6 DOF 机器人，白天）/ 4096（夜间）
 - 推荐 GPU 显存：8GB+（RTX 3090/4090 训练约 2-3 小时）
 
 ## 踩坑记录
@@ -189,8 +298,7 @@ pkill -f "se3-train"
 **问题**：RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
 
 **解决方案**：
-- 无外网环境使用 `WANDB_MODE=offline`（writer 不为 None，checkpoint 正常保存，日志事后 `wandb sync` 上传）
-- 有代理时设置 `HTTP_PROXY=http://... HTTPS_PROXY=http://...`
+- 有代理时设置代理环境变量，或用 `boring` 确保隧道存活
 - **绝对不要**依赖 wandb 在线模式在网络不稳定的环境跑长时间训练
 
 ### checkpoint 文件名排序
@@ -206,21 +314,18 @@ ls model_*.pt | sort -V
 find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 ```
 
-## 远程训练机运维 Skill
+### 观测维度不对齐
 
-涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
+跳跃任务观测为 32 维（行走基模为 31 维）。从行走 checkpoint fine-tune 跳跃任务时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
 
-**触发条件**（满足其一即加载）：
-- 提到远程训练机、GPU 机器、云机器、wuyinyun、无影云、阿里云、腾讯云
-- 需要建立 SSH 连接、代理隧道、反向隧道
-- 需要启动、停止、监控训练进程
-- 需要查看训练日志、wandb 数据
-- 需要拉取 checkpoint 到本地
-- 需要在远程机器执行 uv sync / git pull
-- 询问 zellij 会话管理
+## 常见错误手册
 
-各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
-当前已注册：`wuyinyun`（无影云 RTX 5880）。
+`docs/common_mistakes.md` 记录了本仓库开发过程中反复出现的、容易忽视的、或修复成本较高的常见错误。
+
+常见错误文档里放一个具体的条目，以及大概 200-300 字来龙去脉说明，帮助大家快速勘误。
+
+当前条目：
+- [1. 关节轴方向：MJCF 中 6 个受控关节的物理约束](docs/common_mistakes.md#1-关节轴方向mjcf-中-6-个受控关节的物理约束)
 
 ## 文件结构
 
@@ -228,14 +333,19 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 se3_wheel_leg/
 ├── pyproject.toml          # 项目配置 + ruff 配置
 ├── prek.toml               # pre-commit 钩子（ruff format + check）
+├── justfile                # just 统一命令入口
 ├── .python-version         # 3.11
 ├── .env                    # 环境变量（API keys，不提交）
 ├── .env.example            # 环境变量模板
-├── assets/robots/serialleg/mjcf/
-│   └── serialleg_fidelity_cylinder_wheels.xml
+├── assets/
+│   ├── robots/serialleg/mjcf/
+│   │   └── serialleg_fidelity_cylinder_wheels.xml
+│   ├── base_model/         # 训练完成的基模（_gru.pt / _mlp.pt）
+│   └── trajectories/       # 跳跃参考轨迹（jump_0.4m.npz 等）
 ├── src/
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
 │   ├── se3_sim2sim/        # sim2sim 验证
 │   ├── se3_tools/          # 关节诊断和模型查看工具
+│   └── se3_jump_to/        # 跳跃参考轨迹生成
 ```

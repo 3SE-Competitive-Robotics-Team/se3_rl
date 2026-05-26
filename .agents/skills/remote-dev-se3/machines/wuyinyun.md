@@ -59,6 +59,23 @@ ssh wuyinyun "timeout 10 ssh -o ConnectTimeout=8 -T git@github.com 2>&1; echo ex
 | SSH 反向隧道（本机 tinyproxy → 远程） | `17890` |
 | 机器本地 Mihomo（备用，不稳定） | `7897` |
 
+## 隧道管理（boring）
+
+使用 [boring](https://github.com/alebeck/boring) 管理反向隧道，配置在 `~/.boring.toml`，支持自动重连和 keep-alive。
+
+```bash
+# 开启隧道（后台运行）
+boring open wuyinyun-proxy
+
+# 查看状态
+boring list
+
+# 关闭隧道
+boring close wuyinyun-proxy
+```
+
+切换网络后 boring 会自动重连，无需手动重建。
+
 ## wuyinyun 特有的依赖问题
 
 ### nvshmem
