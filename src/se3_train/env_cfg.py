@@ -38,12 +38,11 @@ from se3_train.mdp.jump_rewards import (
     action_rate_jump,
     action_rate_no_jump,
     action_smoothness_no_jump,
-    feet_contact_without_cmd_no_jump,
     flat_base_height_penalty_no_jump,
     flat_base_lin_vel_z_no_jump,
     flat_orientation_l2_no_jump,
-    flat_wheel_air_penalty_no_jump,
     flat_wheel_center_alignment_no_jump,
+    flat_wheel_contact_penalty_no_jump,
     flat_wheel_ground_slip_no_jump,
     idle_wheel_motion_penalty_no_jump,
     jump_action_mirror,
@@ -683,6 +682,9 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # 追加跳跃观测
     _apply_jump_observations(cfg)
 
+    # 接地行为统一使用 flat_wheel_contact 惩罚表达,避免正奖励和惩罚同时控制同一行为。
+    cfg.rewards.pop("feet_contact_without_cmd", None)
+
     # PreTrain 平地段固定为 0.22m 蹲姿；跳跃目标高度仍单独采样，避免把站高误当成跳高。
     cfg.commands["velocity_height"].height_range = (
         _DEFAULT_STANDING_HEIGHT,
@@ -796,17 +798,14 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    cfg.rewards["flat_wheel_air"] = RewardTermCfg(
-        func=flat_wheel_air_penalty_no_jump,
-        weight=-4.0,
+    cfg.rewards["flat_wheel_contact"] = RewardTermCfg(
+        func=flat_wheel_contact_penalty_no_jump,
+        weight=-3.0,
         params={
             "command_name": "velocity_height",
-            "wheel_radius": 0.059,
+            "sensor_name": "wheel_sensor",
             "idle_command_threshold": 0.08,
-            "clearance_tolerance": 0.003,
-            "clearance_scale": 0.015,
-            "max_penalty": 25.0,
-            "asset_cfg": SceneEntityCfg("robot"),
+            "contact_force_threshold": 1.0,
         },
     )
     cfg.rewards["flat_action_smoothness"] = RewardTermCfg(
@@ -1414,19 +1413,6 @@ def se3_jump_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "command_name": "velocity_height",
             "sensor_name": "wheel_sensor",
-        },
-    )
-
-    # jump_flag=1 时关闭 feet_contact_without_cmd,防止蹲着不跳也能拿分
-    cfg.rewards["feet_contact_without_cmd"] = RewardTermCfg(
-        func=feet_contact_without_cmd_no_jump,
-        weight=0.386,
-        params={
-            "command_name": "velocity_height",
-            "force_threshold": 1.0,
-            "cmd_threshold": 0.1,
-            "sensor_name": "wheel_sensor",
-            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 

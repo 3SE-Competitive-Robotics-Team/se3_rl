@@ -1221,34 +1221,6 @@ def jump_wheel_vel(
     return torch.sum(wheel_vel**2, dim=1) * active.float()
 
 
-def feet_contact_without_cmd_no_jump(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    force_threshold: float,
-    cmd_threshold: float,
-    sensor_name: str,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """jump_flag=1 时关闭 feet_contact_without_cmd 奖励。
-
-    原奖励在「无速度指令且轮子接地」时给正奖励。
-    当 jump_flag=1 时,机器人坐在地面蹲健就能拥有这个奖励,会鼓励「蹲着不动」而非起跳。
-    """
-    from se3_train.mdp.rewards import feet_contact_without_cmd
-
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    result = feet_contact_without_cmd(
-        env,
-        command_name=command_name,
-        force_threshold=force_threshold,
-        cmd_threshold=cmd_threshold,
-        sensor_name=sensor_name,
-        asset_cfg=asset_cfg,
-    )
-    return result * (~jump_flag).float()
-
-
 def stand_still_no_jump(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1611,40 +1583,41 @@ def flat_base_lin_vel_z_no_jump(
     return penalty * active.float()
 
 
-def flat_wheel_air_penalty_no_jump(
+def flat_wheel_contact_penalty_no_jump(
     env: ManagerBasedRlEnv,
     command_name: str,
-    wheel_radius: float = 0.059,
+    sensor_name: str,
     idle_command_threshold: float = 0.08,
-    clearance_tolerance: float = 0.003,
-    clearance_scale: float = 0.015,
-    max_penalty: float = 25.0,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    contact_force_threshold: float = 1.0,
 ) -> torch.Tensor:
-    """平地静止期轮子离地惩罚。
+    """平地静止期轮子缺失接触惩罚。
 
-    只在 jump_flag=0 且低速 idle 时激活。任一轮底明显离地都会扣分,
-    直接压制 sim2sim 里看到的原地小跳;跳跃阶段完全豁免,避免和起跳目标冲突。
+    只在 jump_flag=0 且低速 idle 时激活。两个轮子都接地时惩罚为 0,
+    单轮离地惩罚 0.5,双轮离地惩罚 1.0。该项只使用接触传感器,
+    避免用轮高假设绑定到 flat 地形几何。
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
     cmd_norm = torch.linalg.norm(cmd[:, :3], dim=1)
     idle = (~jump_flag) & (cmd_norm < float(idle_command_threshold))
 
-    wheel_bottom_h = _wheel_bottom_heights(env, asset_cfg, wheel_radius)
-    lift = torch.clamp(wheel_bottom_h - float(clearance_tolerance), min=0.0)
-    penalty = torch.sum((lift / max(float(clearance_scale), 1.0e-6)) ** 2, dim=1)
-    penalty = torch.clamp(penalty, max=float(max_penalty))
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+    contact_ratio = in_contact.float().mean(dim=1)
+    penalty = 1.0 - contact_ratio
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        max_lift = torch.clamp(torch.max(wheel_bottom_h, dim=1).values, min=0.0)
         env.extras["log"].update(
             {
-                "Jump/diag_flat_wheel_air_penalty": _mean_on_mask(penalty, idle),
-                "Jump/diag_flat_wheel_max_lift_m": _mean_on_mask(max_lift, idle),
-                "Jump/diag_flat_wheel_grounded_rate": _mean_on_mask(
-                    (max_lift <= float(clearance_tolerance)).float(),
-                    idle,
+                "Jump/diag_flat_wheel_contact_penalty": _mean_on_mask(penalty, idle),
+                "Jump/diag_flat_wheel_contact_ratio": _mean_on_mask(contact_ratio, idle),
+                "Jump/diag_flat_wheel_full_contact_rate": _mean_on_mask(
+                    (contact_ratio >= 1.0).float(), idle
                 ),
             }
         )
