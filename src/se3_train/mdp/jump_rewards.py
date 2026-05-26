@@ -65,12 +65,22 @@ def _wheel_bottom_height(
     wheel_radius: float,
 ) -> torch.Tensor:
     """返回左右轮底部相对地面的最小高度。"""
+    wheel_bottom_h = _wheel_bottom_heights(env, asset_cfg, wheel_radius)
+    return torch.min(wheel_bottom_h, dim=1).values
+
+
+def _wheel_bottom_heights(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    wheel_radius: float,
+) -> torch.Tensor:
+    """返回左右轮底部相对地面的高度。"""
     robot = env.scene[asset_cfg.name]
     body_ids = _wheel_body_ids(env, asset_cfg)
     wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
     ground_z = env.scene.env_origins[:, 2].unsqueeze(1)
     wheel_bottom_h = wheel_pos_w[:, :, 2] - ground_z - float(wheel_radius)
-    return torch.min(wheel_bottom_h, dim=1).values
+    return wheel_bottom_h
 
 
 def _wheel_alignment_error(
@@ -1599,6 +1609,47 @@ def flat_base_lin_vel_z_no_jump(
         )
 
     return penalty * active.float()
+
+
+def flat_wheel_air_penalty_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    wheel_radius: float = 0.059,
+    idle_command_threshold: float = 0.08,
+    clearance_tolerance: float = 0.003,
+    clearance_scale: float = 0.015,
+    max_penalty: float = 25.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地静止期轮子离地惩罚。
+
+    只在 jump_flag=0 且低速 idle 时激活。任一轮底明显离地都会扣分,
+    直接压制 sim2sim 里看到的原地小跳;跳跃阶段完全豁免,避免和起跳目标冲突。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    cmd_norm = torch.linalg.norm(cmd[:, :3], dim=1)
+    idle = (~jump_flag) & (cmd_norm < float(idle_command_threshold))
+
+    wheel_bottom_h = _wheel_bottom_heights(env, asset_cfg, wheel_radius)
+    lift = torch.clamp(wheel_bottom_h - float(clearance_tolerance), min=0.0)
+    penalty = torch.sum((lift / max(float(clearance_scale), 1.0e-6)) ** 2, dim=1)
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        max_lift = torch.clamp(torch.max(wheel_bottom_h, dim=1).values, min=0.0)
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_air_penalty": _mean_on_mask(penalty, idle),
+                "Jump/diag_flat_wheel_max_lift_m": _mean_on_mask(max_lift, idle),
+                "Jump/diag_flat_wheel_grounded_rate": _mean_on_mask(
+                    (max_lift <= float(clearance_tolerance)).float(),
+                    idle,
+                ),
+            }
+        )
+
+    return penalty * idle.float()
 
 
 def flat_base_height_penalty_no_jump(

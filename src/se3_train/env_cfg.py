@@ -42,6 +42,7 @@ from se3_train.mdp.jump_rewards import (
     flat_base_height_penalty_no_jump,
     flat_base_lin_vel_z_no_jump,
     flat_orientation_l2_no_jump,
+    flat_wheel_air_penalty_no_jump,
     flat_wheel_center_alignment_no_jump,
     flat_wheel_ground_slip_no_jump,
     idle_wheel_motion_penalty_no_jump,
@@ -792,6 +793,19 @@ def se3_jump_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "base_speed_scale": 0.18,
             "wheel_speed_scale": 0.22,
             "max_penalty": 9.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    cfg.rewards["flat_wheel_air"] = RewardTermCfg(
+        func=flat_wheel_air_penalty_no_jump,
+        weight=-4.0,
+        params={
+            "command_name": "velocity_height",
+            "wheel_radius": 0.059,
+            "idle_command_threshold": 0.08,
+            "clearance_tolerance": 0.003,
+            "clearance_scale": 0.015,
+            "max_penalty": 25.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )

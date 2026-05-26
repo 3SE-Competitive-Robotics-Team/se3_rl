@@ -211,6 +211,7 @@ def jump_pretrain_constraint_weight_curriculum(
     current_iter = _current_iter(env)
     schedule = {
         "idle_wheel_motion": (-2.0, -6.0),
+        "flat_wheel_air": (-4.0, -16.0),
         "flat_action_smoothness": (-0.04, -0.08),
         "wheel_distance": (-4.0, -8.0),
         "jump_pre_takeoff_wheel_lift": (-6.0, -18.0),

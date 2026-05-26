@@ -107,9 +107,9 @@ class RobotConfig(BaseModel):
         0.0,
         0.0,
         0.0,
-        0.28,
+        _shared_robot.default_base_height,
         0.0,
-        0.0,
+        0.2,
         0.0,
     )
     """8 维指令: [vx, ωz, pitch, roll, height, jump_flag, jump_target_height, jump_phase]。
