@@ -74,6 +74,7 @@ def leg_contact(
     jump_landing_force_threshold: float | None = None,
     jump_grace_steps: int = 0,
     recovery_grace_steps: int = 0,
+    recovery_terminate: bool = True,
     terminate: bool = True,
 ) -> torch.Tensor:
     """腿部 link 接触地面即时终止（膝盖着地 = 非法运动模式）。
@@ -93,10 +94,11 @@ def leg_contact(
     has_contact = max_force > force_threshold
     terminate_threshold = torch.full_like(max_force, force_threshold)
     terminate_contact = has_contact
+    recovery_mask = _recovery_reset_mask(env)
+    if not recovery_terminate:
+        terminate_contact = terminate_contact & ~recovery_mask
     if recovery_grace_steps > 0:
-        in_recovery_grace = _recovery_reset_mask(env) & (
-            env.episode_length_buf <= int(recovery_grace_steps)
-        )
+        in_recovery_grace = recovery_mask & (env.episode_length_buf <= int(recovery_grace_steps))
         terminate_contact = terminate_contact & ~in_recovery_grace
 
     # 精细拆分诊断：写入 extras["_leg_contact_diag"]（不是 log，log 在 reset 时会被清空）

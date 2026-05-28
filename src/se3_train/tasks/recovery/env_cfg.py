@@ -130,6 +130,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "sensor_name": "leg_contact_sensor",
             "force_threshold": 1.0,
             "recovery_grace_steps": recovery_grace_steps,
+            "recovery_terminate": False,
         },
     )
 
