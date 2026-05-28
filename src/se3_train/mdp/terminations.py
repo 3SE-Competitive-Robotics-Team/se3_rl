@@ -38,15 +38,22 @@ class BadOrientationDelayed:
         max_steps: int = 100,
         recovery_grace_steps: int = 0,
     ) -> torch.Tensor:
-        if self._fail_count is None:
+        if (
+            self._fail_count is None
+            or self._fail_count.shape[0] != env.num_envs
+            or self._fail_count.device != env.device
+        ):
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         robot = env.scene["robot"]
         pg_z = robot.data.projected_gravity_b[:, 2]
         tilt_angle = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-        bad = tilt_angle > limit_angle
+        raw_bad = tilt_angle > limit_angle
+        bad = raw_bad
+        recovery_mask = _recovery_reset_mask(env)
+        in_recovery_grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
         if recovery_grace_steps > 0:
-            in_recovery_grace = _recovery_reset_mask(env) & (
+            in_recovery_grace = recovery_mask & (
                 env.episode_length_buf <= int(recovery_grace_steps)
             )
             bad = bad & ~in_recovery_grace
@@ -55,7 +62,36 @@ class BadOrientationDelayed:
         self._fail_count[~bad] = 0
         self._fail_count[env.episode_length_buf <= 1] = 0
 
-        return self._fail_count > max_steps
+        terminated = self._fail_count > max_steps
+        if hasattr(env, "extras"):
+
+            def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
+                if not mask.any():
+                    return 0.0
+                return values[mask].float().mean().item()
+
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Recovery/bad_orientation_raw_rate": _masked_rate(raw_bad, recovery_mask),
+                    "Recovery/bad_orientation_counted_rate": _masked_rate(bad, recovery_mask),
+                    "Recovery/bad_orientation_grace_rate": _masked_rate(
+                        in_recovery_grace, recovery_mask
+                    ),
+                    "Recovery/bad_orientation_termination_rate": _masked_rate(
+                        terminated, recovery_mask
+                    ),
+                }
+            )
+            # reset 日志会被清空，所以先缓存逐环境诊断，由 command reset 阶段搬运到 log。
+            env.extras["_bad_orientation_diag"] = {
+                "raw_bad": raw_bad.detach().clone(),
+                "counted_bad": bad.detach().clone(),
+                "terminated": terminated.detach().clone(),
+                "recovery_mask": recovery_mask.detach().clone(),
+                "recovery_grace": in_recovery_grace.detach().clone(),
+            }
+
+        return terminated
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         if self._fail_count is not None and env_ids is not None:

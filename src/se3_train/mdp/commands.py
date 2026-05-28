@@ -52,6 +52,66 @@ class VelocityHeightCommandTerm(CommandTerm):
     def command(self) -> torch.Tensor:
         return self._command
 
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        """重置指令项，并把跨 reset 缓存的终止诊断搬入日志。"""
+        assert isinstance(env_ids, torch.Tensor)
+        extras = super().reset(env_ids)
+        self._log_bad_orientation_diagnostics(env_ids)
+        return extras
+
+    def _log_bad_orientation_diagnostics(self, env_ids: torch.Tensor) -> None:
+        """上报 bad_orientation 在恢复样本和平地样本中的拆分来源。"""
+        diag = (
+            self._env.extras.get("_bad_orientation_diag") if hasattr(self._env, "extras") else None
+        )
+        if not isinstance(diag, dict):
+            return
+
+        raw_bad = diag.get("raw_bad")
+        counted_bad = diag.get("counted_bad")
+        terminated = diag.get("terminated")
+        recovery_mask = diag.get("recovery_mask")
+        recovery_grace = diag.get("recovery_grace")
+        tensors = (raw_bad, counted_bad, terminated, recovery_mask, recovery_grace)
+        if not all(
+            isinstance(item, torch.Tensor) and item.shape[0] == self.num_envs for item in tensors
+        ):
+            return
+
+        reset_recovery = recovery_mask[env_ids]
+        reset_flat = ~reset_recovery
+        reset_terminated = terminated[env_ids]
+        reset_raw_bad = raw_bad[env_ids]
+        reset_counted_bad = counted_bad[env_ids]
+        reset_grace = recovery_grace[env_ids]
+
+        def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
+            if not mask.any():
+                return 0.0
+            return values[mask].float().mean().item()
+
+        log = self._env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Episode_Termination/bad_orientation_recovery": (reset_terminated & reset_recovery)
+                .float()
+                .sum()
+                .item(),
+                "Episode_Termination/bad_orientation_flat": (reset_terminated & reset_flat)
+                .float()
+                .sum()
+                .item(),
+                "Recovery/bad_orientation_raw_rate": _masked_rate(reset_raw_bad, reset_recovery),
+                "Recovery/bad_orientation_counted_rate": _masked_rate(
+                    reset_counted_bad, reset_recovery
+                ),
+                "Recovery/bad_orientation_grace_rate": _masked_rate(reset_grace, reset_recovery),
+                "Recovery/bad_orientation_termination_rate": _masked_rate(
+                    reset_terminated, reset_recovery
+                ),
+            }
+        )
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         """为指定环境重新采样指令。"""
         n = len(env_ids)

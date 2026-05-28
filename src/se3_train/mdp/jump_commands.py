@@ -240,6 +240,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         finally:
             self._resampling_for_reset = False
 
+        self._log_bad_orientation_diagnostics(env_ids)
         return extras
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
