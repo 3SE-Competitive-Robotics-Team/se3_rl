@@ -64,8 +64,13 @@ train:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
     uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
-# 倒地自启训练（从 assets/base_model 平地 GRU 基模 warm start）
+# 倒地自启正式训练（从 assets/base_model 平地 GRU 基模 warm start）
 train-recovery:
+    @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
+    uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 4096
+
+# 倒地自启轻量训练（资源紧张时临时使用）
+train-recovery-light:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
     uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 1024
 
