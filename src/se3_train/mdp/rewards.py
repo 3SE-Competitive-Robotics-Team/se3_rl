@@ -46,7 +46,7 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
 
 def _recovery_hard_roll_mask(
     env: ManagerBasedRlEnv,
-    min_initial_roll_deg: float = 45.0,
+    min_initial_roll_deg: float = 75.0,
     max_initial_pitch_deg: float = 35.0,
 ) -> torch.Tensor:
     """识别以大 roll 侧翻为主的 recovery 样本。"""
@@ -56,6 +56,20 @@ def _recovery_hard_roll_mask(
     min_roll = torch.deg2rad(torch.tensor(float(min_initial_roll_deg), device=env.device))
     max_pitch = torch.deg2rad(torch.tensor(float(max_initial_pitch_deg), device=env.device))
     return active & (roll_abs >= min_roll) & (pitch_abs <= max_pitch)
+
+
+def _recovery_hard_pitch_mask(
+    env: ManagerBasedRlEnv,
+    min_initial_pitch_deg: float = 75.0,
+    max_initial_roll_deg: float = 35.0,
+) -> torch.Tensor:
+    """识别以大 pitch 前后翻为主的 recovery 样本。"""
+    active = _recovery_reset_mask(env)
+    roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
+    pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
+    min_pitch = torch.deg2rad(torch.tensor(float(min_initial_pitch_deg), device=env.device))
+    max_roll = torch.deg2rad(torch.tensor(float(max_initial_roll_deg), device=env.device))
+    return active & (pitch_abs >= min_pitch) & (roll_abs <= max_roll)
 
 
 def _recovery_success_mask(
@@ -353,9 +367,22 @@ def recovery_upright(env: ManagerBasedRlEnv) -> torch.Tensor:
     return upright.square() * active.float()
 
 
+def recovery_tilt_progress(env: ManagerBasedRlEnv, upright_angle_deg: float = 15.0) -> torch.Tensor:
+    """相对初始倒地倾角的恢复进度奖励。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    current_tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+    init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
+    upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
+    denom = torch.clamp(init_tilt - upright_limit, min=1.0e-3)
+    progress = torch.clamp((init_tilt - current_tilt) / denom, 0.0, 1.0)
+    return progress * active.float()
+
+
 def recovery_hard_roll_upright(
     env: ManagerBasedRlEnv,
-    min_initial_roll_deg: float = 45.0,
+    min_initial_roll_deg: float = 75.0,
     max_initial_pitch_deg: float = 35.0,
 ) -> torch.Tensor:
     """大 roll 侧翻样本的直立奖励，避免总成功率被 pitch 样本掩盖。"""
@@ -368,6 +395,23 @@ def recovery_hard_roll_upright(
     pg_z = robot.data.projected_gravity_b[:, 2]
     upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
     return upright.square() * hard_roll.float()
+
+
+def recovery_hard_pitch_upright(
+    env: ManagerBasedRlEnv,
+    min_initial_pitch_deg: float = 75.0,
+    max_initial_roll_deg: float = 35.0,
+) -> torch.Tensor:
+    """大 pitch 前后翻样本的直立奖励，避免小角度 pitch 样本虚高。"""
+    robot = env.scene["robot"]
+    hard_pitch = _recovery_hard_pitch_mask(
+        env,
+        min_initial_pitch_deg=min_initial_pitch_deg,
+        max_initial_roll_deg=max_initial_roll_deg,
+    )
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
+    return upright.square() * hard_pitch.float()
 
 
 def recovery_height(
@@ -448,12 +492,10 @@ def recovery_success(
     )
     init_roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
     init_pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
+    init_yaw_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_yaw"))
+    init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
     hard_roll = _recovery_hard_roll_mask(env)
-    hard_pitch = (
-        active
-        & (init_pitch_abs >= torch.deg2rad(torch.tensor(45.0, device=env.device)))
-        & (init_roll_abs <= torch.deg2rad(torch.tensor(35.0, device=env.device)))
-    )
+    hard_pitch = _recovery_hard_pitch_mask(env)
     if hasattr(env, "extras"):
         env.extras.setdefault("log", {}).update(
             {
@@ -462,6 +504,8 @@ def recovery_success(
                 "Recovery/wheel_contact_rate": (active & wheel_contact).float().mean().item(),
                 "Recovery/init_roll_abs_deg": _masked_mean(torch.rad2deg(init_roll_abs), active),
                 "Recovery/init_pitch_abs_deg": _masked_mean(torch.rad2deg(init_pitch_abs), active),
+                "Recovery/init_yaw_abs_deg": _masked_mean(torch.rad2deg(init_yaw_abs), active),
+                "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), active),
                 "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
                 "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
                 "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
@@ -481,7 +525,7 @@ def recovery_hard_roll_success(
     height_tolerance: float = 0.05,
     ang_vel_threshold: float = 1.5,
     force_threshold: float = 1.0,
-    min_initial_roll_deg: float = 45.0,
+    min_initial_roll_deg: float = 75.0,
     max_initial_pitch_deg: float = 35.0,
 ) -> torch.Tensor:
     """大 roll 侧翻恢复成功奖励。"""
@@ -501,6 +545,37 @@ def recovery_hard_roll_success(
         max_initial_pitch_deg=max_initial_pitch_deg,
     )
     return (success & hard_roll).float()
+
+
+def recovery_hard_pitch_success(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    upright_angle_deg: float = 15.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 1.5,
+    force_threshold: float = 1.0,
+    min_initial_pitch_deg: float = 75.0,
+    max_initial_roll_deg: float = 35.0,
+) -> torch.Tensor:
+    """大 pitch 前后翻恢复成功奖励。"""
+    success, _, _ = _recovery_success_mask(
+        env,
+        sensor_name=sensor_name,
+        height_sensor_name=height_sensor_name,
+        command_name=command_name,
+        upright_angle_deg=upright_angle_deg,
+        height_tolerance=height_tolerance,
+        ang_vel_threshold=ang_vel_threshold,
+        force_threshold=force_threshold,
+    )
+    hard_pitch = _recovery_hard_pitch_mask(
+        env,
+        min_initial_pitch_deg=min_initial_pitch_deg,
+        max_initial_roll_deg=max_initial_roll_deg,
+    )
+    return (success & hard_pitch).float()
 
 
 def joint_mirror(

@@ -19,48 +19,60 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """平地行走 + 倒地自启混合训练环境。"""
 
     cfg = flat_env_cfg(play=play)
-    recovery_grace_steps = 400
+    recovery_grace_steps = 600
     recovery_stages = (
         (
             {
                 "step": 0,
-                "prob": 0.20,
-                "roll_range": (-0.35, 0.35),
-                "pitch_range": (-0.35, 0.35),
-                "height_range": (0.24, 0.32),
-                "side_roll_prob": 0.15,
-                "side_roll_min_abs": 0.50,
-                "side_pitch_range": (-0.25, 0.25),
+                "prob": 0.50,
+                "roll_range": (-0.45, 0.45),
+                "pitch_range": (-0.45, 0.45),
+                "height_range": (0.22, 0.32),
+                "fallen_pose_prob": 0.80,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.35, 1.60),
+                "fallen_pitch_abs_range": (1.35, 1.60),
+                "fallen_coupled_range": (-0.25, 0.25),
+                "fallen_height_range": (0.14, 0.24),
             },
             {
-                "step": 1200,
-                "prob": 0.35,
+                "step": 2000,
+                "prob": 0.55,
                 "roll_range": (-0.65, 0.65),
                 "pitch_range": (-0.65, 0.65),
-                "height_range": (0.24, 0.34),
-                "side_roll_prob": 0.35,
-                "side_roll_min_abs": 0.65,
-                "side_pitch_range": (-0.30, 0.30),
+                "height_range": (0.20, 0.32),
+                "fallen_pose_prob": 0.65,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.45, 1.80),
+                "fallen_pitch_abs_range": (1.45, 1.80),
+                "fallen_coupled_range": (-0.30, 0.30),
+                "fallen_height_range": (0.12, 0.23),
             },
             {
-                "step": 3000,
-                "prob": 0.55,
-                "roll_range": (-1.05, 1.05),
-                "pitch_range": (-0.90, 0.90),
-                "height_range": (0.25, 0.36),
-                "side_roll_prob": 0.55,
-                "side_roll_min_abs": 0.80,
-                "side_pitch_range": (-0.35, 0.35),
+                "step": 5000,
+                "prob": 0.75,
+                "roll_range": (-0.80, 0.80),
+                "pitch_range": (-0.80, 0.80),
+                "height_range": (0.18, 0.30),
+                "fallen_pose_prob": 0.85,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.50, 2.10),
+                "fallen_pitch_abs_range": (1.50, 2.10),
+                "fallen_coupled_range": (-0.35, 0.35),
+                "fallen_height_range": (0.10, 0.22),
             },
             {
-                "step": 7000,
-                "prob": 0.70,
-                "roll_range": (-1.35, 1.35),
-                "pitch_range": (-1.10, 1.10),
-                "height_range": (0.26, 0.38),
-                "side_roll_prob": 0.70,
-                "side_roll_min_abs": 0.90,
-                "side_pitch_range": (-0.35, 0.35),
+                "step": 9000,
+                "prob": 0.85,
+                "roll_range": (-1.00, 1.00),
+                "pitch_range": (-1.00, 1.00),
+                "height_range": (0.16, 0.30),
+                "fallen_pose_prob": 0.90,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.45, 2.35),
+                "fallen_pitch_abs_range": (1.45, 2.35),
+                "fallen_coupled_range": (-0.40, 0.40),
+                "fallen_height_range": (0.10, 0.22),
             },
         )
         if not play
@@ -68,12 +80,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             {
                 "step": 0,
                 "prob": 1.0,
-                "roll_range": (-1.05, 1.05),
-                "pitch_range": (-0.90, 0.90),
-                "height_range": (0.25, 0.36),
-                "side_roll_prob": 0.60,
-                "side_roll_min_abs": 0.80,
-                "side_pitch_range": (-0.35, 0.35),
+                "roll_range": (-1.00, 1.00),
+                "pitch_range": (-1.00, 1.00),
+                "height_range": (0.16, 0.30),
+                "fallen_pose_prob": 0.90,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.45, 2.35),
+                "fallen_pitch_abs_range": (1.45, 2.35),
+                "fallen_coupled_range": (-0.40, 0.40),
+                "fallen_height_range": (0.10, 0.22),
             },
         )
     )
@@ -133,23 +148,33 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
         weight=-2.0e-4,
-        params={"asset_cfg": SceneEntityCfg("robot"), "recovery_scale": 0.35},
+        params={"asset_cfg": SceneEntityCfg("robot"), "recovery_scale": 0.15},
     )
     cfg.rewards["leg_power"] = RewardTermCfg(
         func=rewards.leg_power,
         weight=-1.03e-4,
-        params={"asset_cfg": SceneEntityCfg("robot"), "recovery_scale": 0.35},
+        params={"asset_cfg": SceneEntityCfg("robot"), "recovery_scale": 0.15},
     )
     cfg.rewards["action_rate"] = RewardTermCfg(
         func=rewards.action_rate,
         weight=-0.48,
-        params={"recovery_scale": 0.35},
+        params={"recovery_scale": 0.15},
     )
     cfg.rewards["recovery_upright"] = RewardTermCfg(func=rewards.recovery_upright, weight=5.0)
+    cfg.rewards["recovery_tilt_progress"] = RewardTermCfg(
+        func=rewards.recovery_tilt_progress,
+        weight=3.0,
+        params={"upright_angle_deg": 15.0},
+    )
     cfg.rewards["recovery_hard_roll_upright"] = RewardTermCfg(
         func=rewards.recovery_hard_roll_upright,
         weight=4.0,
-        params={"min_initial_roll_deg": 45.0, "max_initial_pitch_deg": 35.0},
+        params={"min_initial_roll_deg": 75.0, "max_initial_pitch_deg": 35.0},
+    )
+    cfg.rewards["recovery_hard_pitch_upright"] = RewardTermCfg(
+        func=rewards.recovery_hard_pitch_upright,
+        weight=4.0,
+        params={"min_initial_pitch_deg": 75.0, "max_initial_roll_deg": 35.0},
     )
     cfg.rewards["recovery_height"] = RewardTermCfg(
         func=rewards.recovery_height,
@@ -189,8 +214,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "height_tolerance": 0.05,
             "ang_vel_threshold": 1.5,
             "force_threshold": 1.0,
-            "min_initial_roll_deg": 45.0,
+            "min_initial_roll_deg": 75.0,
             "max_initial_pitch_deg": 35.0,
+        },
+    )
+    cfg.rewards["recovery_hard_pitch_success"] = RewardTermCfg(
+        func=rewards.recovery_hard_pitch_success,
+        weight=8.0,
+        params={
+            "sensor_name": "wheel_sensor",
+            "height_sensor_name": "base_height_sensor",
+            "command_name": "velocity_height",
+            "upright_angle_deg": 15.0,
+            "height_tolerance": 0.05,
+            "ang_vel_threshold": 1.5,
+            "force_threshold": 1.0,
+            "min_initial_pitch_deg": 75.0,
+            "max_initial_roll_deg": 35.0,
         },
     )
     cfg.rewards["recovery_stability"] = RewardTermCfg(

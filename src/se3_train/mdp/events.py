@@ -99,6 +99,12 @@ def reset_root_state_full(
     recovery_side_roll_prob: float = 0.0,
     recovery_side_roll_min_abs: float = 0.75,
     recovery_side_pitch_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_fallen_pose_prob: float = 0.0,
+    recovery_fallen_roll_pose_prob: float = 0.5,
+    recovery_fallen_roll_abs_range: tuple[float, float] = (1.35, 1.75),
+    recovery_fallen_pitch_abs_range: tuple[float, float] = (1.35, 1.75),
+    recovery_fallen_coupled_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_fallen_height_range: tuple[float, float] = (0.12, 0.24),
     recovery_grace_steps: int = 400,
     recovery_command_height: float = 0.22,
 ) -> None:
@@ -139,6 +145,24 @@ def reset_root_state_full(
         _stage_value(stage, "side_roll_min_abs", recovery_side_roll_min_abs)
     )
     recovery_side_pitch_range = _stage_value(stage, "side_pitch_range", recovery_side_pitch_range)
+    recovery_fallen_pose_prob = float(
+        _stage_value(stage, "fallen_pose_prob", recovery_fallen_pose_prob)
+    )
+    recovery_fallen_roll_pose_prob = float(
+        _stage_value(stage, "fallen_roll_pose_prob", recovery_fallen_roll_pose_prob)
+    )
+    recovery_fallen_roll_abs_range = _stage_value(
+        stage, "fallen_roll_abs_range", recovery_fallen_roll_abs_range
+    )
+    recovery_fallen_pitch_abs_range = _stage_value(
+        stage, "fallen_pitch_abs_range", recovery_fallen_pitch_abs_range
+    )
+    recovery_fallen_coupled_range = _stage_value(
+        stage, "fallen_coupled_range", recovery_fallen_coupled_range
+    )
+    recovery_fallen_height_range = _stage_value(
+        stage, "fallen_height_range", recovery_fallen_height_range
+    )
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
     full_recovery_mask = _ensure_recovery_mask(env)
@@ -146,9 +170,11 @@ def reset_root_state_full(
     init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
     init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
     init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
+    init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
     init_roll[env_ids] = 0.0
     init_pitch[env_ids] = 0.0
     init_yaw[env_ids] = 0.0
+    init_tilt[env_ids] = 0.0
     env._recovery_grace_steps = int(recovery_grace_steps)
     env._recovery_command_height = float(recovery_command_height)
 
@@ -163,6 +189,8 @@ def reset_root_state_full(
     pitch = torch.zeros(n, device=env.device)
     if recovery_mask.any():
         n_recovery = int(recovery_mask.sum().item())
+        recovery_indices = recovery_mask.nonzero().flatten()
+        fallen_pose_mask = torch.rand(n_recovery, device=env.device) < recovery_fallen_pose_prob
         roll[recovery_mask] = sample_uniform(
             torch.tensor(float(recovery_roll_range[0]), device=env.device),
             torch.tensor(float(recovery_roll_range[1]), device=env.device),
@@ -175,7 +203,62 @@ def reset_root_state_full(
             (n_recovery,),
             env.device,
         )
-        side_roll_mask = torch.rand(n_recovery, device=env.device) < recovery_side_roll_prob
+        if fallen_pose_mask.any():
+            n_fallen = int(fallen_pose_mask.sum().item())
+            fallen_indices = recovery_indices[fallen_pose_mask]
+            fallen_roll_pose = (
+                torch.rand(n_fallen, device=env.device) < recovery_fallen_roll_pose_prob
+            )
+            fallen_sign = torch.where(
+                torch.rand(n_fallen, device=env.device) < 0.5,
+                torch.tensor(-1.0, device=env.device),
+                torch.tensor(1.0, device=env.device),
+            )
+            if fallen_roll_pose.any():
+                n_roll = int(fallen_roll_pose.sum().item())
+                roll_indices = fallen_indices[fallen_roll_pose]
+                roll_abs = sample_uniform(
+                    torch.tensor(float(recovery_fallen_roll_abs_range[0]), device=env.device),
+                    torch.tensor(float(recovery_fallen_roll_abs_range[1]), device=env.device),
+                    (n_roll,),
+                    env.device,
+                )
+                roll[roll_indices] = roll_abs * fallen_sign[fallen_roll_pose]
+                pitch[roll_indices] = sample_uniform(
+                    torch.tensor(float(recovery_fallen_coupled_range[0]), device=env.device),
+                    torch.tensor(float(recovery_fallen_coupled_range[1]), device=env.device),
+                    (n_roll,),
+                    env.device,
+                )
+            fallen_pitch_pose = ~fallen_roll_pose
+            if fallen_pitch_pose.any():
+                n_pitch = int(fallen_pitch_pose.sum().item())
+                pitch_indices = fallen_indices[fallen_pitch_pose]
+                pitch_abs = sample_uniform(
+                    torch.tensor(float(recovery_fallen_pitch_abs_range[0]), device=env.device),
+                    torch.tensor(float(recovery_fallen_pitch_abs_range[1]), device=env.device),
+                    (n_pitch,),
+                    env.device,
+                )
+                pitch[pitch_indices] = pitch_abs * fallen_sign[fallen_pitch_pose]
+                roll[pitch_indices] = sample_uniform(
+                    torch.tensor(float(recovery_fallen_coupled_range[0]), device=env.device),
+                    torch.tensor(float(recovery_fallen_coupled_range[1]), device=env.device),
+                    (n_pitch,),
+                    env.device,
+                )
+            pos[fallen_indices, 2] = (
+                sample_uniform(
+                    torch.tensor(float(recovery_fallen_height_range[0]), device=env.device),
+                    torch.tensor(float(recovery_fallen_height_range[1]), device=env.device),
+                    (n_fallen,),
+                    env.device,
+                )
+                + env.scene.env_origins[env_ids][fallen_indices, 2]
+            )
+        side_roll_mask = (
+            torch.rand(n_recovery, device=env.device) < recovery_side_roll_prob
+        ) & ~fallen_pose_mask
         if side_roll_mask.any():
             n_side = int(side_roll_mask.sum().item())
             max_abs_roll = max(
@@ -194,7 +277,6 @@ def reset_root_state_full(
                 torch.tensor(-1.0, device=env.device),
                 torch.tensor(1.0, device=env.device),
             )
-            recovery_indices = recovery_mask.nonzero().flatten()
             side_indices = recovery_indices[side_roll_mask]
             roll[side_indices] = side_roll_abs * side_sign
             pitch[side_indices] = sample_uniform(
@@ -203,18 +285,24 @@ def reset_root_state_full(
                 (n_side,),
                 env.device,
             )
-        pos[recovery_mask, 2] = (
-            sample_uniform(
-                torch.tensor(float(recovery_height_range[0]), device=env.device),
-                torch.tensor(float(recovery_height_range[1]), device=env.device),
-                (n_recovery,),
-                env.device,
+        standard_recovery_mask = recovery_mask.clone()
+        if fallen_pose_mask.any():
+            standard_recovery_mask[recovery_indices[fallen_pose_mask]] = False
+        if standard_recovery_mask.any():
+            n_standard = int(standard_recovery_mask.sum().item())
+            pos[standard_recovery_mask, 2] = (
+                sample_uniform(
+                    torch.tensor(float(recovery_height_range[0]), device=env.device),
+                    torch.tensor(float(recovery_height_range[1]), device=env.device),
+                    (n_standard,),
+                    env.device,
+                )
+                + env.scene.env_origins[env_ids][standard_recovery_mask, 2]
             )
-            + env.scene.env_origins[env_ids][recovery_mask, 2]
-        )
         init_roll[env_ids] = roll
         init_pitch[env_ids] = pitch
         init_yaw[env_ids] = yaw
+        init_tilt[env_ids] = torch.acos(torch.clamp(torch.cos(roll) * torch.cos(pitch), -1.0, 1.0))
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     default_quat = root_states[:, 3:7]
     new_quat = quat_mul(default_quat, quat_delta)
