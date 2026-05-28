@@ -2,31 +2,13 @@
 
 from __future__ import annotations
 
-from se3_train.mdp.rewards import (
-    recovery_hard_pitch_success,
-    recovery_hard_pitch_upright,
-    recovery_hard_roll_success,
-    recovery_hard_roll_upright,
-    recovery_height,
-    recovery_stability,
-    recovery_success,
-    recovery_tilt_progress,
-    recovery_upright,
-    recovery_wheel_contact,
-)
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
+from se3_train.mdp.rewards import is_alive, recovery_height, recovery_upright
 
 __all__ = [
     *_FLAT_REWARD_ALL,
-    "recovery_hard_pitch_success",
-    "recovery_hard_pitch_upright",
-    "recovery_hard_roll_success",
-    "recovery_hard_roll_upright",
+    "is_alive",
     "recovery_height",
-    "recovery_stability",
-    "recovery_success",
-    "recovery_tilt_progress",
     "recovery_upright",
-    "recovery_wheel_contact",
 ]

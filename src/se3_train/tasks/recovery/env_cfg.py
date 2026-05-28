@@ -121,6 +121,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "limit_angle": 0.5236,
             "max_steps": 100,
             "recovery_grace_steps": recovery_grace_steps,
+            "recovery_terminate": False,
         },
     )
     cfg.terminations["leg_contact"] = TerminationTermCfg(
@@ -134,6 +135,36 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
+    cfg.rewards["tracking_orientation_l2"] = RewardTermCfg(
+        func=rewards.tracking_orientation_l2,
+        weight=-12.0,
+        params={"command_name": "velocity_height", "ignore_recovery": True},
+    )
+    cfg.rewards["tracking_height"] = RewardTermCfg(
+        func=rewards.tracking_height,
+        weight=2.49,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.05,
+            "height_sensor_name": "base_height_sensor",
+            "ignore_recovery": True,
+        },
+    )
+    cfg.rewards["bad_tilt"] = RewardTermCfg(
+        func=rewards.bad_tilt,
+        weight=-6.0,
+        params={
+            "soft_limit_deg": 10.0,
+            "hard_limit_deg": 30.0,
+            "max_penalty": 4.0,
+            "ignore_recovery": True,
+        },
+    )
+    cfg.rewards["is_alive"] = RewardTermCfg(
+        func=rewards.is_alive,
+        weight=1.0,
+        params={"recovery_scale": 0.0},
+    )
     cfg.rewards["stand_still"] = RewardTermCfg(
         func=rewards.stand_still,
         weight=-1.0,
@@ -161,83 +192,29 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=-0.48,
         params={"recovery_scale": 0.15},
     )
-    cfg.rewards["recovery_upright"] = RewardTermCfg(func=rewards.recovery_upright, weight=5.0)
-    cfg.rewards["recovery_tilt_progress"] = RewardTermCfg(
-        func=rewards.recovery_tilt_progress,
-        weight=3.0,
-        params={"upright_angle_deg": 15.0},
-    )
-    cfg.rewards["recovery_hard_roll_upright"] = RewardTermCfg(
-        func=rewards.recovery_hard_roll_upright,
-        weight=4.0,
-        params={"min_initial_roll_deg": 75.0, "max_initial_pitch_deg": 35.0},
-    )
-    cfg.rewards["recovery_hard_pitch_upright"] = RewardTermCfg(
-        func=rewards.recovery_hard_pitch_upright,
-        weight=4.0,
-        params={"min_initial_pitch_deg": 75.0, "max_initial_roll_deg": 35.0},
+    cfg.rewards["recovery_upright"] = RewardTermCfg(
+        func=rewards.recovery_upright,
+        weight=6.0,
+        params={
+            "sensor_name": "wheel_sensor",
+            "height_sensor_name": "base_height_sensor",
+            "command_name": "velocity_height",
+            "upright_angle_deg": 15.0,
+            "height_tolerance": 0.05,
+            "ang_vel_threshold": 1.5,
+            "force_threshold": 1.0,
+        },
     )
     cfg.rewards["recovery_height"] = RewardTermCfg(
         func=rewards.recovery_height,
-        weight=2.0,
+        weight=1.0,
         params={
             "command_name": "velocity_height",
             "height_sensor_name": "base_height_sensor",
             "sigma": 0.04,
+            "gate_start_deg": 45.0,
+            "gate_full_deg": 15.0,
         },
-    )
-    cfg.rewards["recovery_wheel_contact"] = RewardTermCfg(
-        func=rewards.recovery_wheel_contact,
-        weight=1.0,
-        params={"sensor_name": "wheel_sensor", "force_threshold": 1.0},
-    )
-    cfg.rewards["recovery_success"] = RewardTermCfg(
-        func=rewards.recovery_success,
-        weight=5.0,
-        params={
-            "sensor_name": "wheel_sensor",
-            "height_sensor_name": "base_height_sensor",
-            "command_name": "velocity_height",
-            "upright_angle_deg": 15.0,
-            "height_tolerance": 0.05,
-            "ang_vel_threshold": 1.5,
-            "force_threshold": 1.0,
-        },
-    )
-    cfg.rewards["recovery_hard_roll_success"] = RewardTermCfg(
-        func=rewards.recovery_hard_roll_success,
-        weight=8.0,
-        params={
-            "sensor_name": "wheel_sensor",
-            "height_sensor_name": "base_height_sensor",
-            "command_name": "velocity_height",
-            "upright_angle_deg": 15.0,
-            "height_tolerance": 0.05,
-            "ang_vel_threshold": 1.5,
-            "force_threshold": 1.0,
-            "min_initial_roll_deg": 75.0,
-            "max_initial_pitch_deg": 35.0,
-        },
-    )
-    cfg.rewards["recovery_hard_pitch_success"] = RewardTermCfg(
-        func=rewards.recovery_hard_pitch_success,
-        weight=8.0,
-        params={
-            "sensor_name": "wheel_sensor",
-            "height_sensor_name": "base_height_sensor",
-            "command_name": "velocity_height",
-            "upright_angle_deg": 15.0,
-            "height_tolerance": 0.05,
-            "ang_vel_threshold": 1.5,
-            "force_threshold": 1.0,
-            "min_initial_pitch_deg": 75.0,
-            "max_initial_roll_deg": 35.0,
-        },
-    )
-    cfg.rewards["recovery_stability"] = RewardTermCfg(
-        func=rewards.recovery_stability,
-        weight=-0.25,
-        params={"ang_vel_weight": 0.25},
     )
 
     return cfg

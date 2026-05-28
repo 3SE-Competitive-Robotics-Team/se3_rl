@@ -117,11 +117,12 @@ def _upright_factor(projected_gravity_z: torch.Tensor) -> torch.Tensor:
 def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
-    """在宽限期内使用 1.0,否则使用直立因子。"""
+    """倒地恢复早期不惩罚接触，接近直立后再恢复常规惩罚。"""
     grace_steps = 74
     upright = _upright_factor(projected_gravity_z)
-    in_grace = env.episode_length_buf < grace_steps
-    return torch.where(in_grace, torch.ones_like(upright), upright)
+    recovery = _recovery_reset_mask(env)
+    in_recovery_grace = recovery & (env.episode_length_buf < grace_steps)
+    return torch.where(in_recovery_grace, torch.zeros_like(upright), upright)
 
 
 def tracking_lin_vel(
@@ -160,7 +161,9 @@ def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) ->
     return torch.exp(-(error**2) / sigma) * gate
 
 
-def tracking_orientation_l2(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def tracking_orientation_l2(
+    env: ManagerBasedRlEnv, command_name: str, ignore_recovery: bool = False
+) -> torch.Tensor:
     """pitch/roll 姿态 L2 惩罚，提供 Tron 风格的持续回正梯度。
 
     L2 惩罚会随误差平方增长，小倾斜也有明确负反馈。行走任务保留 pitch/roll
@@ -176,11 +179,18 @@ def tracking_orientation_l2(env: ManagerBasedRlEnv, command_name: str) -> torch.
 
     pitch_error = current_pitch - cmd[:, 2]
     roll_error = current_roll - cmd[:, 3]
-    return pitch_error**2 + roll_error**2
+    penalty = pitch_error**2 + roll_error**2
+    if ignore_recovery:
+        penalty = penalty * (~_recovery_reset_mask(env)).float()
+    return penalty
 
 
 def tracking_height(
-    env: ManagerBasedRlEnv, command_name: str, sigma: float, height_sensor_name: str
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float,
+    height_sensor_name: str,
+    ignore_recovery: bool = False,
 ) -> torch.Tensor:
     """高度跟踪奖励,不门控（始终提供恢复梯度）。"""
     cmd = env.command_manager.get_command(command_name)
@@ -189,7 +199,10 @@ def tracking_height(
     height = sensor.data.heights[:, 0]
     target_height = cmd[:, 4]
     error = torch.square(height - target_height)
-    return torch.exp(-error / sigma)
+    reward = torch.exp(-error / sigma)
+    if ignore_recovery:
+        reward = reward * (~_recovery_reset_mask(env)).float()
+    return reward
 
 
 def bad_tilt(
@@ -197,6 +210,7 @@ def bad_tilt(
     soft_limit_deg: float = 12.0,
     hard_limit_deg: float = 35.0,
     max_penalty: float = 4.0,
+    ignore_recovery: bool = False,
 ) -> torch.Tensor:
     """坏姿态 barrier 惩罚。
 
@@ -210,7 +224,22 @@ def bad_tilt(
     hard = torch.deg2rad(torch.tensor(float(hard_limit_deg), device=env.device))
     span = torch.clamp(hard - soft, min=1.0e-6)
     excess = torch.clamp((tilt - soft) / span, min=0.0)
-    return torch.clamp(excess**2, max=float(max_penalty))
+    penalty = torch.clamp(excess**2, max=float(max_penalty))
+    if ignore_recovery:
+        penalty = penalty * (~_recovery_reset_mask(env)).float()
+    return penalty
+
+
+def is_alive(env: ManagerBasedRlEnv, recovery_scale: float = 1.0) -> torch.Tensor:
+    """存活奖励；倒地恢复样本可单独缩放，避免躺平刷 alive。"""
+    reward = torch.ones(env.num_envs, device=env.device)
+    if recovery_scale != 1.0:
+        reward = torch.where(
+            _recovery_reset_mask(env),
+            reward * float(recovery_scale),
+            reward,
+        )
+    return reward
 
 
 def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -343,7 +372,16 @@ def stand_still(
     return result
 
 
-def recovery_upright(env: ManagerBasedRlEnv) -> torch.Tensor:
+def recovery_upright(
+    env: ManagerBasedRlEnv,
+    sensor_name: str | None = None,
+    height_sensor_name: str | None = None,
+    command_name: str | None = None,
+    upright_angle_deg: float = 15.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 1.5,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
     """倒地恢复期直立奖励。
 
     使用 projected_gravity 的 z 分量构造连续信号：侧躺约 0.5，直立为 1。
@@ -356,62 +394,50 @@ def recovery_upright(env: ManagerBasedRlEnv) -> torch.Tensor:
 
     if hasattr(env, "extras"):
         tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
-        env.extras.setdefault("log", {}).update(
-            {
-                "Recovery/reset_ratio": active.float().mean().item(),
-                "Recovery/tilt_deg": tilt[active].mean().item() if active.any() else 0.0,
-                "Recovery/upright_score": upright[active].mean().item() if active.any() else 0.0,
-            }
-        )
+        log = {
+            "Recovery/reset_ratio": active.float().mean().item(),
+            "Recovery/tilt_deg": tilt[active].mean().item() if active.any() else 0.0,
+            "Recovery/upright_score": upright[active].mean().item() if active.any() else 0.0,
+        }
+        if sensor_name is not None and height_sensor_name is not None and command_name is not None:
+            success, wheel_contact, _ = _recovery_success_mask(
+                env,
+                sensor_name=sensor_name,
+                height_sensor_name=height_sensor_name,
+                command_name=command_name,
+                upright_angle_deg=upright_angle_deg,
+                height_tolerance=height_tolerance,
+                ang_vel_threshold=ang_vel_threshold,
+                force_threshold=force_threshold,
+            )
+            init_roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
+            init_pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
+            init_yaw_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_yaw"))
+            init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
+            hard_roll = _recovery_hard_roll_mask(env)
+            hard_pitch = _recovery_hard_pitch_mask(env)
+            log.update(
+                {
+                    "Recovery/success_rate": success.float().mean().item(),
+                    "Recovery/success_active_rate": _masked_mean(success.float(), active),
+                    "Recovery/wheel_contact_rate": (active & wheel_contact).float().mean().item(),
+                    "Recovery/init_roll_abs_deg": _masked_mean(
+                        torch.rad2deg(init_roll_abs), active
+                    ),
+                    "Recovery/init_pitch_abs_deg": _masked_mean(
+                        torch.rad2deg(init_pitch_abs), active
+                    ),
+                    "Recovery/init_yaw_abs_deg": _masked_mean(torch.rad2deg(init_yaw_abs), active),
+                    "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), active),
+                    "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
+                    "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
+                    "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
+                    "Recovery/hard_pitch_success_rate": _masked_mean(success.float(), hard_pitch),
+                }
+            )
+        env.extras.setdefault("log", {}).update(log)
 
     return upright.square() * active.float()
-
-
-def recovery_tilt_progress(env: ManagerBasedRlEnv, upright_angle_deg: float = 15.0) -> torch.Tensor:
-    """相对初始倒地倾角的恢复进度奖励。"""
-    active = _recovery_reset_mask(env)
-    robot = env.scene["robot"]
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    current_tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-    init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
-    upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
-    denom = torch.clamp(init_tilt - upright_limit, min=1.0e-3)
-    progress = torch.clamp((init_tilt - current_tilt) / denom, 0.0, 1.0)
-    return progress * active.float()
-
-
-def recovery_hard_roll_upright(
-    env: ManagerBasedRlEnv,
-    min_initial_roll_deg: float = 75.0,
-    max_initial_pitch_deg: float = 35.0,
-) -> torch.Tensor:
-    """大 roll 侧翻样本的直立奖励，避免总成功率被 pitch 样本掩盖。"""
-    robot = env.scene["robot"]
-    hard_roll = _recovery_hard_roll_mask(
-        env,
-        min_initial_roll_deg=min_initial_roll_deg,
-        max_initial_pitch_deg=max_initial_pitch_deg,
-    )
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
-    return upright.square() * hard_roll.float()
-
-
-def recovery_hard_pitch_upright(
-    env: ManagerBasedRlEnv,
-    min_initial_pitch_deg: float = 75.0,
-    max_initial_roll_deg: float = 35.0,
-) -> torch.Tensor:
-    """大 pitch 前后翻样本的直立奖励，避免小角度 pitch 样本虚高。"""
-    robot = env.scene["robot"]
-    hard_pitch = _recovery_hard_pitch_mask(
-        env,
-        min_initial_pitch_deg=min_initial_pitch_deg,
-        max_initial_roll_deg=max_initial_roll_deg,
-    )
-    pg_z = robot.data.projected_gravity_b[:, 2]
-    upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
-    return upright.square() * hard_pitch.float()
 
 
 def recovery_height(
@@ -419,6 +445,8 @@ def recovery_height(
     command_name: str,
     height_sensor_name: str,
     sigma: float = 0.04,
+    gate_start_deg: float = 45.0,
+    gate_full_deg: float = 15.0,
 ) -> torch.Tensor:
     """倒地恢复期 base 高度奖励，目标高度沿用当前站立高度指令。"""
     active = _recovery_reset_mask(env)
@@ -427,6 +455,10 @@ def recovery_height(
     height = sensor.data.heights[:, 0]
     target_height = cmd[:, 4]
     reward = torch.exp(-torch.square(height - target_height) / float(sigma))
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
     if hasattr(env, "extras"):
         env.extras.setdefault("log", {}).update(
@@ -436,146 +468,13 @@ def recovery_height(
                 .item()
                 if active.any()
                 else 0.0,
+                "Recovery/height_gate": near_upright_gate[active].mean().item()
+                if active.any()
+                else 0.0,
             }
         )
 
-    return reward * active.float()
-
-
-def recovery_stability(env: ManagerBasedRlEnv, ang_vel_weight: float = 0.25) -> torch.Tensor:
-    """倒地恢复期稳定性惩罚：压制恢复后的大角速度和上下弹跳。"""
-    active = _recovery_reset_mask(env)
-    robot = env.scene["robot"]
-    lin_vel = robot.data.root_link_lin_vel_b
-    ang_vel = robot.data.root_link_ang_vel_b
-    penalty = lin_vel[:, 2].square() + float(ang_vel_weight) * torch.sum(ang_vel.square(), dim=1)
-    return penalty * active.float()
-
-
-def recovery_wheel_contact(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    force_threshold: float = 1.0,
-) -> torch.Tensor:
-    """倒地恢复期轮子接地奖励，鼓励最终回到双轮支撑。"""
-    active = _recovery_reset_mask(env)
-    sensor: ContactSensor = env.scene[sensor_name]
-    data = sensor.data
-    if data.force is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    force_mag = finite_contact_force_norm(data.force)
-    contact = (force_mag > float(force_threshold)).float()
-    return torch.mean(contact, dim=1) * active.float()
-
-
-def recovery_success(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    height_sensor_name: str,
-    command_name: str,
-    upright_angle_deg: float = 15.0,
-    height_tolerance: float = 0.05,
-    ang_vel_threshold: float = 1.5,
-    force_threshold: float = 1.0,
-) -> torch.Tensor:
-    """恢复成功奖励：直立、高度达标、角速度低且至少一个轮子接地。"""
-    success, wheel_contact, active = _recovery_success_mask(
-        env,
-        sensor_name=sensor_name,
-        height_sensor_name=height_sensor_name,
-        command_name=command_name,
-        upright_angle_deg=upright_angle_deg,
-        height_tolerance=height_tolerance,
-        ang_vel_threshold=ang_vel_threshold,
-        force_threshold=force_threshold,
-    )
-    init_roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
-    init_pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
-    init_yaw_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_yaw"))
-    init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
-    hard_roll = _recovery_hard_roll_mask(env)
-    hard_pitch = _recovery_hard_pitch_mask(env)
-    if hasattr(env, "extras"):
-        env.extras.setdefault("log", {}).update(
-            {
-                "Recovery/success_rate": success.float().mean().item(),
-                "Recovery/success_active_rate": _masked_mean(success.float(), active),
-                "Recovery/wheel_contact_rate": (active & wheel_contact).float().mean().item(),
-                "Recovery/init_roll_abs_deg": _masked_mean(torch.rad2deg(init_roll_abs), active),
-                "Recovery/init_pitch_abs_deg": _masked_mean(torch.rad2deg(init_pitch_abs), active),
-                "Recovery/init_yaw_abs_deg": _masked_mean(torch.rad2deg(init_yaw_abs), active),
-                "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), active),
-                "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
-                "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
-                "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
-                "Recovery/hard_pitch_success_rate": _masked_mean(success.float(), hard_pitch),
-            }
-        )
-
-    return success.float()
-
-
-def recovery_hard_roll_success(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    height_sensor_name: str,
-    command_name: str,
-    upright_angle_deg: float = 15.0,
-    height_tolerance: float = 0.05,
-    ang_vel_threshold: float = 1.5,
-    force_threshold: float = 1.0,
-    min_initial_roll_deg: float = 75.0,
-    max_initial_pitch_deg: float = 35.0,
-) -> torch.Tensor:
-    """大 roll 侧翻恢复成功奖励。"""
-    success, _, _ = _recovery_success_mask(
-        env,
-        sensor_name=sensor_name,
-        height_sensor_name=height_sensor_name,
-        command_name=command_name,
-        upright_angle_deg=upright_angle_deg,
-        height_tolerance=height_tolerance,
-        ang_vel_threshold=ang_vel_threshold,
-        force_threshold=force_threshold,
-    )
-    hard_roll = _recovery_hard_roll_mask(
-        env,
-        min_initial_roll_deg=min_initial_roll_deg,
-        max_initial_pitch_deg=max_initial_pitch_deg,
-    )
-    return (success & hard_roll).float()
-
-
-def recovery_hard_pitch_success(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    height_sensor_name: str,
-    command_name: str,
-    upright_angle_deg: float = 15.0,
-    height_tolerance: float = 0.05,
-    ang_vel_threshold: float = 1.5,
-    force_threshold: float = 1.0,
-    min_initial_pitch_deg: float = 75.0,
-    max_initial_roll_deg: float = 35.0,
-) -> torch.Tensor:
-    """大 pitch 前后翻恢复成功奖励。"""
-    success, _, _ = _recovery_success_mask(
-        env,
-        sensor_name=sensor_name,
-        height_sensor_name=height_sensor_name,
-        command_name=command_name,
-        upright_angle_deg=upright_angle_deg,
-        height_tolerance=height_tolerance,
-        ang_vel_threshold=ang_vel_threshold,
-        force_threshold=force_threshold,
-    )
-    hard_pitch = _recovery_hard_pitch_mask(
-        env,
-        min_initial_pitch_deg=min_initial_pitch_deg,
-        max_initial_roll_deg=max_initial_roll_deg,
-    )
-    return (success & hard_pitch).float()
+    return reward * near_upright_gate * active.float()
 
 
 def joint_mirror(

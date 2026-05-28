@@ -37,6 +37,7 @@ class BadOrientationDelayed:
         limit_angle: float = 0.5236,
         max_steps: int = 100,
         recovery_grace_steps: int = 0,
+        recovery_terminate: bool = True,
     ) -> torch.Tensor:
         if (
             self._fail_count is None
@@ -52,6 +53,8 @@ class BadOrientationDelayed:
         bad = raw_bad
         recovery_mask = _recovery_reset_mask(env)
         in_recovery_grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        if not recovery_terminate:
+            bad = bad & ~recovery_mask
         if recovery_grace_steps > 0:
             in_recovery_grace = recovery_mask & (
                 env.episode_length_buf <= int(recovery_grace_steps)
