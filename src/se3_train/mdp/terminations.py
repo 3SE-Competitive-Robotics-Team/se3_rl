@@ -13,6 +13,14 @@ if TYPE_CHECKING:
     from mjlab.sensor import ContactSensor
 
 
+def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """返回 recovery reset 标记；普通任务没有该标记时全 False。"""
+    mask = getattr(env, "_recovery_reset_mask", None)
+    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    return mask.to(device=env.device, dtype=torch.bool)
+
+
 def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf >= env.max_episode_length
 
@@ -24,7 +32,11 @@ class BadOrientationDelayed:
         self._fail_count: torch.Tensor | None = None
 
     def __call__(
-        self, env: ManagerBasedRlEnv, limit_angle: float = 0.5236, max_steps: int = 100
+        self,
+        env: ManagerBasedRlEnv,
+        limit_angle: float = 0.5236,
+        max_steps: int = 100,
+        recovery_grace_steps: int = 0,
     ) -> torch.Tensor:
         if self._fail_count is None:
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
@@ -33,6 +45,11 @@ class BadOrientationDelayed:
         pg_z = robot.data.projected_gravity_b[:, 2]
         tilt_angle = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
         bad = tilt_angle > limit_angle
+        if recovery_grace_steps > 0:
+            in_recovery_grace = _recovery_reset_mask(env) & (
+                env.episode_length_buf <= int(recovery_grace_steps)
+            )
+            bad = bad & ~in_recovery_grace
 
         self._fail_count[bad] += 1
         self._fail_count[~bad] = 0
@@ -56,6 +73,7 @@ def leg_contact(
     jump_force_threshold: float | None = None,
     jump_landing_force_threshold: float | None = None,
     jump_grace_steps: int = 0,
+    recovery_grace_steps: int = 0,
     terminate: bool = True,
 ) -> torch.Tensor:
     """腿部 link 接触地面即时终止（膝盖着地 = 非法运动模式）。
@@ -75,6 +93,11 @@ def leg_contact(
     has_contact = max_force > force_threshold
     terminate_threshold = torch.full_like(max_force, force_threshold)
     terminate_contact = has_contact
+    if recovery_grace_steps > 0:
+        in_recovery_grace = _recovery_reset_mask(env) & (
+            env.episode_length_buf <= int(recovery_grace_steps)
+        )
+        terminate_contact = terminate_contact & ~in_recovery_grace
 
     # 精细拆分诊断：写入 extras["_leg_contact_diag"]（不是 log，log 在 reset 时会被清空）
     # command_manager._update_metrics 在 reset 之后调用，从此处读取并搬入 extras["log"]

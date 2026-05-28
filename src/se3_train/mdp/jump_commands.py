@@ -331,8 +331,23 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
     def _update_command(self) -> None:
         """更新速度死区，按 step-level 概率启动跳跃，并推进参考轨迹计步器。"""
         super()._update_command()
+        self._apply_recovery_command()
         self._start_new_jumps()
         self._advance_traj_step()
+
+    def _apply_recovery_command(self) -> None:
+        """恢复 episode 固定为原地站立指令，避免重采样切回行走命令。"""
+        recovery_mask = getattr(self._env, "_recovery_reset_mask", None)
+        if not isinstance(recovery_mask, torch.Tensor) or recovery_mask.shape[0] != self.num_envs:
+            return
+        recovery_mask = recovery_mask.to(device=self.device, dtype=torch.bool)
+        if not recovery_mask.any():
+            return
+        command_height = float(getattr(self._env, "_recovery_command_height", 0.22))
+        self._command[recovery_mask, 0:4] = 0.0
+        self._command[recovery_mask, 4] = command_height
+        self._command[recovery_mask, 5] = 0.0
+        self._command[recovery_mask, 7] = 0.0
 
     def _advance_traj_step(self) -> None:
         """按参考轨迹时间推进计步器。

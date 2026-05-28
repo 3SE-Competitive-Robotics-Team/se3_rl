@@ -45,6 +45,14 @@ def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
     return 0.0
 
 
+def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """返回 recovery reset 标记；普通任务没有该标记时全 False。"""
+    mask = getattr(env, "_recovery_reset_mask", None)
+    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    return mask.to(device=env.device, dtype=torch.bool)
+
+
 def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
     """缓存左右轮 body 在 entity 内的局部索引。"""
     attr_name = f"_jump_wheel_body_ids_{asset_cfg.name}"
@@ -1155,6 +1163,7 @@ def flat_wheel_center_alignment_no_jump(
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
+    recovery = _recovery_reset_mask(env)
     low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
         torch.abs(cmd[:, 1]) < float(low_speed_threshold)
     )
@@ -1176,7 +1185,7 @@ def flat_wheel_center_alignment_no_jump(
         (mean_dist / float(center_tolerance)) ** 2,
         max=float(max_penalty),
     )
-    active = (~jump_flag) & low_speed & has_contact
+    active = (~jump_flag) & (~recovery) & low_speed & has_contact
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         env.extras["log"].update(
@@ -1401,7 +1410,7 @@ def action_rate_no_jump(
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
-    flat = ~jump_flag
+    flat = (~jump_flag) & (~_recovery_reset_mask(env))
     cmd_norm = torch.linalg.norm(cmd[:, :3], dim=1)
     idle = flat & (cmd_norm < float(idle_command_threshold))
 
@@ -1563,6 +1572,7 @@ def flat_base_lin_vel_z_no_jump(
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
+    recovery = _recovery_reset_mask(env)
     low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
         torch.abs(cmd[:, 1]) < float(low_speed_threshold)
     )
@@ -1571,7 +1581,7 @@ def flat_base_lin_vel_z_no_jump(
     vz = robot.data.root_link_lin_vel_b[:, 2]
     penalty = lin_vel_z(env)
 
-    active = (~jump_flag) & low_speed
+    active = (~jump_flag) & (~recovery) & low_speed
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         env.extras["log"].update(
             {
@@ -1639,7 +1649,7 @@ def flat_base_height_penalty_no_jump(
     """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
-    flat = ~jump_flag
+    flat = (~jump_flag) & (~_recovery_reset_mask(env))
 
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
     height = sensor.data.heights[:, 0]

@@ -31,6 +31,35 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
+def _stage_value(stage: dict, key: str, default):
+    """读取 recovery stage 字段，缺省时使用默认值。"""
+    return stage.get(key, default)
+
+
+def _active_recovery_stage(
+    env: ManagerBasedRlEnv,
+    recovery_stages: list[dict] | None,
+) -> dict:
+    """按 common_step_counter 选择当前 recovery reset 课程阶段。"""
+    if not recovery_stages:
+        return {}
+    step = getattr(env, "common_step_counter", 0)
+    active = recovery_stages[0]
+    for stage in recovery_stages:
+        if step >= int(stage.get("step", 0)):
+            active = stage
+    return active
+
+
+def _ensure_recovery_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """创建并返回每个 env 的 recovery reset 标记。"""
+    mask = getattr(env, "_recovery_reset_mask", None)
+    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
+        mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        env._recovery_reset_mask = mask
+    return mask
+
+
 def _pre_resample_jump_command_for_reset(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -51,6 +80,15 @@ def reset_root_state_full(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    recovery_prob: float = 0.0,
+    recovery_stages: list[dict] | None = None,
+    recovery_roll_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_pitch_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_height_range: tuple[float, float] = (0.24, 0.34),
+    recovery_lin_vel_range: tuple[float, float] = (-0.15, 0.15),
+    recovery_ang_vel_range: tuple[float, float] = (-0.8, 0.8),
+    recovery_grace_steps: int = 400,
+    recovery_command_height: float = 0.22,
 ) -> None:
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
@@ -79,7 +117,19 @@ def reset_root_state_full(
     )
     pos[:, 0:3] += env.scene.env_origins[env_ids]
 
-    # 仅随机化 yaw,保持直立。
+    stage = _active_recovery_stage(env, recovery_stages)
+    recovery_prob = float(_stage_value(stage, "prob", recovery_prob))
+    recovery_roll_range = _stage_value(stage, "roll_range", recovery_roll_range)
+    recovery_pitch_range = _stage_value(stage, "pitch_range", recovery_pitch_range)
+    recovery_height_range = _stage_value(stage, "height_range", recovery_height_range)
+
+    recovery_mask = torch.rand(n, device=env.device) < recovery_prob
+    full_recovery_mask = _ensure_recovery_mask(env)
+    full_recovery_mask[env_ids] = recovery_mask
+    env._recovery_grace_steps = int(recovery_grace_steps)
+    env._recovery_command_height = float(recovery_command_height)
+
+    # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
         torch.tensor(-torch.pi, device=env.device),
         torch.tensor(torch.pi, device=env.device),
@@ -88,11 +138,59 @@ def reset_root_state_full(
     )
     roll = torch.zeros(n, device=env.device)
     pitch = torch.zeros(n, device=env.device)
+    if recovery_mask.any():
+        n_recovery = int(recovery_mask.sum().item())
+        roll[recovery_mask] = sample_uniform(
+            torch.tensor(float(recovery_roll_range[0]), device=env.device),
+            torch.tensor(float(recovery_roll_range[1]), device=env.device),
+            (n_recovery,),
+            env.device,
+        )
+        pitch[recovery_mask] = sample_uniform(
+            torch.tensor(float(recovery_pitch_range[0]), device=env.device),
+            torch.tensor(float(recovery_pitch_range[1]), device=env.device),
+            (n_recovery,),
+            env.device,
+        )
+        pos[recovery_mask, 2] = (
+            sample_uniform(
+                torch.tensor(float(recovery_height_range[0]), device=env.device),
+                torch.tensor(float(recovery_height_range[1]), device=env.device),
+                (n_recovery,),
+                env.device,
+            )
+            + env.scene.env_origins[env_ids][recovery_mask, 2]
+        )
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     default_quat = root_states[:, 3:7]
     new_quat = quat_mul(default_quat, quat_delta)
 
     vel = torch.zeros(n, 6, device=env.device)
+    if recovery_mask.any():
+        n_recovery = int(recovery_mask.sum().item())
+        vel[recovery_mask, 0:3] = sample_uniform(
+            torch.tensor(float(recovery_lin_vel_range[0]), device=env.device),
+            torch.tensor(float(recovery_lin_vel_range[1]), device=env.device),
+            (n_recovery, 3),
+            env.device,
+        )
+        vel[recovery_mask, 3:6] = sample_uniform(
+            torch.tensor(float(recovery_ang_vel_range[0]), device=env.device),
+            torch.tensor(float(recovery_ang_vel_range[1]), device=env.device),
+            (n_recovery, 3),
+            env.device,
+        )
+        if hasattr(env, "command_manager"):
+            try:
+                cmd = env.command_manager.get_command("velocity_height")
+                recovery_env_ids = env_ids[recovery_mask]
+                cmd[recovery_env_ids, 0:4] = 0.0
+                cmd[recovery_env_ids, 4] = float(recovery_command_height)
+                if cmd.shape[1] >= 8:
+                    cmd[recovery_env_ids, 5] = 0.0
+                    cmd[recovery_env_ids, 7] = 0.0
+            except Exception:
+                pass
 
     # jump_flag=1 的 episode：从参考轨迹初始化。
     #
@@ -184,6 +282,8 @@ def reset_joints(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    recovery_joint_offset_range: float = 0.0,
+    recovery_joint_vel_range: tuple[float, float] = (0.0, 0.0),
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
@@ -195,6 +295,39 @@ def reset_joints(
     joint_vel = torch.zeros_like(joint_pos)
 
     joint_pos[:, JointGroup.WHEELS] = 0.0
+
+    recovery_mask = getattr(env, "_recovery_reset_mask", None)
+    if (
+        isinstance(recovery_mask, torch.Tensor)
+        and recovery_mask.shape[0] == env.num_envs
+        and recovery_joint_offset_range > 0.0
+    ):
+        local_recovery = recovery_mask[env_ids].to(device=env.device, dtype=torch.bool)
+        if local_recovery.any():
+            n_recovery = int(local_recovery.sum().item())
+            local_ids = local_recovery.nonzero().flatten()
+            leg_ids = torch.tensor(JointGroup.LEGS, device=env.device)
+            offset = sample_uniform(
+                torch.tensor(-float(recovery_joint_offset_range), device=env.device),
+                torch.tensor(float(recovery_joint_offset_range), device=env.device),
+                (n_recovery, len(JointGroup.LEGS)),
+                env.device,
+            )
+            joint_pos[local_ids[:, None], leg_ids] += offset
+            joint_vel[local_ids[:, None], leg_ids] = sample_uniform(
+                torch.tensor(float(recovery_joint_vel_range[0]), device=env.device),
+                torch.tensor(float(recovery_joint_vel_range[1]), device=env.device),
+                (n_recovery, len(JointGroup.LEGS)),
+                env.device,
+            )
+
+            soft_limits = asset.data.soft_joint_pos_limits
+            if soft_limits is not None:
+                joint_pos[local_ids[:, None], leg_ids] = torch.clamp(
+                    joint_pos[local_ids[:, None], leg_ids],
+                    soft_limits[env_ids[local_recovery][:, None], leg_ids, 0],
+                    soft_limits[env_ids[local_recovery][:, None], leg_ids, 1],
+                )
 
     # jump_flag=1 的 episode：RSI 关节角——从参考轨迹对应帧注入
     # reset_root_state_full 已缓存帧号到 env._rsi_traj_frame，供此处读取

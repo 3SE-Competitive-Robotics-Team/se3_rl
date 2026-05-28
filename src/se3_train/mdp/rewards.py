@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
+def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """返回 recovery reset 标记；普通任务没有该标记时全 False。"""
+    mask = getattr(env, "_recovery_reset_mask", None)
+    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    return mask.to(device=env.device, dtype=torch.bool)
+
+
 def _upright_factor(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     """计算直立因子:clamp(-pg_z, 0, 0.7) / 0.7。"""
     return torch.clamp(-projected_gravity_z, 0.0, 0.7) / 0.7
@@ -211,6 +219,7 @@ def stand_still(
     command_threshold: float = 0.1,
     default_height: float = 0.27,
     height_tolerance: float = 40.0,
+    ignore_recovery: bool = False,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """站立时关节偏差平方和,高度自适应 sigma。
@@ -235,7 +244,134 @@ def stand_still(
     height_deviation = cmd[:, 4] - default_height
     height_scale = torch.exp(-height_tolerance * height_deviation**2)
 
-    return reward * vel_scale * height_scale * gate
+    result = reward * vel_scale * height_scale * gate
+    if ignore_recovery:
+        result = result * (~_recovery_reset_mask(env)).float()
+    return result
+
+
+def recovery_upright(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """倒地恢复期直立奖励。
+
+    使用 projected_gravity 的 z 分量构造连续信号：侧躺约 0.5，直立为 1。
+    这让策略在大倾角时也能得到非零恢复梯度。
+    """
+    robot = env.scene["robot"]
+    active = _recovery_reset_mask(env)
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
+
+    if hasattr(env, "extras"):
+        tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/reset_ratio": active.float().mean().item(),
+                "Recovery/tilt_deg": tilt[active].mean().item() if active.any() else 0.0,
+                "Recovery/upright_score": upright[active].mean().item() if active.any() else 0.0,
+            }
+        )
+
+    return upright.square() * active.float()
+
+
+def recovery_height(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    sigma: float = 0.04,
+) -> torch.Tensor:
+    """倒地恢复期 base 高度奖励，目标高度沿用当前站立高度指令。"""
+    active = _recovery_reset_mask(env)
+    cmd = env.command_manager.get_command(command_name)
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = sensor.data.heights[:, 0]
+    target_height = cmd[:, 4]
+    reward = torch.exp(-torch.square(height - target_height) / float(sigma))
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/base_height_error_m": torch.abs(height - target_height)[active]
+                .mean()
+                .item()
+                if active.any()
+                else 0.0,
+            }
+        )
+
+    return reward * active.float()
+
+
+def recovery_stability(env: ManagerBasedRlEnv, ang_vel_weight: float = 0.25) -> torch.Tensor:
+    """倒地恢复期稳定性惩罚：压制恢复后的大角速度和上下弹跳。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    lin_vel = robot.data.root_link_lin_vel_b
+    ang_vel = robot.data.root_link_ang_vel_b
+    penalty = lin_vel[:, 2].square() + float(ang_vel_weight) * torch.sum(ang_vel.square(), dim=1)
+    return penalty * active.float()
+
+
+def recovery_wheel_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """倒地恢复期轮子接地奖励，鼓励最终回到双轮支撑。"""
+    active = _recovery_reset_mask(env)
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    contact = (force_mag > float(force_threshold)).float()
+    return torch.mean(contact, dim=1) * active.float()
+
+
+def recovery_success(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    upright_angle_deg: float = 15.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 1.5,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """恢复成功奖励：直立、高度达标、角速度低且至少一个轮子接地。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+    upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
+    upright = tilt < upright_limit
+
+    cmd = env.command_manager.get_command(command_name)
+    height_sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height_ok = torch.abs(height_sensor.data.heights[:, 0] - cmd[:, 4]) < float(height_tolerance)
+
+    ang_vel_norm = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)
+    stable = ang_vel_norm < float(ang_vel_threshold)
+
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    data = contact_sensor.data
+    if data.force is None:
+        wheel_contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    else:
+        force_mag = finite_contact_force_norm(data.force)
+        wheel_contact = (force_mag > float(force_threshold)).any(dim=1)
+
+    success = active & upright & height_ok & stable & wheel_contact
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/success_rate": success.float().mean().item(),
+                "Recovery/wheel_contact_rate": (active & wheel_contact).float().mean().item(),
+            }
+        )
+
+    return success.float()
 
 
 def joint_mirror(
