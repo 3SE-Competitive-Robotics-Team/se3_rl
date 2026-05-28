@@ -60,6 +60,15 @@ def _ensure_recovery_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
     return mask
 
 
+def _ensure_recovery_float_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
+    """创建 recovery reset 诊断浮点缓存。"""
+    values = getattr(env, name, None)
+    if not isinstance(values, torch.Tensor) or values.shape[0] != env.num_envs:
+        values = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+        setattr(env, name, values)
+    return values
+
+
 def _pre_resample_jump_command_for_reset(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -87,6 +96,9 @@ def reset_root_state_full(
     recovery_height_range: tuple[float, float] = (0.24, 0.34),
     recovery_lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     recovery_ang_vel_range: tuple[float, float] = (-0.8, 0.8),
+    recovery_side_roll_prob: float = 0.0,
+    recovery_side_roll_min_abs: float = 0.75,
+    recovery_side_pitch_range: tuple[float, float] = (-0.35, 0.35),
     recovery_grace_steps: int = 400,
     recovery_command_height: float = 0.22,
 ) -> None:
@@ -122,10 +134,21 @@ def reset_root_state_full(
     recovery_roll_range = _stage_value(stage, "roll_range", recovery_roll_range)
     recovery_pitch_range = _stage_value(stage, "pitch_range", recovery_pitch_range)
     recovery_height_range = _stage_value(stage, "height_range", recovery_height_range)
+    recovery_side_roll_prob = float(_stage_value(stage, "side_roll_prob", recovery_side_roll_prob))
+    recovery_side_roll_min_abs = float(
+        _stage_value(stage, "side_roll_min_abs", recovery_side_roll_min_abs)
+    )
+    recovery_side_pitch_range = _stage_value(stage, "side_pitch_range", recovery_side_pitch_range)
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
     full_recovery_mask = _ensure_recovery_mask(env)
     full_recovery_mask[env_ids] = recovery_mask
+    init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
+    init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
+    init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
+    init_roll[env_ids] = 0.0
+    init_pitch[env_ids] = 0.0
+    init_yaw[env_ids] = 0.0
     env._recovery_grace_steps = int(recovery_grace_steps)
     env._recovery_command_height = float(recovery_command_height)
 
@@ -152,6 +175,34 @@ def reset_root_state_full(
             (n_recovery,),
             env.device,
         )
+        side_roll_mask = torch.rand(n_recovery, device=env.device) < recovery_side_roll_prob
+        if side_roll_mask.any():
+            n_side = int(side_roll_mask.sum().item())
+            max_abs_roll = max(
+                abs(float(recovery_roll_range[0])),
+                abs(float(recovery_roll_range[1])),
+                float(recovery_side_roll_min_abs),
+            )
+            side_roll_abs = sample_uniform(
+                torch.tensor(float(recovery_side_roll_min_abs), device=env.device),
+                torch.tensor(float(max_abs_roll), device=env.device),
+                (n_side,),
+                env.device,
+            )
+            side_sign = torch.where(
+                torch.rand(n_side, device=env.device) < 0.5,
+                torch.tensor(-1.0, device=env.device),
+                torch.tensor(1.0, device=env.device),
+            )
+            recovery_indices = recovery_mask.nonzero().flatten()
+            side_indices = recovery_indices[side_roll_mask]
+            roll[side_indices] = side_roll_abs * side_sign
+            pitch[side_indices] = sample_uniform(
+                torch.tensor(float(recovery_side_pitch_range[0]), device=env.device),
+                torch.tensor(float(recovery_side_pitch_range[1]), device=env.device),
+                (n_side,),
+                env.device,
+            )
         pos[recovery_mask, 2] = (
             sample_uniform(
                 torch.tensor(float(recovery_height_range[0]), device=env.device),
@@ -161,6 +212,9 @@ def reset_root_state_full(
             )
             + env.scene.env_origins[env_ids][recovery_mask, 2]
         )
+        init_roll[env_ids] = roll
+        init_pitch[env_ids] = pitch
+        init_yaw[env_ids] = yaw
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     default_quat = root_states[:, 3:7]
     new_quat = quat_mul(default_quat, quat_delta)

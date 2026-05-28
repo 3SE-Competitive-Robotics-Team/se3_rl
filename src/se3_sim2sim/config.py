@@ -102,6 +102,11 @@ class RobotConfig(BaseModel):
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height
+    initial_roll_rad: float = 0.0
+    initial_pitch_rad: float = 0.0
+    initial_yaw_rad: float = 0.0
+    initial_base_height: float | None = None
+    """sim2sim reset 初始 base 姿态。默认全 0，保持原站立回放行为。"""
     command: tuple[float, float, float, float, float, float, float, float] = (
         0.0,
         0.0,

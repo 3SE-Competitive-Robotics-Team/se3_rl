@@ -103,15 +103,25 @@ class WheelLeggedRobot:
 
     def reset(self, *, fixed: bool = True, randomize_root: bool = False) -> np.ndarray:
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[0:3] = np.asarray([0.0, 0.0, self.cfg.base_height], dtype=np.float64)
-        self.data.qpos[3:7] = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        base_height = (
+            self.cfg.base_height
+            if self.cfg.initial_base_height is None
+            else self.cfg.initial_base_height
+        )
+        self.data.qpos[0:3] = np.asarray([0.0, 0.0, float(base_height)], dtype=np.float64)
+        roll = float(self.cfg.initial_roll_rad)
+        pitch = float(self.cfg.initial_pitch_rad)
+        yaw = float(self.cfg.initial_yaw_rad)
         self.data.qvel[0:6] = 0.0
         self.data.qpos[self.joint_qpos] = self.default_dof_pos
         self._project_fourbar_constraints()
         self.data.qvel[self.joint_qvel] = 0.0
         if (not fixed) or randomize_root:
-            roll, pitch, yaw = self.rng.uniform(-0.25, 0.25, size=3)
-            self.data.qpos[3:7] = euler_xyz_to_quat_wxyz(float(roll), float(pitch), float(yaw))
+            roll_offset, pitch_offset, yaw_offset = self.rng.uniform(-0.25, 0.25, size=3)
+            roll += float(roll_offset)
+            pitch += float(pitch_offset)
+            yaw += float(yaw_offset)
+        self.data.qpos[3:7] = euler_xyz_to_quat_wxyz(roll, pitch, yaw)
         mujoco.mj_forward(self.model, self.data)
         self._refresh_state()
         self.last_action.fill(0.0)

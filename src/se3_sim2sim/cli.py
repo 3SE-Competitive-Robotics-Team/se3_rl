@@ -127,6 +127,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-reset", action="store_true")
     parser.add_argument("--randomize-root", action="store_true")
     parser.add_argument(
+        "--initial-roll-deg",
+        type=float,
+        default=0.0,
+        help="Reset 初始 roll 角度（度），用于倒地自启 sim2sim/Rerun 回放。",
+    )
+    parser.add_argument(
+        "--initial-pitch-deg",
+        type=float,
+        default=0.0,
+        help="Reset 初始 pitch 角度（度），用于倒地自启 sim2sim/Rerun 回放。",
+    )
+    parser.add_argument(
+        "--initial-yaw-deg",
+        type=float,
+        default=0.0,
+        help="Reset 初始 yaw 角度（度）。训练端 yaw 随机化范围为 ±180°。",
+    )
+    parser.add_argument(
+        "--initial-base-height",
+        type=float,
+        default=None,
+        help="Reset 初始 base 高度（米）。默认使用共享站立高度。",
+    )
+    parser.add_argument(
         "--command",
         type=float,
         nargs=8,
@@ -279,6 +303,12 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             seed=int(args.seed),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
+            initial_roll_rad=math.radians(float(args.initial_roll_deg)),
+            initial_pitch_rad=math.radians(float(args.initial_pitch_deg)),
+            initial_yaw_rad=math.radians(float(args.initial_yaw_deg)),
+            initial_base_height=(
+                None if args.initial_base_height is None else float(args.initial_base_height)
+            ),
             command=tuple(float(v) for v in args.command),
             yaw_pid=YawPidConfig(
                 enabled=bool(args.yaw_pid),
