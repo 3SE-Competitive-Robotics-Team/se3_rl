@@ -584,6 +584,41 @@ def recovery_height(
     return reward * near_upright_gate * active.float()
 
 
+def recovery_wheel_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    gate_start_deg: float = 120.0,
+    gate_full_deg: float = 45.0,
+) -> torch.Tensor:
+    """倒地恢复期奖励轮子重新成为主要接地点。"""
+    active = _recovery_reset_mask(env)
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    data = contact_sensor.data
+    if data.force is None:
+        wheel_contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    else:
+        force_mag = finite_contact_force_norm(data.force)
+        wheel_contact = (force_mag > float(force_threshold)).any(dim=1)
+
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/wheel_contact_cond_rate": _masked_mean(wheel_contact.float(), active),
+                "Recovery/wheel_contact_gate": near_upright_gate[active].mean().item()
+                if active.any()
+                else 0.0,
+            }
+        )
+
+    return wheel_contact.float() * near_upright_gate * active.float()
+
+
 def joint_mirror(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:

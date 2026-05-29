@@ -256,6 +256,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "gate_full_deg": 25.0,
         },
     )
+    cfg.rewards["recovery_wheel_contact"] = RewardTermCfg(
+        func=rewards.recovery_wheel_contact,
+        weight=2.0,
+        params={
+            "sensor_name": "wheel_sensor",
+            "force_threshold": 1.0,
+            "gate_start_deg": 120.0,
+            "gate_full_deg": 45.0,
+        },
+    )
     cfg.rewards["recovery_progress"] = RewardTermCfg(
         func=rewards.recovery_progress,
         weight=3.0,

@@ -10,6 +10,7 @@ from se3_train.mdp.rewards import (
     recovery_progress,
     recovery_stable_bonus,
     recovery_upright,
+    recovery_wheel_contact,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "recovery_progress",
     "recovery_stable_bonus",
     "recovery_upright",
+    "recovery_wheel_contact",
 ]
