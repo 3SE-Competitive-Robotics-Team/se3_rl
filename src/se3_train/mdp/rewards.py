@@ -623,6 +623,41 @@ def recovery_progress(
     return reward
 
 
+def recovery_hard_roll_unwind(
+    env: ManagerBasedRlEnv,
+    roll_delta_scale: float = 0.05,
+    max_reward: float = 4.0,
+) -> torch.Tensor:
+    """奖励大 roll 侧翻样本逐步把侧躺角度收回到直立。"""
+    hard_roll = _recovery_hard_roll_mask(env)
+    robot = env.scene["robot"]
+    pg = robot.data.projected_gravity_b
+    current_roll_abs = torch.abs(torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0)))
+
+    prev_roll_abs = recovery_state.ensure_float_buffer(env, "_recovery_prev_roll_abs")
+    first_step = hard_roll & (env.episode_length_buf <= 1)
+    prev_roll_abs[first_step] = current_roll_abs[first_step]
+
+    roll_gain = torch.clamp(prev_roll_abs - current_roll_abs, min=0.0) / max(
+        float(roll_delta_scale), 1.0e-6
+    )
+    reward = torch.clamp(roll_gain, max=float(max_reward)) * hard_roll.float()
+    prev_roll_abs[hard_roll] = current_roll_abs[hard_roll].detach()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/hard_roll_unwind_reward": reward[hard_roll].mean().item()
+                if hard_roll.any()
+                else 0.0,
+                "Recovery/hard_roll_current_abs_deg": _masked_mean(
+                    torch.rad2deg(current_roll_abs), hard_roll
+                ),
+            }
+        )
+    return reward
+
+
 def recovery_stable_bonus(
     env: ManagerBasedRlEnv,
     sensor_name: str,
