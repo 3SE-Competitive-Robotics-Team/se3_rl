@@ -22,8 +22,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "roll_range": (-3.141592653589793, 3.141592653589793),
-            "pitch_range": (-3.141592653589793, 3.141592653589793),
+            "tilt_range": (0.0, 3.141592653589793),
+            "tilt_axis_range": (-3.141592653589793, 3.141592653589793),
             "yaw_range": (-3.141592653589793, 3.141592653589793),
             "height_range": (0.26, 0.36),
             "clearance_range": (0.02, 0.05),
@@ -45,6 +45,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("bad_orientation", None)
     cfg.terminations.pop("leg_contact", None)
     cfg.terminations.pop("recovery_stagnation", None)
+    cfg.events.pop("push_robots", None)
+    if cfg.curriculum is not None:
+        cfg.curriculum.pop("push_disturbance", None)
 
     # 去掉轴向姿态惩罚和旧 recovery 专属奖励；自起能力由 upward + 同一套 locomotion reward 学出来。
     for reward_name in (

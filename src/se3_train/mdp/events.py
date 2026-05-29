@@ -138,25 +138,41 @@ def _pre_resample_jump_command_for_reset(
         term.pre_resample_for_reset(env_ids)
 
 
-def _full_angle_safe_base_height(
-    roll: torch.Tensor,
-    pitch: torch.Tensor,
-    clearance: torch.Tensor,
-) -> torch.Tensor:
-    """按完整机器人包络估算任意姿态 reset 时不穿地的 base 高度。"""
-    bbox_min = torch.tensor(_FULL_ANGLE_RESET_BBOX_MIN, device=roll.device, dtype=roll.dtype)
-    bbox_max = torch.tensor(_FULL_ANGLE_RESET_BBOX_MAX, device=roll.device, dtype=roll.dtype)
-
-    # Rz(yaw) @ Ry(pitch) @ Rx(roll) 的世界 z 行；yaw 不影响相对地面的最低点。
-    coeff = torch.stack(
+def _quat_z_row(quat: torch.Tensor) -> torch.Tensor:
+    """返回四元数对应旋转矩阵的世界 z 行。"""
+    w, x, y, z = quat.unbind(dim=-1)
+    return torch.stack(
         (
-            -torch.sin(pitch),
-            torch.cos(pitch) * torch.sin(roll),
-            torch.cos(pitch) * torch.cos(roll),
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
         ),
         dim=-1,
     )
-    min_z = torch.minimum(coeff * bbox_min, coeff * bbox_max).sum(dim=-1)
+
+
+def _quat_from_horizontal_axis_angle(
+    axis_heading: torch.Tensor, angle: torch.Tensor
+) -> torch.Tensor:
+    """按水平倾倒轴和倾倒角构造四元数。"""
+    half = 0.5 * angle
+    sin_half = torch.sin(half)
+    quat = torch.zeros((*angle.shape, 4), device=angle.device, dtype=angle.dtype)
+    quat[:, 0] = torch.cos(half)
+    quat[:, 1] = torch.cos(axis_heading) * sin_half
+    quat[:, 2] = torch.sin(axis_heading) * sin_half
+    return quat
+
+
+def _full_angle_safe_base_height(
+    z_row: torch.Tensor,
+    clearance: torch.Tensor,
+) -> torch.Tensor:
+    """按完整机器人包络估算任意姿态 reset 时不穿地的 base 高度。"""
+    bbox_min = torch.tensor(_FULL_ANGLE_RESET_BBOX_MIN, device=z_row.device, dtype=z_row.dtype)
+    bbox_max = torch.tensor(_FULL_ANGLE_RESET_BBOX_MAX, device=z_row.device, dtype=z_row.dtype)
+
+    min_z = torch.minimum(z_row * bbox_min, z_row * bbox_max).sum(dim=-1)
     return -min_z + clearance
 
 
@@ -164,8 +180,8 @@ def reset_root_state_full_angle_random(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    roll_range: tuple[float, float] = (-torch.pi, torch.pi),
-    pitch_range: tuple[float, float] = (-torch.pi, torch.pi),
+    tilt_range: tuple[float, float] = (0.0, torch.pi),
+    tilt_axis_range: tuple[float, float] = (-torch.pi, torch.pi),
     yaw_range: tuple[float, float] = (-torch.pi, torch.pi),
     height_range: tuple[float, float] = (0.26, 0.36),
     clearance_range: tuple[float, float] = (0.02, 0.05),
@@ -173,7 +189,7 @@ def reset_root_state_full_angle_random(
     lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     ang_vel_range: tuple[float, float] = (-0.8, 0.8),
 ) -> None:
-    """统一 reset：从第一步开始对 roll/pitch/yaw 做全角度随机。"""
+    """统一 reset：随机倾倒角和水平倾倒轴，不区分 roll/pitch 来源。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -196,13 +212,20 @@ def reset_root_state_full_angle_random(
     pos = root_states[:, 0:3].clone()
     pos[:, 0] += _sample_range(pos_xy_range, (n,))
     pos[:, 1] += _sample_range(pos_xy_range, (n,))
-    roll = _sample_range(roll_range, (n,))
-    pitch = _sample_range(pitch_range, (n,))
+    tilt = _sample_range(tilt_range, (n,))
+    tilt_axis = _sample_range(tilt_axis_range, (n,))
     yaw = _sample_range(yaw_range, (n,))
+    tilt_quat = _quat_from_horizontal_axis_angle(tilt_axis, tilt)
+    yaw_quat = quat_from_euler_xyz(
+        torch.zeros_like(yaw),
+        torch.zeros_like(yaw),
+        yaw,
+    )
+    quat_delta = quat_mul(yaw_quat, tilt_quat)
+    z_row = _quat_z_row(quat_delta)
     sampled_height = _sample_range(height_range, (n,))
     safe_height = _full_angle_safe_base_height(
-        roll,
-        pitch,
+        z_row,
         _sample_range(clearance_range, (n,)),
     )
     base_height = torch.maximum(sampled_height, safe_height)
@@ -210,7 +233,6 @@ def reset_root_state_full_angle_random(
     pos[:, 0:3] += env.scene.env_origins[env_ids]
     pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
 
-    quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     new_quat = quat_mul(root_states[:, 3:7], quat_delta)
 
     vel = torch.zeros(n, 6, device=env.device)
@@ -235,8 +257,7 @@ def reset_root_state_full_angle_random(
     env._jump_pose_ref_pos_w[env_ids] = pos
     env._jump_pose_ref_yaw[env_ids] = yaw_ref
 
-    init_tilt = torch.acos(torch.clamp(torch.cos(roll) * torch.cos(pitch), -1.0, 1.0))
-    init_tilt_deg = torch.rad2deg(init_tilt)
+    init_tilt_deg = torch.rad2deg(tilt)
     bins = torch.bucketize(
         init_tilt_deg,
         torch.tensor((30.0, 75.0, 130.0), device=env.device),
