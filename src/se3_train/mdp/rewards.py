@@ -175,6 +175,40 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
     return reward
 
 
+def upward_progress(
+    env: ManagerBasedRlEnv,
+    delta_scale: float = 0.05,
+    max_reward: float = 2.0,
+) -> torch.Tensor:
+    """全局向上进度奖励，不区分 roll/pitch 轴向来源。"""
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    score = torch.square(1.0 - pg_z)
+
+    prev_score = getattr(env, "_prev_upward_score", None)
+    if not isinstance(prev_score, torch.Tensor) or prev_score.shape[0] != env.num_envs:
+        prev_score = score.detach().clone()
+        env._prev_upward_score = prev_score
+
+    first_step = env.episode_length_buf <= 1
+    delta = (score - prev_score) / max(float(delta_scale), 1.0e-6)
+    reward = torch.clamp(delta, -float(max_reward), float(max_reward))
+    reward = torch.where(first_step, torch.zeros_like(reward), reward)
+    prev_score[:] = score.detach()
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "SelfRight/upward_progress": reward.mean().item(),
+                "SelfRight/upward_progress_pos_rate": (reward > 0.0).float().mean().item(),
+                "SelfRight/upward_progress_neg_rate": (reward < 0.0).float().mean().item(),
+            }
+        )
+
+    return reward
+
+
 def tracking_lin_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
