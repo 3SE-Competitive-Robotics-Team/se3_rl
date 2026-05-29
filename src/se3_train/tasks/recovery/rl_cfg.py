@@ -19,6 +19,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         max_iterations = 3000
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
+    learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
@@ -51,7 +52,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
             entropy_coef=0.00516,
             num_learning_epochs=7,
             num_mini_batches=4,
-            learning_rate=3.0e-4,
+            learning_rate=learning_rate,
             schedule="adaptive",
             gamma=0.99,
             lam=0.95,
