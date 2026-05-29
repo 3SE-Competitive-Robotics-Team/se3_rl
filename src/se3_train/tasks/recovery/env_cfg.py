@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -22,10 +24,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     recovery_grace_steps = 600
     steps_per_policy_iter = 64
     recovery_state_cache_path = "assets/recovery_states/serialleg_flat_v1.npz"
+    recovery_curriculum_offset_iter = max(
+        0, int(os.environ.get("SE3_RECOVERY_CURRICULUM_OFFSET_ITER", "0"))
+    )
 
     def recovery_iter(iteration: int) -> int:
         """把 PPO iter 转成 env.common_step_counter 使用的 policy step。"""
-        return int(iteration) * steps_per_policy_iter
+        return max(0, int(iteration) - recovery_curriculum_offset_iter) * steps_per_policy_iter
 
     recovery_stages = (
         (
