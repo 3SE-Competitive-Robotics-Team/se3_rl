@@ -18,6 +18,8 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = False
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
+    init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "1.5"))
+    entropy_coef = float(os.environ.get("SE3_RECOVERY_ENTROPY_COEF", "0.01"))
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
@@ -30,7 +32,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
             obs_normalization=True,
             distribution_cfg={
                 "class_name": "GaussianDistribution",
-                "init_std": 0.5,
+                "init_std": init_std,
                 "std_type": "scalar",
             },
         ),
@@ -47,7 +49,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
             value_loss_coef=1.0,
             use_clipped_value_loss=True,
             clip_param=0.167,
-            entropy_coef=0.00516,
+            entropy_coef=entropy_coef,
             num_learning_epochs=7,
             num_mini_batches=4,
             learning_rate=learning_rate,
