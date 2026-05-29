@@ -276,6 +276,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "max_reward": 4.0,
         },
     )
+    cfg.rewards["recovery_hard_roll_upright"] = RewardTermCfg(
+        func=rewards.recovery_hard_roll_upright,
+        weight=3.0,
+        params={"power": 1.0},
+    )
     cfg.rewards["recovery_stable_bonus"] = RewardTermCfg(
         func=rewards.recovery_stable_bonus,
         weight=6.0,

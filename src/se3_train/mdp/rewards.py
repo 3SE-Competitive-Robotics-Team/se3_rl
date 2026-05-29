@@ -653,6 +653,26 @@ def recovery_progress(
     return reward
 
 
+def recovery_hard_roll_upright(
+    env: ManagerBasedRlEnv,
+    power: float = 1.0,
+) -> torch.Tensor:
+    """奖励大 roll 侧翻样本进入可站立半球。"""
+    hard_roll = _recovery_hard_roll_mask(env)
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    upright_half = torch.clamp(-pg_z, 0.0, 1.0)
+    reward = upright_half.pow(float(power)) * hard_roll.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/hard_roll_upright_reward": _masked_mean(reward, hard_roll),
+                "Recovery/hard_roll_upright_half": _masked_mean(upright_half, hard_roll),
+            }
+        )
+    return reward
+
+
 def recovery_stable_bonus(
     env: ManagerBasedRlEnv,
     sensor_name: str,
@@ -774,9 +794,7 @@ def recovery_wheel_contact(
                 "Recovery/wheel_contact_gate": near_upright_gate[active].mean().item()
                 if active.any()
                 else 0.0,
-                "Recovery/hard_roll_wheel_contact_gate": _masked_mean(
-                    near_upright_gate, hard_roll
-                ),
+                "Recovery/hard_roll_wheel_contact_gate": _masked_mean(near_upright_gate, hard_roll),
                 "Recovery/hard_pitch_wheel_contact_gate": _masked_mean(
                     near_upright_gate, hard_pitch
                 ),
