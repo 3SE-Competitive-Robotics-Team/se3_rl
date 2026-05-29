@@ -6,7 +6,6 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
-from scipy.optimize import least_squares
 
 from se3_shared import ActionDelayConfig, JointGroup, Termination
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -74,9 +73,6 @@ class WheelLeggedRobot:
         self.joint_qvel = np.asarray(
             [self.model.jnt_dofadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
-        self._passive_fourbar_qpos = self._passive_fourbar_qpos_indices()
-        self._fourbar_site_pairs = self._fourbar_site_pair_indices()
-
         self.default_dof_pos = as_float64(cfg.default_dof_pos)
         self.action_scale = as_float64(cfg.action_scale)
         self.torque_limits = as_float64(cfg.torque_limits)
@@ -114,7 +110,6 @@ class WheelLeggedRobot:
         yaw = float(self.cfg.initial_yaw_rad)
         self.data.qvel[0:6] = 0.0
         self.data.qpos[self.joint_qpos] = self.default_dof_pos
-        self._project_fourbar_constraints()
         self.data.qvel[self.joint_qvel] = 0.0
         if (not fixed) or randomize_root:
             roll_offset, pitch_offset, yaw_offset = self.rng.uniform(-0.25, 0.25, size=3)
@@ -311,63 +306,6 @@ class WheelLeggedRobot:
             act.inheritrange = 0.0
 
         return spec.compile()
-
-    def _passive_fourbar_qpos_indices(self) -> np.ndarray:
-        """返回四连杆被动关节在 qpos 中的位置。"""
-        names = (
-            "l_drive_bar_Joint",
-            "l_coupler_Joint",
-            "r_drive_bar_Joint",
-            "r_coupler_Joint",
-        )
-        indices: list[int] = []
-        for name in names:
-            jid = self._id(mujoco.mjtObj.mjOBJ_JOINT, name)
-            indices.append(int(self.model.jnt_qposadr[jid]))
-        return np.asarray(indices, dtype=np.int64)
-
-    def _fourbar_site_pair_indices(self) -> tuple[tuple[int, int], tuple[int, int]]:
-        """返回左右四连杆闭环约束的 site 对。"""
-        pairs = (
-            ("l_fourbar_end", "l_fourbar_target"),
-            ("r_fourbar_end", "r_fourbar_target"),
-        )
-        result: list[tuple[int, int]] = []
-        for end_name, target_name in pairs:
-            end_id = self._id(mujoco.mjtObj.mjOBJ_SITE, end_name)
-            target_id = self._id(mujoco.mjtObj.mjOBJ_SITE, target_name)
-            result.append((end_id, target_id))
-        return (result[0], result[1])
-
-    def _project_fourbar_constraints(self) -> None:
-        """把四连杆被动关节投影到闭环位姿。
-
-        MJCF 的被动四连杆关节默认是 0，但受控髋/膝默认位姿不是闭环位姿。
-        如果 reset 后直接 `mj_forward`，MuJoCo equality constraint 会从约 2cm
-        残差开始求解，第一秒就能把机身推成明显倾斜。这里在动力学开始前
-        只调整被动关节，让两个 connect site 对齐。
-        """
-        if self._passive_fourbar_qpos.size == 0:
-            return
-
-        def residual(values: np.ndarray) -> np.ndarray:
-            self.data.qpos[self._passive_fourbar_qpos] = values
-            mujoco.mj_forward(self.model, self.data)
-            diffs: list[np.ndarray] = []
-            for end_id, target_id in self._fourbar_site_pairs:
-                diffs.append(self.data.site_xpos[end_id] - self.data.site_xpos[target_id])
-            return np.concatenate(diffs)
-
-        initial = self.data.qpos[self._passive_fourbar_qpos].copy()
-        solution = least_squares(
-            residual,
-            initial,
-            xtol=1.0e-12,
-            ftol=1.0e-12,
-            gtol=1.0e-12,
-            max_nfev=100,
-        )
-        self.data.qpos[self._passive_fourbar_qpos] = solution.x
 
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()

@@ -294,7 +294,7 @@ def traj_joint_pos_tracking(
     height_match = torch.abs(h_target - ref_height) <= height_match_tol
 
     robot = env.scene[asset_cfg.name]
-    # 腿部关节索引（MJLab joint_pos 10 维中的列）
+    # 腿部关节索引（MJLab joint_pos 6 维中的列）
     leg_idx = JointGroup.LEGS  # [lf0, lf1, rf0, rf1]
     q_leg = robot.data.joint_pos[:, leg_idx]
 
