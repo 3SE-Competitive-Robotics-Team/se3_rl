@@ -78,8 +78,9 @@ def _load_recovery_state_cache(
     if not isinstance(cache_store, dict):
         cache_store = {}
         env._recovery_state_cache_store = cache_store
-    if path in cache_store:
-        return cache_store[path]
+    cached = cache_store.get(path)
+    if cached is not None:
+        return cached
 
     cache_path = Path(path)
     if not cache_path.is_absolute():
@@ -87,7 +88,6 @@ def _load_recovery_state_cache(
     if not cache_path.exists():
         if hasattr(env, "extras"):
             env.extras.setdefault("log", {})["Recovery/cache_missing"] = 1.0
-        cache_store[path] = None
         return None
 
     import numpy as np
@@ -111,7 +111,12 @@ def _load_recovery_state_cache(
 
     cache_store[path] = cache
     if hasattr(env, "extras"):
-        env.extras.setdefault("log", {})["Recovery/cache_size"] = float(cache["root_pos"].shape[0])
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/cache_missing": 0.0,
+                "Recovery/cache_size": float(cache["root_pos"].shape[0]),
+            }
+        )
     return cache
 
 
