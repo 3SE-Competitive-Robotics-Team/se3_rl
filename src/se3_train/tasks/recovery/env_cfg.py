@@ -242,22 +242,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "height_tolerance": 0.05,
             "ang_vel_threshold": 1.5,
             "force_threshold": 1.0,
+            "power": 1.0,
         },
     )
     cfg.rewards["recovery_height"] = RewardTermCfg(
         func=rewards.recovery_height,
-        weight=1.0,
+        weight=1.5,
         params={
             "command_name": "velocity_height",
             "height_sensor_name": "base_height_sensor",
             "sigma": 0.04,
-            "gate_start_deg": 45.0,
-            "gate_full_deg": 15.0,
+            "gate_start_deg": 90.0,
+            "gate_full_deg": 25.0,
         },
     )
     cfg.rewards["recovery_progress"] = RewardTermCfg(
         func=rewards.recovery_progress,
-        weight=1.5,
+        weight=3.0,
         params={
             "height_sensor_name": "base_height_sensor",
             "upright_delta_scale": 0.05,
@@ -267,7 +268,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["recovery_stable_bonus"] = RewardTermCfg(
         func=rewards.recovery_stable_bonus,
-        weight=4.0,
+        weight=6.0,
         params={
             "sensor_name": "wheel_sensor",
             "height_sensor_name": "base_height_sensor",
@@ -278,7 +279,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "force_threshold": 1.0,
             "stable_steps_required": 32,
             "per_step_bonus": 0.1,
-            "completion_bonus": 1.0,
+            "completion_bonus": 2.0,
         },
     )
 

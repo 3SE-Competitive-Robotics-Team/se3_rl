@@ -384,6 +384,7 @@ def recovery_upright(
     height_tolerance: float = 0.05,
     ang_vel_threshold: float = 1.5,
     force_threshold: float = 1.0,
+    power: float = 2.0,
 ) -> torch.Tensor:
     """倒地恢复期直立奖励。
 
@@ -450,7 +451,7 @@ def recovery_upright(
             )
         env.extras.setdefault("log", {}).update(log)
 
-    return upright.square() * active.float()
+    return upright.pow(float(power)) * active.float()
 
 
 def recovery_progress(
