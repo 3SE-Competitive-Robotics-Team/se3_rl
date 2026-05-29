@@ -673,33 +673,6 @@ def recovery_hard_roll_upright(
     return reward
 
 
-def recovery_hard_roll_deep_upright(
-    env: ManagerBasedRlEnv,
-    min_upright: float = 0.25,
-    power: float = 1.0,
-) -> torch.Tensor:
-    """奖励大 roll 侧翻样本跨过半直立后的继续回正。"""
-    hard_roll = _recovery_hard_roll_mask(env)
-    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
-    upright_half = torch.clamp(-pg_z, 0.0, 1.0)
-    min_upright_value = float(min_upright)
-    deep_upright = torch.clamp(
-        (upright_half - min_upright_value) / max(1.0 - min_upright_value, 1.0e-6),
-        0.0,
-        1.0,
-    )
-    reward = deep_upright.pow(float(power)) * hard_roll.float()
-
-    if hasattr(env, "extras"):
-        env.extras.setdefault("log", {}).update(
-            {
-                "Recovery/hard_roll_deep_upright_reward": _masked_mean(reward, hard_roll),
-                "Recovery/hard_roll_deep_upright_gate": _masked_mean(deep_upright, hard_roll),
-            }
-        )
-    return reward
-
-
 def recovery_stable_bonus(
     env: ManagerBasedRlEnv,
     sensor_name: str,
