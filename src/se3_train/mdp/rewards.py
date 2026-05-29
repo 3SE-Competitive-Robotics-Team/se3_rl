@@ -54,11 +54,41 @@ def _recovery_hard_roll_mask(
 ) -> torch.Tensor:
     """识别以大 roll 侧翻为主的 recovery 样本。"""
     active = _recovery_reset_mask(env)
+    return _recovery_hard_roll_mask_for(
+        env,
+        active,
+        min_initial_roll_deg=min_initial_roll_deg,
+        max_initial_pitch_deg=max_initial_pitch_deg,
+    )
+
+
+def _recovery_hard_roll_episode_mask(
+    env: ManagerBasedRlEnv,
+    min_initial_roll_deg: float = 75.0,
+    max_initial_pitch_deg: float = 35.0,
+) -> torch.Tensor:
+    """识别本 episode 中以大 roll 侧翻为主的 recovery 样本。"""
+    episode = _recovery_episode_mask(env)
+    return _recovery_hard_roll_mask_for(
+        env,
+        episode,
+        min_initial_roll_deg=min_initial_roll_deg,
+        max_initial_pitch_deg=max_initial_pitch_deg,
+    )
+
+
+def _recovery_hard_roll_mask_for(
+    env: ManagerBasedRlEnv,
+    base_mask: torch.Tensor,
+    min_initial_roll_deg: float,
+    max_initial_pitch_deg: float,
+) -> torch.Tensor:
+    """按传入 mask 识别大 roll 侧翻样本。"""
     roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
     pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
     min_roll = torch.deg2rad(torch.tensor(float(min_initial_roll_deg), device=env.device))
     max_pitch = torch.deg2rad(torch.tensor(float(max_initial_pitch_deg), device=env.device))
-    return active & (roll_abs >= min_roll) & (pitch_abs <= max_pitch)
+    return base_mask & (roll_abs >= min_roll) & (pitch_abs <= max_pitch)
 
 
 def _recovery_hard_pitch_mask(
@@ -68,11 +98,41 @@ def _recovery_hard_pitch_mask(
 ) -> torch.Tensor:
     """识别以大 pitch 前后翻为主的 recovery 样本。"""
     active = _recovery_reset_mask(env)
+    return _recovery_hard_pitch_mask_for(
+        env,
+        active,
+        min_initial_pitch_deg=min_initial_pitch_deg,
+        max_initial_roll_deg=max_initial_roll_deg,
+    )
+
+
+def _recovery_hard_pitch_episode_mask(
+    env: ManagerBasedRlEnv,
+    min_initial_pitch_deg: float = 75.0,
+    max_initial_roll_deg: float = 35.0,
+) -> torch.Tensor:
+    """识别本 episode 中以大 pitch 前后翻为主的 recovery 样本。"""
+    episode = _recovery_episode_mask(env)
+    return _recovery_hard_pitch_mask_for(
+        env,
+        episode,
+        min_initial_pitch_deg=min_initial_pitch_deg,
+        max_initial_roll_deg=max_initial_roll_deg,
+    )
+
+
+def _recovery_hard_pitch_mask_for(
+    env: ManagerBasedRlEnv,
+    base_mask: torch.Tensor,
+    min_initial_pitch_deg: float,
+    max_initial_roll_deg: float,
+) -> torch.Tensor:
+    """按传入 mask 识别大 pitch 前后翻样本。"""
     roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
     pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
     min_pitch = torch.deg2rad(torch.tensor(float(min_initial_pitch_deg), device=env.device))
     max_roll = torch.deg2rad(torch.tensor(float(max_initial_roll_deg), device=env.device))
-    return active & (pitch_abs >= min_pitch) & (roll_abs <= max_roll)
+    return base_mask & (pitch_abs >= min_pitch) & (roll_abs <= max_roll)
 
 
 def _recovery_success_components(
@@ -461,6 +521,12 @@ def recovery_upright(
             init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
             hard_roll = _recovery_hard_roll_mask(env)
             hard_pitch = _recovery_hard_pitch_mask(env)
+            hard_roll_episode = _recovery_hard_roll_episode_mask(env)
+            hard_pitch_episode = _recovery_hard_pitch_episode_mask(env)
+            time_to_success = recovery_state.ensure_long_buffer(
+                env, "_recovery_time_to_success_steps"
+            )
+            ever_completed = time_to_success >= 0
             upright_height = upright_ok & height_ok
             upright_height_stable = upright_height & stable_ok
             log.update(
@@ -493,8 +559,16 @@ def recovery_upright(
                     "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), episode),
                     "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
                     "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
+                    "Recovery/hard_roll_episode_ratio": hard_roll_episode.float().mean().item(),
+                    "Recovery/hard_roll_ever_completed_rate": _masked_mean(
+                        ever_completed.float(), hard_roll_episode
+                    ),
                     "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
                     "Recovery/hard_pitch_success_rate": _masked_mean(success.float(), hard_pitch),
+                    "Recovery/hard_pitch_episode_ratio": hard_pitch_episode.float().mean().item(),
+                    "Recovery/hard_pitch_ever_completed_rate": _masked_mean(
+                        ever_completed.float(), hard_pitch_episode
+                    ),
                 }
             )
         env.extras.setdefault("log", {}).update(log)
