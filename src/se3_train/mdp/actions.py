@@ -25,7 +25,9 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
 
     leg_actuator_names: tuple[str, ...] = ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint")
     wheel_actuator_names: tuple[str, ...] = ("l_wheel_Joint", "r_wheel_Joint")
-    leg_scale: float = _SHARED_ROBOT.action_scale[JointGroup.LEG_ACTUATORS[0]]
+    leg_scales: tuple[float, ...] = tuple(
+        _SHARED_ROBOT.action_scale[i] for i in JointGroup.LEG_ACTUATORS
+    )
     wheel_scale: float = _SHARED_ROBOT.action_scale[JointGroup.WHEEL_ACTUATORS[0]]
     action_delay_enabled: bool = _DEFAULT_DELAY.enabled
     action_delay_s: float = _DEFAULT_DELAY.delay_s
@@ -63,9 +65,14 @@ class SerialLegDelayedAction(ActionTerm):
             raise ValueError(f"SerialLegDelayedAction expects 4 leg actuators, got {leg_names}")
         if len(wheel_ids) != 2:
             raise ValueError(f"SerialLegDelayedAction expects 2 wheel actuators, got {wheel_names}")
+        if len(cfg.leg_scales) != 4:
+            raise ValueError(
+                f"SerialLegDelayedAction expects 4 leg action scales, got {cfg.leg_scales}"
+            )
 
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
+        self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
         self._action_dim = 6
 
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
@@ -110,7 +117,7 @@ class SerialLegDelayedAction(ActionTerm):
         self._delayed_actions = self._action_fifo[self._delay_steps, self._env_indices]
 
         leg_target = (
-            self._delayed_actions[:, :4] * float(self.cfg.leg_scale)
+            self._delayed_actions[:, :4] * self._leg_action_scales
             + self._entity.data.default_joint_pos[:, self._leg_joint_ids]
         )
         leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
