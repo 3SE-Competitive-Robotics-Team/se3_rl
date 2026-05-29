@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+_FULL_ANGLE_RESET_BBOX_MIN = (-0.278, -0.242, -0.323)
+_FULL_ANGLE_RESET_BBOX_MAX = (0.278, 0.242, 0.111)
 
 
 def _stage_value(stage: dict, key: str, default):
@@ -136,6 +138,28 @@ def _pre_resample_jump_command_for_reset(
         term.pre_resample_for_reset(env_ids)
 
 
+def _full_angle_safe_base_height(
+    roll: torch.Tensor,
+    pitch: torch.Tensor,
+    clearance: torch.Tensor,
+) -> torch.Tensor:
+    """按完整机器人包络估算任意姿态 reset 时不穿地的 base 高度。"""
+    bbox_min = torch.tensor(_FULL_ANGLE_RESET_BBOX_MIN, device=roll.device, dtype=roll.dtype)
+    bbox_max = torch.tensor(_FULL_ANGLE_RESET_BBOX_MAX, device=roll.device, dtype=roll.dtype)
+
+    # Rz(yaw) @ Ry(pitch) @ Rx(roll) 的世界 z 行；yaw 不影响相对地面的最低点。
+    coeff = torch.stack(
+        (
+            -torch.sin(pitch),
+            torch.cos(pitch) * torch.sin(roll),
+            torch.cos(pitch) * torch.cos(roll),
+        ),
+        dim=-1,
+    )
+    min_z = torch.minimum(coeff * bbox_min, coeff * bbox_max).sum(dim=-1)
+    return -min_z + clearance
+
+
 def reset_root_state_full_angle_random(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -143,7 +167,8 @@ def reset_root_state_full_angle_random(
     roll_range: tuple[float, float] = (-torch.pi, torch.pi),
     pitch_range: tuple[float, float] = (-torch.pi, torch.pi),
     yaw_range: tuple[float, float] = (-torch.pi, torch.pi),
-    height_range: tuple[float, float] = (0.08, 0.32),
+    height_range: tuple[float, float] = (0.26, 0.36),
+    clearance_range: tuple[float, float] = (0.02, 0.05),
     pos_xy_range: tuple[float, float] = (-0.1, 0.1),
     lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     ang_vel_range: tuple[float, float] = (-0.8, 0.8),
@@ -171,12 +196,20 @@ def reset_root_state_full_angle_random(
     pos = root_states[:, 0:3].clone()
     pos[:, 0] += _sample_range(pos_xy_range, (n,))
     pos[:, 1] += _sample_range(pos_xy_range, (n,))
-    pos[:, 0:3] += env.scene.env_origins[env_ids]
-    pos[:, 2] = _sample_range(height_range, (n,)) + env.scene.env_origins[env_ids, 2]
-
     roll = _sample_range(roll_range, (n,))
     pitch = _sample_range(pitch_range, (n,))
     yaw = _sample_range(yaw_range, (n,))
+    sampled_height = _sample_range(height_range, (n,))
+    safe_height = _full_angle_safe_base_height(
+        roll,
+        pitch,
+        _sample_range(clearance_range, (n,)),
+    )
+    base_height = torch.maximum(sampled_height, safe_height)
+
+    pos[:, 0:3] += env.scene.env_origins[env_ids]
+    pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
+
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     new_quat = quat_mul(root_states[:, 3:7], quat_delta)
 
@@ -221,6 +254,13 @@ def reset_root_state_full_angle_random(
                 "Reset/full_angle_random_ratio": 1.0,
                 "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
                 "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
+                "Reset/mean_base_height_m": base_height.mean().item(),
+                "Reset/min_base_height_m": base_height.min().item(),
+                "Reset/max_base_height_m": base_height.max().item(),
+                "Reset/safe_height_clamp_ratio": (base_height > sampled_height)
+                .float()
+                .mean()
+                .item(),
                 "Reset/init_tilt_bin_upright_noise_ratio": (bins == 0).float().mean().item(),
                 "Reset/init_tilt_bin_near_fall_ratio": (bins == 1).float().mean().item(),
                 "Reset/init_tilt_bin_hard_tilt_ratio": (bins == 2).float().mean().item(),

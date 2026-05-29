@@ -19,6 +19,7 @@ from .runtime_spec import RuntimeSpec, as_float64
 from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
+_RESET_FLOOR_CLEARANCE_M = 0.01
 
 
 def _tn_clip(
@@ -82,6 +83,7 @@ class WheelLeggedRobot:
         self.last_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
+        self.reset_floor_lift_m = 0.0
         # 线速度缓存，_refresh_state 更新
         self.base_lin_vel_world = np.zeros(3, dtype=np.float64)
         self.base_lin_vel_body = np.zeros(3, dtype=np.float64)
@@ -118,6 +120,7 @@ class WheelLeggedRobot:
             yaw += float(yaw_offset)
         self.data.qpos[3:7] = euler_xyz_to_quat_wxyz(roll, pitch, yaw)
         mujoco.mj_forward(self.model, self.data)
+        self._lift_root_to_clear_floor()
         self._refresh_state()
         self.last_action.fill(0.0)
         self.last_applied_action.fill(0.0)
@@ -198,6 +201,7 @@ class WheelLeggedRobot:
             "step": int(self.step_count),
             "time": float(self.data.time),
             "height": float(self.data.qpos[2]),  # baselink z 高度
+            "reset_floor_lift_m": float(self.reset_floor_lift_m),
             "wheel_clearance": float(wheel_clearance),  # 轮子最低点离地高度
             "wheel_clearance_left": float(wheel_clearance_l),  # 左轮最低点离地高度
             "wheel_clearance_right": float(wheel_clearance_r),  # 右轮最低点离地高度
@@ -241,6 +245,58 @@ class WheelLeggedRobot:
 
     def diagnostics(self) -> dict[str, object]:
         return model_diagnostics(self.model)
+
+    def _lift_root_to_clear_floor(self) -> None:
+        """如果 reset 姿态穿地，则整体上抬到可碰撞几何体离地。"""
+        min_z = self._min_collision_geom_z()
+        self.reset_floor_lift_m = 0.0
+        if min_z < _RESET_FLOOR_CLEARANCE_M:
+            lift = float(_RESET_FLOOR_CLEARANCE_M - min_z)
+            self.data.qpos[2] += lift
+            self.reset_floor_lift_m = lift
+            mujoco.mj_forward(self.model, self.data)
+
+    def _min_collision_geom_z(self) -> float:
+        min_z = float("inf")
+        for geom_id in range(self.model.ngeom):
+            if (
+                self.model.geom_type[geom_id] == mujoco.mjtGeom.mjGEOM_PLANE
+                or self.model.geom_contype[geom_id] == 0
+            ):
+                continue
+            min_z = min(min_z, self._geom_min_z(geom_id))
+        return min_z
+
+    def _geom_min_z(self, geom_id: int) -> float:
+        geom_type = self.model.geom_type[geom_id]
+        geom_pos = self.data.geom_xpos[geom_id]
+        geom_mat = self.data.geom_xmat[geom_id].reshape(3, 3)
+        geom_size = self.model.geom_size[geom_id]
+
+        if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh_id = int(self.model.geom_dataid[geom_id])
+            vert_adr = int(self.model.mesh_vertadr[mesh_id])
+            vert_num = int(self.model.mesh_vertnum[mesh_id])
+            vertices = self.model.mesh_vert[vert_adr : vert_adr + vert_num]
+            return float(np.min(vertices @ geom_mat[2, :]) + geom_pos[2])
+
+        if geom_type in (mujoco.mjtGeom.mjGEOM_CYLINDER, mujoco.mjtGeom.mjGEOM_CAPSULE):
+            axis_z = abs(float(geom_mat[2, 2]))
+            radial_z = float(np.sqrt(max(0.0, 1.0 - axis_z * axis_z)))
+            half_length = float(geom_size[1])
+            if geom_type == mujoco.mjtGeom.mjGEOM_CAPSULE:
+                half_length += float(geom_size[0])
+            vertical_extent = half_length * axis_z + float(geom_size[0]) * radial_z
+            return float(geom_pos[2] - vertical_extent)
+
+        if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+            vertical_extent = float(np.dot(np.abs(geom_mat[2, :]), geom_size[:3]))
+            return float(geom_pos[2] - vertical_extent)
+
+        if geom_type == mujoco.mjtGeom.mjGEOM_SPHERE:
+            return float(geom_pos[2] - geom_size[0])
+
+        return float(geom_pos[2])
 
     @property
     def dof_pos(self) -> np.ndarray:

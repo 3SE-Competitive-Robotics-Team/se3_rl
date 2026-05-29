@@ -76,6 +76,7 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "roll_rate_rad_s",
         "pitch_rate_rad_s",
         "yaw_rate_rad_s",
+        "reset_floor_lift_m",
         "action_delta_l2",
         "action_delta_max_abs",
         "action_delta_sq_sum",

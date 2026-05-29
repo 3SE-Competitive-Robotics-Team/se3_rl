@@ -185,6 +185,7 @@ class Sim2SimWorkflow:
                     "step": float(step),
                     "time": float(info["time"]),
                     "height": float(info["height"]),
+                    "reset_floor_lift_m": float(info.get("reset_floor_lift_m", 0.0)),
                     "wheel_clearance": float(info.get("wheel_clearance", 0.0)),
                     "wheel_clearance_left": float(info.get("wheel_clearance_left", 0.0)),
                     "wheel_clearance_right": float(info.get("wheel_clearance_right", 0.0)),
