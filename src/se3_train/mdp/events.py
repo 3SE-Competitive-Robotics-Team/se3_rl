@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -18,6 +19,7 @@ from mjlab.utils.lab_api.math import (
 )
 
 from se3_shared import JointGroup
+from se3_train.mdp import recovery_state
 from se3_train.mdp.jump_commands import JumpCommandTerm
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
@@ -53,11 +55,7 @@ def _active_recovery_stage(
 
 def _ensure_recovery_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
     """创建并返回每个 env 的 recovery reset 标记。"""
-    mask = getattr(env, "_recovery_reset_mask", None)
-    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
-        mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-        env._recovery_reset_mask = mask
-    return mask
+    return recovery_state.ensure_bool_buffer(env, "_recovery_reset_mask")
 
 
 def _ensure_recovery_float_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
@@ -67,6 +65,54 @@ def _ensure_recovery_float_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Te
         values = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
         setattr(env, name, values)
     return values
+
+
+def _load_recovery_state_cache(
+    env: ManagerBasedRlEnv, path: str | None
+) -> dict[str, torch.Tensor] | None:
+    """懒加载离线生成的倒地稳定状态缓存。"""
+    if path is None or path == "":
+        return None
+
+    cache_store = getattr(env, "_recovery_state_cache_store", None)
+    if not isinstance(cache_store, dict):
+        cache_store = {}
+        env._recovery_state_cache_store = cache_store
+    if path in cache_store:
+        return cache_store[path]
+
+    cache_path = Path(path)
+    if not cache_path.is_absolute():
+        cache_path = Path.cwd() / cache_path
+    if not cache_path.exists():
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {})["Recovery/cache_missing"] = 1.0
+        cache_store[path] = None
+        return None
+
+    import numpy as np
+
+    data = np.load(cache_path)
+    required = ("root_pos", "root_quat", "root_lin_vel", "root_ang_vel", "joint_pos", "joint_vel")
+    missing = [name for name in required if name not in data]
+    if missing:
+        raise ValueError(f"recovery state cache 缺少字段: {missing}")
+
+    cache = {
+        name: torch.as_tensor(data[name], device=env.device, dtype=torch.float32)
+        for name in required
+    }
+    if "pose_type" in data:
+        cache["pose_type"] = torch.as_tensor(data["pose_type"], device=env.device, dtype=torch.long)
+    else:
+        cache["pose_type"] = torch.zeros(
+            cache["root_pos"].shape[0], device=env.device, dtype=torch.long
+        )
+
+    cache_store[path] = cache
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {})["Recovery/cache_size"] = float(cache["root_pos"].shape[0])
+    return cache
 
 
 def _pre_resample_jump_command_for_reset(
@@ -105,6 +151,8 @@ def reset_root_state_full(
     recovery_fallen_pitch_abs_range: tuple[float, float] = (1.35, 1.75),
     recovery_fallen_coupled_range: tuple[float, float] = (-0.35, 0.35),
     recovery_fallen_height_range: tuple[float, float] = (0.12, 0.24),
+    recovery_state_cache_path: str | None = None,
+    recovery_state_cache_prob: float = 0.0,
     recovery_grace_steps: int = 400,
     recovery_command_height: float = 0.22,
 ) -> None:
@@ -163,13 +211,17 @@ def reset_root_state_full(
     recovery_fallen_height_range = _stage_value(
         stage, "fallen_height_range", recovery_fallen_height_range
     )
+    recovery_state_cache_path = _stage_value(stage, "state_cache_path", recovery_state_cache_path)
+    recovery_state_cache_prob = float(
+        _stage_value(stage, "state_cache_prob", recovery_state_cache_prob)
+    )
     env._recovery_stage_step = int(stage.get("step", 0))
     env._recovery_stage_prob = float(recovery_prob)
     env._recovery_stage_fallen_pose_prob = float(recovery_fallen_pose_prob)
+    env._recovery_stage_cache_prob = float(recovery_state_cache_prob)
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
-    full_recovery_mask = _ensure_recovery_mask(env)
-    full_recovery_mask[env_ids] = recovery_mask
+    recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
     init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
     init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
     init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
@@ -190,22 +242,80 @@ def reset_root_state_full(
     )
     roll = torch.zeros(n, device=env.device)
     pitch = torch.zeros(n, device=env.device)
+    cache_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
+    cached_root_quat = torch.zeros(n, 4, device=env.device)
+    cached_root_vel = torch.zeros(n, 6, device=env.device)
     if recovery_mask.any():
         n_recovery = int(recovery_mask.sum().item())
         recovery_indices = recovery_mask.nonzero().flatten()
-        fallen_pose_mask = torch.rand(n_recovery, device=env.device) < recovery_fallen_pose_prob
-        roll[recovery_mask] = sample_uniform(
-            torch.tensor(float(recovery_roll_range[0]), device=env.device),
-            torch.tensor(float(recovery_roll_range[1]), device=env.device),
-            (n_recovery,),
-            env.device,
-        )
-        pitch[recovery_mask] = sample_uniform(
-            torch.tensor(float(recovery_pitch_range[0]), device=env.device),
-            torch.tensor(float(recovery_pitch_range[1]), device=env.device),
-            (n_recovery,),
-            env.device,
-        )
+        cache = _load_recovery_state_cache(env, recovery_state_cache_path)
+        if cache is not None and recovery_state_cache_prob > 0.0:
+            cache_mask[recovery_indices] = (
+                torch.rand(n_recovery, device=env.device) < recovery_state_cache_prob
+            )
+            if cache_mask.any():
+                n_cache = int(cache_mask.sum().item())
+                cache_size = int(cache["root_pos"].shape[0])
+                cache_ids = torch.randint(cache_size, (n_cache,), device=env.device)
+                cache_indices = cache_mask.nonzero().flatten()
+                pos[cache_indices, 0:3] = (
+                    cache["root_pos"][cache_ids] + env.scene.env_origins[env_ids][cache_indices]
+                )
+                cached_root_quat[cache_indices] = cache["root_quat"][cache_ids]
+                cached_root_vel[cache_indices] = torch.cat(
+                    [cache["root_lin_vel"][cache_ids], cache["root_ang_vel"][cache_ids]], dim=1
+                )
+
+                if not hasattr(env, "_recovery_cached_joint_pos"):
+                    env._recovery_cached_joint_pos = torch.zeros_like(asset.data.default_joint_pos)
+                    env._recovery_cached_joint_vel = torch.zeros_like(asset.data.default_joint_pos)
+                env._recovery_cached_joint_pos[env_ids[cache_indices]] = cache["joint_pos"][
+                    cache_ids
+                ]
+                env._recovery_cached_joint_vel[env_ids[cache_indices]] = cache["joint_vel"][
+                    cache_ids
+                ]
+                recovery_state.mark_cache_reset(
+                    env,
+                    env_ids,
+                    cache_mask,
+                    cache_type_values=cache["pose_type"][cache_ids],
+                )
+
+                cache_roll, cache_pitch, cache_yaw = euler_xyz_from_quat(
+                    cache["root_quat"][cache_ids]
+                )
+                roll[cache_indices] = cache_roll
+                pitch[cache_indices] = cache_pitch
+                yaw[cache_indices] = cache_yaw
+                init_tilt[env_ids[cache_indices]] = torch.acos(
+                    torch.clamp(torch.cos(cache_roll) * torch.cos(cache_pitch), -1.0, 1.0)
+                )
+        procedural_recovery_mask = recovery_mask & ~cache_mask
+        procedural_recovery_indices = procedural_recovery_mask.nonzero().flatten()
+        n_procedural = int(procedural_recovery_mask.sum().item())
+        if n_procedural == 0:
+            fallen_pose_mask = torch.zeros(0, device=env.device, dtype=torch.bool)
+        else:
+            fallen_pose_mask = (
+                torch.rand(n_procedural, device=env.device) < recovery_fallen_pose_prob
+            )
+        if n_procedural > 0:
+            roll[procedural_recovery_mask] = sample_uniform(
+                torch.tensor(float(recovery_roll_range[0]), device=env.device),
+                torch.tensor(float(recovery_roll_range[1]), device=env.device),
+                (n_procedural,),
+                env.device,
+            )
+            pitch[procedural_recovery_mask] = sample_uniform(
+                torch.tensor(float(recovery_pitch_range[0]), device=env.device),
+                torch.tensor(float(recovery_pitch_range[1]), device=env.device),
+                (n_procedural,),
+                env.device,
+            )
+        old_recovery_indices = recovery_indices
+        recovery_indices = procedural_recovery_indices
+        n_recovery = n_procedural
         if fallen_pose_mask.any():
             n_fallen = int(fallen_pose_mask.sum().item())
             fallen_indices = recovery_indices[fallen_pose_mask]
@@ -288,7 +398,7 @@ def reset_root_state_full(
                 (n_side,),
                 env.device,
             )
-        standard_recovery_mask = recovery_mask.clone()
+        standard_recovery_mask = procedural_recovery_mask.clone()
         if fallen_pose_mask.any():
             standard_recovery_mask[recovery_indices[fallen_pose_mask]] = False
         if standard_recovery_mask.any():
@@ -306,9 +416,12 @@ def reset_root_state_full(
         init_pitch[env_ids] = pitch
         init_yaw[env_ids] = yaw
         init_tilt[env_ids] = torch.acos(torch.clamp(torch.cos(roll) * torch.cos(pitch), -1.0, 1.0))
+        recovery_indices = old_recovery_indices
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     default_quat = root_states[:, 3:7]
     new_quat = quat_mul(default_quat, quat_delta)
+    if cache_mask.any():
+        new_quat[cache_mask] = cached_root_quat[cache_mask]
 
     vel = torch.zeros(n, 6, device=env.device)
     if recovery_mask.any():
@@ -336,6 +449,10 @@ def reset_root_state_full(
                     cmd[recovery_env_ids, 7] = 0.0
             except Exception:
                 pass
+        cache_reset_mask = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")
+        local_cache_mask = cache_reset_mask[env_ids]
+        if local_cache_mask.any():
+            vel[local_cache_mask] = cached_root_vel[local_cache_mask]
 
     # jump_flag=1 的 episode：从参考轨迹初始化。
     #
@@ -473,6 +590,20 @@ def reset_joints(
                     soft_limits[env_ids[local_recovery][:, None], leg_ids, 0],
                     soft_limits[env_ids[local_recovery][:, None], leg_ids, 1],
                 )
+
+    cache_reset_mask = getattr(env, "_recovery_cache_reset_mask", None)
+    cache_joint_pos = getattr(env, "_recovery_cached_joint_pos", None)
+    cache_joint_vel = getattr(env, "_recovery_cached_joint_vel", None)
+    if (
+        isinstance(cache_reset_mask, torch.Tensor)
+        and isinstance(cache_joint_pos, torch.Tensor)
+        and isinstance(cache_joint_vel, torch.Tensor)
+        and cache_reset_mask.shape[0] == env.num_envs
+    ):
+        local_cache = cache_reset_mask[env_ids].to(device=env.device, dtype=torch.bool)
+        if local_cache.any():
+            joint_pos[local_cache] = cache_joint_pos[env_ids[local_cache]]
+            joint_vel[local_cache] = cache_joint_vel[env_ids[local_cache]]
 
     # jump_flag=1 的 episode：RSI 关节角——从参考轨迹对应帧注入
     # reset_root_state_full 已缓存帧号到 env._rsi_traj_frame，供此处读取

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import JointGroup
+from se3_train.mdp import recovery_state
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
@@ -338,10 +339,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
     def _apply_recovery_command(self) -> None:
         """恢复 episode 固定为原地站立指令，避免重采样切回行走命令。"""
-        recovery_mask = getattr(self._env, "_recovery_reset_mask", None)
-        if not isinstance(recovery_mask, torch.Tensor) or recovery_mask.shape[0] != self.num_envs:
-            return
-        recovery_mask = recovery_mask.to(device=self.device, dtype=torch.bool)
+        recovery_mask = recovery_state.recovery_active_mask(self._env).to(device=self.device)
         if not recovery_mask.any():
             return
         command_height = float(getattr(self._env, "_recovery_command_height", 0.22))

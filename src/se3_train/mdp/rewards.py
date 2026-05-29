@@ -13,6 +13,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
 from se3_shared import Joint, JointGroup
+from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 
 if TYPE_CHECKING:
@@ -22,11 +23,13 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """返回 recovery reset 标记；普通任务没有该标记时全 False。"""
-    mask = getattr(env, "_recovery_reset_mask", None)
-    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
-        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-    return mask.to(device=env.device, dtype=torch.bool)
+    """返回当前仍处于 recovery active 模式的 env。"""
+    return recovery_state.recovery_active_mask(env)
+
+
+def _recovery_episode_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """返回本 episode 是否由 recovery reset 开始。"""
+    return recovery_state.recovery_episode_mask(env)
 
 
 def _recovery_angle_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
@@ -83,7 +86,7 @@ def _recovery_success_mask(
     force_threshold: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """计算恢复成功、轮子接地和 recovery active mask。"""
-    active = _recovery_reset_mask(env)
+    active = recovery_state.recovery_active_mask(env)
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
     tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
@@ -118,9 +121,9 @@ def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
     """倒地恢复早期不惩罚接触，接近直立后再恢复常规惩罚。"""
-    grace_steps = 74
+    grace_steps = int(getattr(env, "_recovery_grace_steps", 74))
     upright = _upright_factor(projected_gravity_z)
-    recovery = _recovery_reset_mask(env)
+    recovery = recovery_state.recovery_active_mask(env)
     in_recovery_grace = recovery & (env.episode_length_buf < grace_steps)
     return torch.where(in_recovery_grace, torch.zeros_like(upright), upright)
 
@@ -388,21 +391,26 @@ def recovery_upright(
     这让策略在大倾角时也能得到非零恢复梯度。
     """
     robot = env.scene["robot"]
+    episode = _recovery_episode_mask(env)
     active = _recovery_reset_mask(env)
     pg_z = robot.data.projected_gravity_b[:, 2]
     upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
 
     if hasattr(env, "extras"):
         tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+        cache_reset = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")
         log = {
-            "Recovery/reset_ratio": active.float().mean().item(),
-            "Recovery/tilt_deg": tilt[active].mean().item() if active.any() else 0.0,
+            "Recovery/reset_ratio": episode.float().mean().item(),
+            "Recovery/active_ratio": active.float().mean().item(),
+            "Recovery/cache_reset_ratio": _masked_mean(cache_reset.float(), episode),
+            "Recovery/tilt_deg": tilt[episode].mean().item() if episode.any() else 0.0,
             "Recovery/upright_score": upright[active].mean().item() if active.any() else 0.0,
             "Recovery/stage_step": float(getattr(env, "_recovery_stage_step", 0)),
             "Recovery/stage_prob": float(getattr(env, "_recovery_stage_prob", 0.0)),
             "Recovery/stage_fallen_pose_prob": float(
                 getattr(env, "_recovery_stage_fallen_pose_prob", 0.0)
             ),
+            "Recovery/stage_cache_prob": float(getattr(env, "_recovery_stage_cache_prob", 0.0)),
         }
         if sensor_name is not None and height_sensor_name is not None and command_name is not None:
             success, wheel_contact, _ = _recovery_success_mask(
@@ -423,17 +431,17 @@ def recovery_upright(
             hard_pitch = _recovery_hard_pitch_mask(env)
             log.update(
                 {
-                    "Recovery/success_rate": success.float().mean().item(),
+                    "Recovery/success_rate": (episode & success).float().mean().item(),
                     "Recovery/success_active_rate": _masked_mean(success.float(), active),
                     "Recovery/wheel_contact_rate": (active & wheel_contact).float().mean().item(),
                     "Recovery/init_roll_abs_deg": _masked_mean(
-                        torch.rad2deg(init_roll_abs), active
+                        torch.rad2deg(init_roll_abs), episode
                     ),
                     "Recovery/init_pitch_abs_deg": _masked_mean(
-                        torch.rad2deg(init_pitch_abs), active
+                        torch.rad2deg(init_pitch_abs), episode
                     ),
-                    "Recovery/init_yaw_abs_deg": _masked_mean(torch.rad2deg(init_yaw_abs), active),
-                    "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), active),
+                    "Recovery/init_yaw_abs_deg": _masked_mean(torch.rad2deg(init_yaw_abs), episode),
+                    "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), episode),
                     "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
                     "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
                     "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
@@ -443,6 +451,99 @@ def recovery_upright(
         env.extras.setdefault("log", {}).update(log)
 
     return upright.square() * active.float()
+
+
+def recovery_progress(
+    env: ManagerBasedRlEnv,
+    height_sensor_name: str,
+    upright_delta_scale: float = 0.05,
+    height_delta_scale: float = 0.03,
+    max_reward: float = 4.0,
+) -> torch.Tensor:
+    """奖励恢复过程中直立程度和高度的单步正向进展。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = sensor.data.heights[:, 0]
+
+    prev_upright = recovery_state.ensure_float_buffer(env, "_recovery_prev_upright")
+    prev_height = recovery_state.ensure_float_buffer(env, "_recovery_prev_height")
+
+    first_step = active & (env.episode_length_buf <= 1)
+    prev_upright[first_step] = upright[first_step]
+    prev_height[first_step] = height[first_step]
+
+    upright_gain = torch.clamp(upright - prev_upright, min=0.0) / max(
+        float(upright_delta_scale), 1.0e-6
+    )
+    height_gain = torch.clamp(height - prev_height, min=0.0) / max(
+        float(height_delta_scale), 1.0e-6
+    )
+    reward = torch.clamp(upright_gain + height_gain, max=float(max_reward)) * active.float()
+
+    prev_upright[active] = upright[active].detach()
+    prev_height[active] = height[active].detach()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/progress_reward": reward[active].mean().item() if active.any() else 0.0,
+                "Recovery/upright_gain": upright_gain[active].mean().item()
+                if active.any()
+                else 0.0,
+                "Recovery/height_gain": height_gain[active].mean().item() if active.any() else 0.0,
+            }
+        )
+    return reward
+
+
+def recovery_stable_bonus(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    upright_angle_deg: float = 15.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 1.5,
+    force_threshold: float = 1.0,
+    stable_steps_required: int = 32,
+    per_step_bonus: float = 0.1,
+    completion_bonus: float = 1.0,
+) -> torch.Tensor:
+    """连续站稳后退出 recovery active 模式，并给一次完成奖励。"""
+    success, _, active = _recovery_success_mask(
+        env,
+        sensor_name=sensor_name,
+        height_sensor_name=height_sensor_name,
+        command_name=command_name,
+        upright_angle_deg=upright_angle_deg,
+        height_tolerance=height_tolerance,
+        ang_vel_threshold=ang_vel_threshold,
+        force_threshold=force_threshold,
+    )
+    completed = recovery_state.deactivate_recovered(env, success, stable_steps_required)
+    stable_steps = recovery_state.ensure_long_buffer(env, "_recovery_success_steps")
+    time_to_success = recovery_state.ensure_long_buffer(env, "_recovery_time_to_success_steps")
+    episode = _recovery_episode_mask(env)
+
+    reward = (
+        success.float() * float(per_step_bonus) + completed.float() * float(completion_bonus)
+    ) * active.float()
+
+    if hasattr(env, "extras"):
+        valid_time = episode & (time_to_success >= 0)
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/stable_steps": _masked_mean(stable_steps.float(), episode),
+                "Recovery/stable_success_rate": _masked_mean(success.float(), active),
+                "Recovery/completed_rate": _masked_mean(completed.float(), episode),
+                "Recovery/time_to_success_steps": _masked_mean(time_to_success.float(), valid_time),
+            }
+        )
+    return reward
 
 
 def recovery_height(

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 
 if TYPE_CHECKING:
@@ -14,11 +15,8 @@ if TYPE_CHECKING:
 
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """返回 recovery reset 标记；普通任务没有该标记时全 False。"""
-    mask = getattr(env, "_recovery_reset_mask", None)
-    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
-        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-    return mask.to(device=env.device, dtype=torch.bool)
+    """返回当前仍处于 recovery active 模式的 env。"""
+    return recovery_state.recovery_active_mask(env)
 
 
 def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -102,6 +100,68 @@ class BadOrientationDelayed:
 
 
 bad_orientation_delayed = BadOrientationDelayed()
+
+
+class RecoveryStagnation:
+    """恢复样本长时间没有变好时终止，避免躺平刷低惩罚。"""
+
+    def __init__(self) -> None:
+        self._best_score: torch.Tensor | None = None
+        self._stagnation_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        max_steps: int = 256,
+        min_delta: float = 0.02,
+    ) -> torch.Tensor:
+        active = _recovery_reset_mask(env)
+        robot = env.scene["robot"]
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        score = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
+
+        if (
+            self._best_score is None
+            or self._best_score.shape[0] != env.num_envs
+            or self._best_score.device != env.device
+        ):
+            self._best_score = score.detach().clone()
+            self._stagnation_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        assert self._stagnation_count is not None
+        first_step = env.episode_length_buf <= 1
+        reset_mask = first_step | ~active
+        self._best_score[reset_mask] = score[reset_mask]
+        self._stagnation_count[reset_mask] = 0
+
+        improved = active & (score > self._best_score + float(min_delta))
+        self._best_score = torch.maximum(self._best_score, score.detach())
+        self._stagnation_count[active & ~improved] += 1
+        self._stagnation_count[improved] = 0
+
+        terminated = active & (self._stagnation_count >= int(max_steps))
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Recovery/stagnation_steps": self._stagnation_count[active]
+                    .float()
+                    .mean()
+                    .item()
+                    if active.any()
+                    else 0.0,
+                    "Recovery/stagnation_termination_rate": terminated[active].float().mean().item()
+                    if active.any()
+                    else 0.0,
+                }
+            )
+        return terminated
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._stagnation_count is not None and env_ids is not None:
+            self._stagnation_count[env_ids] = 0
+
+
+recovery_stagnation = RecoveryStagnation()
 
 
 def leg_contact(

@@ -13,6 +13,7 @@ from . import jump_curriculums as jump_curriculums
 from . import jump_rewards as jump_rewards
 from . import jump_terminations as jump_terminations
 from . import observations as observations
+from . import recovery_state as recovery_state
 from . import rewards as rewards
 from . import terminations as terminations
 
@@ -26,6 +27,7 @@ __all__ = [
     "jump_rewards",
     "jump_terminations",
     "observations",
+    "recovery_state",
     "rewards",
     "terminations",
 ]

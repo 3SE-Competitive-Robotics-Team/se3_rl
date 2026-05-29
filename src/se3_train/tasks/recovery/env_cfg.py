@@ -21,6 +21,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = flat_env_cfg(play=play)
     recovery_grace_steps = 600
     steps_per_policy_iter = 64
+    recovery_state_cache_path = "assets/recovery_states/serialleg_flat_v1.npz"
 
     def recovery_iter(iteration: int) -> int:
         """把 PPO iter 转成 env.common_step_counter 使用的 policy step。"""
@@ -40,6 +41,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "fallen_pitch_abs_range": (1.05, 1.45),
                 "fallen_coupled_range": (-0.20, 0.20),
                 "fallen_height_range": (0.16, 0.25),
+                "state_cache_path": recovery_state_cache_path,
+                "state_cache_prob": 0.10,
             },
             {
                 "step": recovery_iter(500),
@@ -53,6 +56,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "fallen_pitch_abs_range": (1.20, 1.65),
                 "fallen_coupled_range": (-0.25, 0.25),
                 "fallen_height_range": (0.14, 0.24),
+                "state_cache_path": recovery_state_cache_path,
+                "state_cache_prob": 0.25,
             },
             {
                 "step": recovery_iter(1200),
@@ -66,6 +71,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "fallen_pitch_abs_range": (1.35, 2.00),
                 "fallen_coupled_range": (-0.30, 0.30),
                 "fallen_height_range": (0.12, 0.23),
+                "state_cache_path": recovery_state_cache_path,
+                "state_cache_prob": 0.40,
             },
             {
                 "step": recovery_iter(2200),
@@ -79,6 +86,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "fallen_pitch_abs_range": (1.45, 2.35),
                 "fallen_coupled_range": (-0.40, 0.40),
                 "fallen_height_range": (0.10, 0.22),
+                "state_cache_path": recovery_state_cache_path,
+                "state_cache_prob": 0.55,
+            },
+            {
+                "step": recovery_iter(2600),
+                "prob": 0.20,
+                "roll_range": (-3.14, 3.14),
+                "pitch_range": (-3.14, 3.14),
+                "height_range": (0.08, 0.26),
+                "fallen_pose_prob": 0.90,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.45, 3.14),
+                "fallen_pitch_abs_range": (1.45, 3.14),
+                "fallen_coupled_range": (-0.80, 0.80),
+                "fallen_height_range": (0.08, 0.22),
+                "state_cache_path": recovery_state_cache_path,
+                "state_cache_prob": 0.65,
             },
         )
         if not play
@@ -95,6 +119,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "fallen_pitch_abs_range": (1.45, 2.35),
                 "fallen_coupled_range": (-0.40, 0.40),
                 "fallen_height_range": (0.10, 0.22),
+                "state_cache_path": recovery_state_cache_path,
+                "state_cache_prob": 0.65,
             },
         )
     )
@@ -106,6 +132,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "recovery_prob": 1.0 if play else 0.15,
             "recovery_stages": list(recovery_stages),
+            "recovery_state_cache_path": recovery_state_cache_path,
+            "recovery_state_cache_prob": 0.0,
             "recovery_grace_steps": recovery_grace_steps,
             "recovery_command_height": _DEFAULT_STANDING_HEIGHT,
         },
@@ -129,6 +157,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "recovery_grace_steps": recovery_grace_steps,
             "recovery_terminate": False,
         },
+    )
+    cfg.terminations["recovery_stagnation"] = TerminationTermCfg(
+        func=terminations.recovery_stagnation,
+        time_out=False,
+        params={"max_steps": 320, "min_delta": 0.015},
     )
     cfg.terminations["leg_contact"] = TerminationTermCfg(
         func=terminations.leg_contact,
@@ -220,6 +253,32 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "sigma": 0.04,
             "gate_start_deg": 45.0,
             "gate_full_deg": 15.0,
+        },
+    )
+    cfg.rewards["recovery_progress"] = RewardTermCfg(
+        func=rewards.recovery_progress,
+        weight=1.5,
+        params={
+            "height_sensor_name": "base_height_sensor",
+            "upright_delta_scale": 0.05,
+            "height_delta_scale": 0.03,
+            "max_reward": 4.0,
+        },
+    )
+    cfg.rewards["recovery_stable_bonus"] = RewardTermCfg(
+        func=rewards.recovery_stable_bonus,
+        weight=4.0,
+        params={
+            "sensor_name": "wheel_sensor",
+            "height_sensor_name": "base_height_sensor",
+            "command_name": "velocity_height",
+            "upright_angle_deg": 15.0,
+            "height_tolerance": 0.05,
+            "ang_vel_threshold": 1.5,
+            "force_threshold": 1.0,
+            "stable_steps_required": 32,
+            "per_step_bonus": 0.1,
+            "completion_bonus": 1.0,
         },
     )
 
