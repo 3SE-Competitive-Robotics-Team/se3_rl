@@ -47,92 +47,33 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
     return 0.0
 
 
-def _recovery_hard_roll_mask(
+def _recovery_hard_tilt_mask(
     env: ManagerBasedRlEnv,
-    min_initial_roll_deg: float = 75.0,
-    max_initial_pitch_deg: float = 35.0,
+    min_initial_tilt_deg: float = 75.0,
 ) -> torch.Tensor:
-    """识别以大 roll 侧翻为主的 recovery 样本。"""
+    """识别初始大倾角 recovery 样本，不区分倾倒轴向。"""
     active = _recovery_reset_mask(env)
-    return _recovery_hard_roll_mask_for(
-        env,
-        active,
-        min_initial_roll_deg=min_initial_roll_deg,
-        max_initial_pitch_deg=max_initial_pitch_deg,
-    )
+    return _recovery_hard_tilt_mask_for(env, active, min_initial_tilt_deg)
 
 
-def _recovery_hard_roll_episode_mask(
+def _recovery_hard_tilt_episode_mask(
     env: ManagerBasedRlEnv,
-    min_initial_roll_deg: float = 75.0,
-    max_initial_pitch_deg: float = 35.0,
+    min_initial_tilt_deg: float = 75.0,
 ) -> torch.Tensor:
-    """识别本 episode 中以大 roll 侧翻为主的 recovery 样本。"""
+    """识别本 episode 中的初始大倾角 recovery 样本。"""
     episode = _recovery_episode_mask(env)
-    return _recovery_hard_roll_mask_for(
-        env,
-        episode,
-        min_initial_roll_deg=min_initial_roll_deg,
-        max_initial_pitch_deg=max_initial_pitch_deg,
-    )
+    return _recovery_hard_tilt_mask_for(env, episode, min_initial_tilt_deg)
 
 
-def _recovery_hard_roll_mask_for(
+def _recovery_hard_tilt_mask_for(
     env: ManagerBasedRlEnv,
     base_mask: torch.Tensor,
-    min_initial_roll_deg: float,
-    max_initial_pitch_deg: float,
+    min_initial_tilt_deg: float,
 ) -> torch.Tensor:
-    """按传入 mask 识别大 roll 侧翻样本。"""
-    roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
-    pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
-    min_roll = torch.deg2rad(torch.tensor(float(min_initial_roll_deg), device=env.device))
-    max_pitch = torch.deg2rad(torch.tensor(float(max_initial_pitch_deg), device=env.device))
-    return base_mask & (roll_abs >= min_roll) & (pitch_abs <= max_pitch)
-
-
-def _recovery_hard_pitch_mask(
-    env: ManagerBasedRlEnv,
-    min_initial_pitch_deg: float = 75.0,
-    max_initial_roll_deg: float = 35.0,
-) -> torch.Tensor:
-    """识别以大 pitch 前后翻为主的 recovery 样本。"""
-    active = _recovery_reset_mask(env)
-    return _recovery_hard_pitch_mask_for(
-        env,
-        active,
-        min_initial_pitch_deg=min_initial_pitch_deg,
-        max_initial_roll_deg=max_initial_roll_deg,
-    )
-
-
-def _recovery_hard_pitch_episode_mask(
-    env: ManagerBasedRlEnv,
-    min_initial_pitch_deg: float = 75.0,
-    max_initial_roll_deg: float = 35.0,
-) -> torch.Tensor:
-    """识别本 episode 中以大 pitch 前后翻为主的 recovery 样本。"""
-    episode = _recovery_episode_mask(env)
-    return _recovery_hard_pitch_mask_for(
-        env,
-        episode,
-        min_initial_pitch_deg=min_initial_pitch_deg,
-        max_initial_roll_deg=max_initial_roll_deg,
-    )
-
-
-def _recovery_hard_pitch_mask_for(
-    env: ManagerBasedRlEnv,
-    base_mask: torch.Tensor,
-    min_initial_pitch_deg: float,
-    max_initial_roll_deg: float,
-) -> torch.Tensor:
-    """按传入 mask 识别大 pitch 前后翻样本。"""
-    roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
-    pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
-    min_pitch = torch.deg2rad(torch.tensor(float(min_initial_pitch_deg), device=env.device))
-    max_roll = torch.deg2rad(torch.tensor(float(max_initial_roll_deg), device=env.device))
-    return base_mask & (pitch_abs >= min_pitch) & (roll_abs <= max_roll)
+    """按传入 mask 识别初始大倾角样本。"""
+    init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
+    min_tilt = torch.deg2rad(torch.tensor(float(min_initial_tilt_deg), device=env.device))
+    return base_mask & (init_tilt >= min_tilt)
 
 
 def _recovery_success_components(
@@ -541,14 +482,10 @@ def recovery_upright(
                 ang_vel_threshold=ang_vel_threshold,
                 force_threshold=force_threshold,
             )
-            init_roll_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_roll"))
-            init_pitch_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_pitch"))
             init_yaw_abs = torch.abs(_recovery_angle_buffer(env, "_recovery_init_yaw"))
             init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
-            hard_roll = _recovery_hard_roll_mask(env)
-            hard_pitch = _recovery_hard_pitch_mask(env)
-            hard_roll_episode = _recovery_hard_roll_episode_mask(env)
-            hard_pitch_episode = _recovery_hard_pitch_episode_mask(env)
+            hard_tilt = _recovery_hard_tilt_mask(env)
+            hard_tilt_episode = _recovery_hard_tilt_episode_mask(env)
             time_to_success = recovery_state.ensure_long_buffer(
                 env, "_recovery_time_to_success_steps"
             )
@@ -575,55 +512,28 @@ def recovery_upright(
                     .float()
                     .mean()
                     .item(),
-                    "Recovery/init_roll_abs_deg": _masked_mean(
-                        torch.rad2deg(init_roll_abs), episode
-                    ),
-                    "Recovery/init_pitch_abs_deg": _masked_mean(
-                        torch.rad2deg(init_pitch_abs), episode
-                    ),
                     "Recovery/init_yaw_abs_deg": _masked_mean(torch.rad2deg(init_yaw_abs), episode),
                     "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), episode),
-                    "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
-                    "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
-                    "Recovery/hard_roll_upright_cond_rate": _masked_mean(
-                        upright_ok.float(), hard_roll
+                    "Recovery/hard_tilt_ratio": hard_tilt.float().mean().item(),
+                    "Recovery/hard_tilt_success_rate": _masked_mean(success.float(), hard_tilt),
+                    "Recovery/hard_tilt_upright_cond_rate": _masked_mean(
+                        upright_ok.float(), hard_tilt
                     ),
-                    "Recovery/hard_roll_height_cond_rate": _masked_mean(
-                        height_ok.float(), hard_roll
+                    "Recovery/hard_tilt_height_cond_rate": _masked_mean(
+                        height_ok.float(), hard_tilt
                     ),
-                    "Recovery/hard_roll_stable_cond_rate": _masked_mean(
-                        stable_ok.float(), hard_roll
+                    "Recovery/hard_tilt_stable_cond_rate": _masked_mean(
+                        stable_ok.float(), hard_tilt
                     ),
-                    "Recovery/hard_roll_wheel_contact_cond_rate": _masked_mean(
-                        wheel_contact.float(), hard_roll
+                    "Recovery/hard_tilt_wheel_contact_cond_rate": _masked_mean(
+                        wheel_contact.float(), hard_tilt
                     ),
-                    "Recovery/hard_roll_success_without_contact_rate": _masked_mean(
-                        upright_height_stable.float(), hard_roll
+                    "Recovery/hard_tilt_success_without_contact_rate": _masked_mean(
+                        upright_height_stable.float(), hard_tilt
                     ),
-                    "Recovery/hard_roll_episode_ratio": hard_roll_episode.float().mean().item(),
-                    "Recovery/hard_roll_ever_completed_rate": _masked_mean(
-                        ever_completed.float(), hard_roll_episode
-                    ),
-                    "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
-                    "Recovery/hard_pitch_success_rate": _masked_mean(success.float(), hard_pitch),
-                    "Recovery/hard_pitch_upright_cond_rate": _masked_mean(
-                        upright_ok.float(), hard_pitch
-                    ),
-                    "Recovery/hard_pitch_height_cond_rate": _masked_mean(
-                        height_ok.float(), hard_pitch
-                    ),
-                    "Recovery/hard_pitch_stable_cond_rate": _masked_mean(
-                        stable_ok.float(), hard_pitch
-                    ),
-                    "Recovery/hard_pitch_wheel_contact_cond_rate": _masked_mean(
-                        wheel_contact.float(), hard_pitch
-                    ),
-                    "Recovery/hard_pitch_success_without_contact_rate": _masked_mean(
-                        upright_height_stable.float(), hard_pitch
-                    ),
-                    "Recovery/hard_pitch_episode_ratio": hard_pitch_episode.float().mean().item(),
-                    "Recovery/hard_pitch_ever_completed_rate": _masked_mean(
-                        ever_completed.float(), hard_pitch_episode
+                    "Recovery/hard_tilt_episode_ratio": hard_tilt_episode.float().mean().item(),
+                    "Recovery/hard_tilt_ever_completed_rate": _masked_mean(
+                        ever_completed.float(), hard_tilt_episode
                     ),
                 }
             )
@@ -679,27 +589,27 @@ def recovery_progress(
     return reward
 
 
-def recovery_hard_roll_upright(
+def recovery_hard_tilt_upright(
     env: ManagerBasedRlEnv,
     power: float = 1.0,
 ) -> torch.Tensor:
-    """奖励大 roll 侧翻样本进入可站立半球。"""
-    hard_roll = _recovery_hard_roll_mask(env)
+    """奖励大倾角样本进入可站立半球，不区分倾倒轴向。"""
+    hard_tilt = _recovery_hard_tilt_mask(env)
     pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
     upright_half = torch.clamp(-pg_z, 0.0, 1.0)
-    reward = upright_half.pow(float(power)) * hard_roll.float()
+    reward = upright_half.pow(float(power)) * hard_tilt.float()
 
     if hasattr(env, "extras"):
         env.extras.setdefault("log", {}).update(
             {
-                "Recovery/hard_roll_upright_reward": _masked_mean(reward, hard_roll),
-                "Recovery/hard_roll_upright_half": _masked_mean(upright_half, hard_roll),
+                "Recovery/hard_tilt_upright_reward": _masked_mean(reward, hard_tilt),
+                "Recovery/hard_tilt_upright_half": _masked_mean(upright_half, hard_tilt),
             }
         )
     return reward
 
 
-def recovery_hard_roll_supported_upright(
+def recovery_hard_tilt_supported_upright(
     env: ManagerBasedRlEnv,
     sensor_name: str,
     height_sensor_name: str,
@@ -710,7 +620,7 @@ def recovery_hard_roll_supported_upright(
     force_threshold: float = 1.0,
     near_upright_bonus: float = 0.5,
 ) -> torch.Tensor:
-    """奖励大 roll 样本在已有支撑条件下继续回正。"""
+    """奖励大倾角样本在已有支撑条件下继续回正。"""
     _, wheel_contact, _, near_upright, height_ok, stable_ok = _recovery_success_components(
         env,
         sensor_name=sensor_name,
@@ -721,21 +631,21 @@ def recovery_hard_roll_supported_upright(
         ang_vel_threshold=ang_vel_threshold,
         force_threshold=force_threshold,
     )
-    hard_roll = _recovery_hard_roll_mask(env)
+    hard_tilt = _recovery_hard_tilt_mask(env)
     pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
     upright_half = torch.clamp(-pg_z, 0.0, 1.0)
     supported = wheel_contact & height_ok & stable_ok
     milestone = supported & near_upright
     reward = upright_half * supported.float() + milestone.float() * float(near_upright_bonus)
-    reward = reward * hard_roll.float()
+    reward = reward * hard_tilt.float()
 
     if hasattr(env, "extras"):
         env.extras.setdefault("log", {}).update(
             {
-                "Recovery/hard_roll_supported_upright_reward": _masked_mean(reward, hard_roll),
-                "Recovery/hard_roll_support_cond_rate": _masked_mean(supported.float(), hard_roll),
-                "Recovery/hard_roll_near_upright_milestone_rate": _masked_mean(
-                    milestone.float(), hard_roll
+                "Recovery/hard_tilt_supported_upright_reward": _masked_mean(reward, hard_tilt),
+                "Recovery/hard_tilt_support_cond_rate": _masked_mean(supported.float(), hard_tilt),
+                "Recovery/hard_tilt_near_upright_milestone_rate": _masked_mean(
+                    milestone.float(), hard_tilt
                 ),
             }
         )
@@ -812,8 +722,7 @@ def recovery_height(
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
     if hasattr(env, "extras"):
-        hard_roll = _recovery_hard_roll_mask(env)
-        hard_pitch = _recovery_hard_pitch_mask(env)
+        hard_tilt = _recovery_hard_tilt_mask(env)
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/base_height_error_m": torch.abs(height - target_height)[active]
@@ -824,8 +733,7 @@ def recovery_height(
                 "Recovery/height_gate": near_upright_gate[active].mean().item()
                 if active.any()
                 else 0.0,
-                "Recovery/hard_roll_height_gate": _masked_mean(near_upright_gate, hard_roll),
-                "Recovery/hard_pitch_height_gate": _masked_mean(near_upright_gate, hard_pitch),
+                "Recovery/hard_tilt_height_gate": _masked_mean(near_upright_gate, hard_tilt),
             }
         )
 
@@ -855,18 +763,14 @@ def recovery_wheel_contact(
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
     if hasattr(env, "extras"):
-        hard_roll = _recovery_hard_roll_mask(env)
-        hard_pitch = _recovery_hard_pitch_mask(env)
+        hard_tilt = _recovery_hard_tilt_mask(env)
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/wheel_contact_cond_rate": _masked_mean(wheel_contact.float(), active),
                 "Recovery/wheel_contact_gate": near_upright_gate[active].mean().item()
                 if active.any()
                 else 0.0,
-                "Recovery/hard_roll_wheel_contact_gate": _masked_mean(near_upright_gate, hard_roll),
-                "Recovery/hard_pitch_wheel_contact_gate": _masked_mean(
-                    near_upright_gate, hard_pitch
-                ),
+                "Recovery/hard_tilt_wheel_contact_gate": _masked_mean(near_upright_gate, hard_tilt),
             }
         )
 
