@@ -57,7 +57,19 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ):
         cfg.rewards.pop(reward_name, None)
 
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
+    # 对齐 robot_lab 的自起训练比例:upward 是主目标,动作平滑只保留很轻的正则。
+    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
+    cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.01)
+    cfg.rewards["leg_torques"] = RewardTermCfg(
+        func=rewards.leg_torques,
+        weight=-2.0e-5,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["leg_power"] = RewardTermCfg(
+        func=rewards.leg_power,
+        weight=-2.0e-5,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
     cfg.rewards["tracking_height"] = RewardTermCfg(
         func=rewards.tracking_height,
         weight=2.49,
