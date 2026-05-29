@@ -75,7 +75,7 @@ def _recovery_hard_pitch_mask(
     return active & (pitch_abs >= min_pitch) & (roll_abs <= max_roll)
 
 
-def _recovery_success_mask(
+def _recovery_success_components(
     env: ManagerBasedRlEnv,
     sensor_name: str,
     height_sensor_name: str,
@@ -84,8 +84,8 @@ def _recovery_success_mask(
     height_tolerance: float,
     ang_vel_threshold: float,
     force_threshold: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """计算恢复成功、轮子接地和 recovery active mask。"""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """计算恢复成功及各个成功门控条件。"""
     active = recovery_state.recovery_active_mask(env)
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
@@ -109,6 +109,30 @@ def _recovery_success_mask(
         wheel_contact = (force_mag > float(force_threshold)).any(dim=1)
 
     success = active & upright & height_ok & stable & wheel_contact
+    return success, wheel_contact, active, upright, height_ok, stable
+
+
+def _recovery_success_mask(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    upright_angle_deg: float,
+    height_tolerance: float,
+    ang_vel_threshold: float,
+    force_threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """计算恢复成功、轮子接地和 recovery active mask。"""
+    success, wheel_contact, active, _, _, _ = _recovery_success_components(
+        env,
+        sensor_name=sensor_name,
+        height_sensor_name=height_sensor_name,
+        command_name=command_name,
+        upright_angle_deg=upright_angle_deg,
+        height_tolerance=height_tolerance,
+        ang_vel_threshold=ang_vel_threshold,
+        force_threshold=force_threshold,
+    )
     return success, wheel_contact, active
 
 
@@ -414,7 +438,14 @@ def recovery_upright(
             "Recovery/stage_cache_prob": float(getattr(env, "_recovery_stage_cache_prob", 0.0)),
         }
         if sensor_name is not None and height_sensor_name is not None and command_name is not None:
-            success, wheel_contact, _ = _recovery_success_mask(
+            (
+                success,
+                wheel_contact,
+                success_active,
+                upright_ok,
+                height_ok,
+                stable_ok,
+            ) = _recovery_success_components(
                 env,
                 sensor_name=sensor_name,
                 height_sensor_name=height_sensor_name,
@@ -430,11 +461,28 @@ def recovery_upright(
             init_tilt = _recovery_angle_buffer(env, "_recovery_init_tilt")
             hard_roll = _recovery_hard_roll_mask(env)
             hard_pitch = _recovery_hard_pitch_mask(env)
+            upright_height = upright_ok & height_ok
+            upright_height_stable = upright_height & stable_ok
             log.update(
                 {
                     "Recovery/success_rate": (episode & success).float().mean().item(),
-                    "Recovery/success_active_rate": _masked_mean(success.float(), active),
-                    "Recovery/wheel_contact_rate": (active & wheel_contact).float().mean().item(),
+                    "Recovery/success_active_rate": _masked_mean(success.float(), success_active),
+                    "Recovery/upright_cond_rate": _masked_mean(upright_ok.float(), success_active),
+                    "Recovery/height_cond_rate": _masked_mean(height_ok.float(), success_active),
+                    "Recovery/stable_cond_rate": _masked_mean(stable_ok.float(), success_active),
+                    "Recovery/wheel_contact_cond_rate": _masked_mean(
+                        wheel_contact.float(), success_active
+                    ),
+                    "Recovery/upright_height_rate": _masked_mean(
+                        upright_height.float(), success_active
+                    ),
+                    "Recovery/success_without_contact_rate": _masked_mean(
+                        upright_height_stable.float(), success_active
+                    ),
+                    "Recovery/wheel_contact_rate": (success_active & wheel_contact)
+                    .float()
+                    .mean()
+                    .item(),
                     "Recovery/init_roll_abs_deg": _masked_mean(
                         torch.rad2deg(init_roll_abs), episode
                     ),
@@ -536,11 +584,14 @@ def recovery_stable_bonus(
 
     if hasattr(env, "extras"):
         valid_time = episode & (time_to_success >= 0)
+        ever_completed = episode & (time_to_success >= 0)
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/stable_steps": _masked_mean(stable_steps.float(), episode),
                 "Recovery/stable_success_rate": _masked_mean(success.float(), active),
                 "Recovery/completed_rate": _masked_mean(completed.float(), episode),
+                "Recovery/completed_rate_step": _masked_mean(completed.float(), episode),
+                "Recovery/ever_completed_rate": _masked_mean(ever_completed.float(), episode),
                 "Recovery/time_to_success_steps": _masked_mean(time_to_success.float(), valid_time),
             }
         )
