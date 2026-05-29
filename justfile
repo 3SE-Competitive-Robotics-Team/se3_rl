@@ -57,7 +57,7 @@ smoke-gpu:
 
 # 倒地自启 CPU smoke 验证（5 轮，不上传 W&B）
 smoke-recovery:
-    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 1 --gpu-ids None
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 8 --gpu-ids None
 
 # 平地地形训练（需要 GPU + .env）
 train:

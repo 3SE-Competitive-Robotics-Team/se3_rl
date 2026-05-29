@@ -136,6 +136,99 @@ def _pre_resample_jump_command_for_reset(
         term.pre_resample_for_reset(env_ids)
 
 
+def reset_root_state_full_angle_random(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    roll_range: tuple[float, float] = (-torch.pi, torch.pi),
+    pitch_range: tuple[float, float] = (-torch.pi, torch.pi),
+    yaw_range: tuple[float, float] = (-torch.pi, torch.pi),
+    height_range: tuple[float, float] = (0.08, 0.32),
+    pos_xy_range: tuple[float, float] = (-0.1, 0.1),
+    lin_vel_range: tuple[float, float] = (-0.15, 0.15),
+    ang_vel_range: tuple[float, float] = (-0.8, 0.8),
+) -> None:
+    """统一 reset：从第一步开始对 roll/pitch/yaw 做全角度随机。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    _pre_resample_jump_command_for_reset(env, env_ids)
+
+    asset: Entity = env.scene[asset_cfg.name]
+    default_root_state = asset.data.default_root_state
+    assert default_root_state is not None
+    root_states = default_root_state[env_ids].clone()
+
+    def _sample_range(value_range: tuple[float, float], shape: tuple[int, ...]) -> torch.Tensor:
+        return sample_uniform(
+            torch.tensor(float(value_range[0]), device=env.device),
+            torch.tensor(float(value_range[1]), device=env.device),
+            shape,
+            env.device,
+        )
+
+    n = len(env_ids)
+    pos = root_states[:, 0:3].clone()
+    pos[:, 0] += _sample_range(pos_xy_range, (n,))
+    pos[:, 1] += _sample_range(pos_xy_range, (n,))
+    pos[:, 0:3] += env.scene.env_origins[env_ids]
+    pos[:, 2] = _sample_range(height_range, (n,)) + env.scene.env_origins[env_ids, 2]
+
+    roll = _sample_range(roll_range, (n,))
+    pitch = _sample_range(pitch_range, (n,))
+    yaw = _sample_range(yaw_range, (n,))
+    quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
+    new_quat = quat_mul(root_states[:, 3:7], quat_delta)
+
+    vel = torch.zeros(n, 6, device=env.device)
+    vel[:, 0:3] = _sample_range(lin_vel_range, (n, 3))
+    vel[:, 3:6] = _sample_range(ang_vel_range, (n, 3))
+
+    # 清空旧 recovery buffer，避免旧实验残留把统一 reset 误判成 recovery active。
+    for name in ("_recovery_reset_mask", "_recovery_episode_mask", "_recovery_cache_reset_mask"):
+        values = getattr(env, name, None)
+        if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
+            values[env_ids] = False
+
+    asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
+    asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
+
+    # 6DoF base tracking 使用 reset 后的 xy/yaw 作为局部参考零点。
+    if not hasattr(env, "_jump_pose_ref_pos_w"):
+        env._jump_pose_ref_pos_w = torch.zeros((env.num_envs, 3), device=env.device)
+    if not hasattr(env, "_jump_pose_ref_yaw"):
+        env._jump_pose_ref_yaw = torch.zeros(env.num_envs, device=env.device)
+    _, _, yaw_ref = euler_xyz_from_quat(new_quat)
+    env._jump_pose_ref_pos_w[env_ids] = pos
+    env._jump_pose_ref_yaw[env_ids] = yaw_ref
+
+    init_tilt = torch.acos(torch.clamp(torch.cos(roll) * torch.cos(pitch), -1.0, 1.0))
+    init_tilt_deg = torch.rad2deg(init_tilt)
+    bins = torch.bucketize(
+        init_tilt_deg,
+        torch.tensor((30.0, 75.0, 130.0), device=env.device),
+    )
+    tilt_bins = getattr(env, "_reset_init_tilt_bin", None)
+    if not isinstance(tilt_bins, torch.Tensor) or tilt_bins.shape[0] != env.num_envs:
+        tilt_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._reset_init_tilt_bin = tilt_bins
+    tilt_bins[env_ids] = bins
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Reset/full_angle_random_ratio": 1.0,
+                "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
+                "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
+                "Reset/init_tilt_bin_upright_noise_ratio": (bins == 0).float().mean().item(),
+                "Reset/init_tilt_bin_near_fall_ratio": (bins == 1).float().mean().item(),
+                "Reset/init_tilt_bin_hard_tilt_ratio": (bins == 2).float().mean().item(),
+                "Reset/init_tilt_bin_inverted_ratio": (bins == 3).float().mean().item(),
+            }
+        )
+
+
 def reset_root_state_full(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -549,6 +642,8 @@ def reset_joints(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    joint_offset_range: float = 0.0,
+    joint_vel_range: tuple[float, float] = (0.0, 0.0),
     recovery_joint_offset_range: float = 0.0,
     recovery_joint_vel_range: tuple[float, float] = (0.0, 0.0),
 ) -> None:
@@ -562,6 +657,30 @@ def reset_joints(
     joint_vel = torch.zeros_like(joint_pos)
 
     joint_pos[:, JointGroup.WHEELS] = 0.0
+
+    if joint_offset_range > 0.0:
+        leg_ids = torch.tensor(JointGroup.LEGS, device=env.device)
+        offset = sample_uniform(
+            torch.tensor(-float(joint_offset_range), device=env.device),
+            torch.tensor(float(joint_offset_range), device=env.device),
+            (len(env_ids), len(JointGroup.LEGS)),
+            env.device,
+        )
+        joint_pos[:, leg_ids] += offset
+        joint_vel[:, leg_ids] = sample_uniform(
+            torch.tensor(float(joint_vel_range[0]), device=env.device),
+            torch.tensor(float(joint_vel_range[1]), device=env.device),
+            (len(env_ids), len(JointGroup.LEGS)),
+            env.device,
+        )
+
+        soft_limits = asset.data.soft_joint_pos_limits
+        if soft_limits is not None:
+            joint_pos[:, leg_ids] = torch.clamp(
+                joint_pos[:, leg_ids],
+                soft_limits[env_ids[:, None], leg_ids, 0],
+                soft_limits[env_ids[:, None], leg_ids, 1],
+            )
 
     recovery_mask = getattr(env, "_recovery_reset_mask", None)
     if (

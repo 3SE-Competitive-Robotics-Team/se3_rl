@@ -6,11 +6,9 @@ import os
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
-_BASE_MODEL_DIR = "base_model"
-
 
 def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """倒地自启 GRU PPO 配置（从平地 GRU 基模 warm start）。"""
+    """倒地自启 GRU PPO 配置（从零训练）。"""
     if smoke or os.environ.get("SE3_SMOKE", "0") == "1":
         max_iterations = 5
         logger = "tensorboard"
@@ -18,7 +16,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     else:
         max_iterations = 3000
         logger = os.environ.get("SE3_LOGGER", "wandb")
-        resume = True
+        resume = False
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
 
     return RslRlOnPolicyRunnerCfg(
@@ -66,6 +64,4 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger=logger,
         wandb_project="se3_wheel_leg",
         resume=resume,
-        load_run=_BASE_MODEL_DIR,
-        load_checkpoint="model_[0-9]+_gru\\.pt",
     )

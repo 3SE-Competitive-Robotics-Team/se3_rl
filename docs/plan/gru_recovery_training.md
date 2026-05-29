@@ -1,166 +1,332 @@
-# GRU 反倒起身训练方案
+# GRU 反倒起身训练规范
 
-> 状态：方案阶段，尚未实现。目标是让同一个策略同时保持正常轮腿运动能力，并学会倒地后的自主起身恢复。
+> 状态：当前训练 contract。本文以 `SE3-WheelLegged-Recovery-GRU` 为准，覆盖从零训练、全姿态 reset、统一奖励、终止、监控和验收指标。
 
-## 动机
+## 目标
 
-倒地起身是强时序、强接触、部分可观测任务。单帧 MLP 可以学正常行走，但恢复动作需要记住最近的接触变化、姿态变化、动作历史和身体是否正在变好。GRU 能给策略一个轻量的隐状态，适合在不引入复杂 MoE 或多策略切换的情况下增强恢复能力。
+第一版按 RobotLab Go2W 的思路做最小闭环：同一个 GRU policy 从随机初始化开始训练，在同一套 locomotion objective 下同时学会站立、低速行走和任意姿态自起。
 
-调研中没有在 `unitree_rl_mjlab` 看到 GRU/LSTM 训练配置。MJLab 当前依赖的 RSL-RL 已内置 `RNNModel`，可以直接接入。推荐从工程上最简单、部署成本最低的 `GRU + 512 hidden + 1 layer` 开始。
+核心约束：
 
-## 总体路线
+1. 不从已有 checkpoint 续训，不加载 `assets/base_model`。
+2. 不区分 normal reset、fall reset、recovery reset。
+3. 不设置 recovery mode，不给 actor 增加 mode 输入。
+4. 不按初始姿态、倾角桶、roll 轴或 pitch 轴切换 reward。
+5. 从第 0 iter 开始，root 姿态就是全角度随机。
 
-使用一个 GRU policy 贯穿两阶段训练：
+当前任务入口：
 
-1. **正常运动预训练**：只训练站立、速度追踪、高度追踪和抗扰，得到稳定 sim2sim checkpoint。
-2. **反倒起身后训练**：从预训练 checkpoint resume，混入倒地/半倒 reset，学习恢复，同时保留正常 reset 防止遗忘。
-
-关键约束：预训练阶段就固定最终观测维度。后训练只改变 reset 分布、reward 分支和 curriculum，不改变 actor 输入维度。
-
-## 网络配置
-
-推荐使用 RSL-RL 的 `RNNModel`：
-
-```python
-actor = RslRlModelCfg(
-    class_name="RNNModel",
-    rnn_type="gru",
-    rnn_hidden_dim=512,
-    rnn_num_layers=1,
-    hidden_dims=(512, 256, 128),
-    activation="elu",
-    obs_normalization=True,
-    distribution_cfg={
-        "class_name": "GaussianDistribution",
-        "init_std": 0.5,
-        "std_type": "scalar",
-    },
-)
-
-critic = RslRlModelCfg(
-    class_name="RNNModel",
-    rnn_type="gru",
-    rnn_hidden_dim=512,
-    rnn_num_layers=1,
-    hidden_dims=(512, 256, 128),
-    activation="elu",
-    obs_normalization=True,
-)
+```bash
+just smoke-recovery
+just train-recovery-light
+just train-recovery
 ```
 
-训练参数建议：
+底层任务名：
 
-- `num_steps_per_env=64`，给 BPTT 更长的时序窗口。
-- 预训练学习率保持当前量级，例如 `6.5e-4`。
-- 后训练学习率降到 `2e-4 ~ 3e-4`。
-- `desired_kl` 可略收紧到 `0.006 ~ 0.008`，避免后训练冲坏已学 gait。
+```bash
+uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 4096
+```
 
-GRU 优先于 LSTM。GRU hidden state 简单，sim2sim 和导出维护成本低，恢复任务通常已经够用。
+## 网络与 PPO
 
-## 观测设计
+当前恢复任务使用 `se3_recovery_gru_ppo_runner_cfg`：
 
-从预训练开始就加入最终需要的字段：
+| 项 | 当前值 | 说明 |
+|---|---:|---|
+| policy | `RNNModel` / GRU | 自起是强时序、强接触任务，GRU 用于记忆最近姿态和接触变化 |
+| GRU hidden | 512 | 默认容量，先不引入 MoE 或双策略切换 |
+| GRU layers | 1 | 降低部署和 sim2sim hidden state 维护成本 |
+| MLP head | 512, 256, 128 | 统一 locomotion/self-righting policy head |
+| `num_steps_per_env` | 64 | 给 BPTT 足够长的恢复窗口 |
+| `learning_rate` | `SE3_RECOVERY_LEARNING_RATE` | 从零训练超参 |
+| `desired_kl` | 0.008 | 控制 PPO 更新幅度，避免统一任务早期策略剧烈摆动 |
+| `max_iterations` | 3000+ | 从零训练默认长度应按收敛情况延长 |
+| init | random | policy、value、normalizer、GRU 参数全部随机初始化 |
 
-- `base_height`：建议给 actor。起身恢复强依赖高度，不能只靠腿部关节角隐式推断。
-- `contact`：至少包含轮子接触、腿部接触 bool 或归一化接触力。
-- `mode`：`0=locomotion`，`1=recovery`。
-- `base_lin_vel`：优先只给 critic；如果恢复能力不足，再考虑给 actor。
+正式实验必须从 iteration 0 开始。训练中断后的继续跑只允许作为同一 run 的故障恢复，不作为默认训练流程。
 
-预训练阶段 `mode` 恒为 0，recovery reset 不启用。这样 checkpoint 可以直接 resume 到后训练。
+## 观测 Contract
 
-## 阶段一：正常运动预训练
+当前实现不改变机器人动作语义：动作仍为 6 维 `[lf0, lf1, rf0, rf1, l_wheel, r_wheel]`，腿部是位置目标，轮子是速度目标。
 
-目标：训出正常站立和行走都稳定的 GRU checkpoint。
+actor 观测沿用平地/跳跃共享形状：
 
-配置：
+```text
+base_ang_vel        3
+projected_gravity   3
+commands            5   [vx, yaw_rate, pitch, roll, base_height]
+leg_joint_pos       4
+leg_joint_vel       4
+wheel_pos           2
+wheel_vel           2
+last_actions        6
+jump_commands       3   当前任务中通常为 0
+```
 
-- reset 分布保持正常站立。
-- 终止条件保持当前偏严格逻辑，继续强化“不摔”。
-- action delay、域随机化、push curriculum 照常启用。
-- reward 沿用正常 tracking reward。
-- `mode=0`。
+critic 额外有 `base_lin_vel`、轮子接触力和 `base_height` 特权观测。
 
-验收：
+约束：
 
-- 训练 play 模式稳定站走。
-- sim2sim 默认无 GUI 跑 500-1000 步不倒。
-- `leg_contact=0`，`bad_orientation=0`。
-- `tracking_height`、`tracking_orientation`、`upward` 达到当前 MLP baseline 相近水平。
+- 不允许在没有重新制定从零训练方案时修改 actor 输入维度。
+- command sampler 不因初始姿态特判置零。速度、yaw 和高度命令使用同一套采样规则。
+- 如果要降低命令难度，只能使用全局 command curriculum 缩小所有样本的命令范围，不能按初始姿态切换命令。
 
-## 阶段二：反倒起身后训练
+## Reset 逻辑
 
-从阶段一 GRU checkpoint resume。
+训练端使用一套统一 reset sampler。每个 env 每次 reset 都从同一个分布采样，不记录 normal/fall/recovery source。
 
-reset 混合比例：
+参考 RobotLab Go2W，第一版直接全角度随机：
 
-| 阶段 | 正常 reset | recovery reset | 说明 |
-|---|---:|---:|---|
-| 初期 | 80% | 20% | 轻微半倒、半蹲、跪地 |
-| 中期 | 70% | 30% | 加入侧倒、前趴、后仰 |
-| 收尾 | 85-90% | 10-15% | 巩固正常 locomotion，减少遗忘 |
+```text
+root pose:
+  x, y: 小范围随机
+  z: 低高度到站立高度附近随机
+  roll:  [-pi, pi]
+  pitch: [-pi, pi]
+  yaw:   [-pi, pi]
 
-recovery episode 行为：
+root velocity:
+  lin_vel xyz: 小范围随机
+  ang_vel xyz: 小范围随机
+```
 
-- `mode=1`。
-- 速度命令置 0。
-- 目标先是站起并稳定。
-- 起身成功并稳定 `0.5-1.0s` 后，切回 `mode=0`，恢复正常速度/高度/姿态追踪。
+如果实现上不用 Euler 直接采样，也可以用“倾角 + 水平倒向 + yaw”的等价方式生成姿态，但分布必须覆盖 0-180 deg 倾角，且不能把 roll 和 pitch 当成两类任务。
 
-## Recovery Reward
+关节 reset：
 
-正常 mode 沿用当前 reward。
+- 默认回到 `default_joint_pos`，轮子位置归零。
+- 腿部关节加小范围随机偏移。
+- 腿部关节速度加小范围随机扰动。
+- 第一版不使用离线状态缓存。
 
-recovery mode 单独增加恢复奖励，并且这些恢复奖励不要乘 `upright_gate`：
+### 无 Reset 课程
 
-- `upright_recovery`：鼓励 `projected_gravity_z` 回到直立。
-- `height_recovery`：鼓励 base height 接近目标高度。
-- `delta_upright`：奖励直立程度变好。
-- `delta_height`：奖励高度变高。
-- `low_ang_vel`：奖励角速度下降。
-- `leg_clearance`：惩罚膝盖/腿部持续接触地面。
-- `recovered_bonus`：直立、高度、低角速度同时满足并保持一段时间后给成功奖励。
+第一版不做 reset curriculum：
 
-核心原则：倒地时也必须有正向梯度。不能让 `upright_gate` 把所有追踪和恢复信号清零。
+- 不设 `fallen_prob`。
+- 不设 `recovery_stages`。
+- 不按 iter 扩大角度。
+- 不按成功率触发切换。
+- 不按姿态类型自动回退。
 
-## 终止条件
+所有倾角从第 0 iter 开始进入训练。`init_tilt_bin` 只允许作为日志和验收分桶，不允许进入 reward、command、termination 或 curriculum。
 
-拆成两层：
+推荐诊断分桶：
 
-- `recoverable_fall`：倾斜、低高度、半倒、跪地等可恢复状态，不终止。
-- `hard_failure`：NaN、严重穿模、翻滚不可恢复、长时间无恢复、极低高度持续太久，才终止。
+| 分桶 | 倾角 | 用途 |
+|---|---:|---|
+| `upright_noise` | 0-30 deg | 正常扰动、防摔和轻微扶正 |
+| `near_fall` | 30-75 deg | 倾倒边缘，训练主动回正 |
+| `hard_tilt` | 75-130 deg | 任意倒向等价处理，训练真正自起 |
+| `inverted` | 130-180 deg | 接近倒置和全姿态鲁棒性 |
 
-建议后训练时保留最长恢复时间限制，例如 recovery mode 连续 `3-5s` 没有明显变好就终止，避免 PPO 学会长期躺平刷低惩罚。
+轴对称约束：
 
-## sim2sim 要求
+- 不允许按 roll 轴和 pitch 轴分别设计 reward、metric、课程阈值或验收标准。
+- 不允许出现 `hard_roll_*`、`hard_pitch_*`、`roll_success`、`pitch_success` 这类轴向专属指标。
+- roll/pitch/yaw 只能作为姿态生成和失败复现的坐标表达；训练判断必须汇总到 `init_tilt_bin`。
 
-上 GRU 前，sim2sim 必须支持 recurrent checkpoint：
+## 奖励规范
 
-- 识别 `rnn.rnn.weight_ih_l0` 等 GRU 权重。
-- 构建 `EmpiricalNormalizer + GRU + MLP` 推理链。
-- `PolicyRuntime.reset()` 清空 hidden state。
-- robot reset 时同步 reset policy hidden state。
-- telemetry 记录 `policy_type=gru`、`rnn_hidden_dim`、`rnn_num_layers`。
+奖励设计参考 RobotLab Go2W：同一张 locomotion reward 表覆盖站立、行走和倒地自起；初始姿态、倾角桶、内部计时变量不能进入 reward 公式。
 
-验证场景：
+RobotLab 对照关系：
 
-- 正常站立/行走。
-- 半蹲/跪地恢复。
-- 左右侧倒恢复。
-- 前趴/后仰恢复。
-- 起身成功后切回正常行走。
+- Go2W rough 配置把 reset 姿态扩到全 roll/pitch/yaw，并关闭 `illegal_contact` 终止。
+- Go2W 使用 `upward` 作为全姿态直立项，权重为正。
+- 速度追踪、高度、姿态稳定、接触、默认姿态等项在 reward 函数内部乘 `upright_gate`，倒地时自然降权，站起后自然恢复。
+- `is_terminated.weight = 0`，不靠终止惩罚塑造起身动作。
 
-## 风险与备选
+RobotLab 模式的核心是两个连续状态量：
 
-- **遗忘正常 gait**：后训练恢复比例过高或学习率过大。用混合 reset、低学习率、收尾阶段正常 reset 占比提高来控制。
-- **恢复奖励被钻空子**：只奖励高度可能学会弹跳或支撑在错误姿态。需要同时约束直立、低角速度和腿部接触。
-- **GRU hidden state 部署错误**：sim2sim 和部署端必须正确 reset hidden state，否则同一个 checkpoint 表现会漂。
-- **单模型容量不足**：先加宽 GRU hidden 或 MLP head。确认单模型不够后，再考虑 MoE 或 locomotion/recovery 双 expert。
+```text
+upright_gate = clamp(-projected_gravity_z, 0, 0.7) / 0.7
+upward_score = square(1 - projected_gravity_z)
+```
 
-## 推荐执行顺序
+本仓库的 `projected_gravity_z` 约定为 -1 完全直立，+1 完全倒置。`upward_score` 是全姿态生效的直立项；`upright_gate` 只让速度追踪、高度、接触和默认姿态等“已经接近站稳才有意义”的项平滑恢复，不能作为起身主梯度。
 
-1. 给训练端加 GRU runner 配置，但先不改环境语义。
-2. 给 sim2sim 补 GRU checkpoint 推理。
-3. 训练 GRU 正常运动 baseline，并做 sim2sim 验证。
-4. 固定最终观测维度，加入 `mode/base_height/contact`。
-5. 从 GRU baseline resume，开启 recovery reset 和 recovery reward。
-6. 按比例 curriculum 后训练，定期拉 checkpoint 做四类 sim2sim 恢复验证。
+统一 reward 表：
+
+| 类别 | 参考 RobotLab 项 | 本任务约束 |
+|---|---|---|
+| 全局直立项 | `upward` | 全状态生效，不乘 `upright_gate`，不按初始姿态或倾角桶加权 |
+| 速度追踪 | `track_lin_vel_xy_exp`、`track_ang_vel_z_exp` | 乘 `upright_gate`；command 不因初始姿态置零，策略通过先站稳再跟踪速度来拿完整奖励 |
+| 高度和姿态稳定 | `base_height_l2`、`lin_vel_z_l2`、`ang_vel_xy_l2`、`flat_orientation_l2` | 乘 `upright_gate` 或等价连续 gate；倒地时不应压制起身探索 |
+| 接触和支撑 | `undesired_contacts`、`contact_forces` | 不作为倒地硬失败；惩罚应随 `upright_gate` 恢复，避免倒地初期强压接触 |
+| 关节和动作正则 | `joint_torques_l2`、`joint_acc_l2`、`joint_power`、`action_rate_l2` | 全状态弱约束或连续 gate，权重不能大到压住起身动作 |
+| 默认姿态/静止约束 | `stand_still`、`joint_pos_penalty` | 乘 `upright_gate`；倒地时不能把关节压回默认站姿 |
+| 终止惩罚 | `is_terminated` | 权重为 0 或接近 0，不能靠终止惩罚教起身 |
+
+成功条件只用于统计和验收，不是额外 reward：
+
+```text
+tilt < 15 deg
+abs(base_height - target_height) < 0.05 m
+norm(base_ang_vel) < 1.5 rad/s
+wheel_contact_force > 1.0 N
+```
+
+### 禁止的奖励改法
+
+- 不要只加高度奖励。单纯高度会鼓励弹跳、架腿或错误姿态支撑。
+- 不要区分恢复阶段奖励和正常运动奖励；所有项都属于同一套 locomotion objective。
+- 不要让 `upward` 依赖 `upright_gate`。倒地时 gate 接近 0，会断掉最需要的起身主梯度。
+- 不要按初始姿态、倾角桶或内部 mask 修改 reward 权重。
+- 不要把 leg contact 在倒地时设为强终止或强惩罚。自起必然会经历身体/腿部接触。
+- 不要用 alive reward 或 success bonus 证明恢复成功。
+- 不要区分 pitch 轴和 roll 轴添加奖励、权重、成功率或 curriculum gate。
+
+## 终止规范
+
+第一版终止逻辑也参考 RobotLab 的简化策略：不要用 bad orientation 或非法接触把倒地样本提前杀掉。
+
+允许终止：
+
+- `time_out`：常规 episode 超时。
+- `out_of_bounds`：位置越界或明显离开训练区域。
+- `invalid_state`：NaN、Inf、严重穿模等物理状态异常。
+
+禁用或置零：
+
+- `bad_orientation`：不能作为终止条件。
+- `leg_contact` / `illegal_contact`：不能作为倒地时的终止条件。
+- stagnation 类终止：第一版不启用，避免再次引入恢复窗口。
+- `is_terminated` reward：权重为 0 或接近 0。
+
+## 监控指标
+
+每次恢复训练启动后，前 5 iter 必须确认：
+
+1. reward 表里统一 locomotion 项权重存在且数值正确。
+2. `Reset/init_tilt_bin_*_ratio` 覆盖所有倾角桶。
+3. `Reset/mean_init_tilt_deg` 和 `Reset/max_init_tilt_deg` 符合全角度随机预期。
+4. 没有新增 NaN、环境崩溃或异常终止暴涨。
+
+训练中优先看这些 wandb 指标：
+
+| 指标 | 期望方向 | 含义 |
+|---|---|---|
+| `Reset/init_tilt_bin_*_ratio` | 覆盖全桶 | reset 分布是否真正全角度随机 |
+| `Locomotion/upward` | 上升 | RobotLab 风格全姿态直立项是否提供主梯度 |
+| `Locomotion/upright_gate` | 上升 | 常规 tracking/height/contact 项是否逐步恢复生效 |
+| `SelfRight/success_rate_by_tilt_bin/*` | 上升 | 各倾角桶是否真正学会 |
+| `SelfRight/time_to_success_p90_by_tilt_bin/*` | 下降 | 当前难度下是否足够快地恢复 |
+| `SelfRight/post_success_survival_rate` | 上升 | 起身后是否能继续稳定存在 |
+| `SelfRight/height_cond_rate` | 上升 | 高度是否进入成功窗口 |
+| `SelfRight/stable_cond_rate` | 上升 | 起身后是否能停住角速度 |
+| `SelfRight/wheel_contact_cond_rate` | 上升 | 是否由轮子重新支撑 |
+| `Termination/invalid_state` | 不上升 | 是否出现仿真异常 |
+| `Termination/time_out` | 正常 | episode 是否主要自然结束 |
+
+判断优先级：
+
+1. 先看 reset 分布是否真的全角度。
+2. 再看 `upward` 是否给倒地姿态提供梯度。
+3. 再看成功条件中哪一个卡住。
+4. 最后才调 reward 权重。
+
+## 验收指标
+
+### Smoke 验收
+
+修改 reset、reward 或 termination 后，必须先跑：
+
+```bash
+just smoke-recovery
+```
+
+本地 CPU smoke 使用 8 个 env；1 个 env 对 GRU/PPO batch 过窄，可能出现 loss 统计 NaN，不能作为有效训练信号。
+
+通过标准：
+
+- 5 iter 正常完成。
+- 无导入错误、shape 错误、NaN 崩溃。
+- reward 表包含统一 locomotion 项。
+- `Reset/init_tilt_bin_*_ratio` 至少出现多个倾角桶。
+
+### 训练早期验收
+
+前 200 iter：
+
+- 全角度 reset 分布正确。
+- `Locomotion/upward` 应有非零值并能随姿态改善上升。
+- `Locomotion/upright_gate` 早期可以低，但不应长期完全为 0。
+- `Termination/invalid_state` 不应异常暴涨。
+
+### 中期验收
+
+1200-2200 iter：
+
+- `SelfRight/success_rate_by_tilt_bin/*` 整体上升。
+- `SelfRight/time_to_success_p90_by_tilt_bin/*` 整体下降。
+- `SelfRight/wheel_contact_cond_rate` 与成功率差距缩小，说明不是“看似直立但没有轮子支撑”。
+- 高倾角桶不能只靠低难度桶拉高总成功率。
+
+### 最终验收
+
+最终 checkpoint 必须同时满足训练端和 sim2sim：
+
+| 场景 | 通过标准 |
+|---|---|
+| 0-30 deg | 3 s 内恢复，恢复后稳定 1 s |
+| 30-75 deg | 至少 20 次，整体成功率 >= 80% |
+| 75-130 deg | 至少 20 次，倾倒方位均匀覆盖，整体成功率 >= 70% |
+| 130-180 deg | 至少 10 次，整体成功率 >= 50%，失败样本要保存 Rerun |
+| 起身后 locomotion | 恢复后给 `vx=0.2-0.4 m/s` 指令不立即再摔 |
+| 正常站走 | 接近直立初始化下 1000 control steps 稳定，低速命令不立即摔倒 |
+
+sim2sim 建议命令：
+
+```bash
+uv run se3-sim2sim --checkpoint <ckpt> --viewer none --max-steps 1000 --print-every 100
+uv run se3-sim2sim --checkpoint <ckpt> --viewer rerun --max-steps 1000 --initial-roll-deg 90 --initial-base-height 0.16
+uv run se3-sim2sim --checkpoint <ckpt> --viewer rerun --max-steps 1000 --initial-roll-deg -90 --initial-base-height 0.16
+uv run se3-sim2sim --checkpoint <ckpt> --viewer rerun --max-steps 1000 --initial-pitch-deg 90 --initial-base-height 0.16
+uv run se3-sim2sim --checkpoint <ckpt> --viewer rerun --max-steps 1000 --initial-pitch-deg -90 --initial-base-height 0.16
+```
+
+注意：sim2sim 参数里的 roll/pitch/yaw 只是复现具体初始姿态的坐标表达；通过率统计仍只能按 `init_tilt_bin` 汇总，不能拆成 pitch 轴和 roll 轴指标。
+
+## 调参流程
+
+遇到自起失败，按下面顺序排查：
+
+1. **reset 没全开**：`Reset/init_tilt_bin_*_ratio` 是否覆盖 0-180 deg。
+2. **梯度断链**：`Locomotion/upward`、`upright_gain`、`height_gain` 是否长期为 0。
+3. **成功条件卡住**：比较 `SelfRight/height_cond_rate`、`SelfRight/stable_cond_rate`、`SelfRight/wheel_contact_cond_rate`。
+4. **终止误杀**：`bad_orientation`、`leg_contact`、`illegal_contact` 是否仍在终止 episode。
+5. **正常能力不足**：接近直立初始化下正常站立 sim2sim 是否满足验收标准。
+
+常见症状与首选动作：
+
+| 症状 | 首选排查 | 首选改法 |
+|---|---|---|
+| 起不来但一直有动作 | success 四条件 | 找卡住条件，不先加大所有 reward |
+| 高倾角桶完全没进展 | `SelfRight/success_rate_by_tilt_bin/inverted` | 检查 `upward` 是否在高倾角仍有梯度 |
+| 看似站起但又倒 | `SelfRight/stable_cond_rate`、角速度 | 加强低角速度/完成保持，不加高度奖励 |
+| 站起但轮子没接地 | `SelfRight/wheel_contact_cond_rate` | 检查 wheel contact gate 和接触传感器 |
+| 正常站走能力不足 | command tracking、sim2sim | 检查 `upright_gate` 是否恢复 tracking，不按 reset 类型改 reward |
+
+## 修改守则
+
+- 改 reward 前先写下假设、预测指标和反证指标。
+- 一次只改一个主因：reset 分布、奖励权重、成功条件或终止逻辑不要混在一次提交里。
+- 修改后必须跑 `just smoke-recovery`。
+- 正式训练前 5 iter 必须确认新权重出现在 reward 表。
+- 如果前 200 iter 指标方向反了，停止训练，不要让错误配置跑完整 3000 iter。
+
+## 文件索引
+
+| 模块 | 文件 |
+|---|---|
+| 任务注册 | `src/se3_train/__init__.py` |
+| 自起环境配置 | `src/se3_train/env_cfg.py` |
+| GRU PPO 配置 | `src/se3_train/rl_cfg.py` |
+| 统一 reset sampler | `src/se3_train/mdp/events.py` |
+| 统一 rewards | `src/se3_train/mdp/rewards.py` |
+| 自起 terminations | `src/se3_train/mdp/terminations.py` |
+| GRU sim2sim runtime | `src/se3_sim2sim/policy.py` |
+| sim2sim 初始姿态 CLI | `src/se3_sim2sim/cli.py` |
+| 常用命令 | `justfile` |

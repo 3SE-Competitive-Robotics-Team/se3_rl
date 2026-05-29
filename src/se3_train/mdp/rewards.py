@@ -212,6 +212,28 @@ def _recovery_penalty_gate(
     return torch.where(in_recovery_grace, torch.zeros_like(upright), upright)
 
 
+def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """全局向上奖励，不区分 roll/pitch 轴向来源。"""
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    reward = torch.square(1.0 - pg_z)
+
+    if hasattr(env, "extras"):
+        tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+        upright_15 = tilt < torch.deg2rad(torch.tensor(15.0, device=env.device))
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Locomotion/upward": reward.mean().item(),
+                "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
+                "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
+                "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
+            }
+        )
+
+    return reward
+
+
 def tracking_lin_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -278,15 +300,19 @@ def tracking_height(
     sigma: float,
     height_sensor_name: str,
     ignore_recovery: bool = False,
+    use_upright_gate: bool = False,
 ) -> torch.Tensor:
-    """高度跟踪奖励,不门控（始终提供恢复梯度）。"""
+    """高度跟踪奖励，可按配置乘 upright_gate。"""
     cmd = env.command_manager.get_command(command_name)
 
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = sensor.data.heights[:, 0]
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
     target_height = cmd[:, 4]
     error = torch.square(height - target_height)
     reward = torch.exp(-error / sigma)
+    if use_upright_gate:
+        robot = env.scene["robot"]
+        reward = reward * _upright_factor(robot.data.projected_gravity_b[:, 2])
     if ignore_recovery:
         reward = reward * (~_recovery_reset_mask(env)).float()
     return reward

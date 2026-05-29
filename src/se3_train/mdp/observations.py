@@ -122,7 +122,7 @@ def base_height_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
     from mjlab.sensor import TerrainHeightSensor
 
     sensor: TerrainHeightSensor = env.scene[sensor_name]
-    return sensor.data.heights
+    return torch.nan_to_num(sensor.data.heights, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def jump_commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
