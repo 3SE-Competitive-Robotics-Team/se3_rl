@@ -559,12 +559,42 @@ def recovery_upright(
                     "Recovery/init_tilt_deg": _masked_mean(torch.rad2deg(init_tilt), episode),
                     "Recovery/hard_roll_ratio": hard_roll.float().mean().item(),
                     "Recovery/hard_roll_success_rate": _masked_mean(success.float(), hard_roll),
+                    "Recovery/hard_roll_upright_cond_rate": _masked_mean(
+                        upright_ok.float(), hard_roll
+                    ),
+                    "Recovery/hard_roll_height_cond_rate": _masked_mean(
+                        height_ok.float(), hard_roll
+                    ),
+                    "Recovery/hard_roll_stable_cond_rate": _masked_mean(
+                        stable_ok.float(), hard_roll
+                    ),
+                    "Recovery/hard_roll_wheel_contact_cond_rate": _masked_mean(
+                        wheel_contact.float(), hard_roll
+                    ),
+                    "Recovery/hard_roll_success_without_contact_rate": _masked_mean(
+                        upright_height_stable.float(), hard_roll
+                    ),
                     "Recovery/hard_roll_episode_ratio": hard_roll_episode.float().mean().item(),
                     "Recovery/hard_roll_ever_completed_rate": _masked_mean(
                         ever_completed.float(), hard_roll_episode
                     ),
                     "Recovery/hard_pitch_ratio": hard_pitch.float().mean().item(),
                     "Recovery/hard_pitch_success_rate": _masked_mean(success.float(), hard_pitch),
+                    "Recovery/hard_pitch_upright_cond_rate": _masked_mean(
+                        upright_ok.float(), hard_pitch
+                    ),
+                    "Recovery/hard_pitch_height_cond_rate": _masked_mean(
+                        height_ok.float(), hard_pitch
+                    ),
+                    "Recovery/hard_pitch_stable_cond_rate": _masked_mean(
+                        stable_ok.float(), hard_pitch
+                    ),
+                    "Recovery/hard_pitch_wheel_contact_cond_rate": _masked_mean(
+                        wheel_contact.float(), hard_pitch
+                    ),
+                    "Recovery/hard_pitch_success_without_contact_rate": _masked_mean(
+                        upright_height_stable.float(), hard_pitch
+                    ),
                     "Recovery/hard_pitch_episode_ratio": hard_pitch_episode.float().mean().item(),
                     "Recovery/hard_pitch_ever_completed_rate": _masked_mean(
                         ever_completed.float(), hard_pitch_episode
@@ -693,6 +723,8 @@ def recovery_height(
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
     if hasattr(env, "extras"):
+        hard_roll = _recovery_hard_roll_mask(env)
+        hard_pitch = _recovery_hard_pitch_mask(env)
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/base_height_error_m": torch.abs(height - target_height)[active]
@@ -703,6 +735,8 @@ def recovery_height(
                 "Recovery/height_gate": near_upright_gate[active].mean().item()
                 if active.any()
                 else 0.0,
+                "Recovery/hard_roll_height_gate": _masked_mean(near_upright_gate, hard_roll),
+                "Recovery/hard_pitch_height_gate": _masked_mean(near_upright_gate, hard_pitch),
             }
         )
 
@@ -732,16 +766,24 @@ def recovery_wheel_contact(
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
     if hasattr(env, "extras"):
+        hard_roll = _recovery_hard_roll_mask(env)
+        hard_pitch = _recovery_hard_pitch_mask(env)
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/wheel_contact_cond_rate": _masked_mean(wheel_contact.float(), active),
                 "Recovery/wheel_contact_gate": near_upright_gate[active].mean().item()
                 if active.any()
                 else 0.0,
+                "Recovery/hard_roll_wheel_contact_gate": _masked_mean(
+                    near_upright_gate, hard_roll
+                ),
+                "Recovery/hard_pitch_wheel_contact_gate": _masked_mean(
+                    near_upright_gate, hard_pitch
+                ),
             }
         )
 
-    return wheel_contact.float() * near_upright_gate * active.float()
+    return wheel_contact.float() * active.float()
 
 
 def joint_mirror(
