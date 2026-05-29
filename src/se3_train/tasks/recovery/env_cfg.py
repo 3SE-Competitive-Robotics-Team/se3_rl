@@ -286,6 +286,20 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=3.0,
         params={"power": 1.0},
     )
+    cfg.rewards["recovery_hard_roll_supported_upright"] = RewardTermCfg(
+        func=rewards.recovery_hard_roll_supported_upright,
+        weight=4.0,
+        params={
+            "sensor_name": "wheel_sensor",
+            "height_sensor_name": "base_height_sensor",
+            "command_name": "velocity_height",
+            "near_upright_angle_deg": 30.0,
+            "height_tolerance": 0.05,
+            "ang_vel_threshold": 1.5,
+            "force_threshold": 1.0,
+            "near_upright_bonus": 0.5,
+        },
+    )
     cfg.rewards["recovery_stable_bonus"] = RewardTermCfg(
         func=rewards.recovery_stable_bonus,
         weight=6.0,

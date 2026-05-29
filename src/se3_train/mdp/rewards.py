@@ -673,6 +673,49 @@ def recovery_hard_roll_upright(
     return reward
 
 
+def recovery_hard_roll_supported_upright(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    near_upright_angle_deg: float = 30.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 1.5,
+    force_threshold: float = 1.0,
+    near_upright_bonus: float = 0.5,
+) -> torch.Tensor:
+    """奖励大 roll 样本在已有支撑条件下继续回正。"""
+    _, wheel_contact, _, near_upright, height_ok, stable_ok = _recovery_success_components(
+        env,
+        sensor_name=sensor_name,
+        height_sensor_name=height_sensor_name,
+        command_name=command_name,
+        upright_angle_deg=near_upright_angle_deg,
+        height_tolerance=height_tolerance,
+        ang_vel_threshold=ang_vel_threshold,
+        force_threshold=force_threshold,
+    )
+    hard_roll = _recovery_hard_roll_mask(env)
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    upright_half = torch.clamp(-pg_z, 0.0, 1.0)
+    supported = wheel_contact & height_ok & stable_ok
+    milestone = supported & near_upright
+    reward = upright_half * supported.float() + milestone.float() * float(near_upright_bonus)
+    reward = reward * hard_roll.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/hard_roll_supported_upright_reward": _masked_mean(reward, hard_roll),
+                "Recovery/hard_roll_support_cond_rate": _masked_mean(supported.float(), hard_roll),
+                "Recovery/hard_roll_near_upright_milestone_rate": _masked_mean(
+                    milestone.float(), hard_roll
+                ),
+            }
+        )
+    return reward
+
+
 def recovery_stable_bonus(
     env: ManagerBasedRlEnv,
     sensor_name: str,
