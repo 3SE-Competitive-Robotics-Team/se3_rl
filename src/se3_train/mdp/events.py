@@ -163,6 +163,9 @@ def reset_root_state_full(
     recovery_fallen_height_range = _stage_value(
         stage, "fallen_height_range", recovery_fallen_height_range
     )
+    env._recovery_stage_step = int(stage.get("step", 0))
+    env._recovery_stage_prob = float(recovery_prob)
+    env._recovery_stage_fallen_pose_prob = float(recovery_fallen_pose_prob)
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
     full_recovery_mask = _ensure_recovery_mask(env)

@@ -20,54 +20,60 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg = flat_env_cfg(play=play)
     recovery_grace_steps = 600
+    steps_per_policy_iter = 64
+
+    def recovery_iter(iteration: int) -> int:
+        """把 PPO iter 转成 env.common_step_counter 使用的 policy step。"""
+        return int(iteration) * steps_per_policy_iter
+
     recovery_stages = (
         (
             {
                 "step": 0,
-                "prob": 0.50,
-                "roll_range": (-0.45, 0.45),
-                "pitch_range": (-0.45, 0.45),
+                "prob": 0.20,
+                "roll_range": (-0.35, 0.35),
+                "pitch_range": (-0.35, 0.35),
                 "height_range": (0.22, 0.32),
-                "fallen_pose_prob": 0.80,
+                "fallen_pose_prob": 0.35,
                 "fallen_roll_pose_prob": 0.50,
-                "fallen_roll_abs_range": (1.35, 1.60),
-                "fallen_pitch_abs_range": (1.35, 1.60),
+                "fallen_roll_abs_range": (1.05, 1.45),
+                "fallen_pitch_abs_range": (1.05, 1.45),
+                "fallen_coupled_range": (-0.20, 0.20),
+                "fallen_height_range": (0.16, 0.25),
+            },
+            {
+                "step": recovery_iter(500),
+                "prob": 0.35,
+                "roll_range": (-0.50, 0.50),
+                "pitch_range": (-0.50, 0.50),
+                "height_range": (0.20, 0.32),
+                "fallen_pose_prob": 0.55,
+                "fallen_roll_pose_prob": 0.50,
+                "fallen_roll_abs_range": (1.20, 1.65),
+                "fallen_pitch_abs_range": (1.20, 1.65),
                 "fallen_coupled_range": (-0.25, 0.25),
                 "fallen_height_range": (0.14, 0.24),
             },
             {
-                "step": 2000,
+                "step": recovery_iter(1200),
                 "prob": 0.55,
-                "roll_range": (-0.65, 0.65),
-                "pitch_range": (-0.65, 0.65),
-                "height_range": (0.20, 0.32),
-                "fallen_pose_prob": 0.65,
+                "roll_range": (-0.70, 0.70),
+                "pitch_range": (-0.70, 0.70),
+                "height_range": (0.18, 0.30),
+                "fallen_pose_prob": 0.75,
                 "fallen_roll_pose_prob": 0.50,
-                "fallen_roll_abs_range": (1.45, 1.80),
-                "fallen_pitch_abs_range": (1.45, 1.80),
+                "fallen_roll_abs_range": (1.35, 2.00),
+                "fallen_pitch_abs_range": (1.35, 2.00),
                 "fallen_coupled_range": (-0.30, 0.30),
                 "fallen_height_range": (0.12, 0.23),
             },
             {
-                "step": 5000,
+                "step": recovery_iter(2200),
                 "prob": 0.75,
-                "roll_range": (-0.80, 0.80),
-                "pitch_range": (-0.80, 0.80),
-                "height_range": (0.18, 0.30),
-                "fallen_pose_prob": 0.85,
-                "fallen_roll_pose_prob": 0.50,
-                "fallen_roll_abs_range": (1.50, 2.10),
-                "fallen_pitch_abs_range": (1.50, 2.10),
-                "fallen_coupled_range": (-0.35, 0.35),
-                "fallen_height_range": (0.10, 0.22),
-            },
-            {
-                "step": 9000,
-                "prob": 0.85,
                 "roll_range": (-1.00, 1.00),
                 "pitch_range": (-1.00, 1.00),
                 "height_range": (0.16, 0.30),
-                "fallen_pose_prob": 0.90,
+                "fallen_pose_prob": 0.85,
                 "fallen_roll_pose_prob": 0.50,
                 "fallen_roll_abs_range": (1.45, 2.35),
                 "fallen_pitch_abs_range": (1.45, 2.35),

@@ -398,6 +398,11 @@ def recovery_upright(
             "Recovery/reset_ratio": active.float().mean().item(),
             "Recovery/tilt_deg": tilt[active].mean().item() if active.any() else 0.0,
             "Recovery/upright_score": upright[active].mean().item() if active.any() else 0.0,
+            "Recovery/stage_step": float(getattr(env, "_recovery_stage_step", 0)),
+            "Recovery/stage_prob": float(getattr(env, "_recovery_stage_prob", 0.0)),
+            "Recovery/stage_fallen_pose_prob": float(
+                getattr(env, "_recovery_stage_fallen_pose_prob", 0.0)
+            ),
         }
         if sensor_name is not None and height_sensor_name is not None and command_name is not None:
             success, wheel_contact, _ = _recovery_success_mask(
