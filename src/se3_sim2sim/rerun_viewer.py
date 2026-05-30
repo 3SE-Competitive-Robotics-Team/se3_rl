@@ -105,6 +105,18 @@ class RerunViewer:
             "/metrics/wheel_clearance_right",
             rr.Scalars(scalars=float(telemetry.get("wheel_clearance_right", 0.0))),
         )
+        rr.log(
+            "/metrics/leg_clearance",
+            rr.Scalars(scalars=float(telemetry.get("leg_clearance", 0.0))),
+        )
+        rr.log(
+            "/metrics/wheel_contact",
+            rr.Scalars(scalars=float(telemetry.get("wheel_contact", 0.0))),
+        )
+        rr.log(
+            "/metrics/leg_contact",
+            rr.Scalars(scalars=float(telemetry.get("leg_contact", 0.0))),
+        )
         rr.log("/metrics/tilt_deg", rr.Scalars(scalars=float(telemetry["tilt_deg"])))
         rr.log("/metrics/reward", rr.Scalars(scalars=float(telemetry["reward"])))
         yaw_pid = telemetry.get("yaw_pid")
@@ -135,12 +147,27 @@ class RerunViewer:
             "/plots/height/right_wheel_clearance_m",
             telemetry.get("wheel_clearance_right", 0.0),
         )
+        self._log_scalar("/plots/height/leg_clearance_m", telemetry.get("leg_clearance", 0.0))
+        self._log_scalar("/plots/height/base_clearance_m", telemetry.get("base_clearance", 0.0))
 
         self._log_scalar("/plots/state/height_m", telemetry["height"])
         self._log_scalar("/plots/state/wheel_clearance_m", telemetry.get("wheel_clearance", 0.0))
         self._log_scalar("/plots/state/tilt_deg", telemetry["tilt_deg"])
         self._log_scalar("/plots/state/fail_tilt_deg", telemetry["fail_tilt_deg"])
         self._log_scalar("/plots/state/reward", telemetry["reward"])
+        self._log_scalar("/plots/command/lin_vel_x", telemetry.get("command_lin_vel_x", 0.0))
+        self._log_scalar("/plots/command/yaw_rate", telemetry.get("command_yaw_rate", 0.0))
+        self._log_scalar("/plots/velocity/base_lin_vel_x", telemetry.get("base_lin_vel_x", 0.0))
+        self._log_scalar("/plots/velocity/wheel_lin_vel", telemetry.get("wheel_lin_vel", 0.0))
+        self._log_scalar("/plots/contact/wheel_any", telemetry.get("wheel_contact", 0.0))
+        self._log_scalar("/plots/contact/wheel_full", telemetry.get("wheel_full_contact", 0.0))
+        self._log_scalar("/plots/contact/wheel_left", telemetry.get("wheel_contact_left", 0.0))
+        self._log_scalar("/plots/contact/wheel_right", telemetry.get("wheel_contact_right", 0.0))
+        self._log_scalar("/plots/contact/leg_any", telemetry.get("leg_contact", 0.0))
+        self._log_scalar("/plots/contact/leg_left", telemetry.get("leg_contact_left", 0.0))
+        self._log_scalar("/plots/contact/leg_right", telemetry.get("leg_contact_right", 0.0))
+        self._log_scalar("/plots/contact/base", telemetry.get("base_contact", 0.0))
+        self._log_scalar("/plots/contact/nonwheel", telemetry.get("nonwheel_contact", 0.0))
         yaw_pid = telemetry.get("yaw_pid")
         if isinstance(yaw_pid, dict):
             self._log_scalar("/plots/yaw_pid/current_yaw", yaw_pid["current_yaw"])
@@ -218,6 +245,11 @@ class RerunViewer:
 
         overview = rrb.Vertical(
             time_series_view(origin="/plots/state", contents="/plots/state/**", name="Rollout"),
+            time_series_view(origin="/plots/command", contents="/plots/command/**", name="Command"),
+            time_series_view(
+                origin="/plots/velocity", contents="/plots/velocity/**", name="Velocity"
+            ),
+            time_series_view(origin="/plots/contact", contents="/plots/contact/**", name="Contact"),
             time_series_view(origin="/plots/yaw_pid", contents="/plots/yaw_pid/**", name="Yaw PID"),
             time_series_view(origin="/plots/imu", contents="/plots/imu/**", name="IMU"),
             name="Overview",

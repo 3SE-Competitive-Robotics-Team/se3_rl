@@ -460,6 +460,147 @@ def stand_still(
     return result
 
 
+def upright_leg_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    min_upright_gate: float = 0.5,
+) -> torch.Tensor:
+    """接近直立后惩罚腿部触地，防止用小腿/连杆替代轮子支撑。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    robot = env.scene["robot"]
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    active = (~jump_flag) & (gate >= float(min_upright_gate))
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    has_contact = (force_mag > float(force_threshold)).any(dim=1)
+    penalty = has_contact.float() * gate
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Locomotion/upright_leg_contact_rate": _masked_mean(has_contact.float(), active),
+                "Locomotion/upright_leg_contact_gate": _masked_mean(gate, active),
+            }
+        )
+
+    return penalty * active.float()
+
+
+def upright_wheel_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    min_upright_gate: float = 0.5,
+) -> torch.Tensor:
+    """接近直立后惩罚轮子离地，要求平地支撑主要发生在两个轮子上。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    robot = env.scene["robot"]
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    active = (~jump_flag) & (gate >= float(min_upright_gate))
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(force_threshold)
+    contact_ratio = in_contact.float().mean(dim=1)
+    penalty = (1.0 - contact_ratio) * gate
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Locomotion/upright_wheel_contact_ratio": _masked_mean(contact_ratio, active),
+                "Locomotion/upright_wheel_full_contact_rate": _masked_mean(
+                    (contact_ratio >= 1.0).float(), active
+                ),
+            }
+        )
+
+    return penalty * active.float()
+
+
+def upright_wheel_slip_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    wheel_radius: float = 0.059,
+    idle_command_threshold: float = 0.08,
+    straight_yaw_threshold: float = 0.20,
+    min_upright_gate: float = 0.5,
+    idle_wheel_speed_scale: float = 0.35,
+    slip_speed_scale: float = 0.45,
+    base_speed_scale: float = 0.20,
+    max_penalty: float = 9.0,
+) -> torch.Tensor:
+    """接近直立后惩罚轮子空转和直行滑移，堵住轮子离地高速转的漏洞。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    vx_cmd = cmd[:, 0]
+    yaw_cmd = cmd[:, 1]
+
+    robot = env.scene["robot"]
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    active = (~jump_flag) & (gate >= float(min_upright_gate))
+
+    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    base_vel_b = robot.data.root_link_lin_vel_b
+    base_vx = base_vel_b[:, 0]
+    base_vxy_sq = base_vel_b[:, 0] ** 2 + base_vel_b[:, 1] ** 2
+
+    idle = (torch.abs(vx_cmd) < float(idle_command_threshold)) & (
+        torch.abs(yaw_cmd) < float(idle_command_threshold)
+    )
+    straight = (~idle) & (torch.abs(yaw_cmd) < float(straight_yaw_threshold))
+
+    wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
+    idle_penalty = wheel_speed_sq / (float(idle_wheel_speed_scale) ** 2) + base_vxy_sq / (
+        float(base_speed_scale) ** 2
+    )
+    straight_slip = torch.mean(
+        (wheel_forward_speed - base_vx.unsqueeze(1)) ** 2,
+        dim=1,
+    ) / (float(slip_speed_scale) ** 2)
+    penalty = torch.where(
+        idle,
+        idle_penalty,
+        torch.where(straight, straight_slip, torch.zeros_like(straight_slip)),
+    )
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Locomotion/upright_idle_wheel_speed": _masked_mean(
+                    torch.sqrt(wheel_speed_sq), active & idle
+                ),
+                "Locomotion/upright_wheel_slip_penalty": _masked_mean(penalty, active),
+                "Locomotion/upright_straight_slip_penalty": _masked_mean(
+                    straight_slip, active & straight
+                ),
+            }
+        )
+
+    return penalty * gate * active.float()
+
+
 def recovery_upright(
     env: ManagerBasedRlEnv,
     sensor_name: str | None = None,

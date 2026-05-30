@@ -69,6 +69,25 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
                 [s["wheel_clearance_left"] for s in samples], dtype=np.float64
             )
             result["wheel_clearance_abs_diff"] = _stats(np.abs(left_clearance - right_clearance))
+    for key in ("leg_clearance", "base_clearance"):
+        if key in samples[0]:
+            values = np.asarray([s[key] for s in samples], dtype=np.float64)
+            result[key] = _stats(values)
+    for key in (
+        "wheel_contact",
+        "wheel_full_contact",
+        "wheel_contact_left",
+        "wheel_contact_right",
+        "leg_contact",
+        "leg_contact_left",
+        "leg_contact_right",
+        "base_contact",
+        "nonwheel_contact",
+    ):
+        if key in samples[0]:
+            values = np.asarray([s[key] for s in samples], dtype=np.float64)
+            result[key] = _stats(values)
+            result[f"{key}_rate"] = float(np.mean(values > 0.5))
     for key in (
         "roll_deg",
         "pitch_deg",
@@ -77,6 +96,8 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "pitch_rate_rad_s",
         "yaw_rate_rad_s",
         "reset_floor_lift_m",
+        "command_lin_vel_x",
+        "command_yaw_rate",
         "action_delta_l2",
         "action_delta_max_abs",
         "action_delta_sq_sum",

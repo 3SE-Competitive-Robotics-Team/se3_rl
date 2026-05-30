@@ -60,6 +60,16 @@ class WheelLeggedRobot:
         self.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
         self.model.opt.iterations = 100
         self.data = mujoco.MjData(self.model)
+        (
+            self._ground_geom_ids,
+            self._base_geom_ids,
+            self._leg_geom_ids,
+            self._left_leg_geom_ids,
+            self._right_leg_geom_ids,
+            self._wheel_geom_ids,
+            self._left_wheel_geom_ids,
+            self._right_wheel_geom_ids,
+        ) = self._build_contact_geom_groups()
         self.rng = np.random.default_rng(int(cfg.seed))
         self.sim_dt = float(self.model.opt.timestep)
         self.decimation = int(cfg.control_decimation)
@@ -196,6 +206,9 @@ class WheelLeggedRobot:
         wheel_clearance_l = l_wheel_z - wheel_radius  # 左轮最低点离地高度
         wheel_clearance_r = r_wheel_z - wheel_radius  # 右轮最低点离地高度
         wheel_clearance = min(wheel_clearance_l, wheel_clearance_r)  # 取两轮最低
+        contact = self._ground_contact_state()
+        leg_clearance = self._min_collision_geom_z_for(self._leg_geom_ids)
+        base_clearance = self._min_collision_geom_z_for(self._base_geom_ids)
 
         telemetry = {
             "step": int(self.step_count),
@@ -205,6 +218,17 @@ class WheelLeggedRobot:
             "wheel_clearance": float(wheel_clearance),  # 轮子最低点离地高度
             "wheel_clearance_left": float(wheel_clearance_l),  # 左轮最低点离地高度
             "wheel_clearance_right": float(wheel_clearance_r),  # 右轮最低点离地高度
+            "leg_clearance": float(leg_clearance),  # 腿部碰撞几何最低点离地高度
+            "base_clearance": float(base_clearance),  # base 碰撞几何最低点离地高度
+            "wheel_contact": float(contact["wheel_contact"]),
+            "wheel_full_contact": float(contact["wheel_full_contact"]),
+            "wheel_contact_left": float(contact["wheel_contact_left"]),
+            "wheel_contact_right": float(contact["wheel_contact_right"]),
+            "leg_contact": float(contact["leg_contact"]),
+            "leg_contact_left": float(contact["leg_contact_left"]),
+            "leg_contact_right": float(contact["leg_contact_right"]),
+            "base_contact": float(contact["base_contact"]),
+            "nonwheel_contact": float(contact["nonwheel_contact"]),
             "tilt_deg": float(self.tilt_deg),
             "roll_rad": float(np.arctan2(-self.projected_gravity[1], -self.projected_gravity[2])),
             "pitch_rad": float(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2])),
@@ -217,6 +241,9 @@ class WheelLeggedRobot:
             ),
             "yaw_deg": float(np.degrees(self.base_yaw)),
             "reward": float(0.0 if reward is None else reward),
+            "command": self.command.copy().tolist(),
+            "command_lin_vel_x": float(self.command[0]),
+            "command_yaw_rate": float(self.command[1]),
             "base_lin_vel_x": float(self.base_lin_vel_body[0]),
             "wheel_lin_vel": wheel_lin_vel,
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),
@@ -257,15 +284,112 @@ class WheelLeggedRobot:
             mujoco.mj_forward(self.model, self.data)
 
     def _min_collision_geom_z(self) -> float:
+        return self._min_collision_geom_z_for(set(range(self.model.ngeom)))
+
+    def _min_collision_geom_z_for(self, geom_ids: set[int]) -> float:
+        """计算一组可碰撞几何体最低点离地高度。"""
         min_z = float("inf")
-        for geom_id in range(self.model.ngeom):
+        for geom_id in geom_ids:
             if (
-                self.model.geom_type[geom_id] == mujoco.mjtGeom.mjGEOM_PLANE
+                self.model.geom_type[geom_id]
+                in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_HFIELD)
                 or self.model.geom_contype[geom_id] == 0
             ):
                 continue
             min_z = min(min_z, self._geom_min_z(geom_id))
-        return min_z
+        return 0.0 if min_z == float("inf") else float(min_z)
+
+    def _build_contact_geom_groups(
+        self,
+    ) -> tuple[set[int], set[int], set[int], set[int], set[int], set[int], set[int], set[int]]:
+        """按 body/geom 名称缓存接地诊断需要的碰撞几何体分组。"""
+        ground: set[int] = set()
+        base: set[int] = set()
+        legs: set[int] = set()
+        left_legs: set[int] = set()
+        right_legs: set[int] = set()
+        wheels: set[int] = set()
+        left_wheels: set[int] = set()
+        right_wheels: set[int] = set()
+
+        for geom_id in range(self.model.ngeom):
+            if (
+                int(self.model.geom_contype[geom_id]) == 0
+                and int(self.model.geom_conaffinity[geom_id]) == 0
+            ):
+                continue
+            body_id = int(self.model.geom_bodyid[geom_id])
+            body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id) or ""
+            geom_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            name = f"{body_name}/{geom_name}".lower()
+            geom_type = int(self.model.geom_type[geom_id])
+
+            if (
+                body_id == 0
+                or geom_type
+                in (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
+                or "terrain" in name
+                or "floor" in name
+                or "ground" in name
+            ):
+                ground.add(int(geom_id))
+            if "base_link" in name:
+                base.add(int(geom_id))
+            if "l_wheel" in name:
+                wheels.add(int(geom_id))
+                left_wheels.add(int(geom_id))
+                continue
+            if "r_wheel" in name:
+                wheels.add(int(geom_id))
+                right_wheels.add(int(geom_id))
+                continue
+            if "lf0" in name or "lf1" in name:
+                legs.add(int(geom_id))
+                left_legs.add(int(geom_id))
+            elif "rf0" in name or "rf1" in name:
+                legs.add(int(geom_id))
+                right_legs.add(int(geom_id))
+
+        return ground, base, legs, left_legs, right_legs, wheels, left_wheels, right_wheels
+
+    def _ground_contact_state(self) -> dict[str, bool]:
+        """返回轮子、腿和 base 是否正在与地面接触。"""
+        left_wheel = False
+        right_wheel = False
+        left_leg = False
+        right_leg = False
+        base = False
+
+        for contact_idx in range(int(self.data.ncon)):
+            contact = self.data.contact[contact_idx]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            if geom1 in self._ground_geom_ids:
+                other = geom2
+            elif geom2 in self._ground_geom_ids:
+                other = geom1
+            else:
+                continue
+
+            left_wheel = left_wheel or other in self._left_wheel_geom_ids
+            right_wheel = right_wheel or other in self._right_wheel_geom_ids
+            left_leg = left_leg or other in self._left_leg_geom_ids
+            right_leg = right_leg or other in self._right_leg_geom_ids
+            base = base or other in self._base_geom_ids
+
+        leg = left_leg or right_leg
+        wheel = left_wheel or right_wheel
+        return {
+            "wheel_contact": wheel,
+            "wheel_full_contact": left_wheel and right_wheel,
+            "wheel_contact_left": left_wheel,
+            "wheel_contact_right": right_wheel,
+            "leg_contact": leg,
+            "leg_contact_left": left_leg,
+            "leg_contact_right": right_leg,
+            "base_contact": base,
+            "nonwheel_contact": leg or base,
+        }
 
     def _geom_min_z(self, geom_id: int) -> float:
         geom_type = self.model.geom_type[geom_id]

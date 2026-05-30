@@ -89,5 +89,40 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "use_upright_gate": True,
         },
     )
+    cfg.rewards["upright_leg_contact"] = RewardTermCfg(
+        func=rewards.upright_leg_contact_penalty,
+        weight=-5.0,
+        params={
+            "command_name": "velocity_height",
+            "sensor_name": "leg_contact_sensor",
+            "force_threshold": 1.0,
+            "min_upright_gate": 0.5,
+        },
+    )
+    cfg.rewards["upright_wheel_contact"] = RewardTermCfg(
+        func=rewards.upright_wheel_contact_penalty,
+        weight=-3.0,
+        params={
+            "command_name": "velocity_height",
+            "sensor_name": "wheel_sensor",
+            "force_threshold": 1.0,
+            "min_upright_gate": 0.5,
+        },
+    )
+    cfg.rewards["upright_wheel_slip"] = RewardTermCfg(
+        func=rewards.upright_wheel_slip_penalty,
+        weight=-0.8,
+        params={
+            "command_name": "velocity_height",
+            "wheel_radius": 0.059,
+            "idle_command_threshold": 0.08,
+            "straight_yaw_threshold": 0.20,
+            "min_upright_gate": 0.5,
+            "idle_wheel_speed_scale": 0.35,
+            "slip_speed_scale": 0.45,
+            "base_speed_scale": 0.20,
+            "max_penalty": 9.0,
+        },
+    )
 
     return cfg

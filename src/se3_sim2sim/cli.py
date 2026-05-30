@@ -260,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="指令历程模式。"
         " walk-sweep: 前进速度扫描 0.1→0.6 m/s 每档 5 秒。"
         " jump-sweep: 跳跃高度扫描 0.1→0.6 m。"
+        " upright-velocity-sweep: 自起后 locomotion 验收速度扫描。"
         " none: 固定指令（默认）。",
     )
 

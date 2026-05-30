@@ -101,6 +101,15 @@ class Sim2SimWorkflow:
                 print(
                     f"[历程] jump-sweep: {heights_str}, 间隔 {self.cfg.course.jump_sweep_interval_s}s"
                 )
+            elif self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+                commands_str = ", ".join(
+                    f"vx={vx:+.1f},yaw={yaw:+.1f}"
+                    for vx, yaw in self.cfg.course.upright_velocity_sweep_commands
+                )
+                print(
+                    "[历程] upright-velocity-sweep: "
+                    f"{commands_str}, 每档 {self.cfg.course.upright_velocity_sweep_segment_duration_s}s"
+                )
 
         try:
             for step in step_iter:
@@ -167,6 +176,15 @@ class Sim2SimWorkflow:
                 if self.cfg.robot.yaw_pid.enabled:
                     self.robot.update_yaw_command()
                     obs = self.robot.observation()
+                if (
+                    self._course is not None
+                    and self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP
+                ):
+                    self._course.step()
+                    vx, yaw = self._course.current_command
+                    self.robot.command[0] = vx
+                    self.robot.command[1] = yaw
+                    obs = self.robot.observation()
                 action = self.policy.act(obs)
                 obs, reward, done, info = self.robot.step(action)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
@@ -189,6 +207,17 @@ class Sim2SimWorkflow:
                     "wheel_clearance": float(info.get("wheel_clearance", 0.0)),
                     "wheel_clearance_left": float(info.get("wheel_clearance_left", 0.0)),
                     "wheel_clearance_right": float(info.get("wheel_clearance_right", 0.0)),
+                    "leg_clearance": float(info.get("leg_clearance", 0.0)),
+                    "base_clearance": float(info.get("base_clearance", 0.0)),
+                    "wheel_contact": float(info.get("wheel_contact", 0.0)),
+                    "wheel_full_contact": float(info.get("wheel_full_contact", 0.0)),
+                    "wheel_contact_left": float(info.get("wheel_contact_left", 0.0)),
+                    "wheel_contact_right": float(info.get("wheel_contact_right", 0.0)),
+                    "leg_contact": float(info.get("leg_contact", 0.0)),
+                    "leg_contact_left": float(info.get("leg_contact_left", 0.0)),
+                    "leg_contact_right": float(info.get("leg_contact_right", 0.0)),
+                    "base_contact": float(info.get("base_contact", 0.0)),
+                    "nonwheel_contact": float(info.get("nonwheel_contact", 0.0)),
                     "tilt_deg": float(info["tilt_deg"]),
                     "roll_deg": float(info.get("roll_deg", 0.0)),
                     "pitch_deg": float(info.get("pitch_deg", 0.0)),
@@ -197,6 +226,8 @@ class Sim2SimWorkflow:
                     "pitch_rate_rad_s": float(info["base_ang_vel_body"][1]),
                     "yaw_rate_rad_s": float(info["base_ang_vel_body"][2]),
                     "reward": float(reward),
+                    "command_lin_vel_x": float(info.get("command_lin_vel_x", 0.0)),
+                    "command_yaw_rate": float(info.get("command_yaw_rate", 0.0)),
                     "base_lin_vel_x": float(info["base_lin_vel_x"]),
                     "wheel_lin_vel": float(info["wheel_lin_vel"]),
                     "action_delta_l2": float(np.linalg.norm(action_delta)),
@@ -223,6 +254,11 @@ class Sim2SimWorkflow:
                             course_info = (
                                 f" jump_h={report.get('height', 0.0):.1f}"
                                 f" ({report.get('index', 0)}/{report.get('total', 0)})"
+                            )
+                        elif self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+                            course_info = (
+                                f" course_vx={float(report.get('vx', 0.0)):+.2f}"
+                                f" course_yaw={float(report.get('yaw', 0.0)):+.2f}"
                             )
                     line = (
                         f"step={step:05d} time={float(info['time']):.3f}"
@@ -272,6 +308,11 @@ class Sim2SimWorkflow:
         }
         if script_events:
             summary["jump_events"] = self._jump_event_diagnostics(samples, script_events)
+        if self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+            summary["upright_velocity_sweep"] = self._upright_velocity_sweep_diagnostics(
+                samples,
+                self.cfg.course.upright_velocity_sweep_commands,
+            )
         if self.cfg.json_output is not None:
             self._write_json(self.cfg.json_output, summary)
         if self.viewer is not None:
@@ -351,6 +392,65 @@ class Sim2SimWorkflow:
                     "mean_applied_action_delta_sq_sum": float(np.mean(applied_action_rate)),
                     "max_applied_action_delta_sq_sum": float(np.max(applied_action_rate)),
                     "phases": phase_diagnostics,
+                }
+            )
+        return result
+
+    @staticmethod
+    def _upright_velocity_sweep_diagnostics(
+        samples: list[dict[str, float]],
+        commands: tuple[tuple[float, float], ...],
+    ) -> list[dict[str, object]]:
+        """按验收速度分组统计轮式平地运动是否被腿部接触套利。"""
+        result: list[dict[str, object]] = []
+        for vx_cmd, yaw_cmd in commands:
+            window = [
+                s
+                for s in samples
+                if abs(float(s.get("command_lin_vel_x", 0.0)) - float(vx_cmd)) < 1.0e-6
+                and abs(float(s.get("command_yaw_rate", 0.0)) - float(yaw_cmd)) < 1.0e-6
+            ]
+            if not window:
+                result.append(
+                    {
+                        "command_lin_vel_x": float(vx_cmd),
+                        "command_yaw_rate": float(yaw_cmd),
+                        "samples": 0,
+                    }
+                )
+                continue
+            steady = window[max(0, len(window) // 4) :]
+
+            def values(key: str, steady_window: list[dict[str, float]] = steady) -> np.ndarray:
+                return np.asarray([s.get(key, 0.0) for s in steady_window], dtype=np.float64)
+
+            base_vx = values("base_lin_vel_x")
+            yaw_rate = values("yaw_rate_rad_s")
+            wheel_lin = values("wheel_lin_vel")
+            leg_contact = values("leg_contact")
+            wheel_contact = values("wheel_contact")
+            wheel_full_contact = values("wheel_full_contact")
+            nonwheel_contact = values("nonwheel_contact")
+            leg_clearance = values("leg_clearance")
+            velocity_error = np.abs(base_vx - float(vx_cmd))
+            yaw_error = np.abs(yaw_rate - float(yaw_cmd))
+            result.append(
+                {
+                    "command_lin_vel_x": float(vx_cmd),
+                    "command_yaw_rate": float(yaw_cmd),
+                    "samples": len(window),
+                    "steady_samples": len(steady),
+                    "mean_base_lin_vel_x": float(np.mean(base_vx)),
+                    "mean_abs_velocity_error": float(np.mean(velocity_error)),
+                    "mean_yaw_rate": float(np.mean(yaw_rate)),
+                    "mean_abs_yaw_error": float(np.mean(yaw_error)),
+                    "mean_wheel_lin_vel": float(np.mean(wheel_lin)),
+                    "mean_abs_wheel_lin_vel": float(np.mean(np.abs(wheel_lin))),
+                    "wheel_contact_rate": float(np.mean(wheel_contact > 0.5)),
+                    "wheel_full_contact_rate": float(np.mean(wheel_full_contact > 0.5)),
+                    "leg_contact_rate": float(np.mean(leg_contact > 0.5)),
+                    "nonwheel_contact_rate": float(np.mean(nonwheel_contact > 0.5)),
+                    "min_leg_clearance": float(np.min(leg_clearance)),
                 }
             )
         return result
