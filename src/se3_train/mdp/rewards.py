@@ -142,6 +142,11 @@ def _upright_factor(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     return torch.clamp(-projected_gravity_z, 0.0, 0.7) / 0.7
 
 
+def _upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
+    """全姿态直立分数：倒置为 0，侧躺为 2，直立为 4。"""
+    return torch.clamp(2.0 * (1.0 - projected_gravity_z), min=0.0, max=4.0)
+
+
 def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
@@ -157,7 +162,7 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
     """全局向上奖励，不区分 roll/pitch 轴向来源。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    reward = torch.square(1.0 - pg_z)
+    reward = _upward_score(pg_z)
 
     if hasattr(env, "extras"):
         tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
@@ -183,7 +188,7 @@ def upward_progress(
     """全局向上进度奖励，不区分 roll/pitch 轴向来源。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    score = torch.square(1.0 - pg_z)
+    score = _upward_score(pg_z)
 
     prev_score = getattr(env, "_prev_upward_score", None)
     if not isinstance(prev_score, torch.Tensor) or prev_score.shape[0] != env.num_envs:

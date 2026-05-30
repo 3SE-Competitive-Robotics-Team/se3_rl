@@ -142,10 +142,10 @@ RobotLab 模式的核心是两个连续状态量：
 
 ```text
 upright_gate = clamp(-projected_gravity_z, 0, 0.7) / 0.7
-upward_score = square(1 - projected_gravity_z)
+upward_score = clamp(2 * (1 - projected_gravity_z), 0, 4)
 ```
 
-本仓库的 `projected_gravity_z` 约定为 -1 完全直立，+1 完全倒置。`upward_score` 是全姿态生效的直立项；`upright_gate` 只让速度追踪、高度、接触和默认姿态等“已经接近站稳才有意义”的项平滑恢复，不能作为起身主梯度。
+本仓库的 `projected_gravity_z` 约定为 -1 完全直立，+1 完全倒置。`upward_score` 是全姿态生效的直立项，最大值仍为 4；必须使用线性形式，避免完全倒置附近的二次分数一阶信号过弱。`upright_gate` 只让速度追踪、高度、接触和默认姿态等“已经接近站稳才有意义”的项平滑恢复，不能作为起身主梯度。
 
 统一 reward 表：
 
