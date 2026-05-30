@@ -6,6 +6,7 @@ from se3_train.tasks.recovery.rewards import *  # noqa: F403
 from se3_train.tasks.recovery.rewards import __all__ as _RECOVERY_REWARD_ALL
 from se3_train.mdp.rewards import (
     recovery_height,
+    recovery_stand_stillness,
     recovery_stand_wheel_contact,
     recovery_success_bonus,
 )
@@ -13,6 +14,7 @@ from se3_train.mdp.rewards import (
 __all__ = [
     *_RECOVERY_REWARD_ALL,
     "recovery_height",
+    "recovery_stand_stillness",
     "recovery_stand_wheel_contact",
     "recovery_success_bonus",
 ]

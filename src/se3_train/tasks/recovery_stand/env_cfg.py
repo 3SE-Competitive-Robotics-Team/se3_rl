@@ -180,6 +180,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "gate_full_deg": 45.0,
             },
         ),
+        "recovery_stillness": RewardTermCfg(
+            func=rewards.recovery_stand_stillness,
+            weight=2.0,
+            params={
+                "gate_start_deg": 75.0,
+                "gate_full_deg": 15.0,
+                "base_speed_scale": 0.35,
+                "wheel_speed_scale": 0.45,
+            },
+        ),
         "recovery_success_bonus": RewardTermCfg(
             func=rewards.recovery_success_bonus,
             weight=1.0,

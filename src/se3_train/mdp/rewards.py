@@ -1006,6 +1006,49 @@ def recovery_stand_wheel_contact(
     return dual_contact.float() * near_upright_gate * active.float()
 
 
+def recovery_stand_stillness(
+    env: ManagerBasedRlEnv,
+    wheel_radius: float = 0.059,
+    gate_start_deg: float = 75.0,
+    gate_full_deg: float = 15.0,
+    base_speed_scale: float = 0.35,
+    wheel_speed_scale: float = 0.45,
+) -> torch.Tensor:
+    """接近直立后奖励低机身线速度和低轮速，避免翻正后继续滚走。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    base_speed = torch.linalg.norm(robot.data.root_link_lin_vel_b, dim=1)
+    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed = torch.linalg.norm(wheel_forward_speed, dim=1)
+    base_score = 1.0 / (1.0 + (base_speed / float(base_speed_scale)) ** 2)
+    wheel_score = 1.0 / (1.0 + (wheel_speed / float(wheel_speed_scale)) ** 2)
+    reward = 0.5 * (base_score + wheel_score) * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/stillness_reward": _masked_mean(reward, active),
+                "RecoveryStand/stillness_gate": _masked_mean(near_upright_gate, active),
+                "RecoveryStand/base_lin_vel_norm": _masked_mean(base_speed, active),
+                "RecoveryStand/wheel_forward_speed": _masked_mean(wheel_speed, active),
+            }
+        )
+
+    return reward
+
+
 def recovery_success_bonus(
     env: ManagerBasedRlEnv,
     left_wheel_sensor_name: str,
