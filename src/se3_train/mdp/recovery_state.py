@@ -69,6 +69,9 @@ def set_recovery_episode(env: ManagerBasedRlEnv, env_ids: torch.Tensor, mask: to
     time_to_success = ensure_long_buffer(env, "_recovery_time_to_success_steps")
     cache_reset = ensure_bool_buffer(env, "_recovery_cache_reset_mask")
     cache_type = ensure_long_buffer(env, "_recovery_cache_type")
+    success_updated_step = ensure_long_buffer(env, "_recovery_success_updated_step")
+    completed = ensure_bool_buffer(env, "_recovery_success_completed")
+    completed_latched = ensure_bool_buffer(env, "_recovery_success_completed_latched")
 
     episode[env_ids] = mask
     active[env_ids] = mask
@@ -76,6 +79,9 @@ def set_recovery_episode(env: ManagerBasedRlEnv, env_ids: torch.Tensor, mask: to
     time_to_success[env_ids] = -1
     cache_reset[env_ids] = False
     cache_type[env_ids] = 0
+    success_updated_step[env_ids] = -1
+    completed[env_ids] = False
+    completed_latched[env_ids] = False
 
 
 def mark_cache_reset(
@@ -112,3 +118,35 @@ def deactivate_recovered(
     active_buffer = ensure_bool_buffer(env, "_recovery_reset_mask")
     active_buffer[completed] = False
     return completed
+
+
+def update_success_window(
+    env: ManagerBasedRlEnv,
+    success: torch.Tensor,
+    stable_steps_required: int,
+    min_episode_steps: int,
+) -> torch.Tensor:
+    """按连续成功窗口更新完成状态；同一仿真步内重复调用保持幂等。"""
+    active = recovery_active_mask(env)
+    stable_steps = ensure_long_buffer(env, "_recovery_success_steps")
+    time_to_success = ensure_long_buffer(env, "_recovery_time_to_success_steps")
+    updated_step = ensure_long_buffer(env, "_recovery_success_updated_step")
+    completed = ensure_bool_buffer(env, "_recovery_success_completed")
+    completed_latched = ensure_bool_buffer(env, "_recovery_success_completed_latched")
+
+    common_step = int(getattr(env, "common_step_counter", 0))
+    needs_update = updated_step != common_step
+    if needs_update.any():
+        valid_success = success.to(device=env.device, dtype=torch.bool) & active
+        stable_steps[needs_update & valid_success] += 1
+        stable_steps[needs_update & ~valid_success] = 0
+
+        enough_time = env.episode_length_buf >= int(min_episode_steps)
+        reached_window = active & enough_time & (stable_steps >= int(stable_steps_required))
+        first_completed = reached_window & ~completed_latched
+        completed[:] = first_completed
+        completed_latched[first_completed] = True
+        time_to_success[first_completed] = env.episode_length_buf[first_completed].to(torch.long)
+        updated_step[needs_update] = common_step
+
+    return completed & active

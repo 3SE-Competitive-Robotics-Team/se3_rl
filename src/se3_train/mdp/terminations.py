@@ -218,6 +218,166 @@ def catastrophic_state(
     return terminated
 
 
+_RECOVERY_STAND_BIN_NAMES = ("0_30", "30_60", "60_90", "90_135", "135_180")
+
+
+def _bool_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float,
+) -> torch.Tensor:
+    """读取接触传感器，返回每个 env 是否存在超过阈值的接触。"""
+    sensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    force_mag = finite_contact_force_norm(data.force)
+    if force_mag.ndim == 1:
+        return force_mag > float(force_threshold)
+    return (force_mag > float(force_threshold)).any(dim=1)
+
+
+def _recovery_stand_bins(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """读取 Recovery-Stand reset 时记录的初始倾角桶。"""
+    bins = getattr(env, "_recovery_stand_init_tilt_bin", None)
+    if isinstance(bins, torch.Tensor) and bins.shape[0] == env.num_envs:
+        return bins.to(device=env.device, dtype=torch.long).clamp(0, 4)
+    init_tilt = getattr(env, "_recovery_init_tilt", None)
+    if isinstance(init_tilt, torch.Tensor) and init_tilt.shape[0] == env.num_envs:
+        init_tilt_deg = torch.rad2deg(init_tilt.to(device=env.device))
+        return torch.bucketize(
+            init_tilt_deg,
+            torch.tensor((30.0, 60.0, 90.0, 135.0), device=env.device),
+        )
+    return torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+
+def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
+    """计算 mask 内均值；空 mask 返回 0。"""
+    if mask.any():
+        return values[mask].float().mean().item()
+    return 0.0
+
+
+def recovery_success(
+    env: ManagerBasedRlEnv,
+    left_wheel_sensor_name: str,
+    right_wheel_sensor_name: str,
+    nonwheel_sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    upright_angle_deg: float = 15.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 0.5,
+    lin_vel_threshold: float = 0.2,
+    force_threshold: float = 1.0,
+    stable_steps_required: int = 50,
+    min_episode_steps: int = 50,
+) -> torch.Tensor:
+    """纯自起任务成功终止：连续稳定站立到可交接窗口。"""
+    active = recovery_state.recovery_active_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+    tilt_deg = torch.rad2deg(tilt)
+    upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
+    upright_ok = tilt < upright_limit
+
+    cmd = env.command_manager.get_command(command_name)
+    height_sensor = env.scene[height_sensor_name]
+    height = torch.nan_to_num(height_sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    height_error = torch.abs(height - cmd[:, 4])
+    height_ok = height_error < float(height_tolerance)
+
+    ang_vel_norm = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)
+    lin_vel_norm = torch.linalg.norm(robot.data.root_link_lin_vel_b, dim=1)
+    ang_vel_ok = ang_vel_norm < float(ang_vel_threshold)
+    lin_vel_ok = lin_vel_norm < float(lin_vel_threshold)
+
+    left_contact = _bool_contact(env, left_wheel_sensor_name, force_threshold)
+    right_contact = _bool_contact(env, right_wheel_sensor_name, force_threshold)
+    dual_wheel_contact = left_contact & right_contact
+    nonwheel_contact = _bool_contact(env, nonwheel_sensor_name, force_threshold)
+    nonwheel_clear = ~nonwheel_contact
+
+    raw_success = (
+        active
+        & upright_ok
+        & height_ok
+        & ang_vel_ok
+        & lin_vel_ok
+        & dual_wheel_contact
+        & nonwheel_clear
+    )
+    completed = recovery_state.update_success_window(
+        env,
+        raw_success,
+        stable_steps_required=stable_steps_required,
+        min_episode_steps=min_episode_steps,
+    )
+
+    if hasattr(env, "extras"):
+        episode = recovery_state.recovery_episode_mask(env)
+        time_to_success = recovery_state.ensure_long_buffer(env, "_recovery_time_to_success_steps")
+        timeout = (env.episode_length_buf >= env.max_episode_length) & (time_to_success < 0)
+        bins = _recovery_stand_bins(env)
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "RecoveryStand/success_condition/upright": _masked_mean(upright_ok.float(), active),
+                "RecoveryStand/success_condition/height": _masked_mean(height_ok.float(), active),
+                "RecoveryStand/success_condition/ang_vel": _masked_mean(ang_vel_ok.float(), active),
+                "RecoveryStand/success_condition/lin_vel": _masked_mean(lin_vel_ok.float(), active),
+                "RecoveryStand/success_condition/dual_wheel": _masked_mean(
+                    dual_wheel_contact.float(), active
+                ),
+                "RecoveryStand/success_condition/nonwheel_clear": _masked_mean(
+                    nonwheel_clear.float(), active
+                ),
+                "RecoveryStand/success_raw_rate": _masked_mean(raw_success.float(), active),
+                "RecoveryStand/success_completed_rate": _masked_mean(completed.float(), episode),
+                "RecoveryStand/stable_steps": _masked_mean(
+                    recovery_state.ensure_long_buffer(env, "_recovery_success_steps").float(),
+                    episode,
+                ),
+                "RecoveryStand/tilt_deg": _masked_mean(tilt_deg, episode),
+                "RecoveryStand/height_error": _masked_mean(height_error, episode),
+                "Episode_Termination/recovery_success": completed.float().mean().item(),
+            }
+        )
+        for bin_id, bin_name in enumerate(_RECOVERY_STAND_BIN_NAMES):
+            in_bin = episode & (bins == bin_id)
+            success_in_bin = in_bin & (time_to_success >= 0)
+            timeout_in_bin = in_bin & timeout
+            log.update(
+                {
+                    f"RecoveryStand/success_rate_by_tilt_bin/{bin_name}": _masked_mean(
+                        success_in_bin.float(), in_bin
+                    ),
+                    f"RecoveryStand/time_to_success_by_tilt_bin/{bin_name}": _masked_mean(
+                        time_to_success.float(), success_in_bin
+                    ),
+                    f"RecoveryStand/timeout_rate_by_tilt_bin/{bin_name}": _masked_mean(
+                        timeout.float(), in_bin
+                    ),
+                    f"RecoveryStand/final_tilt_deg_by_tilt_bin/{bin_name}": _masked_mean(
+                        tilt_deg, timeout_in_bin
+                    ),
+                    f"RecoveryStand/final_height_error_by_tilt_bin/{bin_name}": _masked_mean(
+                        height_error, timeout_in_bin
+                    ),
+                    f"RecoveryStand/final_nonwheel_contact_rate_by_tilt_bin/{bin_name}": (
+                        _masked_mean(nonwheel_contact.float(), timeout_in_bin)
+                    ),
+                    f"RecoveryStand/dual_wheel_contact_rate_by_tilt_bin/{bin_name}": (
+                        _masked_mean(dual_wheel_contact.float(), in_bin)
+                    ),
+                }
+            )
+
+    return completed
+
+
 def leg_contact(
     env: ManagerBasedRlEnv,
     sensor_name: str,

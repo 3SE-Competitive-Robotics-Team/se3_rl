@@ -893,6 +893,7 @@ def recovery_height(
     sigma: float = 0.04,
     gate_start_deg: float = 45.0,
     gate_full_deg: float = 15.0,
+    min_gate: float = 0.0,
 ) -> torch.Tensor:
     """倒地恢复期 base 高度奖励，目标高度沿用当前站立高度指令。"""
     active = _recovery_reset_mask(env)
@@ -905,6 +906,7 @@ def recovery_height(
     tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
     gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+    near_upright_gate = torch.clamp(near_upright_gate, min=float(min_gate))
 
     if hasattr(env, "extras"):
         hard_tilt = _recovery_hard_tilt_mask(env)
@@ -960,6 +962,106 @@ def recovery_wheel_contact(
         )
 
     return wheel_contact.float() * active.float()
+
+
+def _contact_bool(env: ManagerBasedRlEnv, sensor_name: str, force_threshold: float) -> torch.Tensor:
+    """读取接触传感器，返回每个 env 是否有接触。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    force_mag = finite_contact_force_norm(data.force)
+    if force_mag.ndim == 1:
+        return force_mag > float(force_threshold)
+    return (force_mag > float(force_threshold)).any(dim=1)
+
+
+def recovery_stand_wheel_contact(
+    env: ManagerBasedRlEnv,
+    left_wheel_sensor_name: str,
+    right_wheel_sensor_name: str,
+    force_threshold: float = 1.0,
+    gate_start_deg: float = 120.0,
+    gate_full_deg: float = 45.0,
+) -> torch.Tensor:
+    """接近直立后奖励左右轮都重新成为接地点。"""
+    active = _recovery_reset_mask(env)
+    left_contact = _contact_bool(env, left_wheel_sensor_name, force_threshold)
+    right_contact = _contact_bool(env, right_wheel_sensor_name, force_threshold)
+    dual_contact = left_contact & right_contact
+
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/dual_wheel_contact_rate": _masked_mean(dual_contact.float(), active),
+                "RecoveryStand/wheel_contact_gate": _masked_mean(near_upright_gate, active),
+            }
+        )
+
+    return dual_contact.float() * near_upright_gate * active.float()
+
+
+def recovery_success_bonus(
+    env: ManagerBasedRlEnv,
+    left_wheel_sensor_name: str,
+    right_wheel_sensor_name: str,
+    nonwheel_sensor_name: str,
+    height_sensor_name: str,
+    command_name: str,
+    upright_angle_deg: float = 15.0,
+    height_tolerance: float = 0.05,
+    ang_vel_threshold: float = 0.5,
+    lin_vel_threshold: float = 0.2,
+    force_threshold: float = 1.0,
+    stable_steps_required: int = 50,
+    min_episode_steps: int = 50,
+    completion_bonus: float = 10.0,
+) -> torch.Tensor:
+    """成功窗口完成时给一次性奖励。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+    upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
+    upright_ok = tilt < upright_limit
+
+    cmd = env.command_manager.get_command(command_name)
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    height_ok = torch.abs(height - cmd[:, 4]) < float(height_tolerance)
+
+    ang_vel_ok = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1) < float(ang_vel_threshold)
+    lin_vel_ok = torch.linalg.norm(robot.data.root_link_lin_vel_b, dim=1) < float(lin_vel_threshold)
+    dual_contact = _contact_bool(env, left_wheel_sensor_name, force_threshold) & _contact_bool(
+        env, right_wheel_sensor_name, force_threshold
+    )
+    nonwheel_clear = ~_contact_bool(env, nonwheel_sensor_name, force_threshold)
+
+    success = (
+        active & upright_ok & height_ok & ang_vel_ok & lin_vel_ok & dual_contact & nonwheel_clear
+    )
+    completed = recovery_state.update_success_window(
+        env,
+        success,
+        stable_steps_required=stable_steps_required,
+        min_episode_steps=min_episode_steps,
+    )
+    reward = completed.float() * float(completion_bonus)
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/success_bonus": reward.mean().item(),
+                "RecoveryStand/success_bonus_rate": completed.float().mean().item(),
+            }
+        )
+
+    return reward
 
 
 def joint_mirror(

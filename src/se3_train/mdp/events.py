@@ -238,6 +238,8 @@ def reset_root_state_full_angle_random(
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
+    mark_recovery_episode: bool = False,
+    recovery_command_height: float = 0.22,
 ) -> None:
     """统一 reset：随机倾倒角和水平倾倒轴，不区分 roll/pitch 来源。"""
     if env_ids is None:
@@ -304,11 +306,29 @@ def reset_root_state_full_angle_random(
     vel[:, 0:3] = _sample_range(lin_vel_range, (n, 3))
     vel[:, 3:6] = _sample_range(ang_vel_range, (n, 3))
 
-    # 清空旧 recovery buffer，避免旧实验残留把统一 reset 误判成 recovery active。
-    for name in ("_recovery_reset_mask", "_recovery_episode_mask", "_recovery_cache_reset_mask"):
-        values = getattr(env, name, None)
-        if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
-            values[env_ids] = False
+    if mark_recovery_episode:
+        recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
+        recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
+        env._recovery_command_height = float(recovery_command_height)
+        init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
+        init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
+        init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
+        init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
+        roll_ref, pitch_ref, yaw_ref = euler_xyz_from_quat(new_quat)
+        init_tilt[env_ids] = tilt
+        init_yaw[env_ids] = yaw_ref
+        init_roll[env_ids] = roll_ref
+        init_pitch[env_ids] = pitch_ref
+    else:
+        # 清空旧 recovery buffer，避免旧实验残留把统一 reset 误判成 recovery active。
+        for name in (
+            "_recovery_reset_mask",
+            "_recovery_episode_mask",
+            "_recovery_cache_reset_mask",
+        ):
+            values = getattr(env, name, None)
+            if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
+                values[env_ids] = False
 
     asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
     asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
@@ -333,14 +353,23 @@ def reset_root_state_full_angle_random(
         env._reset_init_tilt_bin = tilt_bins
     tilt_bins[env_ids] = bins
 
+    stand_bins = torch.bucketize(
+        init_tilt_deg,
+        torch.tensor((30.0, 60.0, 90.0, 135.0), device=env.device),
+    )
+    stand_tilt_bins = getattr(env, "_recovery_stand_init_tilt_bin", None)
+    if not isinstance(stand_tilt_bins, torch.Tensor) or stand_tilt_bins.shape[0] != env.num_envs:
+        stand_tilt_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._recovery_stand_init_tilt_bin = stand_tilt_bins
+    stand_tilt_bins[env_ids] = stand_bins
+
     if hasattr(env, "extras"):
         log = env.extras.setdefault("log", {})
         log.update(
             {
                 "Reset/full_angle_random_ratio": 1.0,
                 "Reset/curriculum_progress": float(curriculum_progress),
-                "Reset/curriculum_tilt_max_deg": float(tilt_range[1]) * 180.0
-                / 3.141592653589793,
+                "Reset/curriculum_tilt_max_deg": float(tilt_range[1]) * 180.0 / 3.141592653589793,
                 "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
                 "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
                 "Reset/mean_base_height_m": base_height.mean().item(),
@@ -354,6 +383,12 @@ def reset_root_state_full_angle_random(
                 "Reset/init_tilt_bin_near_fall_ratio": (bins == 1).float().mean().item(),
                 "Reset/init_tilt_bin_hard_tilt_ratio": (bins == 2).float().mean().item(),
                 "Reset/init_tilt_bin_inverted_ratio": (bins == 3).float().mean().item(),
+                "RecoveryStand/reset_full_difficulty": float(mark_recovery_episode),
+                "RecoveryStand/reset_tilt_bin/0_30": (stand_bins == 0).float().mean().item(),
+                "RecoveryStand/reset_tilt_bin/30_60": (stand_bins == 1).float().mean().item(),
+                "RecoveryStand/reset_tilt_bin/60_90": (stand_bins == 2).float().mean().item(),
+                "RecoveryStand/reset_tilt_bin/90_135": (stand_bins == 3).float().mean().item(),
+                "RecoveryStand/reset_tilt_bin/135_180": (stand_bins == 4).float().mean().item(),
             }
         )
 
@@ -818,9 +853,7 @@ def reset_joints(
     )
     joint_offset_range = _stage_value(stage, "joint_offset_range", joint_offset_range)
     joint_vel_range = _stage_value(stage, "joint_vel_range", joint_vel_range)
-    hip_joint_offset_range = _stage_value(
-        stage, "hip_joint_offset_range", hip_joint_offset_range
-    )
+    hip_joint_offset_range = _stage_value(stage, "hip_joint_offset_range", hip_joint_offset_range)
     knee_joint_offset_range = _stage_value(
         stage, "knee_joint_offset_range", knee_joint_offset_range
     )

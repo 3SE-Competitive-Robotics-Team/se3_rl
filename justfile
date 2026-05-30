@@ -59,6 +59,10 @@ smoke-gpu:
 smoke-recovery:
     SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 8 --gpu-ids None
 
+# 纯 recovery-stand CPU smoke 验证：固定零速度命令，全角度倒地 reset。
+smoke-recovery-stand:
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-Stand-GRU --env.scene.num-envs 1 --gpu-ids None
+
 # 平地地形训练（需要 GPU + .env）
 train:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
@@ -73,6 +77,11 @@ train-recovery:
 train-recovery-light:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
     uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 1024
+
+# 纯 recovery-stand 正式训练：从零训练，不加载已有 checkpoint。
+train-recovery-stand:
+    @[ -f .env ] || { echo "missing .env with WANDB_API_KEY"; exit 1; }
+    uv run --env-file .env se3-train SE3-WheelLegged-Recovery-Stand-GRU --env.scene.num-envs 4096
 
 # 崎岖地形训练（需要 GPU + .env）
 train-rough:
