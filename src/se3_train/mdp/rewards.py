@@ -1006,6 +1006,36 @@ def recovery_stand_wheel_contact(
     return dual_contact.float() * near_upright_gate * active.float()
 
 
+def recovery_stand_nonwheel_clearance(
+    env: ManagerBasedRlEnv,
+    nonwheel_sensor_name: str,
+    force_threshold: float = 1.0,
+    gate_start_deg: float = 75.0,
+    gate_full_deg: float = 15.0,
+) -> torch.Tensor:
+    """接近直立后奖励清除机身和腿部等非轮接触，避免低趴静止解。"""
+    active = _recovery_reset_mask(env)
+    nonwheel_contact = _contact_bool(env, nonwheel_sensor_name, force_threshold)
+    nonwheel_clear = ~nonwheel_contact
+
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+    reward = nonwheel_clear.float() * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/nonwheel_clearance_reward": _masked_mean(reward, active),
+                "RecoveryStand/nonwheel_clearance_gate": _masked_mean(near_upright_gate, active),
+                "RecoveryStand/nonwheel_clear_rate": _masked_mean(nonwheel_clear.float(), active),
+            }
+        )
+
+    return reward
+
+
 def recovery_stand_stillness(
     env: ManagerBasedRlEnv,
     wheel_radius: float = 0.059,

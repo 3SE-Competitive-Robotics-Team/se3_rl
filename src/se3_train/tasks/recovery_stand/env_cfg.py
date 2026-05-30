@@ -159,11 +159,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "recovery_height": RewardTermCfg(
             func=rewards.recovery_height,
-            weight=2.0,
+            weight=3.0,
             params={
                 "command_name": "velocity_height",
                 "height_sensor_name": "base_height_sensor",
-                "sigma": 0.05,
+                "sigma": 0.01,
                 "gate_start_deg": 120.0,
                 "gate_full_deg": 15.0,
                 "min_gate": 0.25,
@@ -171,13 +171,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "recovery_wheel_contact": RewardTermCfg(
             func=rewards.recovery_stand_wheel_contact,
-            weight=1.0,
+            weight=2.0,
             params={
                 "left_wheel_sensor_name": "left_wheel_sensor",
                 "right_wheel_sensor_name": "right_wheel_sensor",
                 "force_threshold": 1.0,
                 "gate_start_deg": 120.0,
                 "gate_full_deg": 45.0,
+            },
+        ),
+        "recovery_nonwheel_clearance": RewardTermCfg(
+            func=rewards.recovery_stand_nonwheel_clearance,
+            weight=1.5,
+            params={
+                "nonwheel_sensor_name": "nonwheel_contact_sensor",
+                "force_threshold": 1.0,
+                "gate_start_deg": 75.0,
+                "gate_full_deg": 15.0,
             },
         ),
         "recovery_stillness": RewardTermCfg(
