@@ -1036,16 +1036,24 @@ def push_robots(
     velocity_range: dict[str, tuple[float, float]],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """随机速度推动。"""
+    """随机速度扰动机器人根节点。"""
     asset: Entity = env.scene[asset_cfg.name]
     vel_w = asset.data.root_link_vel_w[env_ids]
+    active_velocity_range = getattr(env, "_push_velocity_range", velocity_range)
 
     range_list = [
-        velocity_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]
+        active_velocity_range.get(key, (0.0, 0.0))
+        for key in ["x", "y", "z", "roll", "pitch", "yaw"]
     ]
     ranges = torch.tensor(range_list, device=env.device)
     vel_w += sample_uniform(ranges[:, 0], ranges[:, 1], vel_w.shape, device=env.device)
     asset.write_root_link_velocity_to_sim(vel_w, env_ids=env_ids)
+
+    push_max = max(max(abs(low), abs(high)) for low, high in range_list)
+    env.extras.setdefault("log", {})
+    env.extras["log"]["PushDisturbance/active_velocity_max"] = torch.tensor(
+        float(push_max), device=env.device
+    )
 
 
 def randomize_friction(

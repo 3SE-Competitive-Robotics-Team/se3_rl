@@ -36,6 +36,7 @@
 10. success bonus 第一版为 `10.0`，只在完成连续稳定窗口时给一次。
 11. 不显式奖励“越快越好”，只记录 `time_to_success`。
 12. 训练诊断必须按初始倾角分桶，不能只看总成功率。
+13. 训练后半程加入平面 push disturbance：只扰动 root 的 `x/y/yaw` 速度，不加入 `z/roll/pitch` 冲击；课程按 PPO iter 从 0 逐步放大到 `±1.0`。
 
 ## 非目标
 
@@ -59,10 +60,11 @@ just train-recovery-stand
 
 ```bash
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-Stand-GRU --env.scene.num-envs 1 --gpu-ids None
-uv run --env-file .env se3-train SE3-WheelLegged-Recovery-Stand-GRU --env.scene.num-envs 4096
+SE3_LOGGER=tensorboard WANDB_MODE=disabled uv run --env-file .env se3-train SE3-WheelLegged-Recovery-Stand-GRU --env.scene.num-envs 4096
 ```
 
 训练环境不应复用旧 `Recovery-GRU` 的速度课程语义。可以复用已有 reset、reward helper 和 GRU PPO 配置，但最终 contract 以本文为准。
+正式长训不依赖 W&B，默认用 TensorBoard/本地日志保证 checkpoint 保存不受网络影响。
 
 ## 观测与动作
 
@@ -215,6 +217,8 @@ jump_phase = 0.0
 | `RecoveryStand/dual_wheel_contact_rate_by_tilt_bin/*` | 是否能回到双轮接触 |
 | `RecoveryStand/wheel_fore_aft_offset_m` | 是否出现左右轮前后错位/腿部劈叉 |
 | `RecoveryStand/success_condition/wheel_alignment` | 可交接窗口是否满足腿部几何对齐 |
+| `Curriculum/push_disturbance/push_vel_max` | 当前 push disturbance 课程强度 |
+| `PushDisturbance/active_velocity_max` | 最近一次实际推扰动的最大速度幅值 |
 
 验收时优先看 `90-135°` 和 `135-180°`，总成功率只能作为辅助指标。
 
@@ -240,6 +244,7 @@ Smoke 只证明环境不崩，不能证明策略有效。
 - `tracking_lin_vel` / `tracking_ang_vel` 是否没有出现在 reward 表。
 - success 条件各子项日志是否存在且没有 NaN。
 - `RecoveryStand/success_condition/wheel_alignment` 是否存在且没有 NaN。
+- `Curriculum/push_disturbance/progress` 从 iter 语义推进，初期 `push_vel_max=0`。
 - 没有 `bad_orientation` 或 `leg_contact` 提前终止。
 
 ### 早期训练

@@ -70,24 +70,36 @@ def push_disturbance(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     push_stages: list[dict],
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
+    offset_iter: int = 0,
 ) -> dict[str, torch.Tensor]:
-    """按训练步数逐步增大推扰动强度。
+    """按训练进度逐步增大推扰动强度。
 
     修改 env 上存储的 push velocity_range 配置。
-    push_stages 格式: [{"step": 0, "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}, ...]
+    push_stages 格式:
+    [{"step": 0, "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}, ...]
     """
     del env_ids
-    step = env.common_step_counter
-    current_max = 0.5
+    step = int(getattr(env, "common_step_counter", 0))
+    progress = _curriculum_progress(
+        env,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    threshold_key = "iteration" if use_iterations else "step"
+    current_max = 0.0
 
     for stage in push_stages:
-        if step >= stage["step"]:
+        threshold = int(stage.get(threshold_key, stage.get("step", 0)))
+        if progress >= threshold:
             velocity_range = stage["velocity_range"]
-            current_max = max(abs(velocity_range["x"][0]), abs(velocity_range["x"][1]))
-            if hasattr(env, "_push_velocity_range"):
-                env._push_velocity_range = velocity_range
+            current_max = max(max(abs(low), abs(high)) for low, high in velocity_range.values())
+            env._push_velocity_range = velocity_range
 
     return {
         "step_counter": torch.tensor(float(step)),
+        "progress": torch.tensor(float(progress)),
         "push_vel_max": torch.tensor(current_max),
     }

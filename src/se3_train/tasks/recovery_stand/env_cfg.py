@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -11,7 +12,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg
 
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import commands, events, rewards, terminations
+from . import commands, curriculums, events, rewards, terminations
 
 _DEFAULT_STANDING_HEIGHT = 0.22
 
@@ -114,6 +115,49 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     cfg.curriculum = {}
+    if not play:
+        cfg.events["push_robots"] = EventTermCfg(
+            func=events.push_robots,
+            mode="interval",
+            interval_range_s=(3.0, 5.0),
+            params={
+                "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
+        cfg.curriculum["push_disturbance"] = CurriculumTermCfg(
+            func=curriculums.push_disturbance,
+            params={
+                "use_iterations": True,
+                "steps_per_policy_iter": 64,
+                "push_stages": [
+                    {
+                        "iteration": 0,
+                        "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
+                    },
+                    {
+                        "iteration": 500,
+                        "velocity_range": {
+                            "x": (-0.25, 0.25),
+                            "y": (-0.25, 0.25),
+                            "yaw": (-0.25, 0.25),
+                        },
+                    },
+                    {
+                        "iteration": 1000,
+                        "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-0.5, 0.5)},
+                    },
+                    {
+                        "iteration": 1500,
+                        "velocity_range": {"x": (-0.8, 0.8), "y": (-0.8, 0.8), "yaw": (-0.8, 0.8)},
+                    },
+                    {
+                        "iteration": 2200,
+                        "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0), "yaw": (-1.0, 1.0)},
+                    },
+                ],
+            },
+        )
 
     success_params = {
         "left_wheel_sensor_name": "left_wheel_sensor",
