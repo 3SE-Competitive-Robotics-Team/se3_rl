@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared import JointGroup
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 
@@ -162,6 +163,59 @@ class RecoveryStagnation:
 
 
 recovery_stagnation = RecoveryStagnation()
+
+
+def catastrophic_state(
+    env: ManagerBasedRlEnv,
+    max_leg_pos_error: float = 3.0,
+    max_leg_vel: float = 120.0,
+    max_root_lin_vel: float = 80.0,
+    max_root_ang_vel: float = 500.0,
+    min_base_height: float = -0.5,
+    max_base_height: float = 3.0,
+) -> torch.Tensor:
+    """物理状态已经发散时立即终止，防止 NaN 观测进入 PPO。"""
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_vel = robot.data.joint_vel
+    root_pos = robot.data.root_link_pos_w
+    root_lin_vel = robot.data.root_link_lin_vel_w
+    root_ang_vel = robot.data.root_link_ang_vel_b
+    projected_gravity = robot.data.projected_gravity_b
+
+    finite = (
+        torch.isfinite(joint_pos).all(dim=1)
+        & torch.isfinite(joint_vel).all(dim=1)
+        & torch.isfinite(root_pos).all(dim=1)
+        & torch.isfinite(root_lin_vel).all(dim=1)
+        & torch.isfinite(root_ang_vel).all(dim=1)
+        & torch.isfinite(projected_gravity).all(dim=1)
+    )
+
+    leg_pos = joint_pos[:, JointGroup.LEGS]
+    leg_default = robot.data.default_joint_pos[:, JointGroup.LEGS]
+    leg_vel = joint_vel[:, JointGroup.LEGS]
+    base_height = root_pos[:, 2] - env.scene.env_origins[:, 2]
+
+    leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)
+    leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
+    root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
+    root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)
+    height_bad = (base_height < float(min_base_height)) | (base_height > float(max_base_height))
+
+    terminated = ~finite | leg_pos_bad | leg_vel_bad | root_lin_bad | root_ang_bad | height_bad
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Episode_Termination/catastrophic_state": terminated.float().mean().item(),
+                "Debug/catastrophic_nonfinite": (~finite).float().mean().item(),
+                "Debug/catastrophic_leg_pos": leg_pos_bad.float().mean().item(),
+                "Debug/catastrophic_leg_vel": leg_vel_bad.float().mean().item(),
+                "Debug/catastrophic_root_vel": (root_lin_bad | root_ang_bad).float().mean().item(),
+                "Debug/catastrophic_height": height_bad.float().mean().item(),
+            }
+        )
+    return terminated
 
 
 def leg_contact(

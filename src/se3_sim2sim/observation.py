@@ -69,4 +69,6 @@ class ObservationBuilder:
             raise RuntimeError(
                 f"observation shape mismatch: expected {(expected,)}, got {arr.shape}"
             )
-        return np.clip(arr, -self.runtime.clip_observations, self.runtime.clip_observations)
+        limit = float(self.runtime.clip_observations)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=limit, neginf=-limit)
+        return np.clip(arr, -limit, limit)

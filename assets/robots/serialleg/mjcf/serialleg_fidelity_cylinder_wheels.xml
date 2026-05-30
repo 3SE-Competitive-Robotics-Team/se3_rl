@@ -59,7 +59,7 @@
         <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09" />
       </body>
       <body name="lf0_Link" pos="0 0.16885 0">
-        <joint name="lf0_Joint" type="hinge" axis="0 -1 0" damping="0" />
+        <joint name="lf0_Joint" type="hinge" axis="0 -1 0" range="-1.2 1.6" damping="0" />
         <inertial pos="-0.09972259 0.00404879 0.00010639" mass="0.3224201" diaginertia="0.000125495485 0.00170560175 0.00178264276" quat="0.717427384 -0.696027437 0.0284175469 -0.0060166269" />
         <geom type="mesh" mesh="visual_Left_thigh_link" pos="0 0 0" name="lf0_Link_collision_0" contype="1" conaffinity="2" group="0" />
         <body name="lf1_Link" pos="-0.18 0.0215 0">
@@ -75,7 +75,7 @@
         </body>
       </body>
       <body name="rf0_Link" pos="0 -0.16885 0">
-        <joint name="rf0_Joint" type="hinge" axis="0 -1 0" damping="0" />
+        <joint name="rf0_Joint" type="hinge" axis="0 -1 0" range="-1.2 1.6" damping="0" />
         <inertial pos="-0.09972259 -0.00404879 0.00010639" mass="0.32242009" diaginertia="0.000125495485 0.00170560175 0.00178264276" quat="-0.696027437 0.717427384 0.0060166269 -0.0284175469" />
         <geom type="mesh" mesh="visual_Right_thigh_link" pos="0 0 0" name="rf0_Link_collision_0" contype="1" conaffinity="2" group="0" />
         <body name="rf1_Link" pos="-0.18 -0.02 0">

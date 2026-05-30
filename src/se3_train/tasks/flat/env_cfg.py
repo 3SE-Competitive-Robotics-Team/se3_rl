@@ -352,6 +352,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
+        "catastrophic_state": TerminationTermCfg(
+            func=terminations.catastrophic_state,
+            time_out=False,
+            params={
+                "max_leg_pos_error": 3.0,
+                "max_leg_vel": 120.0,
+                "max_root_lin_vel": 80.0,
+                "max_root_ang_vel": 500.0,
+                "min_base_height": -0.5,
+                "max_base_height": 3.0,
+            },
+        ),
         "bad_orientation": TerminationTermCfg(
             func=terminations.bad_orientation_delayed,
             time_out=False,

@@ -23,16 +23,22 @@ _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR = "_wheel_contact_force_nonfinite_tota
 _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR = "_wheel_contact_force_sample_total"
 
 
+def _finite_clamp(value: torch.Tensor, limit: float | None = None) -> torch.Tensor:
+    """把观测限制在有限范围内，避免单个发散 env 污染整批 PPO。"""
+    bound = float(_OBS_CFG.clip_value if limit is None else limit)
+    return torch.nan_to_num(value, nan=0.0, posinf=bound, neginf=-bound).clamp(-bound, bound)
+
+
 def base_ang_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """基座坐标系下的角速度,缩放 0.25。"""
     robot = env.scene["robot"]
-    return robot.data.root_link_ang_vel_b * _OBS_CFG.ang_vel_scale
+    return _finite_clamp(robot.data.root_link_ang_vel_b * _OBS_CFG.ang_vel_scale)
 
 
 def projected_gravity_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """投影到基座坐标系下的重力向量。"""
     robot = env.scene["robot"]
-    return robot.data.projected_gravity_b
+    return _finite_clamp(robot.data.projected_gravity_b, limit=1.0)
 
 
 def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -43,13 +49,13 @@ def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """
     cmd = env.command_manager.get_command("velocity_height")
     scale = torch.tensor(list(_OBS_CFG.command_scale), device=cmd.device)
-    return cmd[:, :5] * scale
+    return _finite_clamp(cmd[:, :5] * scale)
 
 
 def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """腿部关节位置（相对默认位姿），4D。"""
     robot = env.scene["robot"]
-    return (
+    return _finite_clamp(
         robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
     )
 
@@ -57,24 +63,24 @@ def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def leg_joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """腿部关节速度,缩放 0.25,4D。"""
     robot = env.scene["robot"]
-    return robot.data.joint_vel[:, JointGroup.LEGS] * _OBS_CFG.leg_vel_scale
+    return _finite_clamp(robot.data.joint_vel[:, JointGroup.LEGS] * _OBS_CFG.leg_vel_scale)
 
 
 def wheel_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """轮子关节位置（MJCF 已修正轴方向,无需手动取反）。"""
     robot = env.scene["robot"]
-    return robot.data.joint_pos[:, JointGroup.WHEELS]
+    return _finite_clamp(robot.data.joint_pos[:, JointGroup.WHEELS])
 
 
 def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """轮子关节速度,缩放 0.05（MJCF 已修正轴方向）。"""
     robot = env.scene["robot"]
-    return robot.data.joint_vel[:, JointGroup.WHEELS] * _OBS_CFG.wheel_vel_scale
+    return _finite_clamp(robot.data.joint_vel[:, JointGroup.WHEELS] * _OBS_CFG.wheel_vel_scale)
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """上一步的 6 个动作。"""
-    return env.action_manager.action
+    return _finite_clamp(env.action_manager.action)
 
 
 # --- Critic 特权观测 ---
@@ -83,7 +89,7 @@ def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def base_lin_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """基座坐标系下的线速度,3D（特权信息,actor 不可见）。"""
     robot = env.scene["robot"]
-    return robot.data.root_link_lin_vel_b
+    return _finite_clamp(robot.data.root_link_lin_vel_b)
 
 
 def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
@@ -95,7 +101,7 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
     if data.force is None:
         return torch.zeros(env.num_envs, 2, device=env.device)
     _record_wheel_contact_force_nonfinite(env, data.force)
-    return finite_contact_force_norm(data.force)
+    return _finite_clamp(finite_contact_force_norm(data.force))
 
 
 def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.Tensor) -> None:
@@ -140,4 +146,4 @@ def jump_commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
             f"jump_commands_obs 要求 8 维指令 (JumpCommandTerm),"
             f" 实际得到 {cmd.shape[1]} 维。请将 velocity_height 指令替换为 JumpCommandCfg。"
         )
-    return cmd[:, 5:8]
+    return _finite_clamp(cmd[:, 5:8])
