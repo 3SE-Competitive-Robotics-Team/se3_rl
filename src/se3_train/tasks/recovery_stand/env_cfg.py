@@ -128,6 +128,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "force_threshold": 1.0,
         "stable_steps_required": 50,
         "min_episode_steps": 50,
+        "min_wheel_lateral_distance": 0.40,
+        "max_wheel_lateral_distance": 0.46,
+        "max_wheel_fore_aft_offset": 0.03,
     }
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
@@ -198,6 +201,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "gate_full_deg": 15.0,
                 "base_speed_scale": 0.35,
                 "wheel_speed_scale": 0.45,
+            },
+        ),
+        "recovery_leg_alignment": RewardTermCfg(
+            func=rewards.recovery_stand_leg_alignment,
+            weight=-2.0,
+            params={
+                "gate_start_deg": 75.0,
+                "gate_full_deg": 15.0,
+                "min_lateral_distance": 0.40,
+                "max_lateral_distance": 0.46,
+                "max_fore_aft_offset": 0.03,
+                "lateral_scale": 0.04,
+                "fore_aft_scale": 0.03,
+                "fore_aft_weight": 1.5,
+                "max_penalty": 4.0,
+                "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
         "recovery_success_bonus": RewardTermCfg(

@@ -69,7 +69,13 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
                 [s["wheel_clearance_left"] for s in samples], dtype=np.float64
             )
             result["wheel_clearance_abs_diff"] = _stats(np.abs(left_clearance - right_clearance))
-    for key in ("leg_clearance", "base_clearance"):
+    for key in (
+        "leg_clearance",
+        "base_clearance",
+        "wheel_lateral_distance",
+        "wheel_fore_aft_offset",
+        "leg_mirror_error",
+    ):
         if key in samples[0]:
             values = np.asarray([s[key] for s in samples], dtype=np.float64)
             result[key] = _stats(values)

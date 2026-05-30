@@ -9,6 +9,7 @@ import torch
 from se3_shared import JointGroup
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.leg_alignment import wheel_alignment_ok
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -273,6 +274,9 @@ def recovery_success(
     force_threshold: float = 1.0,
     stable_steps_required: int = 50,
     min_episode_steps: int = 50,
+    min_wheel_lateral_distance: float = 0.40,
+    max_wheel_lateral_distance: float = 0.46,
+    max_wheel_fore_aft_offset: float = 0.03,
 ) -> torch.Tensor:
     """纯自起任务成功终止：连续稳定站立到可交接窗口。"""
     active = recovery_state.recovery_active_mask(env)
@@ -299,6 +303,12 @@ def recovery_success(
     dual_wheel_contact = left_contact & right_contact
     nonwheel_contact = _bool_contact(env, nonwheel_sensor_name, force_threshold)
     nonwheel_clear = ~nonwheel_contact
+    wheel_alignment, wheel_lateral_distance, wheel_fore_aft_offset = wheel_alignment_ok(
+        env,
+        min_lateral_distance=min_wheel_lateral_distance,
+        max_lateral_distance=max_wheel_lateral_distance,
+        max_fore_aft_offset=max_wheel_fore_aft_offset,
+    )
 
     raw_success = (
         active
@@ -308,6 +318,7 @@ def recovery_success(
         & lin_vel_ok
         & dual_wheel_contact
         & nonwheel_clear
+        & wheel_alignment
     )
     completed = recovery_state.update_success_window(
         env,
@@ -334,6 +345,9 @@ def recovery_success(
                 "RecoveryStand/success_condition/nonwheel_clear": _masked_mean(
                     nonwheel_clear.float(), active
                 ),
+                "RecoveryStand/success_condition/wheel_alignment": _masked_mean(
+                    wheel_alignment.float(), active
+                ),
                 "RecoveryStand/success_raw_rate": _masked_mean(raw_success.float(), active),
                 "RecoveryStand/success_completed_rate": _masked_mean(completed.float(), episode),
                 "RecoveryStand/stable_steps": _masked_mean(
@@ -342,6 +356,12 @@ def recovery_success(
                 ),
                 "RecoveryStand/tilt_deg": _masked_mean(tilt_deg, episode),
                 "RecoveryStand/height_error": _masked_mean(height_error, episode),
+                "RecoveryStand/wheel_lateral_distance_m": _masked_mean(
+                    wheel_lateral_distance, episode
+                ),
+                "RecoveryStand/wheel_fore_aft_offset_m": _masked_mean(
+                    wheel_fore_aft_offset, episode
+                ),
                 "Episode_Termination/recovery_success": completed.float().mean().item(),
             }
         )

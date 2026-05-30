@@ -30,10 +30,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-height-error-m", type=float, default=0.05)
     parser.add_argument("--min-dual-wheel-contact-rate", type=float, default=0.5)
     parser.add_argument("--max-nonwheel-contact-rate", type=float, default=0.2)
+    parser.add_argument("--min-wheel-lateral-distance-m", type=float, default=0.40)
+    parser.add_argument("--max-wheel-lateral-distance-m", type=float, default=0.46)
+    parser.add_argument("--max-wheel-fore-aft-offset-m", type=float, default=0.03)
     parser.add_argument(
         "--allow-final-single-wheel-contact",
         action="store_true",
         help="允许终态只有单轮触地，仅用于诊断历史 checkpoint。",
+    )
+    parser.add_argument(
+        "--allow-final-wheel-misalignment",
+        action="store_true",
+        help="允许终态左右轮前后错位，仅用于诊断历史 checkpoint。",
     )
     parser.add_argument(
         "--fail-on-threshold",
@@ -127,6 +135,13 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
         and final_left_wheel_contact > 0.5
         and final_right_wheel_contact > 0.5
     )
+    final_wheel_lateral_distance = float(final.get("wheel_lateral_distance", 0.0))
+    final_wheel_fore_aft_offset = float(final.get("wheel_fore_aft_offset", 1.0))
+    final_wheel_alignment = (
+        final_wheel_lateral_distance >= float(args.min_wheel_lateral_distance_m)
+        and final_wheel_lateral_distance <= float(args.max_wheel_lateral_distance_m)
+        and final_wheel_fore_aft_offset <= float(args.max_wheel_fore_aft_offset_m)
+    )
     passed = (
         payload["done_reason"] == "max_steps"
         and final_tilt <= float(args.max_final_tilt_deg)
@@ -134,6 +149,7 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
         and dual_wheel_rate >= float(args.min_dual_wheel_contact_rate)
         and nonwheel_rate <= float(args.max_nonwheel_contact_rate)
         and (args.allow_final_single_wheel_contact or final_dual_wheel_contact)
+        and (args.allow_final_wheel_misalignment or final_wheel_alignment)
     )
     return {
         "passed": passed,
@@ -143,6 +159,10 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
         "final_dual_wheel_contact": final_dual_wheel_contact,
         "final_left_wheel_contact": final_left_wheel_contact,
         "final_right_wheel_contact": final_right_wheel_contact,
+        "final_wheel_alignment": final_wheel_alignment,
+        "final_wheel_lateral_distance_m": final_wheel_lateral_distance,
+        "final_wheel_fore_aft_offset_m": final_wheel_fore_aft_offset,
+        "final_leg_mirror_error_rad": float(final.get("leg_mirror_error", 0.0)),
         "dual_wheel_contact_rate": dual_wheel_rate,
         "nonwheel_contact_rate": nonwheel_rate,
         "max_tilt_deg": float(rollout["tilt_deg"]["max"]),

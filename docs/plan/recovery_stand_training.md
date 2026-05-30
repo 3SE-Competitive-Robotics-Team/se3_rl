@@ -18,8 +18,9 @@
 |---|---|
 | 纯自起策略 | 只处理倒地/异常姿态到稳定站立的策略，不负责恢复期间移动、转向或平地行走 |
 | 固定站立高度 | 当前共享默认高度 `0.22m`，来自 `se3_shared.robot.default_base_height` 和 `_DEFAULT_STANDING_HEIGHT` |
-| 可交接站立态 | 倾角、高度、速度、双轮接触和非轮接触都满足成功窗口的站稳状态 |
+| 可交接站立态 | 倾角、高度、速度、双轮接触、非轮接触和腿部几何对齐都满足成功窗口的站稳状态 |
 | 非轮接触 | 腿部、机身或其他非轮部件与地面接触；恢复过程中允许，成功窗口内不允许 |
+| 腿部几何对齐 | 左右轮保持正常横向轮距，且机身坐标系下前后错位不超过阈值；不允许两条腿前后劈叉 |
 
 ## 已决策
 
@@ -134,6 +135,7 @@ jump_phase = 0.0
 | base 线速度范数 | `< 0.2 m/s` |
 | 双轮接触 | 左右轮接触力范数都 `> 1N`，仅作为接触存在检测 |
 | 非轮接触 | 腿部、机身等非轮接触力都 `<= 1N` |
+| 腿部几何对齐 | 左右轮横向距离在 `[0.40, 0.46]m`，前后错位 `<= 0.03m` |
 | 连续满足时间 | `0.5s` |
 | 最小 episode 时间 | reset 后至少经过 `0.5s` 才允许成功 |
 
@@ -175,6 +177,7 @@ jump_phase = 0.0
 | `recovery_wheel_contact` | 接近直立后鼓励轮子重新成为接地点 |
 | `recovery_nonwheel_clearance` | 接近直立后鼓励机身、腿部等非轮部件离地，避免靠身体/腿撑住的低趴解 |
 | `recovery_stillness` | 接近直立后鼓励机身线速度和轮速降到可交接范围，避免翻正后继续滚走 |
+| `recovery_leg_alignment` | 接近直立后惩罚左右轮前后错位和异常轮距，避免两条腿前后劈叉 |
 | `recovery_success_bonus` | 成功窗口完成后一次性给 `10.0` |
 | `action_rate` | 轻量动作变化正则 |
 | `leg_torques` | 轻量力矩正则 |
@@ -210,6 +213,8 @@ jump_phase = 0.0
 | `RecoveryStand/final_height_error_by_tilt_bin/*` | 是否卡在高度条件 |
 | `RecoveryStand/final_nonwheel_contact_rate_by_tilt_bin/*` | 是否靠腿/身体撑住 |
 | `RecoveryStand/dual_wheel_contact_rate_by_tilt_bin/*` | 是否能回到双轮接触 |
+| `RecoveryStand/wheel_fore_aft_offset_m` | 是否出现左右轮前后错位/腿部劈叉 |
+| `RecoveryStand/success_condition/wheel_alignment` | 可交接窗口是否满足腿部几何对齐 |
 
 验收时优先看 `90-135°` 和 `135-180°`，总成功率只能作为辅助指标。
 
@@ -234,6 +239,7 @@ Smoke 只证明环境不崩，不能证明策略有效。
 - 关节随机是否已经使用最大范围。
 - `tracking_lin_vel` / `tracking_ang_vel` 是否没有出现在 reward 表。
 - success 条件各子项日志是否存在且没有 NaN。
+- `RecoveryStand/success_condition/wheel_alignment` 是否存在且没有 NaN。
 - 没有 `bad_orientation` 或 `leg_contact` 提前终止。
 
 ### 早期训练
@@ -284,6 +290,7 @@ Smoke 只证明环境不崩，不能证明策略有效。
 | 成功条件过严 | 已站起但 success rate 为 0 | 看子项日志定位是高度、双轮、非轮接触还是速度卡住 |
 | 翻正后继续滚走 | roll90 回放能站起，但零速度命令下 base / wheel 速度仍高，`lin_vel` 子条件接近 0 | 加入只在接近直立后生效的 `recovery_stillness` 密集奖励，让低机身线速度和低轮速有可学习梯度 |
 | 非轮接触卡成功 | 策略靠腿或机身撑住，不交接 | 保持“过程允许、成功窗口禁止”的语义；若策略进入近直立低趴静止解，加入近直立后生效的 `recovery_nonwheel_clearance` 正向密集奖励 |
+| 两腿前后劈叉 | roll90 回放能站稳，但左右轮在机身 x 方向明显错开 | 加入近直立后生效的 `recovery_leg_alignment` 惩罚，并把 wheel alignment 纳入 success 和 sim2sim 验收 |
 | 轮子接触力噪声 | 成功窗口抖动 | 先看左右轮 contact force 分布，再调接触阈值或连续窗口 |
 | 动作过猛 | sim2sim 不稳、力矩打满 | 成功率起来后逐步加动作/力矩正则，不在早期压探索 |
 

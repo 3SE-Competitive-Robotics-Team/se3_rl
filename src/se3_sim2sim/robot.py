@@ -201,11 +201,21 @@ class WheelLeggedRobot:
 
         # 轮子最低点离地高度：轮子中心 z - 轮子半径
         # 反映实际离地间隙，跳跃时比 baselink 高度更直观
-        l_wheel_z = float(self.data.body("l_wheel_Link").xpos[2])
-        r_wheel_z = float(self.data.body("r_wheel_Link").xpos[2])
+        l_wheel_pos = np.asarray(self.data.body("l_wheel_Link").xpos, dtype=np.float64).copy()
+        r_wheel_pos = np.asarray(self.data.body("r_wheel_Link").xpos, dtype=np.float64).copy()
+        l_wheel_z = float(l_wheel_pos[2])
+        r_wheel_z = float(r_wheel_pos[2])
         wheel_clearance_l = l_wheel_z - wheel_radius  # 左轮最低点离地高度
         wheel_clearance_r = r_wheel_z - wheel_radius  # 右轮最低点离地高度
         wheel_clearance = min(wheel_clearance_l, wheel_clearance_r)  # 取两轮最低
+        wheel_delta_b = rotate_inverse(self.base_quat, l_wheel_pos - r_wheel_pos)
+        wheel_lateral_distance = abs(float(wheel_delta_b[1]))
+        wheel_fore_aft_offset = abs(float(wheel_delta_b[0]))
+        dof_pos = self.dof_pos
+        leg_mirror_error = max(
+            abs(float(dof_pos[0] - dof_pos[3])),
+            abs(float(dof_pos[1] - dof_pos[4])),
+        )
         contact = self._ground_contact_state()
         leg_clearance = self._min_collision_geom_z_for(self._leg_geom_ids)
         base_clearance = self._min_collision_geom_z_for(self._base_geom_ids)
@@ -220,6 +230,9 @@ class WheelLeggedRobot:
             "wheel_clearance_right": float(wheel_clearance_r),  # 右轮最低点离地高度
             "leg_clearance": float(leg_clearance),  # 腿部碰撞几何最低点离地高度
             "base_clearance": float(base_clearance),  # base 碰撞几何最低点离地高度
+            "wheel_lateral_distance": float(wheel_lateral_distance),
+            "wheel_fore_aft_offset": float(wheel_fore_aft_offset),
+            "leg_mirror_error": float(leg_mirror_error),
             "wheel_contact": float(contact["wheel_contact"]),
             "wheel_full_contact": float(contact["wheel_full_contact"]),
             "wheel_contact_left": float(contact["wheel_contact_left"]),
@@ -249,7 +262,7 @@ class WheelLeggedRobot:
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),
             "base_ang_vel_world": self.base_ang_vel_world.copy().tolist(),
             "projected_gravity": self.projected_gravity.copy().tolist(),
-            "dof_pos": self.dof_pos.copy().tolist(),
+            "dof_pos": dof_pos.copy().tolist(),
             "dof_vel": self.dof_vel.copy().tolist(),
             "policy_action_raw": self.last_policy_action.copy().tolist(),
             "policy_action_clipped": self.last_clipped_policy_action.copy().tolist(),

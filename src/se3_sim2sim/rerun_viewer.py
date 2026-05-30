@@ -168,6 +168,18 @@ class RerunViewer:
         self._log_scalar("/plots/contact/leg_right", telemetry.get("leg_contact_right", 0.0))
         self._log_scalar("/plots/contact/base", telemetry.get("base_contact", 0.0))
         self._log_scalar("/plots/contact/nonwheel", telemetry.get("nonwheel_contact", 0.0))
+        self._log_scalar(
+            "/plots/leg_alignment/wheel_lateral_distance_m",
+            telemetry.get("wheel_lateral_distance", 0.0),
+        )
+        self._log_scalar(
+            "/plots/leg_alignment/wheel_fore_aft_offset_m",
+            telemetry.get("wheel_fore_aft_offset", 0.0),
+        )
+        self._log_scalar(
+            "/plots/leg_alignment/leg_mirror_error_rad",
+            telemetry.get("leg_mirror_error", 0.0),
+        )
         yaw_pid = telemetry.get("yaw_pid")
         if isinstance(yaw_pid, dict):
             self._log_scalar("/plots/yaw_pid/current_yaw", yaw_pid["current_yaw"])

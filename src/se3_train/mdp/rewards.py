@@ -15,6 +15,7 @@ from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from se3_shared import Joint, JointGroup
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.leg_alignment import wheel_alignment_ok, wheel_alignment_penalty
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -1079,6 +1080,54 @@ def recovery_stand_stillness(
     return reward
 
 
+def recovery_stand_leg_alignment(
+    env: ManagerBasedRlEnv,
+    gate_start_deg: float = 75.0,
+    gate_full_deg: float = 15.0,
+    min_lateral_distance: float = 0.40,
+    max_lateral_distance: float = 0.46,
+    max_fore_aft_offset: float = 0.03,
+    lateral_scale: float = 0.04,
+    fore_aft_scale: float = 0.03,
+    fore_aft_weight: float = 1.5,
+    max_penalty: float = 4.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """接近直立后惩罚左右轮前后错位，避免站成前后劈叉。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene[asset_cfg.name]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    penalty, lateral_distance, fore_aft_offset, alignment_ok = wheel_alignment_penalty(
+        env,
+        min_lateral_distance=min_lateral_distance,
+        max_lateral_distance=max_lateral_distance,
+        max_fore_aft_offset=max_fore_aft_offset,
+        lateral_scale=lateral_scale,
+        fore_aft_scale=fore_aft_scale,
+        fore_aft_weight=fore_aft_weight,
+        max_penalty=max_penalty,
+        asset_cfg=asset_cfg,
+    )
+    result = penalty * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/leg_alignment_penalty": _masked_mean(result, active),
+                "RecoveryStand/wheel_lateral_distance_m": _masked_mean(lateral_distance, active),
+                "RecoveryStand/wheel_fore_aft_offset_m": _masked_mean(fore_aft_offset, active),
+                "RecoveryStand/wheel_alignment_ok_rate": _masked_mean(alignment_ok.float(), active),
+                "RecoveryStand/leg_alignment_gate": _masked_mean(near_upright_gate, active),
+            }
+        )
+
+    return result
+
+
 def recovery_success_bonus(
     env: ManagerBasedRlEnv,
     left_wheel_sensor_name: str,
@@ -1093,6 +1142,9 @@ def recovery_success_bonus(
     force_threshold: float = 1.0,
     stable_steps_required: int = 50,
     min_episode_steps: int = 50,
+    min_wheel_lateral_distance: float = 0.40,
+    max_wheel_lateral_distance: float = 0.46,
+    max_wheel_fore_aft_offset: float = 0.03,
     completion_bonus: float = 10.0,
 ) -> torch.Tensor:
     """成功窗口完成时给一次性奖励。"""
@@ -1114,9 +1166,22 @@ def recovery_success_bonus(
         env, right_wheel_sensor_name, force_threshold
     )
     nonwheel_clear = ~_contact_bool(env, nonwheel_sensor_name, force_threshold)
+    wheel_alignment, _, _ = wheel_alignment_ok(
+        env,
+        min_lateral_distance=min_wheel_lateral_distance,
+        max_lateral_distance=max_wheel_lateral_distance,
+        max_fore_aft_offset=max_wheel_fore_aft_offset,
+    )
 
     success = (
-        active & upright_ok & height_ok & ang_vel_ok & lin_vel_ok & dual_contact & nonwheel_clear
+        active
+        & upright_ok
+        & height_ok
+        & ang_vel_ok
+        & lin_vel_ok
+        & dual_contact
+        & nonwheel_clear
+        & wheel_alignment
     )
     completed = recovery_state.update_success_window(
         env,
