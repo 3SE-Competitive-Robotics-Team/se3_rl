@@ -179,11 +179,13 @@ jump_phase = 0.0
 | `recovery_wheel_contact` | 接近直立后鼓励轮子重新成为接地点 |
 | `recovery_nonwheel_clearance` | 接近直立后鼓励机身、腿部等非轮部件离地，避免靠身体/腿撑住的低趴解 |
 | `recovery_stillness` | 接近直立后鼓励机身线速度和轮速降到可交接范围，避免翻正后继续滚走 |
-| `recovery_leg_alignment` | 接近直立后惩罚左右轮前后错位和异常轮距，避免两条腿前后劈叉 |
+| `recovery_leg_alignment` | 从恢复中段开始惩罚左右轮前后错位和异常轮距，避免两条腿前后劈叉 |
 | `recovery_success_bonus` | 成功窗口完成后一次性给 `10.0` |
 | `action_rate` | 轻量动作变化正则 |
 | `leg_torques` | 轻量力矩正则 |
 | `leg_power` | 轻量功率正则 |
+
+`recovery_leg_alignment` 不能等到完全接近直立才启动。roll90 早期回放已观察到策略在约 `80°` 倾角附近通过左右腿前后错位把机身撑起，因此该惩罚从 `135°` 开始逐步打开，防止把前后劈叉学成中间支撑路径。
 
 过程语义：
 
