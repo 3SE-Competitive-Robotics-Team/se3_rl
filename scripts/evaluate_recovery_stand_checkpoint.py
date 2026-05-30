@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-dual-wheel-contact-rate", type=float, default=0.5)
     parser.add_argument("--max-nonwheel-contact-rate", type=float, default=0.2)
     parser.add_argument(
+        "--allow-final-single-wheel-contact",
+        action="store_true",
+        help="允许终态只有单轮触地，仅用于诊断历史 checkpoint。",
+    )
+    parser.add_argument(
         "--fail-on-threshold",
         action="store_true",
         help="未通过阈值时返回非 0；默认只表示评估流程是否成功执行。",
@@ -115,18 +120,29 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
         float(rollout.get("wheel_contact_right_rate", 0.0)),
     )
     nonwheel_rate = float(rollout.get("nonwheel_contact_rate", 1.0))
+    final_left_wheel_contact = float(final.get("wheel_contact_left", 0.0))
+    final_right_wheel_contact = float(final.get("wheel_contact_right", 0.0))
+    final_dual_wheel_contact = (
+        float(final.get("wheel_full_contact", 0.0)) > 0.5
+        and final_left_wheel_contact > 0.5
+        and final_right_wheel_contact > 0.5
+    )
     passed = (
         payload["done_reason"] == "max_steps"
         and final_tilt <= float(args.max_final_tilt_deg)
         and height_error <= float(args.max_height_error_m)
         and dual_wheel_rate >= float(args.min_dual_wheel_contact_rate)
         and nonwheel_rate <= float(args.max_nonwheel_contact_rate)
+        and (args.allow_final_single_wheel_contact or final_dual_wheel_contact)
     )
     return {
         "passed": passed,
         "final_tilt_deg": final_tilt,
         "final_height_m": final_height,
         "final_height_error_m": height_error,
+        "final_dual_wheel_contact": final_dual_wheel_contact,
+        "final_left_wheel_contact": final_left_wheel_contact,
+        "final_right_wheel_contact": final_right_wheel_contact,
         "dual_wheel_contact_rate": dual_wheel_rate,
         "nonwheel_contact_rate": nonwheel_rate,
         "max_tilt_deg": float(rollout["tilt_deg"]["max"]),
