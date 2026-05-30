@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import events, rewards
+from . import curriculums, events, rewards
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """统一全姿态随机的反倒自起训练环境。"""
 
     cfg = flat_env_cfg(play=play)
+    steps_per_policy_iter = 64
 
     cfg.events["reset_root_state"] = EventTermCfg(
         func=events.reset_root_state_full_angle_random,
@@ -29,6 +31,34 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "clearance_range": (0.02, 0.05),
             "lin_vel_range": (-0.15, 0.15),
             "ang_vel_range": (-0.8, 0.8),
+            "use_iterations": True,
+            "steps_per_policy_iter": steps_per_policy_iter,
+            "curriculum_stages": [
+                {
+                    "iteration": 0,
+                    "tilt_range": (0.0, 1.05),
+                    "lin_vel_range": (-0.05, 0.05),
+                    "ang_vel_range": (-0.2, 0.2),
+                },
+                {
+                    "iteration": 300,
+                    "tilt_range": (0.0, 1.57),
+                    "lin_vel_range": (-0.08, 0.08),
+                    "ang_vel_range": (-0.35, 0.35),
+                },
+                {
+                    "iteration": 700,
+                    "tilt_range": (0.0, 2.36),
+                    "lin_vel_range": (-0.12, 0.12),
+                    "ang_vel_range": (-0.6, 0.6),
+                },
+                {
+                    "iteration": 1100,
+                    "tilt_range": (0.0, 3.141592653589793),
+                    "lin_vel_range": (-0.15, 0.15),
+                    "ang_vel_range": (-0.8, 0.8),
+                },
+            ],
         },
     )
     cfg.events["reset_joints"] = EventTermCfg(
@@ -36,8 +66,38 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "joint_offset_range": 0.25,
-            "joint_vel_range": (-0.8, 0.8),
+            "joint_offset_range": 0.0,
+            "hip_joint_offset_range": (-0.10, 0.10),
+            "knee_joint_offset_range": (-0.10, 0.10),
+            "joint_vel_range": (-0.2, 0.2),
+            "use_iterations": True,
+            "steps_per_policy_iter": steps_per_policy_iter,
+            "curriculum_stages": [
+                {
+                    "iteration": 0,
+                    "hip_joint_offset_range": (-0.10, 0.10),
+                    "knee_joint_offset_range": (-0.10, 0.10),
+                    "joint_vel_range": (-0.2, 0.2),
+                },
+                {
+                    "iteration": 500,
+                    "hip_joint_offset_range": (-0.20, 0.25),
+                    "knee_joint_offset_range": (-0.20, 0.30),
+                    "joint_vel_range": (-0.4, 0.4),
+                },
+                {
+                    "iteration": 1000,
+                    "hip_joint_offset_range": (-0.35, 0.40),
+                    "knee_joint_offset_range": (-0.30, 0.45),
+                    "joint_vel_range": (-0.6, 0.6),
+                },
+                {
+                    "iteration": 1500,
+                    "hip_joint_offset_range": (-0.50, 0.55),
+                    "knee_joint_offset_range": (-0.45, 0.65),
+                    "joint_vel_range": (-0.8, 0.8),
+                },
+            ],
         },
     )
 
@@ -87,6 +147,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "sigma": 0.05,
             "height_sensor_name": "base_height_sensor",
             "use_upright_gate": True,
+            "min_upright_gate": 0.25,
         },
     )
     cfg.rewards["upright_leg_contact"] = RewardTermCfg(
@@ -124,5 +185,47 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "max_penalty": 9.0,
         },
     )
+
+    if cfg.curriculum is not None:
+        cfg.curriculum["command_vel"] = CurriculumTermCfg(
+            func=curriculums.commands_vel,
+            params={
+                "command_name": "velocity_height",
+                "use_iterations": True,
+                "steps_per_policy_iter": steps_per_policy_iter,
+                "velocity_stages": [
+                    {
+                        "iteration": 0,
+                        "lin_vel_x_range": (0.0, 0.0),
+                        "ang_vel_yaw_range": (0.0, 0.0),
+                    },
+                    {
+                        "iteration": 250,
+                        "lin_vel_x_range": (-0.3, 0.3),
+                        "ang_vel_yaw_range": (-0.3, 0.3),
+                    },
+                    {
+                        "iteration": 600,
+                        "lin_vel_x_range": (-0.5, 0.5),
+                        "ang_vel_yaw_range": (-0.5, 0.5),
+                    },
+                    {
+                        "iteration": 1000,
+                        "lin_vel_x_range": (-1.0, 1.0),
+                        "ang_vel_yaw_range": (-0.5, 0.5),
+                    },
+                    {
+                        "iteration": 1500,
+                        "lin_vel_x_range": (-1.5, 1.5),
+                        "ang_vel_yaw_range": (-0.75, 0.75),
+                    },
+                    {
+                        "iteration": 2200,
+                        "lin_vel_x_range": (-1.5, 1.5),
+                        "ang_vel_yaw_range": (-1.0, 1.0),
+                    },
+                ],
+            },
+        )
 
     return cfg

@@ -281,8 +281,9 @@ def tracking_height(
     height_sensor_name: str,
     ignore_recovery: bool = False,
     use_upright_gate: bool = False,
+    min_upright_gate: float = 0.0,
 ) -> torch.Tensor:
-    """高度跟踪奖励，可按配置乘 upright_gate。"""
+    """高度跟踪奖励，可保留倒地阶段的最小高度梯度。"""
     cmd = env.command_manager.get_command(command_name)
 
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
@@ -292,7 +293,11 @@ def tracking_height(
     reward = torch.exp(-error / sigma)
     if use_upright_gate:
         robot = env.scene["robot"]
-        reward = reward * _upright_factor(robot.data.projected_gravity_b[:, 2])
+        gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+        gate = torch.clamp(gate, min=float(min_upright_gate))
+        reward = reward * gate
+        if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+            env.extras["log"]["Locomotion/height_gate"] = gate.mean().item()
     if ignore_recovery:
         reward = reward * (~_recovery_reset_mask(env)).float()
     return reward

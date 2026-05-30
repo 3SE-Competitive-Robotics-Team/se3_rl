@@ -55,6 +55,52 @@ def _active_recovery_stage(
     return active
 
 
+def _curriculum_progress(
+    env: ManagerBasedRlEnv,
+    *,
+    use_iterations: bool,
+    steps_per_policy_iter: int,
+    offset_iter: int = 0,
+) -> int:
+    """返回 reset 课程进度；自起任务用 PPO iter，避免课程在几十 iter 内全展开。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    if not use_iterations:
+        return step
+    steps_per_iter = max(1, int(steps_per_policy_iter))
+    return max(0, step // steps_per_iter - int(offset_iter))
+
+
+def _active_curriculum_stage(
+    env: ManagerBasedRlEnv,
+    stages: list[dict] | None,
+    *,
+    use_iterations: bool,
+    steps_per_policy_iter: int,
+    offset_iter: int = 0,
+) -> tuple[dict, int]:
+    """按课程进度选择当前 stage。"""
+    if not stages:
+        return {}, _curriculum_progress(
+            env,
+            use_iterations=use_iterations,
+            steps_per_policy_iter=steps_per_policy_iter,
+            offset_iter=offset_iter,
+        )
+
+    progress = _curriculum_progress(
+        env,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    key = "iteration" if use_iterations else "step"
+    active = stages[0]
+    for stage in stages:
+        if progress >= int(stage.get(key, stage.get("step", 0))):
+            active = stage
+    return active, progress
+
+
 def _ensure_recovery_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
     """创建并返回每个 env 的 recovery reset 标记。"""
     return recovery_state.ensure_bool_buffer(env, "_recovery_reset_mask")
@@ -188,12 +234,31 @@ def reset_root_state_full_angle_random(
     pos_xy_range: tuple[float, float] = (-0.1, 0.1),
     lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     ang_vel_range: tuple[float, float] = (-0.8, 0.8),
+    curriculum_stages: list[dict] | None = None,
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = 64,
+    offset_iter: int = 0,
 ) -> None:
     """统一 reset：随机倾倒角和水平倾倒轴，不区分 roll/pitch 来源。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
     _pre_resample_jump_command_for_reset(env, env_ids)
+    stage, curriculum_progress = _active_curriculum_stage(
+        env,
+        curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    tilt_range = _stage_value(stage, "tilt_range", tilt_range)
+    tilt_axis_range = _stage_value(stage, "tilt_axis_range", tilt_axis_range)
+    yaw_range = _stage_value(stage, "yaw_range", yaw_range)
+    height_range = _stage_value(stage, "height_range", height_range)
+    clearance_range = _stage_value(stage, "clearance_range", clearance_range)
+    pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
+    lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
+    ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -273,6 +338,9 @@ def reset_root_state_full_angle_random(
         log.update(
             {
                 "Reset/full_angle_random_ratio": 1.0,
+                "Reset/curriculum_progress": float(curriculum_progress),
+                "Reset/curriculum_tilt_max_deg": float(tilt_range[1]) * 180.0
+                / 3.141592653589793,
                 "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
                 "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
                 "Reset/mean_base_height_m": base_height.mean().item(),
@@ -699,18 +767,63 @@ def reset_root_state_full(
     env._jump_pose_ref_yaw[env_ids] = yaw_ref
 
 
+def _symmetric_or_explicit_range(value: float | tuple[float, float]) -> tuple[float, float]:
+    """把标量扰动转成对称区间，显式二元组保持原样。"""
+    if isinstance(value, tuple):
+        return float(value[0]), float(value[1])
+    magnitude = float(value)
+    return -magnitude, magnitude
+
+
+def _sample_joint_offset(
+    env: ManagerBasedRlEnv,
+    value_range: float | tuple[float, float],
+    shape: tuple[int, int],
+) -> torch.Tensor:
+    """采样关节角 offset。"""
+    low, high = _symmetric_or_explicit_range(value_range)
+    return sample_uniform(
+        torch.tensor(low, device=env.device),
+        torch.tensor(high, device=env.device),
+        shape,
+        env.device,
+    )
+
+
 def reset_joints(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     joint_offset_range: float = 0.0,
     joint_vel_range: tuple[float, float] = (0.0, 0.0),
+    hip_joint_offset_range: float | tuple[float, float] | None = None,
+    knee_joint_offset_range: float | tuple[float, float] | None = None,
+    curriculum_stages: list[dict] | None = None,
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = 64,
+    offset_iter: int = 0,
     recovery_joint_offset_range: float = 0.0,
     recovery_joint_vel_range: tuple[float, float] = (0.0, 0.0),
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    stage, curriculum_progress = _active_curriculum_stage(
+        env,
+        curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    joint_offset_range = _stage_value(stage, "joint_offset_range", joint_offset_range)
+    joint_vel_range = _stage_value(stage, "joint_vel_range", joint_vel_range)
+    hip_joint_offset_range = _stage_value(
+        stage, "hip_joint_offset_range", hip_joint_offset_range
+    )
+    knee_joint_offset_range = _stage_value(
+        stage, "knee_joint_offset_range", knee_joint_offset_range
+    )
 
     asset: Entity = env.scene[asset_cfg.name]
 
@@ -719,8 +832,37 @@ def reset_joints(
 
     joint_pos[:, JointGroup.WHEELS] = 0.0
 
-    if joint_offset_range > 0.0:
-        leg_ids = torch.tensor(JointGroup.LEGS, device=env.device)
+    leg_ids = torch.tensor(JointGroup.LEGS, device=env.device)
+    if hip_joint_offset_range is not None or knee_joint_offset_range is not None:
+        hip_ids = torch.tensor([JointGroup.LEGS[0], JointGroup.LEGS[2]], device=env.device)
+        knee_ids = torch.tensor([JointGroup.LEGS[1], JointGroup.LEGS[3]], device=env.device)
+        if hip_joint_offset_range is not None:
+            joint_pos[:, hip_ids] += _sample_joint_offset(
+                env,
+                hip_joint_offset_range,
+                (len(env_ids), 2),
+            )
+        if knee_joint_offset_range is not None:
+            joint_pos[:, knee_ids] += _sample_joint_offset(
+                env,
+                knee_joint_offset_range,
+                (len(env_ids), 2),
+            )
+        joint_vel[:, leg_ids] = sample_uniform(
+            torch.tensor(float(joint_vel_range[0]), device=env.device),
+            torch.tensor(float(joint_vel_range[1]), device=env.device),
+            (len(env_ids), len(JointGroup.LEGS)),
+            env.device,
+        )
+
+        soft_limits = asset.data.soft_joint_pos_limits
+        if soft_limits is not None:
+            joint_pos[:, leg_ids] = torch.clamp(
+                joint_pos[:, leg_ids],
+                soft_limits[env_ids[:, None], leg_ids, 0],
+                soft_limits[env_ids[:, None], leg_ids, 1],
+            )
+    elif joint_offset_range > 0.0:
         offset = sample_uniform(
             torch.tensor(-float(joint_offset_range), device=env.device),
             torch.tensor(float(joint_offset_range), device=env.device),
@@ -742,6 +884,10 @@ def reset_joints(
                 soft_limits[env_ids[:, None], leg_ids, 0],
                 soft_limits[env_ids[:, None], leg_ids, 1],
             )
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log["Reset/joint_curriculum_progress"] = float(curriculum_progress)
 
     recovery_mask = getattr(env, "_recovery_reset_mask", None)
     if (
