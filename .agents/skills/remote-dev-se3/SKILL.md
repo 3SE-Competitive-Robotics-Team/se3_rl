@@ -15,6 +15,7 @@ user-invocable: true
 | SSH 别名 | 云厂商 | GPU | 备忘录 |
 |---|---|---|---|
 | `wuyinyun` | 无影云 | RTX 5880 Ada 48GB | `machines/wuyinyun.md` |
+| `gpufree` | gpufree 容器 | RTX 4090 24GB | `machines/gpufree.md` |
 
 > 新增机器时：在 `machines/` 下新建对应 `.md` 文件，并在上表添加一行。
 

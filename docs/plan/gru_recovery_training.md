@@ -1,6 +1,6 @@
 # GRU 反倒起身训练规范
 
-> 状态：当前训练 contract。本文以 `SE3-WheelLegged-Recovery-GRU` 为准，覆盖从零训练、全姿态 reset、统一奖励、终止、监控和验收指标。
+> 状态：历史方案。当前新的分离训练方向见 `docs/plan/recovery_stand_training.md`，新任务计划为 `SE3-WheelLegged-Recovery-Stand-GRU`，只训练倒地自起到固定站立态；本文保留用于追溯旧的“自起 + locomotion 同策略”方案。
 
 ## 目标
 
