@@ -114,6 +114,7 @@
 - `uv run` 的 MuJoCo 编译检查通过。
 - `se3-joint-viewer --closedchain-spring` 可打开并拖动主动杆。
 - 默认站姿无明显爆约束、穿地或自碰问题。
+- 交付闭链 MJCF 文件路径和查看命令。查看命令必须固定 `base_link`，允许主动拖动 `LF/LB/RF/RB` 主动杆，其他杆件在重力下自由响应，且 300 N 气弹簧力实际生效。
 
 ### Phase 2：共享配置和索引重构
 
@@ -252,5 +253,6 @@ MJCF 自带气弹簧 actuator 后，`model.nu` 不再等于 6。
 - openchain variant 仍可显式启用。
 - policy action/actor 腿部观测语义为主动杆坐标。
 - 闭链默认站姿稳定，无 NaN、无约束爆炸、无意外穿地。
+- 已给出闭链 MJCF 文件和固定 base 的查看命令；该命令下可主动拖动主动杆，其他杆件受重力，气弹簧力生效。
 - CPU smoke 通过。
 - 文档说明新 joint/action contract 和回退方式。
