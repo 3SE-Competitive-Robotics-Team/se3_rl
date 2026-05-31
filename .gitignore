@@ -17,6 +17,8 @@ wandb/
 
 # Training and smoke run logs
 logs/
+checkpoints/
+outputs/
 
 # MuJoCo runtime logs
 MUJOCO_LOG.TXT
@@ -28,6 +30,12 @@ replays/
 # AI tooling
 .sisyphus/
 .opencode/
+.omx/
+.tmp/
 opencode.json
 .DS_Store
+.vscode/
 xyh-learning/
+
+# Local probes
+sw_probe.txt

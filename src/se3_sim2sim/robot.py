@@ -22,6 +22,31 @@ _SHARED_ROBOT = SharedRobotConfig()
 _RESET_FLOOR_CLEARANCE_M = 0.01
 
 
+def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
+    """读取模型中的非 freejoint 关节名。"""
+    names: list[str] = []
+    for jid in range(model.njnt):
+        if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+def _model_has_joints(model: mujoco.MjModel, names: tuple[str, ...]) -> bool:
+    """判断模型是否包含一组关节。"""
+    available = set(_model_joint_names(model))
+    return all(name in available for name in names)
+
+
+def _policy_joint_names_for_model(model: mujoco.MjModel) -> tuple[str, ...]:
+    """闭链使用主动杆；开链显式回退到旧 lf1/rf1 语义。"""
+    if _model_has_joints(model, JointGroup.POLICY_LEG_NAMES):
+        return JointGroup.POLICY_JOINT_NAMES
+    return (*JointGroup.OPENCHAIN_LEG_NAMES, *JointGroup.WHEEL_NAMES)
+
+
 def _tn_clip(
     effort: np.ndarray,
     velocity: np.ndarray,
@@ -77,16 +102,42 @@ class WheelLeggedRobot:
         self.obs = ObservationBuilder(robot_cfg=cfg, runtime=runtime)
         self.yaw_pid = YawPidController(cfg.yaw_pid)
 
-        self.joint_ids = [self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in runtime.joint_names]
+        self.policy_joint_names = _policy_joint_names_for_model(self.model)
+        self.joint_ids = [
+            self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in self.policy_joint_names
+        ]
         self.joint_qpos = np.asarray(
             [self.model.jnt_qposadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
         self.joint_qvel = np.asarray(
             [self.model.jnt_dofadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
-        self.default_dof_pos = as_float64(cfg.default_dof_pos)
+        if self.policy_joint_names == JointGroup.POLICY_JOINT_NAMES:
+            self.default_dof_pos = as_float64(cfg.default_dof_pos)
+        else:
+            default_map = _SHARED_ROBOT.default_model_joint_pos
+            self.default_dof_pos = np.asarray(
+                [default_map[name] for name in self.policy_joint_names], dtype=np.float64
+            )
         self.action_scale = as_float64(cfg.action_scale)
         self.torque_limits = as_float64(cfg.torque_limits)
+        self.motor_actuator_names = tuple(f"{name}_motor" for name in self.policy_joint_names)
+        self.motor_ctrl_ids = np.asarray(
+            [self._id(mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in self.motor_actuator_names],
+            dtype=np.int64,
+        )
+        self.output_joint_names = tuple(
+            name
+            for name in JointGroup.OUTPUT_LEG_NAMES
+            if mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0
+        )
+        self.output_joint_qpos = np.asarray(
+            [
+                self.model.jnt_qposadr[self._id(mujoco.mjtObj.mjOBJ_JOINT, name)]
+                for name in self.output_joint_names
+            ],
+            dtype=np.int64,
+        )
         self.command = np.asarray(cfg.command, dtype=np.float64)
         self.last_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_applied_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
@@ -121,7 +172,7 @@ class WheelLeggedRobot:
         pitch = float(self.cfg.initial_pitch_rad)
         yaw = float(self.cfg.initial_yaw_rad)
         self.data.qvel[0:6] = 0.0
-        self.data.qpos[self.joint_qpos] = self.default_dof_pos
+        self._apply_default_joint_positions()
         self.data.qvel[self.joint_qvel] = 0.0
         if (not fixed) or randomize_root:
             roll_offset, pitch_offset, yaw_offset = self.rng.uniform(-0.25, 0.25, size=3)
@@ -170,7 +221,7 @@ class WheelLeggedRobot:
             applied_action = self.action_fifo[self.action_delay_steps]
             self.last_applied_action[:] = applied_action
             ctrl = self._compute_pd_torques(applied_action)
-            self.data.ctrl[:] = ctrl
+            self.data.ctrl[self.motor_ctrl_ids] = ctrl
             mujoco.mj_step(self.model, self.data)
         self._refresh_state()
         self.step_count += 1
@@ -212,9 +263,18 @@ class WheelLeggedRobot:
         wheel_lateral_distance = abs(float(wheel_delta_b[1]))
         wheel_fore_aft_offset = abs(float(wheel_delta_b[0]))
         dof_pos = self.dof_pos
+        output_leg_pos = self.output_leg_pos
         leg_mirror_error = max(
-            abs(float(dof_pos[0] - dof_pos[3])),
-            abs(float(dof_pos[1] - dof_pos[4])),
+            abs(float(dof_pos[0] - dof_pos[2])),
+            abs(float(dof_pos[1] - dof_pos[3])),
+        )
+        output_leg_mirror_error = (
+            max(
+                abs(float(output_leg_pos[0] - output_leg_pos[2])),
+                abs(float(output_leg_pos[1] - output_leg_pos[3])),
+            )
+            if output_leg_pos.shape == (4,)
+            else 0.0
         )
         contact = self._ground_contact_state()
         leg_clearance = self._min_collision_geom_z_for(self._leg_geom_ids)
@@ -233,6 +293,7 @@ class WheelLeggedRobot:
             "wheel_lateral_distance": float(wheel_lateral_distance),
             "wheel_fore_aft_offset": float(wheel_fore_aft_offset),
             "leg_mirror_error": float(leg_mirror_error),
+            "output_leg_mirror_error": float(output_leg_mirror_error),
             "wheel_contact": float(contact["wheel_contact"]),
             "wheel_full_contact": float(contact["wheel_full_contact"]),
             "wheel_contact_left": float(contact["wheel_contact_left"]),
@@ -264,6 +325,9 @@ class WheelLeggedRobot:
             "projected_gravity": self.projected_gravity.copy().tolist(),
             "dof_pos": dof_pos.copy().tolist(),
             "dof_vel": self.dof_vel.copy().tolist(),
+            "policy_joint_names": list(self.policy_joint_names),
+            "output_leg_pos": output_leg_pos.copy().tolist(),
+            "output_joint_names": list(self.output_joint_names),
             "policy_action_raw": self.last_policy_action.copy().tolist(),
             "policy_action_clipped": self.last_clipped_policy_action.copy().tolist(),
             "last_action": self.last_action.copy().tolist(),
@@ -444,6 +508,10 @@ class WheelLeggedRobot:
         return self.data.qvel[self.joint_qvel].copy()
 
     @property
+    def output_leg_pos(self) -> np.ndarray:
+        return self.data.qpos[self.output_joint_qpos].copy()
+
+    @property
     def tilt_deg(self) -> float:
         return float(np.degrees(np.arccos(np.clip(-float(self.projected_gravity[2]), -1.0, 1.0))))
 
@@ -467,8 +535,12 @@ class WheelLeggedRobot:
         """
         spec = mujoco.MjSpec.from_file(xml_path)
 
-        leg_joint_names = ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint")
-        wheel_joint_names = ("l_wheel_Joint", "r_wheel_Joint")
+        joint_names = tuple(joint.name for joint in spec.joints if joint.name)
+        if all(name in joint_names for name in JointGroup.POLICY_LEG_NAMES):
+            leg_joint_names = JointGroup.POLICY_LEG_NAMES
+        else:
+            leg_joint_names = JointGroup.OPENCHAIN_LEG_NAMES
+        wheel_joint_names = JointGroup.WHEEL_NAMES
 
         for jname in leg_joint_names:
             act = spec.add_actuator()
@@ -500,6 +572,15 @@ class WheelLeggedRobot:
 
         return spec.compile()
 
+    def _apply_default_joint_positions(self) -> None:
+        """把闭链被动输出和 policy 关节一起写到默认站姿。"""
+        default_map = _SHARED_ROBOT.default_model_joint_pos
+        for joint_name, value in default_map.items():
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                continue
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
+
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
         self.base_lin_vel_world = self.data.qvel[0:3].copy()
@@ -524,6 +605,7 @@ class WheelLeggedRobot:
         leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
         leg_default = self.default_dof_pos[JointGroup.CTRL_LEGS]
         leg_target = action[:4] * leg_scale + leg_default
+        leg_target = self._clamp_active_rod_angle_target(leg_target)
         leg_pos_err = leg_target - dof_pos[JointGroup.CTRL_LEGS]
         leg_vel = dof_vel[JointGroup.CTRL_LEGS]
         leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
@@ -551,6 +633,22 @@ class WheelLeggedRobot:
         ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
         return ctrl
+
+    def _clamp_active_rod_angle_target(self, leg_target: np.ndarray) -> np.ndarray:
+        """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
+        if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES:
+            return leg_target
+        target = np.asarray(leg_target, dtype=np.float64).copy()
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+            angle = np.clip(
+                front_coef * target[front_idx] + back_coef * target[back_idx],
+                lower,
+                upper,
+            )
+            target[back_idx] = (angle - front_coef * target[front_idx]) / back_coef
+        return target
 
     def _sample_action_delay_steps(self) -> int:
         if self.min_action_delay_steps == self.max_action_delay_steps:

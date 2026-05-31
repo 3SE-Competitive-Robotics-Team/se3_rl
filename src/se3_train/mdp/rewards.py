@@ -12,15 +12,25 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
-from se3_shared import Joint, JointGroup
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.joint_indices import (
+    active_rod_angle_terms,
+    is_closedchain_model,
+    leg_actuator_ids,
+    output_leg_mirror_diffs,
+    policy_leg_joint_ids,
+    wheel_actuator_ids,
+    wheel_joint_ids,
+)
 from se3_train.mdp.leg_alignment import wheel_alignment_ok, wheel_alignment_penalty
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+_SHARED_ROBOT = SharedRobotConfig()
 
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -378,9 +388,9 @@ def leg_torques(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     recovery_scale: float | None = None,
 ) -> torch.Tensor:
-    """腿部执行器力矩平方和（position actuator 索引 0,1,2,3）。"""
+    """腿部电机力矩平方和，按 actuator 名称排除气弹簧。"""
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force[:, JointGroup.LEG_ACTUATORS]
+    torques = robot.data.actuator_force[:, leg_actuator_ids(robot)]
     penalty = torch.sum(torques**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -397,7 +407,7 @@ def wheel_torques(
     max_torque: 轮子电机额定最大力矩 (N·m)。
     """
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force[:, JointGroup.WHEEL_ACTUATORS]
+    torques = robot.data.actuator_force[:, wheel_actuator_ids(robot)]
     excess = torch.clamp(torch.abs(torques) - max_torque, min=0.0)
     return torch.sum(excess**2, dim=1)
 
@@ -408,7 +418,7 @@ def leg_dof_acc(
     """腿部关节加速度平方和(排除轮子)。"""
     robot = env.scene[asset_cfg.name]
     acc = robot.data.joint_acc
-    return torch.sum(acc[:, JointGroup.LEGS] ** 2, dim=1)
+    return torch.sum(acc[:, policy_leg_joint_ids(robot)] ** 2, dim=1)
 
 
 def leg_power(
@@ -418,8 +428,8 @@ def leg_power(
 ) -> torch.Tensor:
     """腿部关节 |力矩 * 速度| 之和。"""
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force[:, JointGroup.LEG_ACTUATORS]
-    vel = robot.data.joint_vel[:, JointGroup.LEGS]
+    torques = robot.data.actuator_force[:, leg_actuator_ids(robot)]
+    vel = robot.data.joint_vel[:, policy_leg_joint_ids(robot)]
     penalty = torch.sum(torch.abs(torques * vel), dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -454,9 +464,8 @@ def stand_still(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    diff = (
-        robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
-    )
+    leg_ids = policy_leg_joint_ids(robot)
+    diff = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
@@ -564,7 +573,7 @@ def upright_wheel_slip_penalty(
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
     active = (~jump_flag) & (gate >= float(min_upright_gate))
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -1054,7 +1063,7 @@ def recovery_stand_stillness(
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
     base_speed = torch.linalg.norm(robot.data.root_link_lin_vel_b, dim=1)
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -1210,10 +1219,8 @@ def joint_mirror(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    diff = (
-        robot.data.joint_pos[:, [Joint.LF0, Joint.LF1]]
-        - robot.data.joint_pos[:, [Joint.RF0, Joint.RF1]]
-    )
+    hip_diff, knee_diff = output_leg_mirror_diffs(robot, robot.data.joint_pos)
+    diff = torch.stack((hip_diff, knee_diff), dim=1)
     num_pairs = 2
     return torch.sum(diff**2, dim=1) / num_pairs * gate
 
@@ -1288,14 +1295,27 @@ def feet_contact_without_cmd(
 def dof_pos_limits(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """关节限位违规惩罚(仅腿部关节:0,1,3,4)。"""
+    """腿部限位违规惩罚：闭链使用同侧两主动杆夹角。"""
     robot = env.scene[asset_cfg.name]
+    if is_closedchain_model(robot):
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        penalties = []
+        for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(robot):
+            angle = (
+                front_coef * robot.data.joint_pos[:, front_id]
+                + back_coef * robot.data.joint_pos[:, back_id]
+            )
+            penalties.append(-(angle - float(lower)).clip(max=0.0))
+            penalties.append((angle - float(upper)).clip(min=0.0))
+        return torch.stack(penalties, dim=1).sum(dim=1)
+
     soft_limits = robot.data.soft_joint_pos_limits
     if soft_limits is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    pos = robot.data.joint_pos[:, JointGroup.LEGS]
-    limits = soft_limits[:, JointGroup.LEGS]
+    leg_ids = policy_leg_joint_ids(robot)
+    pos = robot.data.joint_pos[:, leg_ids]
+    limits = soft_limits[:, leg_ids]
 
     out_of_limits = -(pos - limits[:, :, 0]).clip(max=0.0)
     out_of_limits += (pos - limits[:, :, 1]).clip(min=0.0)

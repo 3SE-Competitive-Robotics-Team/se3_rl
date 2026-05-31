@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import JointGroup
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.joint_indices import policy_leg_joint_ids
 from se3_train.mdp.leg_alignment import wheel_alignment_ok
 
 if TYPE_CHECKING:
@@ -193,9 +193,10 @@ def catastrophic_state(
         & torch.isfinite(projected_gravity).all(dim=1)
     )
 
-    leg_pos = joint_pos[:, JointGroup.LEGS]
-    leg_default = robot.data.default_joint_pos[:, JointGroup.LEGS]
-    leg_vel = joint_vel[:, JointGroup.LEGS]
+    leg_ids = policy_leg_joint_ids(robot)
+    leg_pos = joint_pos[:, leg_ids]
+    leg_default = robot.data.default_joint_pos[:, leg_ids]
+    leg_vel = joint_vel[:, leg_ids]
     base_height = root_pos[:, 2] - env.scene.env_origins[:, 2]
 
     leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)

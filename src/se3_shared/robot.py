@@ -12,24 +12,24 @@ from .motor import DM8009P, M3508_HEXROLL
 
 
 class Joint(IntEnum):
-    """SerialLeg 受控关节语义枚举。
+    """SerialLeg policy 关节语义枚举。
 
-    值为 MJLab joint_pos / joint_vel 张量中的列索引。
+    值为 policy-order 数组中的列索引，不再等同于 MJCF qpos 顺序。
 
-    MJLab joint_pos 列布局（6 维）：
-        0: lf0_Joint       -> LF0
-        1: lf1_Joint       -> LF1
-        2: l_wheel_Joint   -> L_WHEEL
-        3: rf0_Joint       -> RF0
-        4: rf1_Joint       -> RF1
-        5: r_wheel_Joint   -> R_WHEEL
+    policy 动作/actor 观测布局（6 维）：
+        0: lf0_Joint          -> LF0 / 左前主动杆
+        1: l_drive_bar_Joint  -> LB / 左后主动杆
+        2: rf0_Joint          -> RF0 / 右前主动杆
+        3: r_drive_bar_Joint  -> RB / 右后主动杆
+        4: l_wheel_Joint      -> L_WHEEL
+        5: r_wheel_Joint      -> R_WHEEL
     """
 
     LF0 = 0
-    LF1 = 1
-    L_WHEEL = 2
-    RF0 = 3
-    RF1 = 4
+    LB = 1
+    RF0 = 2
+    RB = 3
+    L_WHEEL = 4
     R_WHEEL = 5
 
     @property
@@ -39,40 +39,70 @@ class Joint(IntEnum):
 
 _MJCF_NAMES: dict[Joint, str] = {
     Joint.LF0: "lf0_Joint",
-    Joint.LF1: "lf1_Joint",
-    Joint.L_WHEEL: "l_wheel_Joint",
+    Joint.LB: "l_drive_bar_Joint",
     Joint.RF0: "rf0_Joint",
-    Joint.RF1: "rf1_Joint",
+    Joint.RB: "r_drive_bar_Joint",
+    Joint.L_WHEEL: "l_wheel_Joint",
     Joint.R_WHEEL: "r_wheel_Joint",
 }
 
 
 class JointGroup:
-    """预定义的关节索引分组，替代散布在各处的魔法索引列表。
+    """预定义的 policy-order 分组和 MJCF 名称。
 
-    LEGS / WHEELS / ALL 中的值是 MJLab joint_pos (6 维) 的列索引。
-    CTRL_LEGS / CTRL_WHEELS 是受控关节 6 维数组（sim2sim dof_pos、actuator 输出）中的位置索引。
-    LEG_ACTUATORS / WHEEL_ACTUATORS 是 actuator_force (6 维) 的列索引，与关节索引无关。
+    LEGS / WHEELS / ALL 只适用于 policy-order 的 6 维数组。
+    训练端读取 MJLab joint_pos / actuator_force 时必须按名称解析，
+    不能把这些索引当作 MJCF qpos 或 actuator_force 的自然顺序。
     """
 
-    LEGS: ClassVar[list[int]] = [Joint.LF0, Joint.LF1, Joint.RF0, Joint.RF1]
+    LEGS: ClassVar[list[int]] = [Joint.LF0, Joint.LB, Joint.RF0, Joint.RB]
     WHEELS: ClassVar[list[int]] = [Joint.L_WHEEL, Joint.R_WHEEL]
-    CTRL_LEGS: ClassVar[list[int]] = [0, 1, 3, 4]
-    CTRL_WHEELS: ClassVar[list[int]] = [2, 5]
+    CTRL_LEGS: ClassVar[list[int]] = LEGS
+    CTRL_WHEELS: ClassVar[list[int]] = WHEELS
     LEG_ACTUATORS: ClassVar[list[int]] = [0, 1, 2, 3]
     WHEEL_ACTUATORS: ClassVar[list[int]] = [4, 5]
     ALL: ClassVar[list[int]] = [
         Joint.LF0,
-        Joint.LF1,
-        Joint.L_WHEEL,
+        Joint.LB,
         Joint.RF0,
-        Joint.RF1,
+        Joint.RB,
+        Joint.L_WHEEL,
         Joint.R_WHEEL,
     ]
+    POLICY_JOINT_NAMES: ClassVar[tuple[str, ...]] = tuple(j.mjcf_name for j in Joint)
+    POLICY_LEG_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "l_drive_bar_Joint",
+        "rf0_Joint",
+        "r_drive_bar_Joint",
+    )
+    OPENCHAIN_LEG_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "lf1_Joint",
+        "rf0_Joint",
+        "rf1_Joint",
+    )
+    WHEEL_NAMES: ClassVar[tuple[str, ...]] = ("l_wheel_Joint", "r_wheel_Joint")
+    OUTPUT_LEG_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "lf1_Joint",
+        "rf0_Joint",
+        "rf1_Joint",
+    )
+    OUTPUT_KNEE_NAMES: ClassVar[tuple[str, ...]] = ("lf1_Joint", "rf1_Joint")
+    CLOSEDCHAIN_PASSIVE_JOINT_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf1_Joint",
+        "l_coupler_Joint",
+        "rf1_Joint",
+        "r_coupler_Joint",
+    )
+    POLICY_MOTOR_ACTUATOR_NAMES: ClassVar[tuple[str, ...]] = tuple(
+        f"{name}_motor" for name in POLICY_JOINT_NAMES
+    )
 
     @staticmethod
     def joint_names() -> tuple[str, ...]:
-        return tuple(j.mjcf_name for j in Joint)
+        return JointGroup.POLICY_JOINT_NAMES
 
 
 class Termination(BaseModel):
@@ -90,12 +120,19 @@ class RobotConfig(BaseModel):
     torque_limits: tuple[float, ...] = (
         DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
         DM8009P.stall_torque,
+        DM8009P.stall_torque,
+        DM8009P.stall_torque,
         M3508_HEXROLL.rated_torque,
-        DM8009P.stall_torque,
-        DM8009P.stall_torque,
         M3508_HEXROLL.rated_torque,
     )
-    default_dof_pos: tuple[float, ...] = (0.4610, 0.4742, 0.0, 0.4610, 0.4742, 0.0)
+    default_dof_pos: tuple[float, ...] = (0.2, -0.5403, -0.2, 0.5403, 0.0, 0.0)
+    default_output_knee_pos: tuple[float, float] = (0.781527708, -0.781527712)
+    default_coupler_pos: tuple[float, float] = (0.785386799, -0.785386809)
+    active_rod_angle_limits: tuple[float, float] = (0.12, 1.36)
+    active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
+        (1.0, -1.0),
+        (-1.0, 1.0),
+    )
     default_base_height: float = 0.22
     action_scale: tuple[float, ...] = (0.35, 0.25, 0.35, 0.25, 20.0, 20.0)
     sim_dt: float = 0.002
@@ -106,3 +143,29 @@ class RobotConfig(BaseModel):
     @property
     def control_dt(self) -> float:
         return self.sim_dt * self.control_decimation
+
+    @property
+    def default_active_rod_angles(self) -> tuple[float, float]:
+        """返回左右腿当前装配分支下的两主动杆夹角。"""
+        left_front, left_back = self.active_rod_angle_coeffs[0]
+        right_front, right_back = self.active_rod_angle_coeffs[1]
+        return (
+            left_front * self.default_dof_pos[Joint.LF0]
+            + left_back * self.default_dof_pos[Joint.LB],
+            right_front * self.default_dof_pos[Joint.RF0]
+            + right_back * self.default_dof_pos[Joint.RB],
+        )
+
+    @property
+    def default_model_joint_pos(self) -> dict[str, float]:
+        """返回闭链/开链 MJCF 都可使用的默认关节角映射。"""
+        policy = dict(zip(JointGroup.POLICY_JOINT_NAMES, self.default_dof_pos, strict=True))
+        policy.update(
+            {
+                "lf1_Joint": self.default_output_knee_pos[0],
+                "rf1_Joint": self.default_output_knee_pos[1],
+                "l_coupler_Joint": self.default_coupler_pos[0],
+                "r_coupler_Joint": self.default_coupler_pos[1],
+            }
+        )
+        return policy

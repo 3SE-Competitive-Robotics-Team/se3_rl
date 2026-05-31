@@ -89,7 +89,9 @@ def _fourbar_solve_phi(
     return float(2 * np.arctan2(q + mode * np.sqrt(disc), p + r))
 
 
-def _set_joint_qpos(model: mujoco.MjModel, data: mujoco.MjData, joint_name: str, value: float) -> None:
+def _set_joint_qpos(
+    model: mujoco.MjModel, data: mujoco.MjData, joint_name: str, value: float
+) -> None:
     """按关节名写入 qpos，避免受四连杆虚拟关节数量影响。"""
     jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
     if jid < 0:

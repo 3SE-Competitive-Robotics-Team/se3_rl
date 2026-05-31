@@ -1,6 +1,6 @@
 # SE3 Wheel Leg
 
-SerialLeg 轮腿机器人（6 DOF）的强化学习训练与 sim2sim 验证框架。训练端用 MJLab（MuJoCo-Warp GPU 加速）跑 PPO，验证端用标准 MuJoCo CPU，两端通过 `se3_shared` 共享机器人常量、观测维度和动作延迟配置，保证 sim2sim gap 可控。
+SerialLeg 轮腿机器人（6 维 policy 动作）的强化学习训练与 sim2sim 验证框架。默认模型是闭链四连杆 + 300 N 气弹簧 MJCF，动作顺序为 `[LF, LB, RF, RB, l_wheel, r_wheel]`。训练端用 MJLab（MuJoCo-Warp GPU 加速）跑 PPO，验证端用标准 MuJoCo CPU，两端通过 `se3_shared` 共享机器人常量、观测维度和动作延迟配置，保证 sim2sim gap 可控。
 
 ## 前置条件
 
@@ -37,6 +37,7 @@ uv run prek install
 ```bash
 just setup     # 装依赖 + 配置 pre-commit hook
 just smoke     # CPU smoke 验证环境
+just check-closedchain-model  # 闭链 MJCF residual/actuator 检查
 just train     # 开始平地训练（需要 GPU + .env）
 just sim       # 加载 checkpoint，Rerun 可视化回放
 ```
@@ -60,6 +61,7 @@ just check       # 环境健康检查（Python / GPU / W&B / prek）
 
 ```bash
 just smoke       # CPU smoke
+just smoke-openchain # 显式开链回退 smoke
 just smoke-gpu   # GPU smoke
 ```
 

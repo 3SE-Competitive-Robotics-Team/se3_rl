@@ -15,9 +15,13 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import JointGroup
 from se3_train.mdp import recovery_state
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
+from se3_train.mdp.joint_indices import (
+    active_leg_mirror_diffs,
+    policy_leg_joint_ids,
+    wheel_joint_ids,
+)
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
     DEFAULT_JUMP_TRAJ_PATHS,
@@ -430,7 +434,8 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         vz_tracking_reward = torch.where(vz_w < vz_tracking_threshold, vz_progress, vz_tracking)
 
         robot = self._env.scene["robot"]
-        knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
+        leg_ids = policy_leg_joint_ids(robot)
+        knee_indices = [leg_ids[1], leg_ids[3]]
         knee_vel = robot.data.joint_vel[:, knee_indices]
         extension_vel = torch.clamp(-torch.mean(knee_vel, dim=1), min=0.0)
         ref_q_vel = self.reference_joint_velocity()
@@ -528,10 +533,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         q = robot.data.joint_pos
         pg = robot.data.projected_gravity_b
         pitch_deg = torch.rad2deg(torch.abs(torch.atan2(pg[:, 0], -pg[:, 2])))
-        hip_abs = torch.abs(q[:, JointGroup.LEGS[0]] - q[:, JointGroup.LEGS[2]])
-        knee_abs = torch.abs(q[:, JointGroup.LEGS[1]] - q[:, JointGroup.LEGS[3]])
+        hip_diff, knee_diff = active_leg_mirror_diffs(robot, q)
+        hip_abs = torch.abs(hip_diff)
+        knee_abs = torch.abs(knee_diff)
         mirror_raw = 4.0 * hip_abs**2 + 1.5 * knee_abs**2
-        wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+        wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
         # 左右轮 joint axis 相反，joint 广义速度同号更容易制造 yaw 扭转。
         wheel_yaw_drive_sq = (wheel_vel[:, 0] + wheel_vel[:, 1]) ** 2
         yaw_rate_abs = torch.abs(robot.data.root_link_ang_vel_b[:, 2])

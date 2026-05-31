@@ -92,7 +92,7 @@
 
 ### Phase 1：重建闭链 MJCF
 
-现有 `serialleg_fidelity_cylinder_wheels_closedchain_spring.xml` 只能作为草稿，不作为权威几何。
+旧草稿 `serialleg_fidelity_cylinder_wheels_closedchain_spring.xml` 保留为参考；当前交付模型为 `serialleg_closed_chain_v2_spring.xml`，几何来自 `robot_lab_serialleg` 历史闭链模型。
 
 要做：
 

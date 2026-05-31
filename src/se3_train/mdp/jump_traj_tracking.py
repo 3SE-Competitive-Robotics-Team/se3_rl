@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from se3_shared import JointGroup
+from se3_train.mdp.joint_indices import is_closedchain_model, output_leg_joint_ids
 from se3_train.mdp.jump_commands import JumpCommandTerm
 from se3_train.mdp.jump_trajectories import JumpTrajLibrary
 
@@ -294,8 +294,10 @@ def traj_joint_pos_tracking(
     height_match = torch.abs(h_target - ref_height) <= height_match_tol
 
     robot = env.scene[asset_cfg.name]
-    # 腿部关节索引（MJLab joint_pos 6 维中的列）
-    leg_idx = JointGroup.LEGS  # [lf0, lf1, rf0, rf1]
+    if is_closedchain_model(robot):
+        raise RuntimeError("闭链主模型暂不支持旧跳跃 q_ref 轨迹跟踪，请显式切回 openchain。")
+    # 旧跳跃轨迹仍是开链输出角语义：[lf0, lf1, rf0, rf1]。
+    leg_idx = output_leg_joint_ids(robot)
     q_leg = robot.data.joint_pos[:, leg_idx]
 
     # ref_q 是 6 维受控关节 [lf0, lf1, lw, rf0, rf1, rw]，腿部取 0,1,3,4

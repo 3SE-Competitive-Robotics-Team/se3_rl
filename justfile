@@ -51,6 +51,14 @@ check-code: fmt lint
 smoke:
     SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
+# 显式回退开链模型的 CPU smoke，用于 A/B 定位闭链问题
+smoke-openchain:
+    SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+
+# 闭链 MJCF 编译、关节/actuator introspection 和默认站姿 residual 检查
+check-closedchain-model:
+    uv run python scripts/check_closedchain_model.py
+
 # GPU smoke 验证（5 轮，不上传 W&B）
 smoke-gpu:
     SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024

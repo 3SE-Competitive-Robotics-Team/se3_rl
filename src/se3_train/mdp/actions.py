@@ -11,6 +11,7 @@ from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 
 from se3_shared import ActionDelayConfig, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp.joint_indices import is_closedchain_model
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -23,8 +24,8 @@ _DEFAULT_DELAY = _SHARED_ROBOT.action_delay
 class SerialLegDelayedActionCfg(ActionTermCfg):
     """6D 策略动作项，支持训练端 action 延迟。"""
 
-    leg_actuator_names: tuple[str, ...] = ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint")
-    wheel_actuator_names: tuple[str, ...] = ("l_wheel_Joint", "r_wheel_Joint")
+    leg_actuator_names: tuple[str, ...] = JointGroup.POLICY_LEG_NAMES
+    wheel_actuator_names: tuple[str, ...] = JointGroup.WHEEL_NAMES
     leg_scales: tuple[float, ...] = tuple(
         _SHARED_ROBOT.action_scale[i] for i in JointGroup.LEG_ACTUATORS
     )
@@ -57,7 +58,12 @@ class SerialLegDelayedAction(ActionTerm):
     def __init__(self, cfg: SerialLegDelayedActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg=cfg, env=env)
 
-        leg_ids, leg_names = self._entity.find_joints_by_actuator_names(cfg.leg_actuator_names)
+        try:
+            leg_ids, leg_names = self._entity.find_joints_by_actuator_names(cfg.leg_actuator_names)
+        except ValueError:
+            leg_ids, leg_names = self._entity.find_joints_by_actuator_names(
+                JointGroup.OPENCHAIN_LEG_NAMES
+            )
         wheel_ids, wheel_names = self._entity.find_joints_by_actuator_names(
             cfg.wheel_actuator_names
         )
@@ -73,6 +79,15 @@ class SerialLegDelayedAction(ActionTerm):
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
+        self._closedchain = is_closedchain_model(self._entity)
+        self._active_rod_angle_limits = torch.tensor(
+            _SHARED_ROBOT.active_rod_angle_limits,
+            device=self.device,
+        )
+        self._active_rod_angle_coeffs = torch.tensor(
+            _SHARED_ROBOT.active_rod_angle_coeffs,
+            device=self.device,
+        )
         self._action_dim = 6
 
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
@@ -120,6 +135,7 @@ class SerialLegDelayedAction(ActionTerm):
             self._delayed_actions[:, :4] * self._leg_action_scales
             + self._entity.data.default_joint_pos[:, self._leg_joint_ids]
         )
+        leg_target = self._clamp_active_rod_angles(leg_target)
         leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
         wheel_target = (
             self._delayed_actions[:, 4:6] * float(self.cfg.wheel_scale)
@@ -128,6 +144,22 @@ class SerialLegDelayedAction(ActionTerm):
 
         self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
         self._entity.set_joint_velocity_target(wheel_target, joint_ids=self._wheel_joint_ids)
+
+    def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
+        """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
+        if not self._closedchain:
+            return leg_target
+        target = leg_target.clone()
+        lower, upper = self._active_rod_angle_limits
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
+            angle = torch.clamp(
+                front_coef * target[:, front_idx] + back_coef * target[:, back_idx],
+                lower,
+                upper,
+            )
+            target[:, back_idx] = (angle - front_coef * target[:, front_idx]) / back_coef
+        return target
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)

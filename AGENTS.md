@@ -5,8 +5,8 @@
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
 - 5 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）
-- 机器人：6 DOF（左腿 lf0/lf1/l_wheel + 右腿 rf0/rf1/r_wheel）
-- 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
+- 机器人：6 维 policy 动作（`[LF, LB, RF, RB, l_wheel, r_wheel]`），默认 MJCF 为闭链四连杆 + 300 N 气弹簧
+- 控制方式：腿部主动杆位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
 ## 术语表 (Glossary)
 
@@ -240,8 +240,11 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 ### 动作空间（6 维）
 ```
-[lf0, lf1, rf0, rf1, l_wheel, r_wheel]
-腿部：action × 0.25 + default_dof_pos
+[LF, LB, RF, RB, l_wheel, r_wheel]
+LF/RF：lf0_Joint/rf0_Joint 主动前杆
+LB/RB：l_drive_bar_Joint/r_drive_bar_Joint 主动后驱动杆
+lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 action
+腿部：action × (0.35, 0.25, 0.35, 0.25) + default_dof_pos
 轮子：action × 20.0 rad/s
 ```
 
@@ -267,7 +270,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
 **触发条件**（满足其一即加载）：
-- 提到远程训练机、GPU 机器、云机器、wuyinyun、无影云、阿里云、腾讯云
+- 提到远程训练机、GPU 机器、云机器、wuyinyun、gpufree、a800、无影云、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
 - 需要启动、停止、监控训练进程
 - 需要查看训练日志、wandb 数据
@@ -276,7 +279,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 - 询问 tmux 会话管理
 
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
-当前已注册：`wuyinyun`（无影云 RTX 5880）。
+当前已注册：`wuyinyun`（无影云 RTX 5880）、`gpufree`（RTX 4090）、`a800`（4 * NVIDIA A800，局域网 Kubernetes 容器）。
 
 ## 环境限制
 

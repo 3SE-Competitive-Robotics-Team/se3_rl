@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import JointGroup, ObservationConfig
+from se3_shared import ObservationConfig
 from se3_train.mdp.contact_utils import contact_force_nonfinite_env_mask, finite_contact_force_norm
+from se3_train.mdp.joint_indices import policy_leg_joint_ids, wheel_joint_ids
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -53,29 +54,32 @@ def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """腿部关节位置（相对默认位姿），4D。"""
+    """腿部主动杆位置（相对默认位姿），4D。"""
     robot = env.scene["robot"]
+    leg_ids = policy_leg_joint_ids(robot)
     return _finite_clamp(
-        robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
+        robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
     )
 
 
 def leg_joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """腿部关节速度,缩放 0.25,4D。"""
+    """腿部主动杆速度,缩放 0.25,4D。"""
     robot = env.scene["robot"]
-    return _finite_clamp(robot.data.joint_vel[:, JointGroup.LEGS] * _OBS_CFG.leg_vel_scale)
+    return _finite_clamp(
+        robot.data.joint_vel[:, policy_leg_joint_ids(robot)] * _OBS_CFG.leg_vel_scale
+    )
 
 
 def wheel_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """轮子关节位置（MJCF 已修正轴方向,无需手动取反）。"""
     robot = env.scene["robot"]
-    return _finite_clamp(robot.data.joint_pos[:, JointGroup.WHEELS])
+    return _finite_clamp(robot.data.joint_pos[:, wheel_joint_ids(robot)])
 
 
 def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """轮子关节速度,缩放 0.05（MJCF 已修正轴方向）。"""
     robot = env.scene["robot"]
-    return _finite_clamp(robot.data.joint_vel[:, JointGroup.WHEELS] * _OBS_CFG.wheel_vel_scale)
+    return _finite_clamp(robot.data.joint_vel[:, wheel_joint_ids(robot)] * _OBS_CFG.wheel_vel_scale)
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

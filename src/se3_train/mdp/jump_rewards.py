@@ -15,8 +15,12 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from se3_shared import JointGroup
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.joint_indices import (
+    active_leg_mirror_diffs,
+    policy_leg_joint_ids,
+    wheel_joint_ids,
+)
 from se3_train.mdp.jump_commands import JumpCommandTerm, ideal_takeoff_vel
 
 if TYPE_CHECKING:
@@ -438,7 +442,8 @@ def jump_takeoff_impulse(
 
     robot = env.scene[asset_cfg.name]
 
-    knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
+    leg_ids = policy_leg_joint_ids(robot)
+    knee_indices = [leg_ids[1], leg_ids[3]]
     knee_vel = robot.data.joint_vel[:, knee_indices]
     extension_vel = torch.clamp(-torch.mean(knee_vel, dim=1) - min_knee_extension_vel, min=0.0)
 
@@ -518,8 +523,9 @@ def jump_dof_pos_limits_strict(
     if soft_limits is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    # 只看膝关节:JointGroup.LEGS 中索引 1/3(lf1/rf1)
-    knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
+    # 只看 policy 腿部的第二/第四个主动关节。
+    leg_ids = policy_leg_joint_ids(robot)
+    knee_indices = [leg_ids[1], leg_ids[3]]
     pos = robot.data.joint_pos[:, knee_indices]
     limits = soft_limits[:, knee_indices]
 
@@ -691,7 +697,7 @@ def jump_wheel_counterspin(
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     yaw_drive = wheel_vel[:, 0] + wheel_vel[:, 1]
     return (yaw_drive**2) * jump_flag.float()
 
@@ -727,7 +733,7 @@ def jump_wheel_ground_slip(
     in_contact = force_mag > float(contact_force_threshold)
 
     robot = env.scene[asset_cfg.name]
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -804,7 +810,7 @@ def jump_landing_horizontal_motion_penalty(
     base_vel_b = robot.data.root_link_lin_vel_b
     base_vxy_sq = base_vel_b[:, 0] ** 2 + base_vel_b[:, 1] ** 2
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -1022,8 +1028,7 @@ def jump_joint_mirror(
     jump_flag = cmd[:, 5] > 0.5
 
     q = robot.data.joint_pos
-    diff_hip = q[:, JointGroup.LEGS[0]] - q[:, JointGroup.LEGS[2]]  # lf0 - rf0
-    diff_knee = q[:, JointGroup.LEGS[1]] - q[:, JointGroup.LEGS[3]]  # lf1 - rf1
+    diff_hip, diff_knee = active_leg_mirror_diffs(robot, q)
 
     mirror_penalty = float(hip_weight) * diff_hip**2 + float(knee_weight) * diff_knee**2
 
@@ -1224,9 +1229,7 @@ def jump_wheel_vel(
     in_air = term.jump_stage == 1
     active = jump_flag & in_air
 
-    from se3_shared import JointGroup
-
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]  # [num_envs, 2]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     return torch.sum(wheel_vel**2, dim=1) * active.float()
 
 
@@ -1282,12 +1285,7 @@ def standing_joint_mirror_no_jump(
     low_speed_gate = torch.clamp(low_speed_gate, min=float(low_speed_floor), max=1.0)
     low_speed_gate = torch.where(stationary, torch.ones_like(low_speed_gate), low_speed_gate)
 
-    hip_diff = (
-        robot.data.joint_pos[:, JointGroup.LEGS[0]] - robot.data.joint_pos[:, JointGroup.LEGS[2]]
-    )
-    knee_diff = (
-        robot.data.joint_pos[:, JointGroup.LEGS[1]] - robot.data.joint_pos[:, JointGroup.LEGS[3]]
-    )
+    hip_diff, knee_diff = active_leg_mirror_diffs(robot, robot.data.joint_pos)
     penalty = float(hip_weight) * hip_diff**2 + float(knee_weight) * knee_diff**2
     return penalty * low_speed_gate * (~jump_flag).float() * gate
 
@@ -1464,7 +1462,7 @@ def idle_wheel_motion_penalty_no_jump(
     base_vel_b = robot.data.root_link_lin_vel_b
     base_vxy_sq = base_vel_b[:, 0] ** 2 + base_vel_b[:, 1] ** 2
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -1523,7 +1521,7 @@ def flat_wheel_ground_slip_no_jump(
     in_contact = force_mag > float(contact_force_threshold)
 
     robot = env.scene[asset_cfg.name]
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),

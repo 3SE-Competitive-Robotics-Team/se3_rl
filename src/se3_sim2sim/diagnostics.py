@@ -193,13 +193,18 @@ def _wheel_collision_diagnostics(model: mujoco.MjModel) -> dict[str, object]:
 def _model_issues(wheel: dict[str, object]) -> list[DiagnosticIssue]:
     issues: list[DiagnosticIssue] = []
     if wheel.get("mode") != "cylinder":
+        wheel_geoms = [geom for geom in wheel.get("geoms", []) if isinstance(geom, dict)]
+        has_visual_mesh = any(geom.get("mesh_source") == "visual_stl" for geom in wheel_geoms)
+        mesh_description = (
+            "Visual STL wheel meshes" if has_visual_mesh else "Mesh wheel collision geoms"
+        )
         issues.append(
             DiagnosticIssue(
                 severity="warning",
                 code="wheel_collision_not_cylinder",
                 message=(
                     "Wheel collision geoms are not pure cylinders. "
-                    "Visual STL wheel meshes can create unstable MuJoCo contacts and poor standing behavior."
+                    f"{mesh_description} can create unstable MuJoCo contacts and poor standing behavior."
                 ),
             )
         )

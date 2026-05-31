@@ -10,8 +10,15 @@ import numpy as np
 from .math_utils import quat_wxyz_to_xyzw
 
 SIDE_LABELS = ("left", "right")
-ACTION_LABELS = ("left_hip", "left_knee", "right_hip", "right_knee", "left_wheel", "right_wheel")
-CTRL_LABELS = ("left_hip", "left_knee", "left_wheel", "right_hip", "right_knee", "right_wheel")
+ACTION_LABELS = (
+    "left_front",
+    "left_drive",
+    "right_front",
+    "right_drive",
+    "left_wheel",
+    "right_wheel",
+)
+CTRL_LABELS = ACTION_LABELS
 XYZ_LABELS = ("x", "y", "z")
 ENTITY_COLORS = {
     "base": (72, 115, 180, 255),

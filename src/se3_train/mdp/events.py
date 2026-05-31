@@ -18,8 +18,16 @@ from mjlab.utils.lab_api.math import (
     sample_uniform,
 )
 
-from se3_shared import JointGroup
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import recovery_state
+from se3_train.mdp.joint_indices import (
+    active_rod_angle_terms,
+    is_closedchain_model,
+    policy_joint_ids,
+    policy_leg_joint_ids,
+    tensor_ids,
+    wheel_joint_ids,
+)
 from se3_train.mdp.jump_commands import JumpCommandTerm
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
@@ -31,6 +39,7 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+_SHARED_ROBOT = SharedRobotConfig()
 _FULL_ANGLE_RESET_BBOX_MIN = (-0.278, -0.242, -0.323)
 _FULL_ANGLE_RESET_BBOX_MAX = (0.278, 0.242, 0.111)
 
@@ -825,6 +834,48 @@ def _sample_joint_offset(
     )
 
 
+def _clamp_policy_leg_pose(
+    asset: Entity,
+    joint_pos: torch.Tensor,
+    env_ids: torch.Tensor,
+    leg_ids: torch.Tensor,
+    *,
+    rows: torch.Tensor | None = None,
+) -> None:
+    """按模型语义裁剪腿部关节：闭链裁剪主动杆夹角，开链裁剪单关节限位。"""
+    if is_closedchain_model(asset):
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        row_index = slice(None) if rows is None else rows
+        for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(asset):
+            angle = torch.clamp(
+                front_coef * joint_pos[row_index, front_id]
+                + back_coef * joint_pos[row_index, back_id],
+                min=float(lower),
+                max=float(upper),
+            )
+            joint_pos[row_index, back_id] = (
+                angle - front_coef * joint_pos[row_index, front_id]
+            ) / back_coef
+        return
+
+    soft_limits = asset.data.soft_joint_pos_limits
+    if soft_limits is None:
+        return
+    if rows is None:
+        joint_pos[:, leg_ids] = torch.clamp(
+            joint_pos[:, leg_ids],
+            soft_limits[env_ids[:, None], leg_ids, 0],
+            soft_limits[env_ids[:, None], leg_ids, 1],
+        )
+    else:
+        active_env_ids = env_ids[rows]
+        joint_pos[rows[:, None], leg_ids] = torch.clamp(
+            joint_pos[rows[:, None], leg_ids],
+            soft_limits[active_env_ids[:, None], leg_ids, 0],
+            soft_limits[active_env_ids[:, None], leg_ids, 1],
+        )
+
+
 def reset_joints(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -863,12 +914,13 @@ def reset_joints(
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
 
-    joint_pos[:, JointGroup.WHEELS] = 0.0
+    wheel_ids = tensor_ids(wheel_joint_ids(asset), device=env.device)
+    joint_pos[:, wheel_ids] = 0.0
 
-    leg_ids = torch.tensor(JointGroup.LEGS, device=env.device)
+    leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
     if hip_joint_offset_range is not None or knee_joint_offset_range is not None:
-        hip_ids = torch.tensor([JointGroup.LEGS[0], JointGroup.LEGS[2]], device=env.device)
-        knee_ids = torch.tensor([JointGroup.LEGS[1], JointGroup.LEGS[3]], device=env.device)
+        hip_ids = leg_ids[torch.tensor([0, 2], device=env.device)]
+        knee_ids = leg_ids[torch.tensor([1, 3], device=env.device)]
         if hip_joint_offset_range is not None:
             joint_pos[:, hip_ids] += _sample_joint_offset(
                 env,
@@ -884,39 +936,27 @@ def reset_joints(
         joint_vel[:, leg_ids] = sample_uniform(
             torch.tensor(float(joint_vel_range[0]), device=env.device),
             torch.tensor(float(joint_vel_range[1]), device=env.device),
-            (len(env_ids), len(JointGroup.LEGS)),
+            (len(env_ids), len(leg_ids)),
             env.device,
         )
 
-        soft_limits = asset.data.soft_joint_pos_limits
-        if soft_limits is not None:
-            joint_pos[:, leg_ids] = torch.clamp(
-                joint_pos[:, leg_ids],
-                soft_limits[env_ids[:, None], leg_ids, 0],
-                soft_limits[env_ids[:, None], leg_ids, 1],
-            )
+        _clamp_policy_leg_pose(asset, joint_pos, env_ids, leg_ids)
     elif joint_offset_range > 0.0:
         offset = sample_uniform(
             torch.tensor(-float(joint_offset_range), device=env.device),
             torch.tensor(float(joint_offset_range), device=env.device),
-            (len(env_ids), len(JointGroup.LEGS)),
+            (len(env_ids), len(leg_ids)),
             env.device,
         )
         joint_pos[:, leg_ids] += offset
         joint_vel[:, leg_ids] = sample_uniform(
             torch.tensor(float(joint_vel_range[0]), device=env.device),
             torch.tensor(float(joint_vel_range[1]), device=env.device),
-            (len(env_ids), len(JointGroup.LEGS)),
+            (len(env_ids), len(leg_ids)),
             env.device,
         )
 
-        soft_limits = asset.data.soft_joint_pos_limits
-        if soft_limits is not None:
-            joint_pos[:, leg_ids] = torch.clamp(
-                joint_pos[:, leg_ids],
-                soft_limits[env_ids[:, None], leg_ids, 0],
-                soft_limits[env_ids[:, None], leg_ids, 1],
-            )
+        _clamp_policy_leg_pose(asset, joint_pos, env_ids, leg_ids)
 
     if hasattr(env, "extras"):
         log = env.extras.setdefault("log", {})
@@ -932,28 +972,21 @@ def reset_joints(
         if local_recovery.any():
             n_recovery = int(local_recovery.sum().item())
             local_ids = local_recovery.nonzero().flatten()
-            leg_ids = torch.tensor(JointGroup.LEGS, device=env.device)
             offset = sample_uniform(
                 torch.tensor(-float(recovery_joint_offset_range), device=env.device),
                 torch.tensor(float(recovery_joint_offset_range), device=env.device),
-                (n_recovery, len(JointGroup.LEGS)),
+                (n_recovery, len(leg_ids)),
                 env.device,
             )
             joint_pos[local_ids[:, None], leg_ids] += offset
             joint_vel[local_ids[:, None], leg_ids] = sample_uniform(
                 torch.tensor(float(recovery_joint_vel_range[0]), device=env.device),
                 torch.tensor(float(recovery_joint_vel_range[1]), device=env.device),
-                (n_recovery, len(JointGroup.LEGS)),
+                (n_recovery, len(leg_ids)),
                 env.device,
             )
 
-            soft_limits = asset.data.soft_joint_pos_limits
-            if soft_limits is not None:
-                joint_pos[local_ids[:, None], leg_ids] = torch.clamp(
-                    joint_pos[local_ids[:, None], leg_ids],
-                    soft_limits[env_ids[local_recovery][:, None], leg_ids, 0],
-                    soft_limits[env_ids[local_recovery][:, None], leg_ids, 1],
-                )
+            _clamp_policy_leg_pose(asset, joint_pos, env_ids, leg_ids, rows=local_ids)
 
     cache_reset_mask = getattr(env, "_recovery_cache_reset_mask", None)
     cache_joint_pos = getattr(env, "_recovery_cached_joint_pos", None)
@@ -984,7 +1017,11 @@ def reset_joints(
                 # rsi_done_local：local index 中已从轨迹注入关节角的位置（用于计算回退 mask）
                 rsi_done_mask = torch.zeros(len(env_ids), dtype=torch.bool, device=env.device)
 
-                if rsi_frames is not None:
+                if is_closedchain_model(asset):
+                    if hasattr(env, "extras"):
+                        env.extras.setdefault("log", {})["Jump/closedchain_rsi_disabled"] = 1.0
+                    rsi_done_mask = jump_mask
+                elif rsi_frames is not None:
                     frames = rsi_frames[env_ids]
                     rsi_done_mask = jump_mask & (frames >= 0)
                     if rsi_done_mask.any():
@@ -1003,14 +1040,14 @@ def reset_joints(
                         h_targets = cmd[env_ids[rsi_done_mask], 6]
                         _, _, q_ref, q_vel, _, _ = library.gather(h_targets, frames[rsi_done_mask])
                         # q_ref/q_vel: [lf0, lf1, lw, rf0, rf1, rw]
-                        joint_pos[rsi_done_mask, JointGroup.LEGS[0]] = q_ref[:, 0]
-                        joint_pos[rsi_done_mask, JointGroup.LEGS[1]] = q_ref[:, 1]
-                        joint_pos[rsi_done_mask, JointGroup.LEGS[2]] = q_ref[:, 3]
-                        joint_pos[rsi_done_mask, JointGroup.LEGS[3]] = q_ref[:, 4]
-                        joint_vel[rsi_done_mask, JointGroup.LEGS[0]] = q_vel[:, 0]
-                        joint_vel[rsi_done_mask, JointGroup.LEGS[1]] = q_vel[:, 1]
-                        joint_vel[rsi_done_mask, JointGroup.LEGS[2]] = q_vel[:, 3]
-                        joint_vel[rsi_done_mask, JointGroup.LEGS[3]] = q_vel[:, 4]
+                        joint_pos[rsi_done_mask, leg_ids[0]] = q_ref[:, 0]
+                        joint_pos[rsi_done_mask, leg_ids[1]] = q_ref[:, 1]
+                        joint_pos[rsi_done_mask, leg_ids[2]] = q_ref[:, 3]
+                        joint_pos[rsi_done_mask, leg_ids[3]] = q_ref[:, 4]
+                        joint_vel[rsi_done_mask, leg_ids[0]] = q_vel[:, 0]
+                        joint_vel[rsi_done_mask, leg_ids[1]] = q_vel[:, 1]
+                        joint_vel[rsi_done_mask, leg_ids[2]] = q_vel[:, 3]
+                        joint_vel[rsi_done_mask, leg_ids[3]] = q_vel[:, 4]
 
                 # 未做 RSI 的 jump env 默认保持站立姿态。
                 # 只有显式启用部分 RSI 时，未注入的样本才回退到预蹲姿态做消融。
@@ -1020,10 +1057,10 @@ def reset_joints(
                 )
                 fallback_mask = jump_mask & ~rsi_done_mask & use_fallback_squat
                 if fallback_mask.any():
-                    joint_pos[fallback_mask, JointGroup.LEGS[0]] = _jump_hip_fallback
-                    joint_pos[fallback_mask, JointGroup.LEGS[1]] = _jump_knee_fallback
-                    joint_pos[fallback_mask, JointGroup.LEGS[2]] = _jump_hip_fallback
-                    joint_pos[fallback_mask, JointGroup.LEGS[3]] = _jump_knee_fallback
+                    joint_pos[fallback_mask, leg_ids[0]] = _jump_hip_fallback
+                    joint_pos[fallback_mask, leg_ids[1]] = _jump_knee_fallback
+                    joint_pos[fallback_mask, leg_ids[2]] = _jump_hip_fallback
+                    joint_pos[fallback_mask, leg_ids[3]] = _jump_knee_fallback
         except Exception:
             pass
 
@@ -1251,25 +1288,33 @@ def randomize_default_dof_pos(
 
     asset: Entity = env.scene[asset_cfg.name]
     n = len(env_ids)
+    ctrl_ids = tensor_ids(policy_joint_ids(asset), device=env.device)
 
     offset = sample_uniform(
         torch.tensor(offset_range[0], device=env.device),
         torch.tensor(offset_range[1], device=env.device),
-        (n, len(JointGroup.ALL)),
+        (n, len(ctrl_ids)),
         env.device,
     )
 
     default_joint_pos = asset.data.default_joint_pos.clone()
-    default_joint_pos[env_ids[:, None], torch.tensor(JointGroup.ALL, device=env.device)] += offset
+    default_joint_pos[env_ids[:, None], ctrl_ids] += offset
 
     # 裁剪到关节限制范围内。
     soft_limits = asset.data.soft_joint_pos_limits
     if soft_limits is not None:
-        ctrl_idx = torch.tensor(JointGroup.ALL, device=env.device)
-        default_joint_pos[env_ids[:, None], ctrl_idx] = torch.clamp(
-            default_joint_pos[env_ids[:, None], ctrl_idx],
-            soft_limits[env_ids[:, None], ctrl_idx, 0],
-            soft_limits[env_ids[:, None], ctrl_idx, 1],
+        default_joint_pos[env_ids[:, None], ctrl_ids] = torch.clamp(
+            default_joint_pos[env_ids[:, None], ctrl_ids],
+            soft_limits[env_ids[:, None], ctrl_ids, 0],
+            soft_limits[env_ids[:, None], ctrl_ids, 1],
         )
+    selected_joint_pos = default_joint_pos[env_ids].clone()
+    _clamp_policy_leg_pose(
+        asset,
+        selected_joint_pos,
+        env_ids,
+        tensor_ids(policy_leg_joint_ids(asset), device=env.device),
+    )
+    default_joint_pos[env_ids] = selected_joint_pos
 
     asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]

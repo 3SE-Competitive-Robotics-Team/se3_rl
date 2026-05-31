@@ -4,7 +4,8 @@
 
 ## 机体结构
 
-- 自由度：6 DOF（左腿 lf0/lf1/l_wheel + 右腿 rf0/rf1/r_wheel）
+- policy 动作自由度：6 DOF（`[LF, LB, RF, RB, l_wheel, r_wheel]`）
+- 闭链模型关节语义：`LF/RF = lf0_Joint/rf0_Joint`，`LB/RB = l_drive_bar_Joint/r_drive_bar_Joint`，`lf1_Joint/rf1_Joint` 是被动输出小腿角；主动杆限位语义为同侧两主动杆夹角，当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`
 - 轮径：**R = 59 mm**（直径 118 mm，来自 MJCF `wheelRadius: 0.059 m`）
 - 腿部传动：四连杆机构，膝关节通过驱动杆 AB → 连杆 BC → 小腿 CD 传动
 - 轮子安装：小腿末端，接地点固定作为参考坐标系原点
@@ -54,6 +55,16 @@
 ```
 
 平地连续行驶的速度上限约 **1.2 m/s**。短时冲刺理论可到 **3.6 m/s**，但此时轮子输出扭矩趋近于零。RL 训练的 action scale = 20 rad/s 把轮速目标限制在 **1.18 m/s**，和额定工况基本吻合。训练速度课程最高指令 ±2.5 m/s 超出额定范围，属于短时冲刺区间。
+
+## 动作空间和关节契约
+
+默认训练和 sim2sim 使用闭链四连杆模型：
+
+```text
+[LF, LB, RF, RB, l_wheel, r_wheel]
+```
+
+腿部四维是主动电机坐标，其中 `LB/RB` 是独立挂在 `base_link` 下的驱动杆，不是 `lf1/rf1`。`lf1_Joint/rf1_Joint` 仍然存在，但只表示输出小腿角，用于几何诊断、终止、奖励或 critic 特权信息；actor 腿部观测不读取它们。
 
 ## 训练速度课程
 

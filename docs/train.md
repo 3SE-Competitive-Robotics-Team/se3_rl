@@ -6,6 +6,26 @@
 
 训练和仿真用的 MJCF 与 mesh 文件已放在 `assets/robots/serialleg/`。重新导出模型时，保持 MJCF 中的关节名和 mesh 相对路径不变。
 
+默认模型是闭链四连杆 + 300 N 气弹簧：
+
+```text
+assets/robots/serialleg/mjcf/serialleg_closed_chain_v2_spring.xml
+```
+
+policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，默认范围为 `0.12~1.36 rad`，不是后主动杆的绝对角。旧开链模型仍保留为显式回退 variant：
+
+```bash
+SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run se3-sim2sim --model assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml --viewer none --max-steps 200
+```
+
+闭链模型基础检查：
+
+```bash
+uv run python scripts/check_closedchain_model.py
+uv run se3-joint-viewer --closedchain-spring
+```
+
 ### 安装依赖
 
 ```bash
@@ -21,6 +41,9 @@ uv sync
 ```bash
 # CPU smoke（任何机器都能跑）
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+
+# 开链回退 smoke（仅用于 A/B 定位）
+SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # GPU smoke
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
