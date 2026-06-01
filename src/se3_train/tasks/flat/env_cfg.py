@@ -45,7 +45,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     cfg = ManagerBasedRlEnvCfg(
-        decimation=5,
+        decimation=_ROBOT_DEFAULTS.control_decimation,
         scene=scene,
     )
 
@@ -549,7 +549,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.sim = SimulationCfg(
         nconmax=256,
         njmax=1040,
-        mujoco=MujocoCfg(timestep=0.002),
+        mujoco=MujocoCfg(timestep=_ROBOT_DEFAULTS.sim_dt),
     )
     cfg.viewer = ViewerConfig()
 
