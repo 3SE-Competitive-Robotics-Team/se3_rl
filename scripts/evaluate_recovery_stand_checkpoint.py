@@ -27,7 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rerun-memory-limit", default="512MB")
     parser.add_argument("--case", choices=("roll90", "pitch90", "inverted"), default="roll90")
     parser.add_argument("--max-final-tilt-deg", type=float, default=15.0)
+    parser.add_argument("--max-final-abs-roll-deg", type=float, default=3.0)
+    parser.add_argument("--max-final-abs-pitch-deg", type=float, default=5.0)
     parser.add_argument("--max-height-error-m", type=float, default=0.05)
+    parser.add_argument("--max-final-abs-base-lin-vel-x", type=float, default=0.03)
+    parser.add_argument("--max-final-abs-wheel-lin-vel", type=float, default=0.03)
     parser.add_argument("--min-dual-wheel-contact-rate", type=float, default=0.5)
     parser.add_argument("--max-nonwheel-contact-rate", type=float, default=0.2)
     parser.add_argument("--min-wheel-lateral-distance-m", type=float, default=0.40)
@@ -121,8 +125,12 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
     rollout = payload["rollout"]
     final = rollout["final"]
     final_tilt = float(final["tilt_deg"])
+    final_abs_roll = abs(float(final.get("roll_deg", 0.0)))
+    final_abs_pitch = abs(float(final.get("pitch_deg", 0.0)))
     final_height = float(final["height"])
     height_error = abs(final_height - _STAND_COMMAND[4])
+    final_abs_base_lin_vel_x = abs(float(final.get("base_lin_vel_x", 0.0)))
+    final_abs_wheel_lin_vel = abs(float(final.get("wheel_lin_vel", 0.0)))
     dual_wheel_rate = min(
         float(rollout.get("wheel_contact_left_rate", 0.0)),
         float(rollout.get("wheel_contact_right_rate", 0.0)),
@@ -145,7 +153,11 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
     passed = (
         payload["done_reason"] == "max_steps"
         and final_tilt <= float(args.max_final_tilt_deg)
+        and final_abs_roll <= float(args.max_final_abs_roll_deg)
+        and final_abs_pitch <= float(args.max_final_abs_pitch_deg)
         and height_error <= float(args.max_height_error_m)
+        and final_abs_base_lin_vel_x <= float(args.max_final_abs_base_lin_vel_x)
+        and final_abs_wheel_lin_vel <= float(args.max_final_abs_wheel_lin_vel)
         and dual_wheel_rate >= float(args.min_dual_wheel_contact_rate)
         and nonwheel_rate <= float(args.max_nonwheel_contact_rate)
         and (args.allow_final_single_wheel_contact or final_dual_wheel_contact)
@@ -154,8 +166,12 @@ def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, 
     return {
         "passed": passed,
         "final_tilt_deg": final_tilt,
+        "final_abs_roll_deg": final_abs_roll,
+        "final_abs_pitch_deg": final_abs_pitch,
         "final_height_m": final_height,
         "final_height_error_m": height_error,
+        "final_abs_base_lin_vel_x": final_abs_base_lin_vel_x,
+        "final_abs_wheel_lin_vel": final_abs_wheel_lin_vel,
         "final_dual_wheel_contact": final_dual_wheel_contact,
         "final_left_wheel_contact": final_left_wheel_contact,
         "final_right_wheel_contact": final_right_wheel_contact,

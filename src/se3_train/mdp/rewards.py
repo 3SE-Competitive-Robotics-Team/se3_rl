@@ -1089,6 +1089,102 @@ def recovery_stand_stillness(
     return reward
 
 
+def recovery_stand_orientation_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 15.0,
+    roll_scale_rad: float = 0.08,
+    pitch_scale_rad: float = 0.12,
+    roll_weight: float = 1.5,
+    pitch_weight: float = 1.0,
+    max_penalty: float = 6.0,
+) -> torch.Tensor:
+    """接近直立后惩罚 pitch/roll 分轴误差，避免总 tilt 合格但 roll 歪着站。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pg = robot.data.projected_gravity_b
+
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    current_pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
+    current_roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
+    pitch_error = current_pitch - cmd[:, 2]
+    roll_error = current_roll - cmd[:, 3]
+    pitch_term = (pitch_error / max(float(pitch_scale_rad), 1.0e-6)) ** 2
+    roll_term = (roll_error / max(float(roll_scale_rad), 1.0e-6)) ** 2
+    penalty = torch.clamp(
+        float(roll_weight) * roll_term + float(pitch_weight) * pitch_term,
+        max=float(max_penalty),
+    )
+    result = penalty * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/final_orientation_penalty": _masked_mean(result, active),
+                "RecoveryStand/abs_roll_deg": _masked_mean(
+                    torch.rad2deg(torch.abs(roll_error)), active
+                ),
+                "RecoveryStand/abs_pitch_deg": _masked_mean(
+                    torch.rad2deg(torch.abs(pitch_error)), active
+                ),
+                "RecoveryStand/orientation_gate": _masked_mean(near_upright_gate, active),
+            }
+        )
+
+    return result
+
+
+def recovery_stand_zero_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    wheel_radius: float = 0.059,
+    gate_start_deg: float = 45.0,
+    gate_full_deg: float = 15.0,
+    base_speed_scale: float = 0.05,
+    wheel_speed_scale: float = 0.05,
+    max_penalty: float = 8.0,
+) -> torch.Tensor:
+    """接近直立后强惩罚机体平动和轮速，避免零命令自起后继续溜车。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    base_vxy = robot.data.root_link_lin_vel_b[:, :2]
+    base_speed_sq = torch.sum(base_vxy**2, dim=1)
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
+    penalty = base_speed_sq / (float(base_speed_scale) ** 2) + wheel_speed_sq / (
+        float(wheel_speed_scale) ** 2
+    )
+    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/zero_velocity_penalty": _masked_mean(result, active),
+                "RecoveryStand/base_vxy_speed": _masked_mean(torch.sqrt(base_speed_sq), active),
+                "RecoveryStand/wheel_idle_speed": _masked_mean(torch.sqrt(wheel_speed_sq), active),
+                "RecoveryStand/zero_velocity_gate": _masked_mean(near_upright_gate, active),
+            }
+        )
+
+    return result
+
+
 def recovery_stand_leg_alignment(
     env: ManagerBasedRlEnv,
     gate_start_deg: float = 75.0,
@@ -1145,9 +1241,13 @@ def recovery_success_bonus(
     height_sensor_name: str,
     command_name: str,
     upright_angle_deg: float = 15.0,
+    max_abs_roll_deg: float = 3.0,
+    max_abs_pitch_deg: float = 5.0,
     height_tolerance: float = 0.05,
     ang_vel_threshold: float = 0.5,
-    lin_vel_threshold: float = 0.2,
+    lin_vel_threshold: float = 0.05,
+    wheel_speed_threshold: float = 0.05,
+    wheel_radius: float = 0.059,
     force_threshold: float = 1.0,
     stable_steps_required: int = 50,
     min_episode_steps: int = 50,
@@ -1163,6 +1263,12 @@ def recovery_success_bonus(
     tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
     upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
     upright_ok = tilt < upright_limit
+    current_pitch = torch.asin(torch.clamp(robot.data.projected_gravity_b[:, 0], -1.0, 1.0))
+    current_roll = torch.asin(torch.clamp(-robot.data.projected_gravity_b[:, 1], -1.0, 1.0))
+    roll_limit = torch.deg2rad(torch.tensor(float(max_abs_roll_deg), device=env.device))
+    pitch_limit = torch.deg2rad(torch.tensor(float(max_abs_pitch_deg), device=env.device))
+    roll_ok = torch.abs(current_roll) < roll_limit
+    pitch_ok = torch.abs(current_pitch) < pitch_limit
 
     cmd = env.command_manager.get_command(command_name)
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
@@ -1171,6 +1277,15 @@ def recovery_success_bonus(
 
     ang_vel_ok = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1) < float(ang_vel_threshold)
     lin_vel_ok = torch.linalg.norm(robot.data.root_link_lin_vel_b, dim=1) < float(lin_vel_threshold)
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed_ok = torch.linalg.norm(wheel_forward_speed, dim=1) < float(wheel_speed_threshold)
     dual_contact = _contact_bool(env, left_wheel_sensor_name, force_threshold) & _contact_bool(
         env, right_wheel_sensor_name, force_threshold
     )
@@ -1185,9 +1300,12 @@ def recovery_success_bonus(
     success = (
         active
         & upright_ok
+        & roll_ok
+        & pitch_ok
         & height_ok
         & ang_vel_ok
         & lin_vel_ok
+        & wheel_speed_ok
         & dual_contact
         & nonwheel_clear
         & wheel_alignment

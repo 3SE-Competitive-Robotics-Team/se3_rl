@@ -8,7 +8,7 @@ import torch
 
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
-from se3_train.mdp.joint_indices import policy_leg_joint_ids
+from se3_train.mdp.joint_indices import policy_leg_joint_ids, wheel_joint_ids
 from se3_train.mdp.leg_alignment import wheel_alignment_ok
 
 if TYPE_CHECKING:
@@ -269,9 +269,13 @@ def recovery_success(
     height_sensor_name: str,
     command_name: str,
     upright_angle_deg: float = 15.0,
+    max_abs_roll_deg: float = 3.0,
+    max_abs_pitch_deg: float = 5.0,
     height_tolerance: float = 0.05,
     ang_vel_threshold: float = 0.5,
-    lin_vel_threshold: float = 0.2,
+    lin_vel_threshold: float = 0.05,
+    wheel_speed_threshold: float = 0.05,
+    wheel_radius: float = 0.059,
     force_threshold: float = 1.0,
     stable_steps_required: int = 50,
     min_episode_steps: int = 50,
@@ -287,6 +291,12 @@ def recovery_success(
     tilt_deg = torch.rad2deg(tilt)
     upright_limit = torch.deg2rad(torch.tensor(float(upright_angle_deg), device=env.device))
     upright_ok = tilt < upright_limit
+    current_pitch = torch.asin(torch.clamp(robot.data.projected_gravity_b[:, 0], -1.0, 1.0))
+    current_roll = torch.asin(torch.clamp(-robot.data.projected_gravity_b[:, 1], -1.0, 1.0))
+    roll_limit = torch.deg2rad(torch.tensor(float(max_abs_roll_deg), device=env.device))
+    pitch_limit = torch.deg2rad(torch.tensor(float(max_abs_pitch_deg), device=env.device))
+    roll_ok = torch.abs(current_roll) < roll_limit
+    pitch_ok = torch.abs(current_pitch) < pitch_limit
 
     cmd = env.command_manager.get_command(command_name)
     height_sensor = env.scene[height_sensor_name]
@@ -298,6 +308,16 @@ def recovery_success(
     lin_vel_norm = torch.linalg.norm(robot.data.root_link_lin_vel_b, dim=1)
     ang_vel_ok = ang_vel_norm < float(ang_vel_threshold)
     lin_vel_ok = lin_vel_norm < float(lin_vel_threshold)
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed = torch.linalg.norm(wheel_forward_speed, dim=1)
+    wheel_speed_ok = wheel_speed < float(wheel_speed_threshold)
 
     left_contact = _bool_contact(env, left_wheel_sensor_name, force_threshold)
     right_contact = _bool_contact(env, right_wheel_sensor_name, force_threshold)
@@ -314,9 +334,12 @@ def recovery_success(
     raw_success = (
         active
         & upright_ok
+        & roll_ok
+        & pitch_ok
         & height_ok
         & ang_vel_ok
         & lin_vel_ok
+        & wheel_speed_ok
         & dual_wheel_contact
         & nonwheel_clear
         & wheel_alignment
@@ -337,9 +360,14 @@ def recovery_success(
         log.update(
             {
                 "RecoveryStand/success_condition/upright": _masked_mean(upright_ok.float(), active),
+                "RecoveryStand/success_condition/roll": _masked_mean(roll_ok.float(), active),
+                "RecoveryStand/success_condition/pitch": _masked_mean(pitch_ok.float(), active),
                 "RecoveryStand/success_condition/height": _masked_mean(height_ok.float(), active),
                 "RecoveryStand/success_condition/ang_vel": _masked_mean(ang_vel_ok.float(), active),
                 "RecoveryStand/success_condition/lin_vel": _masked_mean(lin_vel_ok.float(), active),
+                "RecoveryStand/success_condition/wheel_speed": _masked_mean(
+                    wheel_speed_ok.float(), active
+                ),
                 "RecoveryStand/success_condition/dual_wheel": _masked_mean(
                     dual_wheel_contact.float(), active
                 ),
@@ -356,7 +384,15 @@ def recovery_success(
                     episode,
                 ),
                 "RecoveryStand/tilt_deg": _masked_mean(tilt_deg, episode),
+                "RecoveryStand/abs_roll_deg": _masked_mean(
+                    torch.rad2deg(torch.abs(current_roll)), episode
+                ),
+                "RecoveryStand/abs_pitch_deg": _masked_mean(
+                    torch.rad2deg(torch.abs(current_pitch)), episode
+                ),
                 "RecoveryStand/height_error": _masked_mean(height_error, episode),
+                "RecoveryStand/lin_vel_norm": _masked_mean(lin_vel_norm, episode),
+                "RecoveryStand/wheel_speed_norm": _masked_mean(wheel_speed, episode),
                 "RecoveryStand/wheel_lateral_distance_m": _masked_mean(
                     wheel_lateral_distance, episode
                 ),
