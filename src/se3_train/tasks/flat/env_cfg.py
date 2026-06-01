@@ -335,15 +335,60 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "feet_contact_without_cmd": RewardTermCfg(
-            func=rewards.feet_contact_without_cmd,
-            weight=0.386,
+        "flat_wheel_contact": RewardTermCfg(
+            func=rewards.flat_wheel_contact_penalty_no_jump,
+            weight=-8.0,
             params={
                 "command_name": "velocity_height",
-                "force_threshold": 1.0,
-                "cmd_threshold": 0.1,
                 "sensor_name": "wheel_sensor",
+                "idle_command_threshold": 0.08,
+                "contact_force_threshold": 1.0,
+            },
+        ),
+        "upright_wheel_contact": RewardTermCfg(
+            func=rewards.upright_wheel_contact_penalty,
+            weight=-10.0,
+            params={
+                "command_name": "velocity_height",
+                "sensor_name": "wheel_sensor",
+                "force_threshold": 1.0,
+                "min_upright_gate": 0.35,
+            },
+        ),
+        "upright_leg_contact": RewardTermCfg(
+            func=rewards.upright_leg_contact_penalty,
+            weight=-25.0,
+            params={
+                "command_name": "velocity_height",
+                "sensor_name": "leg_contact_sensor",
+                "force_threshold": 1.0,
+                "min_upright_gate": 0.35,
+            },
+        ),
+        "idle_wheel_motion": RewardTermCfg(
+            func=rewards.idle_wheel_motion_penalty_no_jump,
+            weight=-2.0,
+            params={
+                "command_name": "velocity_height",
+                "sensor_name": "wheel_sensor",
+                "wheel_radius": 0.059,
+                "idle_command_threshold": 0.08,
+                "contact_force_threshold": 1.0,
+                "base_speed_scale": 0.18,
+                "wheel_speed_scale": 0.22,
+                "max_penalty": 9.0,
                 "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "flat_action_smoothness": RewardTermCfg(
+            func=rewards.action_smoothness_no_jump,
+            weight=-0.04,
+            params={
+                "command_name": "velocity_height",
+                "idle_command_threshold": 0.08,
+                "idle_scale": 1.5,
+                "moving_scale": 0.5,
+                "max_penalty": 80.0,
             },
         ),
         # 业界标准:移除显式 termination 惩罚,改用 alive reward 隐式机制
@@ -378,6 +423,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "sensor_name": "leg_contact_sensor",
                 "force_threshold": 1.0,
                 "command_name": "velocity_height",
+                "terminate": False,
             },
         ),
     }

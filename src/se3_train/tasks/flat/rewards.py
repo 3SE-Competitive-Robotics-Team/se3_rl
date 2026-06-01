@@ -5,10 +5,13 @@ from __future__ import annotations
 from mjlab.envs.mdp.rewards import is_alive
 
 from se3_train.mdp.jump_rewards import (
+    action_smoothness_no_jump,
     flat_base_height_penalty_no_jump,
     flat_base_lin_vel_z_no_jump,
     flat_wheel_center_alignment_no_jump,
+    flat_wheel_contact_penalty_no_jump,
     flat_wheel_ground_slip_no_jump,
+    idle_wheel_motion_penalty_no_jump,
 )
 from se3_train.mdp.rewards import (
     action_rate,
@@ -28,11 +31,14 @@ from se3_train.mdp.rewards import (
     tracking_height,
     tracking_lin_vel,
     tracking_orientation_l2,
+    upright_leg_contact_penalty,
+    upright_wheel_contact_penalty,
     wheel_torques,
 )
 
 __all__ = [
     "action_rate",
+    "action_smoothness_no_jump",
     "ang_vel_xy",
     "angular_momentum",
     "bad_tilt",
@@ -43,7 +49,9 @@ __all__ = [
     "flat_base_height_penalty_no_jump",
     "flat_base_lin_vel_z_no_jump",
     "flat_wheel_center_alignment_no_jump",
+    "flat_wheel_contact_penalty_no_jump",
     "flat_wheel_ground_slip_no_jump",
+    "idle_wheel_motion_penalty_no_jump",
     "is_alive",
     "joint_mirror",
     "leg_dof_acc",
@@ -54,5 +62,7 @@ __all__ = [
     "tracking_height",
     "tracking_lin_vel",
     "tracking_orientation_l2",
+    "upright_leg_contact_penalty",
+    "upright_wheel_contact_penalty",
     "wheel_torques",
 ]
