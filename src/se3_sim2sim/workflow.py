@@ -316,6 +316,11 @@ class Sim2SimWorkflow:
                 samples,
                 self.cfg.course.upright_velocity_sweep_commands,
             )
+        if self.cfg.course.mode == CourseType.WALK_SWEEP:
+            summary["walk_sweep"] = self._walk_sweep_diagnostics(
+                samples,
+                self.cfg.course.walk_sweep_velocities,
+            )
         if self.cfg.json_output is not None:
             self._write_json(self.cfg.json_output, summary)
         if self.viewer is not None:
@@ -395,6 +400,68 @@ class Sim2SimWorkflow:
                     "mean_applied_action_delta_sq_sum": float(np.mean(applied_action_rate)),
                     "max_applied_action_delta_sq_sum": float(np.max(applied_action_rate)),
                     "phases": phase_diagnostics,
+                }
+            )
+        return result
+
+    @staticmethod
+    def _walk_sweep_diagnostics(
+        samples: list[dict[str, float]],
+        velocities: tuple[float, ...],
+    ) -> list[dict[str, object]]:
+        """按 walk-sweep 的速度档位统计稳态跟踪、姿态和接触情况。"""
+        result: list[dict[str, object]] = []
+        for vx_cmd in velocities:
+            window = [
+                s
+                for s in samples
+                if abs(float(s.get("command_lin_vel_x", 0.0)) - float(vx_cmd)) < 1.0e-6
+            ]
+            if not window:
+                result.append(
+                    {
+                        "command_lin_vel_x": float(vx_cmd),
+                        "samples": 0,
+                    }
+                )
+                continue
+            steady = window[max(0, len(window) // 4) :]
+
+            def values(key: str, steady_window: list[dict[str, float]] = steady) -> np.ndarray:
+                return np.asarray([s.get(key, 0.0) for s in steady_window], dtype=np.float64)
+
+            base_vx = values("base_lin_vel_x")
+            wheel_lin = values("wheel_lin_vel")
+            yaw_rate = values("yaw_rate_rad_s")
+            tilt = values("tilt_deg")
+            height = values("height")
+            leg_contact = values("leg_contact")
+            wheel_contact = values("wheel_contact")
+            wheel_full_contact = values("wheel_full_contact")
+            nonwheel_contact = values("nonwheel_contact")
+            leg_clearance = values("leg_clearance")
+            base_clearance = values("base_clearance")
+            velocity_error = np.abs(base_vx - float(vx_cmd))
+            wheel_velocity_error = np.abs(wheel_lin - float(vx_cmd))
+            result.append(
+                {
+                    "command_lin_vel_x": float(vx_cmd),
+                    "samples": len(window),
+                    "steady_samples": len(steady),
+                    "mean_base_lin_vel_x": float(np.mean(base_vx)),
+                    "mean_abs_velocity_error": float(np.mean(velocity_error)),
+                    "mean_wheel_lin_vel": float(np.mean(wheel_lin)),
+                    "mean_abs_wheel_velocity_error": float(np.mean(wheel_velocity_error)),
+                    "mean_abs_yaw_rate_rad_s": float(np.mean(np.abs(yaw_rate))),
+                    "mean_tilt_deg": float(np.mean(tilt)),
+                    "max_tilt_deg": float(np.max(tilt)),
+                    "mean_height": float(np.mean(height)),
+                    "wheel_contact_rate": float(np.mean(wheel_contact > 0.5)),
+                    "wheel_full_contact_rate": float(np.mean(wheel_full_contact > 0.5)),
+                    "leg_contact_rate": float(np.mean(leg_contact > 0.5)),
+                    "nonwheel_contact_rate": float(np.mean(nonwheel_contact > 0.5)),
+                    "min_leg_clearance": float(np.min(leg_clearance)),
+                    "min_base_clearance": float(np.min(base_clearance)),
                 }
             )
         return result
