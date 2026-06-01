@@ -247,7 +247,20 @@ def tracking_lin_vel(
 
     cmd_mag = torch.abs(cmd[:, 0])
     sigma = torch.where(cmd_mag < 0.2, sigma_stand, sigma_move)
-    return torch.exp(-(error_x**2 + vz_weight * vz**2) / sigma) * gate
+    reward = torch.exp(-(error_x**2 + vz_weight * vz**2) / sigma) * gate
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        moving = cmd_mag >= 0.2
+        env.extras["log"].update(
+            {
+                "Locomotion/cmd_vx_mean": _masked_mean(cmd[:, 0], moving),
+                "Locomotion/base_vx_mean": _masked_mean(lin_vel[:, 0], moving),
+                "Locomotion/base_vx_error_abs": _masked_mean(torch.abs(error_x), moving),
+                "Locomotion/tracking_lin_vel_reward": _masked_mean(reward, moving),
+            }
+        )
+
+    return reward
 
 
 def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:

@@ -195,10 +195,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards = {
         "tracking_lin_vel": RewardTermCfg(
             func=rewards.tracking_lin_vel,
-            weight=2.73,
+            weight=4.0,
             params={
                 "command_name": "velocity_height",
-                "sigma_move": 0.25,
+                "sigma_move": 0.08,
                 "sigma_stand": 0.1,
                 "vz_weight": 2.0,
             },
