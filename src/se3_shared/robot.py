@@ -126,9 +126,9 @@ class RobotConfig(BaseModel):
         M3508_HEXROLL.rated_torque,
     )
     default_dof_pos: tuple[float, ...] = (0.2, -0.5403, -0.2, 0.5403, 0.0, 0.0)
-    default_output_knee_pos: tuple[float, float] = (0.781527708, -0.781527712)
-    default_coupler_pos: tuple[float, float] = (0.785386799, -0.785386809)
-    active_rod_angle_limits: tuple[float, float] = (0.12, 1.36)
+    default_output_knee_pos: tuple[float, float] = (-0.736361350, 0.736362150)
+    default_coupler_pos: tuple[float, float] = (0.785409053, -0.785410896)
+    active_rod_angle_limits: tuple[float, float] = (0.0, 1.7)
     active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
         (1.0, -1.0),
         (-1.0, 1.0),

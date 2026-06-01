@@ -11,7 +11,7 @@ from se3_shared import RobotConfig as SharedRobotConfig
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
-_CLOSEDCHAIN_SPRING_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v2_spring.xml"
+_CLOSEDCHAIN_SPRING_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train.xml"
 _MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
 _MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
 
