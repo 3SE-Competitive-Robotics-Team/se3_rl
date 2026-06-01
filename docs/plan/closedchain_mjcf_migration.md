@@ -6,9 +6,36 @@
 
 第一版目标是跑通基础站立、行走、恢复和 sim2sim，不迁移跳跃参考轨迹、RSI 和轨迹跟踪。
 
+## 当前实验修订（2026-06-01）
+
+长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，下一轮平地基模训练先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧常力版本：
+
+```text
+assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml
+```
+
+带 300 N 气弹簧常力的同构模型保留为显式 A/B 对照，不作为默认训练入口：
+
+```text
+assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_spring.xml
+```
+
+后续只有在无气弹簧闭链基模能稳定双轮支撑、base 不触地、pitch/roll 可控后，才重新启用气弹簧并重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
+
+无气弹簧默认站姿已经重新标定为 base_link 距地约 0.23 m、轮心接近整机质心投影的中等腿长装配分支：
+
+```text
+default_dof_pos = [-0.2275, -1.4475, 0.2275, 1.4475, 0.0, 0.0]
+default_output_knee_pos = [-1.163001511, 1.163000657]
+default_coupler_pos = [1.296413806, -1.296416824]
+default_base_height = 0.230340071 m
+```
+
+该点的闭链 residual 在 `check_closedchain_model.py` 下接近数值噪声，轮心离地高度为 0，base/腿部碰撞几何有正间隙。注意两轮倒立机器人没有轮子反馈时仍会倒向接触支撑；因此“平衡点”在这里指 reset 几何和质心投影对齐，不表示零 action 开环可长期自稳。
+
 ## 已确认决策
 
-1. 默认模型切换为闭链四连杆 + 气弹簧 MJCF。
+1. 默认模型切换为闭链四连杆 MJCF；当前实验阶段默认不启用气弹簧常力。
 2. 旧开链 XML 文件保留，训练端和 sim2sim 端保留显式 `openchain` variant。
 3. policy 仍为 6 维动作，actor 观测维度保持 32 维。
 4. 腿部 action 和 actor 腿部观测改为主动杆坐标。
@@ -17,10 +44,10 @@
 7. `lf1_Joint/rf1_Joint` 是被动输出小腿角，不进 action，不作为 actor 主关节观测。
 8. `l_drive_bar_Joint/r_drive_bar_Joint` 必须是相对 base 的独立主动铰，不能作为 `lf0_Link/rf0_Link` 子关节。
 9. 闭链端点约束使用 `connect site1/site2`，表达销轴点约束。
-10. MJCF 保留气弹簧 actuator，第一版用 300 N 常力。
+10. 带 300 N 气弹簧 actuator 的 MJCF 必须保留，但当前不作为默认训练模型。
 11. 6 个电机 actuator 继续由训练端和 sim2sim 代码程序化添加。
 12. 四杆/五杆几何采用 Infantry 3/4 共同参数，不绑定 Infantry 3 或 Infantry 4 的编码器 offset。
-13. 默认站姿保持当前 2027 MJCF 外形，通过反解得到主动杆默认角。
+13. 默认站姿使用 base 高度约 0.23 m 的中等腿长装配分支，通过反解得到主动杆和被动闭链关节默认角。
 14. 跳跃参考轨迹第一版先不迁移，避免和闭链主模型切换耦合。
 
 ## 参考依据

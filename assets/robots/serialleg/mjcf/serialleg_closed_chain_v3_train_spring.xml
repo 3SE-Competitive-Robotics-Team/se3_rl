@@ -1,0 +1,162 @@
+<mujoco model="serialleg_closed_chain_v3_train">
+  <compiler angle="radian" meshdir="../meshes" autolimits="true" strippath="false" />
+  <option timestep="0.002" solver="Newton" cone="pyramidal" />
+  <visual>
+    <global offwidth="1280" offheight="720" />
+  </visual>
+  <default>
+    <geom solref="0.004 1.5" solimp="0.85 0.99 0.005" />
+    <joint damping="0" />
+    <equality solref="0.005 1.05" solimp="0.2 0.95 0.002 0.9 6" />
+  </default>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4" />
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2" />
+    <mesh name="visual_swbase_base_link_00" file="sw_original_base/base_link_chunk_00.stl" />
+    <mesh name="visual_swbase_base_link_01" file="sw_original_base/base_link_chunk_01.stl" />
+    <mesh name="visual_swbase_base_link_02" file="sw_original_base/base_link_chunk_02.stl" />
+    <mesh name="visual_swbase_base_link_03" file="sw_original_base/base_link_chunk_03.stl" />
+    <mesh name="visual_swbase_base_link_04" file="sw_original_base/base_link_chunk_04.stl" />
+    <mesh name="visual_swbase_base_link_05" file="sw_original_base/base_link_chunk_05.stl" />
+    <mesh name="visual_swbase_base_link_06" file="sw_original_base/base_link_chunk_06.stl" />
+    <mesh name="visual_swbase_base_link_07" file="sw_original_base/base_link_chunk_07.stl" />
+    <mesh name="visual_swbase_base_link_08" file="sw_original_base/base_link_chunk_08.stl" />
+    <mesh name="visual_swbase_base_link_09" file="sw_original_base/base_link_chunk_09.stl" />
+    <mesh name="visual_swbase_base_link_10" file="sw_original_base/base_link_chunk_10.stl" />
+    <mesh name="visual_swbase_base_link_11" file="sw_original_base/base_link_chunk_11.stl" />
+    <mesh name="visual_swbase_base_link_12" file="sw_original_base/base_link_chunk_12.stl" />
+    <mesh name="visual_lf_wheel" file="lf_wheel_link.STL" />
+    <mesh name="visual_rf_wheel" file="rf_wheel_link.STL" />
+    <mesh name="visual_lf_thigh" file="lf_thigh_link.STL" />
+    <mesh name="visual_l_drive_bar" file="lf_calf_1_link.STL" />
+    <mesh name="visual_l_coupler" file="lf_calf_2_link.STL" />
+    <mesh name="visual_l_calf" file="lf_calf_3_link.STL" />
+    <mesh name="visual_rf_thigh" file="rf_thigh_link.STL" />
+    <mesh name="visual_r_drive_bar" file="rf_calf_1_link.STL" />
+    <mesh name="visual_r_coupler" file="rf_calf_2_link.STL" />
+    <mesh name="visual_r_calf" file="rf_calf_3_link.STL" />
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1" />
+    <light name="spotlight" mode="targetbodycom" target="base_link" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -6 4" cutoff="30" />
+    <body name="base_link" pos="0 0 0.22">
+      <freejoint />
+      <inertial pos="-0.01780372 0.01307697 -0.03342401" mass="10.74541262" fullinertia="0.14395729 0.21248062 0.30929562 -0.00229101 0.00807199 -0.00039793" />
+      <geom name="base_link_sw_raw_visual_00" type="mesh" mesh="visual_swbase_base_link_00" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_01" type="mesh" mesh="visual_swbase_base_link_01" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_02" type="mesh" mesh="visual_swbase_base_link_02" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_03" type="mesh" mesh="visual_swbase_base_link_03" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_04" type="mesh" mesh="visual_swbase_base_link_04" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_05" type="mesh" mesh="visual_swbase_base_link_05" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_06" type="mesh" mesh="visual_swbase_base_link_06" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_07" type="mesh" mesh="visual_swbase_base_link_07" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_08" type="mesh" mesh="visual_swbase_base_link_08" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_09" type="mesh" mesh="visual_swbase_base_link_09" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_10" type="mesh" mesh="visual_swbase_base_link_10" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_11" type="mesh" mesh="visual_swbase_base_link_11" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_sw_raw_visual_12" type="mesh" mesh="visual_swbase_base_link_12" contype="0" conaffinity="0" group="1" />
+      <geom name="base_link_ucol_main" type="box" pos="0.0050578 0 -0.0321384" size="0.215182 0.14325 0.0732178" group="0" contype="1" conaffinity="2" />
+      <body name="lf0_Link" pos="0 0.16885 0">
+        <joint name="lf0_Joint" type="hinge" axis="0 1 0" armature="0.01" />
+        <inertial pos="-0.09968276 0.00404879 0.00282013" mass="0.32242010" fullinertia="0.00013496 0.00177872 0.00170006 0.00007976 0.00009393 -0.00000238" />
+        <geom name="lf0_Link_visual" type="mesh" mesh="visual_lf_thigh" contype="0" conaffinity="0" group="1" />
+        <site name="lf_thigh_end" pos="-0.17993464 0.0215 0.00489576" size="0.008" rgba="1 0 0 1" />
+        <site name="l_spring_p1" pos="0.00705 0.00497702 -0.04678497" group="4" />
+        <geom name="lf0_Link_ucol_main" type="box" pos="-0.0791153 0.0104893 0.00967075" size="0.114195 0.0363472 0.0215947" group="0" contype="1" conaffinity="2" quat="0.0816062 -0.0715672 -0.757451 -0.643807" />
+        <body name="lf1_Link" pos="-0.12990117 0.0215 0.04639203">
+          <joint name="lf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 1 0" damping="1" armature="0.02" />
+          <inertial pos="-0.04177153 -0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 0.00000296 -0.00076497 0.00001136" />
+          <geom name="lf1_Link_visual" type="mesh" mesh="visual_l_calf" contype="0" conaffinity="0" group="1" />
+          <site name="lf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
+          <site name="lf_coupler_closure" pos="0 0 0" size="0.008" rgba="0 0.7 1 1" />
+          <site name="l_spring_p2" pos="-0.09034883 -0.01652298 -0.09317700" group="4" />
+          <geom name="lf1_Link_ucol_main" type="box" pos="-0.0686723 -0.00751413 -0.0734519" size="0.105536 0.0226941 0.0170808" group="0" contype="1" conaffinity="2" quat="0.266815 0.312912 0.607394 -0.679683" />
+          <body name="l_wheel_Link" pos="-0.15699 0.02705 -0.21049">
+            <joint name="l_wheel_Joint" type="hinge" axis="0 1 0" armature="0.005" />
+            <inertial pos="-0.00007447 -0.00660229 -0.00008940" mass="0.27783378" fullinertia="0.00026503 0.00048080 0.00026516 -0.00000020 0.00000031 -0.00000025" />
+            <geom type="mesh" mesh="visual_lf_wheel" pos="0 0 0" name="l_wheel_Link_visual" contype="0" conaffinity="0" group="1" />
+            <geom name="l_wheel_Link_collision_0" type="cylinder" size="0.059 0.016" pos="0 -0.0066 0" euler="1.5708 0 0" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" />
+          </body>
+        </body>
+      </body>
+      <body name="l_drive_bar_Link" pos="0 0.16885 0">
+        <joint name="l_drive_bar_Joint" type="hinge" axis="0 1 0" armature="0.01" />
+        <inertial pos="0.01185501 0.01367042 0.01339557" mass="0.04635322" fullinertia="0.00002217 0.00004090 0.00001928 -0.00000004 -0.00001180 -0.00000005" />
+        <geom name="l_drive_bar_Link_visual" type="mesh" mesh="visual_l_drive_bar" contype="0" conaffinity="0" group="1" />
+        <geom name="l_drive_bar_Link_ucol_main" type="box" pos="0.0140802 0.0137528 0.0161577" size="0.0455967 0.0203935 0.008" group="0" contype="1" conaffinity="2" quat="0.499004 -0.500697 0.500727 0.499569" />
+        <body name="l_coupler_Link" pos="0.04009536 0.00690000 0.04530576">
+          <joint name="l_coupler_Joint" type="hinge" axis="0 1 0" damping="1" armature="0.02" />
+          <inertial pos="-0.08300337 0.00146519 0.01330427" mass="0.02321892" fullinertia="0.00000249 0.00007107 0.00006893 0.00000032 -0.00000125 -0.00000007" />
+          <geom name="l_coupler_Link_visual" type="mesh" mesh="visual_l_coupler" contype="0" conaffinity="0" group="1" />
+          <site name="l_coupler_end" pos="-0.16999653 0.0146 0.00108627" size="0.008" rgba="1 0.5 0 1" />
+          <geom name="l_coupler_Link_ucol_main" type="box" pos="-0.0847227 0.000859694 0.0123235" size="0.0957434 0.0209158 0.008" group="0" contype="1" conaffinity="2" quat="0.00343031 0.00526854 0.718068 -0.695944" />
+        </body>
+      </body>
+      <body name="rf0_Link" pos="0 -0.16885 0">
+        <joint name="rf0_Joint" type="hinge" axis="0 -1 0" armature="0.01" />
+        <inertial pos="-0.09968276 -0.00404879 0.00282013" mass="0.32242010" fullinertia="0.00013496 0.00177872 0.00170006 -0.00007976 0.00009393 0.00000238" />
+        <geom name="rf0_Link_visual" type="mesh" mesh="visual_rf_thigh" contype="0" conaffinity="0" group="1" />
+        <site name="rf_thigh_end" pos="-0.179935 -0.0200 0.004896" size="0.008" rgba="1 0 0 1" />
+        <site name="r_spring_p1" pos="0.00705 -0.00497702 -0.04678497" group="4" />
+        <geom name="rf0_Link_ucol_main" type="box" pos="-0.0790212 -0.0104735 0.00965626" size="0.114374 0.0364025 0.0215992" group="0" contype="1" conaffinity="2" quat="0.0813693 0.071449 -0.756589 0.644862" />
+        <body name="rf1_Link" pos="-0.12990153 -0.0200 0.04639227">
+          <joint name="rf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 -1 0" damping="1" armature="0.02" />
+          <inertial pos="-0.04177153 0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 -0.00000296 -0.00076497 -0.00001136" />
+          <geom name="rf1_Link_visual" type="mesh" mesh="visual_r_calf" contype="0" conaffinity="0" group="1" />
+          <site name="rf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
+          <site name="rf_coupler_closure" pos="0 0 0" size="0.008" rgba="0 0.7 1 1" />
+          <site name="r_spring_p2" pos="-0.09034883 0.01502298 -0.09317700" group="4" />
+          <geom name="rf1_Link_ucol_main" type="box" pos="-0.0683563 0.00435352 -0.0733316" size="0.105135 0.0227139 0.0170572" group="0" contype="1" conaffinity="2" quat="0.266497 0.313796 0.606149 -0.680511" />
+          <body name="r_wheel_Link" pos="-0.15699 -0.02705 -0.21049">
+            <joint name="r_wheel_Joint" type="hinge" axis="0 -1 0" armature="0.005" />
+            <inertial pos="-0.00007447 0.00660229 -0.00008940" mass="0.27783378" fullinertia="0.00026503 0.00048080 0.00026516 0.00000020 0.00000031 0.00000025" />
+            <geom type="mesh" mesh="visual_rf_wheel" pos="0 0 0" name="r_wheel_Link_visual" contype="0" conaffinity="0" group="1" />
+            <geom name="r_wheel_Link_collision_0" type="cylinder" size="0.059 0.016" pos="0 0.0066 0" euler="1.5708 0 0" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" />
+          </body>
+        </body>
+      </body>
+      <body name="r_drive_bar_Link" pos="0 -0.16885 0">
+        <joint name="r_drive_bar_Joint" type="hinge" axis="0 -1 0" armature="0.01" />
+        <inertial pos="0.01185501 -0.01367042 0.01339557" mass="0.04635322" fullinertia="0.00002217 0.00004090 0.00001928 0.00000004 -0.00001180 0.00000005" />
+        <geom name="r_drive_bar_Link_visual" type="mesh" mesh="visual_r_drive_bar" contype="0" conaffinity="0" group="1" />
+        <geom name="r_drive_bar_Link_ucol_main" type="box" pos="0.0140806 -0.0137563 0.0164107" size="0.0458355 0.0203854 0.008" group="0" contype="1" conaffinity="2" quat="0.50136 -0.498405 0.498371 0.501853" />
+        <body name="r_coupler_Link" pos="0.040095 -0.0069 0.045306">
+          <joint name="r_coupler_Joint" type="hinge" axis="0 -1 0" damping="1" armature="0.02" />
+          <inertial pos="-0.08300337 -0.00146519 0.01330427" mass="0.02321892" fullinertia="0.00000249 0.00007107 0.00006893 -0.00000032 -0.00000125 0.00000007" />
+          <geom name="r_coupler_Link_visual" type="mesh" mesh="visual_r_coupler" contype="0" conaffinity="0" group="1" />
+          <site name="r_coupler_end" pos="-0.16999653 -0.0131 0.00108627" size="0.008" rgba="1 0.5 0 1" />
+          <geom name="r_coupler_Link_ucol_main" type="box" pos="-0.0850801 -0.000862684 0.0122261" size="0.0953848 0.0208264 0.008" group="0" contype="1" conaffinity="2" quat="0.00343881 -0.00524957 0.718104 0.695908" />
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <connect name="l_coupler_to_lf_calf" site1="l_coupler_end" site2="lf_coupler_closure" />
+    <connect name="r_coupler_to_rf_calf" site1="r_coupler_end" site2="rf_coupler_closure" />
+  </equality>
+  <tendon>
+    <fixed name="l_active_rod_angle" limited="true" range="0 1.7" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+      <joint joint="lf0_Joint" coef="1" />
+      <joint joint="l_drive_bar_Joint" coef="-1" />
+    </fixed>
+    <fixed name="r_active_rod_angle" limited="true" range="0 1.7" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+      <joint joint="r_drive_bar_Joint" coef="1" />
+      <joint joint="rf0_Joint" coef="-1" />
+    </fixed>
+    <spatial name="l_knee_spring" width="0.003" rgba="0.2 0.6 1 1">
+      <site site="l_spring_p1" />
+      <site site="l_spring_p2" />
+    </spatial>
+    <spatial name="r_knee_spring" width="0.003" rgba="0.2 0.6 1 1">
+      <site site="r_spring_p1" />
+      <site site="r_spring_p2" />
+    </spatial>
+  </tendon>
+  <actuator>
+    <general name="l_knee_gas_spring" tendon="l_knee_spring" dyntype="none" gaintype="fixed" biastype="affine" gainprm="0" biasprm="300 0 0" />
+    <general name="r_knee_gas_spring" tendon="r_knee_spring" dyntype="none" gaintype="fixed" biastype="affine" gainprm="0" biasprm="300 0 0" />
+  </actuator>
+  <keyframe>
+    <key name="standing" qpos="0 0 0.230340071 1 0 0 0 -0.2275 -1.163001511 0 -1.4475 1.296413806 0.2275 1.163000657 0 1.4475 -1.296416824" />
+  </keyframe>
+</mujoco>

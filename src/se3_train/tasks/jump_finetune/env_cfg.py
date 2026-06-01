@@ -24,6 +24,7 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 from se3_train.robot_cfg import get_serialleg_cfg
@@ -31,7 +32,8 @@ from se3_train.tasks.flat import events, observations
 from se3_train.tasks.jump_finetune import commands, curriculums, rewards, terminations
 from se3_train.tasks.jump_pretrain.env_cfg import env_cfg as pretrain_env_cfg
 
-_DEFAULT_STANDING_HEIGHT = 0.22
+_ROBOT_DEFAULTS = SharedRobotConfig()
+_DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
 
 

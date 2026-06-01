@@ -217,11 +217,11 @@
     <connect body1="rf0_Link" body2="rf1_Link" anchor="-0.17993 -0.009275 0.0049" solref="0.002 1" solimp="0.95 0.99 0.001" />
   </equality>
   <tendon>
-    <fixed name="l_active_rod_angle" limited="true" range="0.12 1.36" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+    <fixed name="l_active_rod_angle" limited="true" range="0.655 2.268" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
       <joint joint="lf0_Joint" coef="1" />
       <joint joint="l_drive_bar_Joint" coef="-1" />
     </fixed>
-    <fixed name="r_active_rod_angle" limited="true" range="0.12 1.36" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+    <fixed name="r_active_rod_angle" limited="true" range="0.655 2.268" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
       <joint joint="r_drive_bar_Joint" coef="1" />
       <joint joint="rf0_Joint" coef="-1" />
     </fixed>

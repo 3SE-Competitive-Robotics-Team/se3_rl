@@ -10,11 +10,13 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import commands, curriculums, events, rewards, terminations
 
-_DEFAULT_STANDING_HEIGHT = 0.22
+_ROBOT_DEFAULTS = SharedRobotConfig()
+_DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:

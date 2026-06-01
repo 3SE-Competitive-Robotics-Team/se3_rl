@@ -120,6 +120,54 @@ PRIMITIVE_COLLISION_GEOMS: dict[str, tuple[dict[str, str], ...]] = {
             "friction": "0.8 0.005 0.0001",
         },
     ),
+    "lf0_Link": (
+        {
+            "name": "lf0_Link_collision_0",
+            "type": "box",
+            "size": "0.1214 0.0213 0.0489",
+            "pos": "-0.0806 0.0075 -0.0071",
+            "group": "0",
+            "contype": "1",
+            "conaffinity": "2",
+        },
+    ),
+    "rf0_Link": (
+        {
+            "name": "rf0_Link_collision_0",
+            "type": "box",
+            "size": "0.1214 0.0213 0.0489",
+            "pos": "-0.0806 -0.0075 -0.0071",
+            "group": "0",
+            "contype": "1",
+            "conaffinity": "2",
+        },
+    ),
+    "lf1_Link": (
+        {
+            "name": "lf1_Link_collision_0",
+            "type": "box",
+            "size": "0.1070 0.0209 0.1193",
+            "pos": "-0.0900 -0.0118 -0.1165",
+            "group": "0",
+            "contype": "1",
+            "conaffinity": "2",
+        },
+    ),
+    "rf1_Link": (
+        {
+            "name": "rf1_Link_collision_0",
+            "type": "box",
+            "size": "0.1070 0.0209 0.1193",
+            "pos": "-0.0900 0 -0.1165",
+            "group": "0",
+            "contype": "1",
+            "conaffinity": "2",
+        },
+    ),
+    "l_drive_bar_Link": (),
+    "r_drive_bar_Link": (),
+    "l_coupler_Link": (),
+    "r_coupler_Link": (),
 }
 
 

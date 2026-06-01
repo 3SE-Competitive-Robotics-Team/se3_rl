@@ -17,7 +17,7 @@
 | 术语 | 定义 |
 |---|---|
 | 纯自起策略 | 只处理倒地/异常姿态到稳定站立的策略，不负责恢复期间移动、转向或平地行走 |
-| 固定站立高度 | 当前共享默认高度 `0.22m`，来自 `se3_shared.robot.default_base_height` 和 `_DEFAULT_STANDING_HEIGHT` |
+| 固定站立高度 | 当前共享默认高度 `0.230340071m`，来自 `se3_shared.robot.default_base_height` 和 `_DEFAULT_STANDING_HEIGHT` |
 | 可交接站立态 | 倾角、高度、速度、双轮接触、非轮接触和腿部几何对齐都满足成功窗口的站稳状态 |
 | 非轮接触 | 腿部、机身或其他非轮部件与地面接触；恢复过程中允许，成功窗口内不允许 |
 | 腿部几何对齐 | 左右轮保持正常横向轮距，且机身坐标系下前后错位不超过阈值；不允许两条腿前后劈叉 |
@@ -27,7 +27,7 @@
 1. 新建任务 `SE3-WheelLegged-Recovery-Stand-GRU`，不覆盖旧任务。
 2. recovery policy 从零训练，不从 flat checkpoint warm-start。
 3. actor 观测维度保持现有 32D contract，不添加 recovery mode flag。
-4. 指令固定为 `vx=0, yaw_rate=0, pitch=0, roll=0, height=0.22m`。
+4. 指令固定为 `vx=0, yaw_rate=0, pitch=0, roll=0, height=default_base_height`。
 5. reset 从第 0 iter 起使用全难度随机：base 姿态、yaw、关节位置、关节速度全部随机。
 6. recovery 只训练恢复到固定站立态，不训练移动或转向。
 7. episode 长度先设为 `5s`，成功后提前 reset。
@@ -71,7 +71,7 @@ SE3_LOGGER=tensorboard WANDB_MODE=disabled uv run --env-file .env se3-train SE3-
 动作仍为 6 维：
 
 ```text
-[lf0, lf1, rf0, rf1, l_wheel, r_wheel]
+[LF, LB, RF, RB, l_wheel, r_wheel]
 ```
 
 腿部动作是位置目标，轮子动作是速度目标。actor 观测保持现有共享布局：
@@ -99,7 +99,7 @@ vx = 0.0
 yaw_rate = 0.0
 pitch = 0.0
 roll = 0.0
-height = 0.22
+height = default_base_height
 jump_flag = 0.0
 jump_target_height = 0.0
 jump_phase = 0.0
@@ -240,7 +240,7 @@ Smoke 只证明环境不崩，不能证明策略有效。
 
 检查：
 
-- command 是否固定为 `0,0,0,0,0.22`。
+- command 是否固定为 `0,0,0,0,default_base_height`。
 - reset 是否从第 0 iter 就覆盖 `0°~180°`。
 - 关节随机是否已经使用最大范围。
 - `tracking_lin_vel` / `tracking_ang_vel` 是否没有出现在 reward 表。

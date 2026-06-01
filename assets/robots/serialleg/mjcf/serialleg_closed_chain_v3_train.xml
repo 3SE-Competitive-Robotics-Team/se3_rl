@@ -152,11 +152,8 @@
       <site site="r_spring_p2" />
     </spatial>
   </tendon>
-  <actuator>
-    <general name="l_knee_gas_spring" tendon="l_knee_spring" dyntype="none" gaintype="fixed" biastype="affine" gainprm="0" biasprm="300 0 0" />
-    <general name="r_knee_gas_spring" tendon="r_knee_spring" dyntype="none" gaintype="fixed" biastype="affine" gainprm="0" biasprm="300 0 0" />
-  </actuator>
+  <!-- 默认训练模型暂时不启用气弹簧常力，只保留挂点和 tendon 几何；带 300 N 气弹簧的版本见 serialleg_closed_chain_v3_train_spring.xml。 -->
   <keyframe>
-    <key name="standing" qpos="0 0 0.22 1 0 0 0 0.2 -0.73636135 0 -0.5403 0.785409053 -0.2 0.73636215 0 0.5403 -0.785410896" />
+    <key name="standing" qpos="0 0 0.230340071 1 0 0 0 -0.2275 -1.163001511 0 -1.4475 1.296413806 0.2275 1.163000657 0 1.4475 -1.296416824" />
   </keyframe>
 </mujoco>

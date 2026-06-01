@@ -130,11 +130,11 @@
   </equality>
   <tendon>
     <!-- 闭链主动杆限位使用当前装配分支下的后杆-前杆夹角，而不是后主动杆绝对角。 -->
-    <fixed name="l_active_rod_angle" limited="true" range="0.12 1.36">
+    <fixed name="l_active_rod_angle" limited="true" range="0.655 2.268">
       <joint joint="l_drive_bar_Joint" coef="1" />
       <joint joint="lf0_Joint" coef="-1" />
     </fixed>
-    <fixed name="r_active_rod_angle" limited="true" range="0.12 1.36">
+    <fixed name="r_active_rod_angle" limited="true" range="0.655 2.268">
       <joint joint="r_drive_bar_Joint" coef="1" />
       <joint joint="rf0_Joint" coef="-1" />
     </fixed>

@@ -5,7 +5,7 @@
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
 - 5 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）
-- 机器人：6 维 policy 动作（`[LF, LB, RF, RB, l_wheel, r_wheel]`），默认 MJCF 为闭链四连杆 + 300 N 气弹簧
+- 机器人：6 维 policy 动作（`[LF, LB, RF, RB, l_wheel, r_wheel]`），默认 MJCF 为闭链四连杆无气弹簧常力；默认站姿为 `[-0.2275, -1.4475, 0.2275, 1.4475, 0, 0]`、base 高度约 `0.23034 m`；带 300 N 气弹簧的 v3 MJCF 保留为显式 A/B 对照
 - 控制方式：腿部主动杆位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
 ## 术语表 (Glossary)
@@ -172,6 +172,8 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 - 膝关节通过**四连杆机构**（驱动杆 AB → 连杆 BC → 小腿上段 CD）传动
 - 膝关节安装有**气弹簧**，P₁ 在驱动杆对侧（A 下方），P₂ 在小腿对侧（D 下方）
 
+当前训练实验先禁用气弹簧常力，只验证闭链机构本身；重新启用气弹簧前必须重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
+
 运行 `scripts/plot_spring_geometry.py` 可生成带真实 MuJoCo FK 的机构示意图，理解四连杆拓扑和弹簧挂点位置关系。详细方案见 `docs/plan/knee_spring_modeling.md`。
 
 ## 架构关键点
@@ -247,6 +249,8 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 腿部：action × (0.35, 0.25, 0.35, 0.25) + default_dof_pos
 轮子：action × 20.0 rad/s
 ```
+
+当前无气弹簧闭链默认姿态使用 base 高度约 0.23 m 的中等腿长分支：`default_dof_pos=(-0.2275, -1.4475, 0.2275, 1.4475, 0, 0)`，`default_output_knee_pos=(-1.163001511, 1.163000657)`，`default_coupler_pos=(1.296413806, -1.296416824)`，`default_base_height=0.230340071`。该点用于 reset 几何和质心投影对齐；两轮倒立平衡仍依赖策略的轮子反馈，不应把零 action 开环自稳当成验收条件。
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 

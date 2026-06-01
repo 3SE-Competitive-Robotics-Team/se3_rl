@@ -11,7 +11,8 @@ from se3_shared import RobotConfig as SharedRobotConfig
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
-_CLOSEDCHAIN_SPRING_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train.xml"
+_CLOSEDCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train.xml"
+_CLOSEDCHAIN_SPRING_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_spring.xml"
 _MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
 _MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
 
@@ -21,7 +22,7 @@ _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
 
 def _resolve_mjcf_path() -> Path:
-    """解析训练使用的 MJCF 路径，默认使用闭链四连杆模型。"""
+    """解析训练使用的 MJCF 路径，默认使用闭链四连杆无气弹簧常力模型。"""
     override = os.environ.get(_MJCF_ENV_VAR)
     if override:
         path = Path(override).expanduser()
@@ -33,12 +34,14 @@ def _resolve_mjcf_path() -> Path:
         return path
 
     variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "closedchain").strip().lower()
-    if variant in {"default", "closedchain", "closedchain_spring", "spring", "fourbar"}:
+    if variant in {"default", "closedchain", "fourbar", "no-spring", "no_spring"}:
+        return _CLOSEDCHAIN_MJCF_PATH
+    if variant in {"closedchain_spring", "spring", "gas_spring", "gas-spring"}:
         return _CLOSEDCHAIN_SPRING_MJCF_PATH
-    if variant in {"openchain", "no-spring", "no_spring"}:
+    if variant in {"openchain"}:
         return _OPENCHAIN_MJCF_PATH
     raise ValueError(
-        f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 closedchain/openchain，"
+        f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 closedchain/closedchain_spring/openchain，"
         f"或用 {_MJCF_ENV_VAR} 指定 MJCF 路径。"
     )
 
