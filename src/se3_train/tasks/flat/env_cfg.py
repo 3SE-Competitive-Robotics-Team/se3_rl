@@ -374,7 +374,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "leg_contact": TerminationTermCfg(
             func=terminations.leg_contact,
             time_out=False,
-            params={"sensor_name": "leg_contact_sensor", "force_threshold": 1.0},
+            params={
+                "sensor_name": "leg_contact_sensor",
+                "force_threshold": 1.0,
+                "command_name": "velocity_height",
+            },
         ),
     }
 
@@ -384,6 +388,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 func=curriculums.commands_vel,
                 params={
                     "command_name": "velocity_height",
+                    "use_iterations": True,
                     "velocity_stages": [
                         {
                             "step": 0,
@@ -421,6 +426,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "push_disturbance": CurriculumTermCfg(
                 func=curriculums.push_disturbance,
                 params={
+                    "use_iterations": True,
                     "push_stages": [
                         {
                             "step": 0,
