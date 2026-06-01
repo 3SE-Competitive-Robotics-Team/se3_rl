@@ -295,7 +295,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "collision": RewardTermCfg(
             func=rewards.collision,
-            weight=-2.51,
+            weight=-16.0,
             params={"sensor_name": "collision_sensor", "asset_cfg": SceneEntityCfg("robot")},
         ),
         "contact_forces": RewardTermCfg(

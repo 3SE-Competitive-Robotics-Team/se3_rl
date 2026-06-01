@@ -1360,6 +1360,17 @@ def collision(
 
     force_mag = finite_contact_force_norm(data.force)
     contact_count = (force_mag > 0.1).float().sum(dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        has_contact = contact_count > 0.0
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "Locomotion/upright_base_contact_rate": _masked_mean(has_contact.float(), active),
+                "Locomotion/upright_base_contact_count": _masked_mean(contact_count, active),
+            }
+        )
+
     return contact_count * gate
 
 
