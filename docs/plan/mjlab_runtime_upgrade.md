@@ -59,3 +59,51 @@ UniLab 这次的问题不是“仿真平台天然更快”，而是它让 CPU/GP
 - TensorBoard/W&B 出现 `Runtime/*` 和新增 `Perf/*` 字段。
 - 旧的 `Steps per second`、`Collection time`、`Learning time` 仍正常打印。
 - 同一任务同一 seed 下，训练曲线不应因 runner profile 产生系统性变化。
+
+## A100 远端验证
+
+记录时间：2026-06-02。
+
+远端机器：`root@120.209.70.195 -p 30369`，A100-SXM4-80GB * 2。测试时两张 GPU 空闲，单卡测试固定 `CUDA_VISIBLE_DEVICES=0`。
+
+测试 commit：
+
+```text
+b4e2852 enh(se3_train): 为 MJLab 训练增加运行时画像
+```
+
+测试命令：
+
+```bash
+SE3_LOGGER=tensorboard CUDA_VISIBLE_DEVICES=0 \
+uv run --no-sync se3-train SE3-WheelLegged-Flat-GRU \
+  --env.scene.num-envs 8192 \
+  --agent.max-iterations 60 \
+  --agent.save-interval 1000
+```
+
+训练启动时 runtime summary：
+
+```text
+[SE3 Runtime] cpu_visible=112, cpu_affinity=112, cpu_quota=24.00, cpu_effective=24.00, cuda_visible=0
+```
+
+结果：
+
+| 指标 | warm 平均 | tail-20 平均 | 最后一轮 |
+| --- | ---: | ---: | ---: |
+| `Iteration time` | `12.448s` | `12.363s` | `12.330s` |
+| `Collection time` | `10.883s` | `10.814s` | `10.798s` |
+| `Learning time` | `1.565s` | `1.549s` | `1.531s` |
+| `Steps per second` | `42.12k` | `42.41k` | `42.53k` |
+| `Perf/returns_s` | - | `0.0068s` | `0.0067s` |
+| `Perf/update_s` | - | `1.542s` | `1.525s` |
+
+结论：
+
+- profile runner 在 A100 真实训练中可用，`Runtime/*` 和新增 `Perf/*` 已写入 TensorBoard。
+- cgroup 配额被正确识别为 24 核，避免再次把 `os.cpu_count()==112` 误当成可用 CPU。
+- `returns_s` 只有毫秒级，`update_s` 约 1.5s；主要瓶颈仍是 MJLab rollout collection，tail-20 约 10.8s。
+- 单卡 `8192 envs x 64 steps` 吞吐约 `42.4k steps/s`，与此前同机 MJLab baseline 一致，说明 profile runner 没有引入可见吞吐回退。
+
+双卡 `--gpu-ids all` 首次尝试在 torchrunx rank 同步阶段失败，rank0 看到 rank1 断开，未进入训练循环。该问题与 profile runner 的单卡验证无关，但需要单独排查 torchrunx/rank1 启动日志和容器 OpenGL/EGL 依赖。
