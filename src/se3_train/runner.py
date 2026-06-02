@@ -8,6 +8,7 @@ import torch
 from mjlab.rl import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
 
+from se3_train.async_logging import Se3AsyncHostLogger, async_host_logger_enabled
 from se3_train.training_runtime import (
     IterationTimer,
     IterationTiming,
@@ -24,8 +25,12 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         super().__init__(*args, **kwargs)
         self._se3_runtime_info = detect_training_runtime()
         self._se3_runtime_info_logged = False
+        self._se3_async_host_logger_enabled = async_host_logger_enabled()
+        self._se3_last_async_logger_flush_s = 0.0
         if not self.is_distributed or self.gpu_global_rank == 0:
             print(format_runtime_summary(self._se3_runtime_info), flush=True)
+            if self._se3_async_host_logger_enabled:
+                print("[SE3 Runtime] async_host_logger=enabled", flush=True)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """运行 PPO 训练循环，并记录采样、return、update 的分段耗时。"""
@@ -42,6 +47,11 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             self.alg.broadcast_parameters()
 
         self.logger.init_logging_writer()
+        async_logger = (
+            Se3AsyncHostLogger(self.logger)
+            if self._se3_async_host_logger_enabled
+            else None
+        )
 
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
@@ -65,13 +75,19 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                         if self.cfg["algorithm"].get("rnd_cfg")
                         else None
                     )
-                    self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+                    if async_logger is None:
+                        self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+                    else:
+                        async_logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
 
                 timer.mark_collect_done()
                 self.alg.compute_returns(obs)
                 timer.mark_returns_done()
 
             loss_dict = self.alg.update()
+            self._se3_last_async_logger_flush_s = (
+                async_logger.flush() if async_logger is not None else 0.0
+            )
             timing = timer.finish()
             self.current_learning_iteration = it
 
@@ -108,9 +124,15 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         for key, value in timing.as_log_dict().items():
             writer.add_scalar(key, value, iteration)
         writer.add_scalar("Perf/update_s", timing.learn_s, iteration)
+        writer.add_scalar("Perf/async_host_logger_flush_s", self._se3_last_async_logger_flush_s, iteration)
         if not self._se3_runtime_info_logged:
             for key, value in self._se3_runtime_info.as_log_dict().items():
                 writer.add_scalar(key, value, iteration)
+            writer.add_scalar(
+                "Runtime/async_host_logger_enabled",
+                float(self._se3_async_host_logger_enabled),
+                iteration,
+            )
             self._se3_runtime_info_logged = True
 
 
