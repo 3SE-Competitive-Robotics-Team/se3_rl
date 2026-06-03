@@ -143,6 +143,14 @@ sim-headless:
 sim-headless-ckpt checkpoint:
     uv run se3-sim2sim --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 
+# NX recovery-only runtime dry-run：不连接 STM32，只验证 checkpoint 推理链路。
+nx-recovery-dry-run:
+    uv run se3-nx-recovery --dry-run --max-steps 100 --print-every 25
+
+# 导出 NX 轻量 NumPy policy 权重。
+nx-export-policy:
+    uv run se3-export-nx-policy --checkpoint logs/rsl_rl/se3_wheel_leg/2026-05-31_14-08-23/model_2999.pt --output logs/deploy/model_2999_recovery_stand_gru.npz
+
 # ---- sim2sim（跳跃模型） —— 默认跑 jump-sweep 历程 ----
 
 # sim2sim 跳跃回放（自动选最新 checkpoint，Rerun，jump-sweep 历程）

@@ -1,7 +1,7 @@
 ---
 name: remote-dev-se3
-description: se3_wheel_leg 远程训练机运维。管理 SSH 隧道、代理穿透、训练启动/停止/监控、checkpoint 拉取、sim2sim 验证。当用户提到远程训练、训练机、GPU 机器、wuyinyun、gpufree、a800、阿里云、腾讯云、SSH 连接、代理隧道、训练日志、checkpoint 下载、wandb 看不到数据时触发。
-when_to_use: 远程训练 / 训练机 / SSH 隧道 / 代理穿透 / 训练启动 / 训练日志 / checkpoint / wandb / wuyinyun / gpufree / a800 / 无影云 / 阿里云 / 腾讯云 / GPU 机器
+description: se3_wheel_leg 远程训练机与 NX 真机部署运维。管理 SSH 隧道、代理穿透、训练启动/停止/监控、checkpoint 拉取、sim2sim 验证、NX 直连和真机部署准备。当用户提到远程训练、训练机、GPU 机器、wuyinyun、gpufree、a800、NX、Jetson、真机部署、阿里云、腾讯云、SSH 连接、代理隧道、训练日志、checkpoint 下载、wandb 看不到数据时触发。
+when_to_use: 远程训练 / 训练机 / SSH 隧道 / 代理穿透 / 训练启动 / 训练日志 / checkpoint / wandb / wuyinyun / gpufree / a800 / NX / Jetson / 真机部署 / 无影云 / 阿里云 / 腾讯云 / GPU 机器
 user-invocable: true
 ---
 
@@ -17,6 +17,7 @@ user-invocable: true
 | `wuyinyun` | 无影云 | RTX 5880 Ada 48GB | `machines/wuyinyun.md` |
 | `gpufree` | gpufree 容器 | RTX 4090 24GB | `machines/gpufree.md` |
 | `a800` | 局域网 Kubernetes 容器 | NVIDIA A800 * 4 | `machines/a800.md` |
+| `serialleg-nx` | 网线直连真机 | Jetson Orin NX | `machines/nx.md` |
 
 > 新增机器时：在 `machines/` 下新建对应 `.md` 文件，并在上表添加一行。
 
