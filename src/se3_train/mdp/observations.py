@@ -80,9 +80,7 @@ def leg_joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
             robot.data.joint_vel[:, leg_ids],
         )
         return _finite_clamp(vel * _OBS_CFG.leg_vel_scale)
-    return _finite_clamp(
-        robot.data.joint_vel[:, leg_ids] * _OBS_CFG.leg_vel_scale
-    )
+    return _finite_clamp(robot.data.joint_vel[:, leg_ids] * _OBS_CFG.leg_vel_scale)
 
 
 def wheel_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

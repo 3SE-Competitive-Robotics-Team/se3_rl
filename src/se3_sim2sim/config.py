@@ -96,9 +96,7 @@ class RobotConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model_path: Path = Path(
-        "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
-    )
+    model_path: Path = Path("assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml")
     task: str = "wheel_legged_joint_pos"
     seed: int = 0
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt

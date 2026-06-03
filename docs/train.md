@@ -6,13 +6,13 @@
 
 训练和仿真用的 MJCF 与 mesh 文件已放在 `assets/robots/serialleg/`。重新导出模型时，保持 MJCF 中的关节名和 mesh 相对路径不变。
 
-当前默认模型是闭链四连杆无气弹簧常力版本，用来先单独验证闭链机构对平地基模的影响。默认训练入口已使用 OBB 裁剪碰撞版：base 为 3 个保守 box，轮子为窄接地 cylinder，四个主腿 link 各使用一个沿视觉 mesh 长轴拟合并裁掉关节重叠的有向 box，`drive_bar/coupler` 不参与 collision。
+当前默认模型是解析四连杆等效开树版本，用来降低闭链求解成本，同时保持 policy 的 `[LF, LB, RF, RB, l_wheel, r_wheel]` 主动杆语义。它移除 `drive_bar/coupler/equality`，但通过解析 FK/IK 在训练动作、观测和力矩映射中复现四连杆关系；collision 沿用闭链 OBB 裁剪方案，base 为 3 个保守 box，轮子为窄接地 cylinder，四个主腿 link 各使用一个沿视觉 mesh 长轴拟合并裁掉关节重叠的有向 box。
 
 ```text
-assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml
+assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml
 ```
 
-MJCF 目录保留当前闭链训练模型、解析四连杆等效开树模型和旧开链模型。训练端默认 `SE3_ROBOT_MJCF_VARIANT=closedchain` 使用无气弹簧常力版本；需要降低闭链求解成本时用 `SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate`，它移除 `drive_bar/coupler/equality`，但通过解析 FK/IK 保持 policy 的 `LB/RB` 虚拟主动杆语义，并沿用闭链训练版的 base/腿/轮碰撞体；需要回退定位时用 `SE3_ROBOT_MJCF_VARIANT=openchain`。临时测试其它导出文件时，用 `SE3_ROBOT_MJCF` 显式指定路径。
+MJCF 目录保留解析四连杆等效开树模型、OBB 裁剪闭链模型和旧开链模型。训练端默认 `SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate`；需要显式验证真实闭链求解时用 `SE3_ROBOT_MJCF_VARIANT=closedchain`；需要回退定位时用 `SE3_ROBOT_MJCF_VARIANT=openchain`。临时测试其它导出文件时，用 `SE3_ROBOT_MJCF` 显式指定路径。
 
 policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.46945 rad`，对应腿长下限约 `0.14 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
 
@@ -28,7 +28,7 @@ default_base_height = 0.22 m
 这只是两轮倒立系统的 reset 几何基点；零轮速开环 PD 仍不能替代策略的轮子平衡反馈。旧开链模型仍保留为显式回退 variant：
 
 ```bash
-SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_ROBOT_MJCF_VARIANT=closedchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 uv run se3-sim2sim --model assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml --viewer none --max-steps 200
 ```
@@ -59,8 +59,8 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --g
 # 开链回退 smoke（仅用于 A/B 定位）
 SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
-# 解析四连杆等效开树 smoke（训练加速 A/B）
-SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+# 真实闭链 OBB smoke（用于 A/B 定位）
+SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=closedchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # GPU smoke
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024

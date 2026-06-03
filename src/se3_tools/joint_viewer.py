@@ -15,7 +15,7 @@ import mujoco.viewer
 
 from se3_shared import JointGroup, RobotConfig
 
-MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml"
+MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
 OPENCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
 FOURBAR_SURROGATE_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
 CLOSEDCHAIN_SPRING_MJCF_PATH = (
@@ -146,10 +146,13 @@ def _add_viewer_actuators(xml: str, *, position_kp: float = VIEWER_POSITION_KP) 
     if "<actuator>" in xml:
         return xml.replace(
             "</actuator>",
-            "\n".join(_viewer_actuator_inner_lines(xml, position_kp=position_kp)) + "\n  </actuator>",
+            "\n".join(_viewer_actuator_inner_lines(xml, position_kp=position_kp))
+            + "\n  </actuator>",
             1,
         )
-    return xml.replace("</mujoco>", _viewer_actuator_xml(xml, position_kp=position_kp) + "\n</mujoco>")
+    return xml.replace(
+        "</mujoco>", _viewer_actuator_xml(xml, position_kp=position_kp) + "\n</mujoco>"
+    )
 
 
 def _set_floor_contact(xml: str, *, enabled: bool) -> str:

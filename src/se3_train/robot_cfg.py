@@ -33,15 +33,22 @@ def _resolve_mjcf_path() -> Path:
             raise FileNotFoundError(f"{_MJCF_ENV_VAR} 指向的 MJCF 不存在: {path}")
         return path
 
-    variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "closedchain").strip().lower()
-    if variant in {"default", "closedchain", "fourbar", "no-spring", "no_spring"}:
-        return _CLOSEDCHAIN_MJCF_PATH
-    if variant in {"fourbar-surrogate", "fourbar_surrogate", "surrogate", "equivalent-openchain"}:
+    variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "fourbar-surrogate").strip().lower()
+    if variant in {
+        "default",
+        "fourbar",
+        "fourbar-surrogate",
+        "fourbar_surrogate",
+        "surrogate",
+        "equivalent-openchain",
+    }:
         return _FOURBAR_SURROGATE_MJCF_PATH
+    if variant in {"closedchain", "closedchain-obb", "closedchain_obb", "no-spring", "no_spring"}:
+        return _CLOSEDCHAIN_MJCF_PATH
     if variant in {"openchain"}:
         return _OPENCHAIN_MJCF_PATH
     raise ValueError(
-        f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 closedchain/fourbar-surrogate/openchain，"
+        f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 fourbar-surrogate/closedchain/openchain，"
         f"或用 {_MJCF_ENV_VAR} 指定 MJCF 路径。"
     )
 

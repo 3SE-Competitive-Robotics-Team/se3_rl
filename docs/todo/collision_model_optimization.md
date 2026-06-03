@@ -8,8 +8,8 @@
 
 ## 当前判断
 
-- 默认训练 MJCF 已切换到 `assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml`。
-- 该版本只替换 collision geom，不改变闭链拓扑、气弹簧挂点、关节默认姿态和 actuator 语义。
+- 默认训练 MJCF 已切换到 `assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml`。
+- 该版本使用解析四连杆等效开树动力学，collision 沿用 OBB 裁剪闭链方案；显式 `closedchain` variant 才直接使用 `serialleg_closed_chain_v3_train_obb_trim.xml`。
 - `drive_bar/coupler` 暂不参与 collision，避免闭链内部细杆成为额外接触面。
 - 腿部原始 STL mesh collision 只保留为预览/诊断思路，不作为默认训练方案；MuJoCo mesh collision 按凸包处理，孔洞和凹槽不会成为精确接触边界。
 
