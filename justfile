@@ -85,12 +85,12 @@ play-ckpt checkpoint:
 
 # mjlab play 跳跃回放（自动选最新 checkpoint，本地 viewer）
 play-jump:
-    uv run se3-play SE3-WheelLegged-Jump-GRU --num-envs 1
+    uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --num-envs 1
 
 # mjlab play 跳跃回放（指定 checkpoint）
 # 用法: just play-jump-ckpt logs/.../model_4999.pt
 play-jump-ckpt checkpoint:
-    uv run se3-play SE3-WheelLegged-Jump-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+    uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --checkpoint-file {{checkpoint}} --num-envs 1
 
 # ---- sim2sim（行走模型）—— 默认跑 walk-sweep 历程 ----
 

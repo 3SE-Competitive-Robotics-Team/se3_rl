@@ -52,7 +52,7 @@ uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1 --
 
 ## 训练参数
 
-轮数和保存间隔在 `src/se3_train/rl_cfg.py` 里配置：
+轮数和保存间隔在对应任务的 `src/se3_train/tasks/<task>/rl_cfg.py` 里配置：
 
 ```python
 max_iterations=5000,  # 默认 5000 轮

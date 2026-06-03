@@ -202,7 +202,7 @@ just train-rough # 崎岖地形训练
 
 第一次建议先跑平地任务。训练会：
 
-- 用 `src/se3_train/rl_cfg.py` 里的 PPO 配置。
+- 用对应任务 `src/se3_train/tasks/<task>/rl_cfg.py` 里的 PPO 配置。
 - 默认跑 5000 轮。
 - 每 100 轮保存一次 checkpoint。
 - 把训练指标上传到 W&B。
