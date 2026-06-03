@@ -276,7 +276,7 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
 **触发条件**（满足其一即加载）：
-- 提到远程训练机、GPU 机器、云机器、wuyinyun、gpufree、a800、NX、Jetson、真机部署、无影云、阿里云、腾讯云
+- 提到远程训练机、GPU 机器、云机器、gpufree、a800、NX、Jetson、真机部署、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
 - 需要启动、停止、监控训练进程
 - 需要查看训练日志、wandb 数据
@@ -285,7 +285,12 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 - 询问 tmux 会话管理
 
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
-当前已注册：`wuyinyun`（无影云 RTX 5880）、`gpufree`（RTX 4090）、`a800`（4 * NVIDIA A800，局域网 Kubernetes 容器）、`serialleg-nx`（Jetson Orin NX 真机部署目标）。
+
+**codex/xyh 个人工作分支当前只使用两台远程训练服务器：**
+- `a800`：4 * NVIDIA A800，局域网 Kubernetes 容器，主力多卡训练。
+- `gpufree`：1 * NVIDIA L40S，按量计费单卡训练 / smoke / 备用。
+
+`wuyinyun` 不属于当前 `codex/xyh` 分支的可用远程训练服务器；相关文档仅作历史归档，不要把它作为默认 SSH、代理、训练或 checkpoint 拉取目标。`serialleg-nx` 是 Jetson Orin NX 真机部署目标，不是 MJLab 训练服务器。
 
 Windows PowerShell 调远端 bash 时，默认使用 `scripts/remote_bash.ps1` 或 `.agents/skills/remote-dev-se3/SKILL.md` 里的单引号 here-string 模板。禁止把含 `&&`、`$()`、`$变量` 或管道的复杂 bash 直接塞进 PowerShell 双引号字符串里。
 

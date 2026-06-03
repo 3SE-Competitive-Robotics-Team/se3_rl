@@ -1,7 +1,7 @@
 ---
 name: remote-dev-se3
-description: se3_wheel_leg 远程训练机与 NX 真机部署运维。管理 SSH 隧道、代理穿透、训练启动/停止/监控、checkpoint 拉取、sim2sim 验证、NX 直连和真机部署准备。当用户提到远程训练、训练机、GPU 机器、wuyinyun、gpufree、a800、NX、Jetson、真机部署、阿里云、腾讯云、SSH 连接、代理隧道、训练日志、checkpoint 下载、wandb 看不到数据时触发。
-when_to_use: 远程训练 / 训练机 / SSH 隧道 / 代理穿透 / 训练启动 / 训练日志 / checkpoint / wandb / wuyinyun / gpufree / a800 / NX / Jetson / 真机部署 / 无影云 / 阿里云 / 腾讯云 / GPU 机器
+description: se3_wheel_leg 远程训练机与 NX 真机部署运维。管理 SSH 隧道、代理穿透、训练启动/停止/监控、checkpoint 拉取、sim2sim 验证、NX 直连和真机部署准备。codex/xyh 分支当前只使用 a800 与 gpufree 两台远程训练服务器；wuyinyun 仅作历史归档。
+when_to_use: 远程训练 / 训练机 / SSH 隧道 / 代理穿透 / 训练启动 / 训练日志 / checkpoint / wandb / gpufree / a800 / NX / Jetson / 真机部署 / 阿里云 / 腾讯云 / GPU 机器
 user-invocable: true
 ---
 
@@ -10,14 +10,18 @@ user-invocable: true
 每台训练机的具体参数（IP、用户名、SSH 别名、GPU 型号）在 `machines/` 子目录对应文件中。
 本文档是通用范式入口，所有机器共用同一套操作流程。
 
-## 当前已注册机器
+## codex/xyh 当前远程服务器
 
 | SSH 别名 | 云厂商 | GPU | 备忘录 |
 |---|---|---|---|
-| `wuyinyun` | 无影云 | RTX 5880 Ada 48GB | `machines/wuyinyun.md` |
-| `gpufree` | gpufree 容器 | RTX 4090 24GB | `machines/gpufree.md` |
 | `a800` | 局域网 Kubernetes 容器 | NVIDIA A800 * 4 | `machines/a800.md` |
-| `serialleg-nx` | 网线直连真机 | Jetson Orin NX | `machines/nx.md` |
+| `gpufree` | gpufree 容器 | NVIDIA L40S * 1 | `machines/gpufree.md` |
+
+`codex/xyh` 个人工作分支没有 `wuyinyun` 远程训练服务器。`machines/wuyinyun.md` 和 `docs/wuyinyun.md` 只保留历史归档，不作为 SSH、代理、训练、checkpoint 拉取或默认示例目标。
+
+`serialleg-nx` 是 Jetson Orin NX 真机部署目标，不是 MJLab 训练服务器；涉及真机部署时才看 `machines/nx.md`。
+
+执行远程操作前必须先选定 `a800` 或 `gpufree`。如果历史命令片段中仍出现 `wuyinyun`，在 `codex/xyh` 分支下视为归档示例，不能直接运行，也不能把它替换成默认目标；应改用对应机器文档里的命令。
 
 > 新增机器时：在 `machines/` 下新建对应 `.md` 文件，并在上表添加一行。
 
@@ -302,9 +306,9 @@ ssh wuyinyun "pkill -f 'uv sync'"
 
 ## 新增训练机流程
 
-1. 在 `machines/` 下新建 `<alias>.md`，参考 `machines/wuyinyun.md` 格式
+1. 在 `machines/` 下新建 `<alias>.md`，参考 `machines/a800.md` 或 `machines/gpufree.md` 格式
 2. 配置本机 `~/.ssh/config`（HostName、User、IdentityFile）
 3. 验证 SSH 连接：`ssh <alias> "whoami && nvidia-smi --query-gpu=name --format=csv,noheader"`
 4. 建立代理隧道并验证连通性
 5. 首次部署项目（见上方"项目部署"）
-6. 在本文件顶部"当前已注册机器"表格中添加一行
+6. 只有当该机器被明确纳入 `codex/xyh` 当前远程服务器时，才在本文件顶部的服务器表格中添加一行

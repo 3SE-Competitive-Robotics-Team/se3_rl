@@ -11,7 +11,7 @@
 | SSH 地址 | 控制台动态生成；每次开机后从实例详情重新复制 SSH 命令 |
 | 用户名 | `root` |
 | 系统 | Ubuntu 容器环境，Linux 5.15.0-176-generic |
-| GPU | NVIDIA GeForce RTX 4090 24GB；控制台当前有 5 卡实例可用于长训 |
+| GPU | NVIDIA L40S * 1 |
 | NVIDIA driver | 580.126.09 |
 | 仓库路径 | `/root/gpufree-data/se3_wheel_leg` |
 | 数据盘 | `/root/gpufree-data`，约 49GB |
@@ -71,20 +71,19 @@ warp-lang 1.12.1
 
 ## 省钱运行策略
 
-gpufree 按量计费时，默认把 GPU 时间看成最贵资源。代码修改、依赖安装、仓库同步、文档整理和 CPU smoke 都不要占用 GPU 开机时间；只有正式 GPU smoke、吞吐 benchmark、长轮训练和 checkpoint 评估需要开 RTX 4090 实例。
+gpufree 按量计费时，默认把 GPU 时间看成最贵资源。代码修改、依赖安装、仓库同步、文档整理和 CPU smoke 都不要占用 GPU 开机时间；只有正式 GPU smoke、吞吐 benchmark、长轮训练和 checkpoint 评估需要开 L40S 实例。
 
 控制台实例备注：
 
 | 实例ID | 配置 | 用途 |
 |---|---|---|
-| `mhkty1yi-gvnhcs30` | RTX 4090 24GB * 5 | 长轮训练优先使用 |
-| `oj45dlbh-xvkf612m` | RTX 4090 24GB * 1 | 单卡调试或备用 |
+| 控制台当前实例 | NVIDIA L40S * 1 | 单卡训练 / GPU smoke / 备用 |
 
 推荐生命周期：
 
 1. **本地改代码**：在本机完成代码修改、文档修改、ruff、CPU smoke 和提交。远程源码同步必须走 git，不用 GPU 实例在线等待。
 2. **无卡模式开机准备环境**：需要整理远程仓库、安装依赖、写 `.env`、配置 SSH key、执行 `uv sync`、创建 `se3_env.sh`、拉取 checkpoint 或做 CPU smoke 时，用控制台的无卡模式开机。无卡模式下不要期待 `nvidia-smi` 可用，训练命令必须带 `--gpu-ids None` 且 `num_envs=1`。
-3. **GPU 模式短验证**：准备开训前再把 5 卡实例切到 GPU 模式。先跑 GPU smoke 和 20-50 iter benchmark，确认 `torch.cuda.device_count()==5`、wandb 有日志、checkpoint 能保存、Rerun 监控能产物落盘。
+3. **GPU 模式短验证**：准备开训前再把 L40S 单卡实例切到 GPU 模式。先跑 GPU smoke 和 20-50 iter benchmark，确认 `torch.cuda.device_count()==1`、wandb 有日志、checkpoint 能保存、Rerun 监控能产物落盘。
 4. **GPU 模式长训**：只有确认短验证方向正确后才启动长轮训练。训练必须在 tmux 中运行，必须同步拉取 checkpoint/Rerun。
 5. **收尾立刻关机**：训练停止、checkpoint 和 Rerun 拉回本地后，先确认无 `se3-train` 进程和无未同步产物，再从控制台关机。不要让 GPU 实例空转等下一次改代码。
 
@@ -103,13 +102,13 @@ ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_w
 ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
 ```
 
-5 卡训练命令示例：
+单卡训练命令示例：
 
 ```bash
-ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s recovery4096 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids all --env.scene.num-envs 1024'"
+ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s recovery_l40s 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids 0 --env.scene.num-envs 1024'"
 ```
 
-注意：MJLab 多卡模式会给每张卡启动一个训练进程，`--env.scene.num-envs 1024` 是**每张卡 1024 个环境**，5 卡全局约 5120 个环境。不要直接把单卡的 `4096` 原样搬到 5 卡，除非已经明确要用全局约 20480 个环境；那样课程阶段、`max_iterations`、`save_interval` 和评估频率都要按总样本量重新缩放。
+注意：gpufree 当前按单卡 L40S 使用，默认不要套用 A800 多卡的 `--gpu-ids all` 配置。`--env.scene.num-envs` 就是单卡环境数；需要多卡时应另开明确记录的新实例文档，并重新缩放课程阶段、`max_iterations`、`save_interval` 和评估频率。
 
 ## cuDNN 环境坑
 

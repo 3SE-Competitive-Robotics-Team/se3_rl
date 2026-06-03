@@ -80,15 +80,17 @@ uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 
 ### 远程多卡训练
 
+`codex/xyh` 个人工作分支当前只使用两台远程训练服务器：`a800`（4 * NVIDIA A800）和 `gpufree`（1 * NVIDIA L40S）。没有 `wuyinyun` 远程训练服务器；`docs/wuyinyun.md` 仅作历史归档。
+
 gpufree 等按量计费机器遵循“本地改代码、无卡模式准备、GPU 模式短验证、GPU 模式长训、产物同步后立即关机”的流程，具体见 `.agents/skills/remote-dev-se3/machines/gpufree.md`。
 
-MJLab 多卡训练使用 `--gpu-ids all`。多卡时 `--env.scene.num-envs` 是每张卡的环境数，不是全局环境数。例如 5 张 RTX 4090 上设置 `1024`，全局约为 `5 * 1024 = 5120` 个环境。
+MJLab 多卡训练使用 `--gpu-ids all`。多卡时 `--env.scene.num-envs` 是每张卡的环境数，不是全局环境数。当前多卡主力是 A800 四卡；例如 A800 四卡上设置 `2048`，全局约为 `4 * 2048 = 8192` 个环境。gpufree 当前是 L40S 单卡，默认不要使用多卡配置。
 
 ```bash
 uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids all --env.scene.num-envs 1024
 ```
 
-如果把单卡 `4096` 直接搬到 5 卡，会变成全局约 `20480` 个环境。除非已经重新缩放课程阶段、总迭代数、保存间隔和评估频率，否则优先用每卡 `1024` 做 20-50 iter benchmark。
+如果把单卡 `4096` 直接搬到 A800 四卡，会变成全局约 `16384` 个环境。除非已经重新缩放课程阶段、总迭代数、保存间隔和评估频率，否则优先先做 20-50 iter benchmark。
 
 A800 四卡倒地自起训练当前推荐使用每卡 `2048` 个环境。2026-06-01 benchmark 显示 `2048 env/rank` 约 `155.7k steps/s`，比 `1024 env/rank` 的约 `91.8k steps/s` 明显更快，同时等样本量仍保留约 `1500` 次 PPO update。`3072` 和 `4096` 吞吐更高，但等样本量时 update 次数更少，先作为吞吐实验或夜间试训，不直接替代主线长训。详细数据见 `docs/perf.md`。
 
