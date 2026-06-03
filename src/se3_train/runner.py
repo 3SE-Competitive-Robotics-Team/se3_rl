@@ -48,9 +48,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
 
         self.logger.init_logging_writer()
         async_logger = (
-            Se3AsyncHostLogger(self.logger)
-            if self._se3_async_host_logger_enabled
-            else None
+            Se3AsyncHostLogger(self.logger) if self._se3_async_host_logger_enabled else None
         )
 
         start_it = self.current_learning_iteration
@@ -71,9 +69,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                     )
                     self.alg.process_env_step(obs, rewards, dones, extras)
                     intrinsic_rewards = (
-                        self.alg.intrinsic_rewards
-                        if self.cfg["algorithm"].get("rnd_cfg")
-                        else None
+                        self.alg.intrinsic_rewards if self.cfg["algorithm"].get("rnd_cfg") else None
                     )
                     if async_logger is None:
                         self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
@@ -124,7 +120,9 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         for key, value in timing.as_log_dict().items():
             writer.add_scalar(key, value, iteration)
         writer.add_scalar("Perf/update_s", timing.learn_s, iteration)
-        writer.add_scalar("Perf/async_host_logger_flush_s", self._se3_last_async_logger_flush_s, iteration)
+        writer.add_scalar(
+            "Perf/async_host_logger_flush_s", self._se3_last_async_logger_flush_s, iteration
+        )
         if not self._se3_runtime_info_logged:
             for key, value in self._se3_runtime_info.as_log_dict().items():
                 writer.add_scalar(key, value, iteration)
