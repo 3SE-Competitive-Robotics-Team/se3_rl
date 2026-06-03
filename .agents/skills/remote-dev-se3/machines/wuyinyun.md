@@ -1,6 +1,6 @@
 # wuyinyun 机器备忘录
 
-> **归档说明**：`codex/xyh` 个人工作分支当前没有 `wuyinyun` 远程训练服务器。当前可用训练服务器只有 `a800`（4 * NVIDIA A800）和 `gpufree`（1 * NVIDIA L40S）。本文只保留历史记录，不要把 `wuyinyun` 作为 SSH、代理、训练、checkpoint 拉取或默认命令目标。
+> **归档说明**：`codex/xyh` 个人工作分支当前没有 `wuyinyun` 远程训练服务器。当前可用训练服务器只有 `a800`（4 * NVIDIA A800，每卡 4096 envs，全局约 16384 envs）和 `gpufree`（1 * NVIDIA L40S，单卡 8192 envs）。本文只保留历史记录，不要把 `wuyinyun` 作为 SSH、代理、训练、checkpoint 拉取或默认命令目标。
 
 > 通用操作流程见父目录 `SKILL.md`，本文件只记录 wuyinyun 特有的参数和坑。
 

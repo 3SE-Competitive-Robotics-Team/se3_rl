@@ -130,25 +130,25 @@ SE3_LOGGER=tensorboard ./.venv/bin/se3-train \
 
 - A800 上 GPU 没有被完全打满。即使 `4096 env/rank`，平均利用率仍约 `77%`，显存也远低于 80GB。
 - 主要时间在 rollout collection，不在 PPO learning。最后一轮典型比例是 collection 数秒、learning 不到 1 秒。
-- `2048 env/rank` 是当前推荐长训档位：吞吐从 `1024` 的约 `92k` 提升到约 `156k steps/s`，但等样本量时仍有约 `1500` 次 PPO update。
-- `3072` 和 `4096` 适合作为吞吐实验或夜间试训档位。等样本量时 PPO update 只有约 `1000` / `750` 次，可能改变策略质量，不能直接替代 `1024 env/rank * 3000 iter` 的训练结论。
+- `4096 env/rank` 是当前 A800 四卡默认长训档位：吞吐约 `215.5k steps/s`，全局约 `16384` 个环境，单卡显存峰值约 `17.9GB`。
+- `2048 env/rank` 只保留为历史 benchmark 对照，不作为 `codex/xyh` 当前远程默认；如果比较历史结果，注意等样本量时 PPO update 次数会随 env/rank 增大而减少。
 
 推荐用法：
 
 ```bash
-# 同等样本量的快速长训，约 1.4 小时
+# A800 四卡当前默认长训档位，约 1.0 小时等样本量
 SE3_LOGGER=tensorboard ./.venv/bin/se3-train \
   SE3-WheelLegged-Recovery-Stand-GRU \
   --gpu-ids all \
-  --env.scene.num-envs 2048 \
-  --agent.max-iterations 1500
+  --env.scene.num-envs 4096 \
+  --agent.max-iterations 750
 
-# 更保守，样本更多，约 1.9 小时
+# 更保守，样本更多，约 1.4 小时
 SE3_LOGGER=tensorboard ./.venv/bin/se3-train \
   SE3-WheelLegged-Recovery-Stand-GRU \
   --gpu-ids all \
-  --env.scene.num-envs 2048 \
-  --agent.max-iterations 2000
+  --env.scene.num-envs 4096 \
+  --agent.max-iterations 1000
 ```
 
 不要只按“相同 iter 数”比较不同环境数。多卡下每轮样本量为：
@@ -157,4 +157,4 @@ SE3_LOGGER=tensorboard ./.venv/bin/se3-train \
 num_gpus * env_per_rank * num_steps_per_env
 ```
 
-本任务当前 `num_steps_per_env=64`，因此 `2048 env/rank * 1500 iter` 与 `1024 env/rank * 3000 iter` 的总样本量接近。
+本任务当前 `num_steps_per_env=64`，因此 `4096 env/rank * 750 iter` 与 `1024 env/rank * 3000 iter` 的总样本量接近。

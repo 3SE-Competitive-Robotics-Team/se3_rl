@@ -14,8 +14,8 @@ user-invocable: true
 
 | SSH 别名 | 云厂商 | GPU | 备忘录 |
 |---|---|---|---|
-| `a800` | 局域网 Kubernetes 容器 | NVIDIA A800 * 4 | `machines/a800.md` |
-| `gpufree` | gpufree 容器 | NVIDIA L40S * 1 | `machines/gpufree.md` |
+| `a800` | 局域网 Kubernetes 容器 | NVIDIA A800 * 4，每卡 4096 envs | `machines/a800.md` |
+| `gpufree` | gpufree 容器 | NVIDIA L40S * 1，单卡 8192 envs | `machines/gpufree.md` |
 
 `codex/xyh` 个人工作分支没有 `wuyinyun` 远程训练服务器。`machines/wuyinyun.md` 和 `docs/wuyinyun.md` 只保留历史归档，不作为 SSH、代理、训练、checkpoint 拉取或默认示例目标。
 
@@ -134,12 +134,12 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 
 ### env 数量规则
 
-| 时段 | num_envs | 说明 |
+| 服务器 | GPU | `--env.scene.num-envs` 语义 | 默认值 |
 |---|---|---|
-| 夜间（22:00-08:00 CST） | **4096** | 无人使用，充分利用 GPU |
-| 白天（08:00-22:00 CST） | **1024** | 保留响应余量 |
+| `a800` | A800 * 4 | 每张卡 / 每个 rank 的环境数 | **4096**（全局约 16384 envs） |
+| `gpufree` | L40S * 1 | 单卡环境数 | **8192** |
 
-启动前先检查远程时间：`ssh wuyinyun "date '+%H:%M %Z'"`
+不再按白天 / 夜间自动切换 `1024` / `4096` 档位。需要 smoke 或短 benchmark 时，在命令里显式设置更小的 `--env.scene.num-envs`。
 
 ### 常用任务名
 

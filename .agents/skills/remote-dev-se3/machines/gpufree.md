@@ -12,6 +12,7 @@
 | 用户名 | `root` |
 | 系统 | Ubuntu 容器环境，Linux 5.15.0-176-generic |
 | GPU | NVIDIA L40S * 1 |
+| 默认环境数 | `--env.scene.num-envs 8192` |
 | NVIDIA driver | 580.126.09 |
 | 仓库路径 | `/root/gpufree-data/se3_wheel_leg` |
 | 数据盘 | `/root/gpufree-data`，约 49GB |
@@ -105,10 +106,10 @@ ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_w
 单卡训练命令示例：
 
 ```bash
-ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s recovery_l40s 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids 0 --env.scene.num-envs 1024'"
+ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s recovery_l40s 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids 0 --env.scene.num-envs 8192'"
 ```
 
-注意：gpufree 当前按单卡 L40S 使用，默认不要套用 A800 多卡的 `--gpu-ids all` 配置。`--env.scene.num-envs` 就是单卡环境数；需要多卡时应另开明确记录的新实例文档，并重新缩放课程阶段、`max_iterations`、`save_interval` 和评估频率。
+注意：gpufree 当前按单卡 L40S 使用，默认不要套用 A800 多卡的 `--gpu-ids all` 配置。`--env.scene.num-envs 8192` 就是单卡环境数；需要多卡时应另开明确记录的新实例文档，并重新缩放课程阶段、`max_iterations`、`save_interval` 和评估频率。
 
 ## cuDNN 环境坑
 
@@ -161,7 +162,7 @@ ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_w
 启动训练建议使用 tmux：
 
 ```bash
-ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s train 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024'"
+ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s train 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --gpu-ids 0 --env.scene.num-envs 8192'"
 ```
 
 查看训练：
