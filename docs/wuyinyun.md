@@ -96,6 +96,27 @@ ssh wuyinyun "HTTPS_PROXY=http://127.0.0.1:17890 HTTP_PROXY=http://127.0.0.1:178
 
 > **注意**：Mihomo（Clash Meta，端口 7890）也可以作为代理源，但不如公司 WiFi 直连稳定。tinyproxy 方案走的是公司 WiFi 出口，更可靠。
 
+### Windows PowerShell 调远端 Bash
+
+在 Windows PowerShell 5.x 里不要手写 `ssh wuyinyun "cmd1 && cmd2"` 这种长串命令；`&&`、`$()`、`$变量`、管道和双引号 here-string 都容易先被本地 PowerShell 解析。统一用仓库里的 helper，把 bash 脚本 base64 后送到远端执行：
+
+```powershell
+$bash = @'
+date
+cd ~/project/se3_wheel_leg
+grep -R "reward" logs | tail -20
+echo "remote time: $(date +%H:%M:%S)"
+'@
+
+.\scripts\remote_bash.ps1 -HostAlias wuyinyun -ScriptText $bash -UseProxy
+```
+
+规则：
+- bash 脚本块用单引号 here-string：`@' ... '@`，不要用会展开变量的 `@" ... "@`。
+- 复杂命令写成多行 bash，脚本里可以正常使用 `&&`、`$()` 和 `|`。
+- 常用长脚本放到本地 `.sh` 文件后执行：`.\scripts\remote_bash.ps1 -HostAlias wuyinyun -ScriptPath .\tmp\check_training.sh -UseProxy`。
+- 需要进 Kubernetes pod 时，加 `-KubePod <pod>`，可选 `-KubeNamespace <ns>`、`-KubeContainer <container>`；pod 内项目路径不同时用 `-Workdir <path>` 或 `-NoWorkdir` 覆盖默认目录。
+
 ---
 
 ## GitHub SSH（远程机器侧）
@@ -318,6 +339,38 @@ pkill -f "ssh.*17890"
 tinyproxy -c /tmp/tinyproxy.conf 2>/dev/null || true
 ssh -f -N -R 17890:127.0.0.1:18080 wuyinyun
 ```
+
+分层处理顺序：
+1. 先验证远端代理，而不是直接重跑下载：`curl --proxy http://127.0.0.1:17890 https://pypi.org/simple/` 期望返回 `200`。
+2. 已有 `uv.lock` 时优先用 `uv sync --frozen`，避免网络慢时顺手触发锁文件刷新。
+3. 保留 uv 缓存，禁止为了“干净”加 `--no-cache`；需要显式缓存目录时用 `UV_CACHE_DIR=$HOME/.cache/uv`。
+4. 仍然慢时只杀卡住的 `uv sync`，不要杀训练进程：`ps aux | grep 'uv sync' | grep -v grep` 后再 `pkill -f 'uv sync'`。
+5. 拉 checkpoint、日志、`.rrd` 这类产物时优先用 `rsync -avz --partial --progress --timeout=60`，中断后能续传；源码仍然只走 git，不用 rsync 覆盖。
+
+推荐命令：
+
+```bash
+ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && \
+  export HTTP_PROXY=http://127.0.0.1:17890 HTTPS_PROXY=http://127.0.0.1:17890 && \
+  export UV_CACHE_DIR=\$HOME/.cache/uv && \
+  uv sync --frozen"
+```
+
+### git pull / fetch 慢
+
+先确认远端 GitHub SSH 走的是 443 配置，再确认仓库没有落在 HTTPS remote：
+
+```bash
+ssh wuyinyun "cd ~/project/se3_wheel_leg && git remote -v && ssh -T git@github.com 2>&1 | head -3"
+```
+
+常规更新用 `git fetch --prune` 加 `git pull --ff-only`，不要删除重克隆：
+
+```bash
+ssh wuyinyun "cd ~/project/se3_wheel_leg && git fetch --prune && git pull --ff-only"
+```
+
+如果 `git fetch` 卡住，先用 `ssh -vvT git@github.com` 看是 SSH 握手慢、认证慢还是 GitHub 响应慢；只在排查时打开 verbose，正常训练脚本不要带 `-vv`。
 
 ### 训练启动崩溃：`AttributeError: module 'warp' has no attribute 'context'`
 

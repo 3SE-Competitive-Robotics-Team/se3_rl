@@ -287,6 +287,8 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
 当前已注册：`wuyinyun`（无影云 RTX 5880）、`gpufree`（RTX 4090）、`a800`（4 * NVIDIA A800，局域网 Kubernetes 容器）、`serialleg-nx`（Jetson Orin NX 真机部署目标）。
 
+Windows PowerShell 调远端 bash 时，默认使用 `scripts/remote_bash.ps1` 或 `.agents/skills/remote-dev-se3/SKILL.md` 里的单引号 here-string 模板。禁止把含 `&&`、`$()`、`$变量` 或管道的复杂 bash 直接塞进 PowerShell 双引号字符串里。
+
 ## 环境限制
 
 - **训练**：仅支持 Linux + NVIDIA GPU（CUDA 12.4+）
@@ -329,6 +331,15 @@ ls model_*.pt | sort -V
 # 或者用 find + stat 按时间
 find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 ```
+
+### A800 pod 同步和回放入口
+
+**问题**：A800 pod 访问 GitHub 可能在 TLS 阶段报 `gnutls_handshake() failed: Error in the pull function`；非交互 shell 里 `uv` 也可能不在 PATH，裸 `uv run` 还可能触发联网下载依赖。
+
+**正确做法**：
+- GitHub 拉取失败时改用 git bundle：本地 `git bundle create <name>.bundle HEAD`，传到宿主机和 pod 后在 pod 内 `git fetch /tmp/<name>.bundle HEAD`，仍保持源码走 git。
+- A800 pod 自动化脚本使用 `/root/.local/bin/uv` 或 `.venv/bin/<entrypoint>` 绝对路径；Rerun 录制优先 `.venv/bin/se3-sim2sim`，避免 `uv run` 临时下载依赖。
+- `kubectl cp` / tar 拉可选 `.done` / `.failed` marker 时，缺少其中一个的 `Cannot stat` warning 通常无害；以主产物存在且 `.done`/`.failed` 至少一个存在为准。
 
 ### 观测维度不对齐
 

@@ -67,6 +67,29 @@ ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17
 
 只有 checkpoint、日志、回放、导出的分析产物允许用 `rsync` 拉取或上传；源码一律走 git，保证远程训练 run 可追溯到明确 commit。
 
+### Windows PowerShell 调用规范
+
+从 Windows PowerShell 调远端训练机时，默认使用 `scripts/remote_bash.ps1`，不要把复杂 bash 直接塞进 `ssh "..."`
+字符串里。Windows PowerShell 5.x 不支持 `cmd1 && cmd2` 作为本地命令连接符，双引号字符串和双引号 here-string 还会提前展开 `$变量` 与 `$(...)`。
+
+推荐模板：
+
+```powershell
+$bash = @'
+date
+cd ~/project/se3_wheel_leg
+grep -R "reward" logs | tail -20
+echo "remote time: $(date +%H:%M:%S)"
+'@
+
+.\scripts\remote_bash.ps1 -HostAlias wuyinyun -ScriptText $bash -UseProxy
+```
+
+规则：
+- bash 脚本块用单引号 here-string：`@' ... '@`。
+- 复杂命令写成本地 `.sh` 后用 `-ScriptPath` 执行，避免多层转义。
+- 需要进 Kubernetes pod 时使用 `-KubePod` / `-KubeNamespace` / `-KubeContainer`，pod 内路径不同则加 `-Workdir` 或 `-NoWorkdir`；不要手写 `kubectl exec "... $(...) | ..."` 套娃命令。
+
 ### 首次部署
 
 ```bash
@@ -88,6 +111,12 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && \
 # 更新代码 + 依赖
 ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && uv sync 2>&1 | tail -3"
 ```
+
+慢下载排查顺序：
+1. 先验证远端代理：`curl --proxy http://127.0.0.1:17890 https://pypi.org/simple/` 应返回 `200`。
+2. 有锁文件时用 `uv sync --frozen`，避免慢网环境刷新锁文件。
+3. 保留 uv 缓存，必要时显式设置 `UV_CACHE_DIR=$HOME/.cache/uv`；不要为了“干净”加 `--no-cache`。
+4. 产物拉取用 `rsync -avz --partial --progress --timeout=60`，源码仍只走 git。
 
 ---
 
@@ -260,6 +289,14 @@ ssh wuyinyun "pkill -f 'se3-train'"
 ssh wuyinyun "ps aux | grep 'uv sync' | grep -v grep"
 ssh wuyinyun "pkill -f 'uv sync'"
 ```
+
+### A800 / Kubernetes pod 常见坑
+
+- `git fetch` 报 `gnutls_handshake() failed: Error in the pull function` 时，不要继续硬拉 GitHub。按 `machines/a800.md` 用本地 `git bundle create <name>.bundle HEAD`，传到宿主机和 pod 后在 pod 内 `git fetch /tmp/<name>.bundle HEAD`，仍然保持源码通过 git 同步。
+- PowerShell 调 `ssh` / `kubectl exec` 时，含 `&&`、`$()`、`$变量` 或管道的脚本统一走 `scripts/remote_bash.ps1`，不要手写嵌套双引号。
+- pod 非交互 shell 可能没有 uv 的 PATH；A800 当前 uv 在 `/root/.local/bin/uv`，项目入口在 `.venv/bin/`。自动化脚本用绝对路径，不依赖 `.bashrc`。
+- 远端回放或 Rerun 录制不要用会触发同步的裸 `uv run`。优先 `.venv/bin/se3-sim2sim`、`.venv/bin/python`；必须用 uv 时加 `/root/.local/bin/uv run --no-sync`。
+- `kubectl cp` / tar 拉可选 marker 时，缺少 `.done` 或 `.failed` 其中一个的 `Cannot stat` 通常无害。以 `.rrd`、summary JSON、checkpoint 是否存在且非空，以及 `.done`/`.failed` 至少一个存在作为成功判据。
 
 ---
 
