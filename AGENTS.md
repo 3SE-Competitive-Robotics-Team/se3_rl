@@ -252,6 +252,8 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 
 当前无气弹簧闭链默认姿态使用 base 高度约 0.23 m 的中等腿长分支：`default_dof_pos=(-0.2275, -1.4475, 0.2275, 1.4475, 0, 0)`，`default_output_knee_pos=(-1.163001511, 1.163000657)`，`default_coupler_pos=(1.296413806, -1.296416824)`，`default_base_height=0.230340071`。该点用于 reset 几何和质心投影对齐；两轮倒立平衡仍依赖策略的轮子反馈，不应把零 action 开环自稳当成验收条件。
 
+默认控制频率配置在 `se3_shared.RobotConfig` 中：`sim_dt=0.002`（物理仿真 500 Hz）、`control_decimation=10`，因此 policy/action 更新周期为 `0.02 s`（50 Hz）。该基准对齐 Unitree 官方 RL 仓库常用的 50 Hz policy；修改频率时必须同步训练端、sim2sim、真机 runtime 和所有按秒换算 step 的奖励/课程逻辑。详细记录见 `docs/control_frequency.md`。
+
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 
 ## RL 训练调优 Skill
@@ -274,7 +276,7 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
 **触发条件**（满足其一即加载）：
-- 提到远程训练机、GPU 机器、云机器、wuyinyun、gpufree、a800、无影云、阿里云、腾讯云
+- 提到远程训练机、GPU 机器、云机器、wuyinyun、gpufree、a800、NX、Jetson、真机部署、无影云、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
 - 需要启动、停止、监控训练进程
 - 需要查看训练日志、wandb 数据
@@ -283,7 +285,7 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 - 询问 tmux 会话管理
 
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
-当前已注册：`wuyinyun`（无影云 RTX 5880）、`gpufree`（RTX 4090）、`a800`（4 * NVIDIA A800，局域网 Kubernetes 容器）。
+当前已注册：`wuyinyun`（无影云 RTX 5880）、`gpufree`（RTX 4090）、`a800`（4 * NVIDIA A800，局域网 Kubernetes 容器）、`serialleg-nx`（Jetson Orin NX 真机部署目标）。
 
 ## 环境限制
 

@@ -8,27 +8,21 @@
 
 ## 当前实验修订（2026-06-01）
 
-长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，下一轮平地基模训练先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧常力版本：
+长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，下一轮平地基模训练先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧常力版本。2026-06-02 起默认入口使用 OBB 裁剪碰撞版，视觉 mesh 保持 SW 原始外观，collision 使用 base 三盒、轮子窄 cylinder、四个主腿 OBB 裁剪 box：
 
 ```text
-assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml
+assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml
 ```
 
-带 300 N 气弹簧常力的同构模型保留为显式 A/B 对照，不作为默认训练入口：
+当前 MJCF 目录只保留当前闭链训练模型和旧开链模型。后续只有在无气弹簧闭链基模能稳定双轮支撑、base 不触地、pitch/roll 可控后，才重新导入气弹簧模型并重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
+
+无气弹簧默认站姿已经重新标定为 base_link 距地约 0.22 m、轮心接近整机质心投影的中等腿长装配分支：
 
 ```text
-assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_spring.xml
-```
-
-后续只有在无气弹簧闭链基模能稳定双轮支撑、base 不触地、pitch/roll 可控后，才重新启用气弹簧并重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
-
-无气弹簧默认站姿已经重新标定为 base_link 距地约 0.23 m、轮心接近整机质心投影的中等腿长装配分支：
-
-```text
-default_dof_pos = [-0.2275, -1.4475, 0.2275, 1.4475, 0.0, 0.0]
-default_output_knee_pos = [-1.163001511, 1.163000657]
-default_coupler_pos = [1.296413806, -1.296416824]
-default_base_height = 0.230340071 m
+default_dof_pos = [0.2, -0.5403, -0.2, 0.5403, 0.0, 0.0]
+default_output_knee_pos = [-0.736361350, 0.736362150]
+default_coupler_pos = [0.785409053, -0.785410896]
+default_base_height = 0.22 m
 ```
 
 该点的闭链 residual 在 `check_closedchain_model.py` 下接近数值噪声，轮心离地高度为 0，base/腿部碰撞几何有正间隙。注意两轮倒立机器人没有轮子反馈时仍会倒向接触支撑；因此“平衡点”在这里指 reset 几何和质心投影对齐，不表示零 action 开环可长期自稳。
@@ -44,7 +38,7 @@ default_base_height = 0.230340071 m
 7. `lf1_Joint/rf1_Joint` 是被动输出小腿角，不进 action，不作为 actor 主关节观测。
 8. `l_drive_bar_Joint/r_drive_bar_Joint` 必须是相对 base 的独立主动铰，不能作为 `lf0_Link/rf0_Link` 子关节。
 9. 闭链端点约束使用 `connect site1/site2`，表达销轴点约束。
-10. 带 300 N 气弹簧 actuator 的 MJCF 必须保留，但当前不作为默认训练模型。
+10. 带 300 N 气弹簧 actuator 的 MJCF 暂不保留在主 MJCF 目录；需要重新启用时重新导入并用 `SE3_ROBOT_MJCF` 显式指定。
 11. 6 个电机 actuator 继续由训练端和 sim2sim 代码程序化添加。
 12. 四杆/五杆几何采用 Infantry 3/4 共同参数，不绑定 Infantry 3 或 Infantry 4 的编码器 offset。
 13. 默认站姿使用 base 高度约 0.23 m 的中等腿长装配分支，通过反解得到主动杆和被动闭链关节默认角。
@@ -119,7 +113,7 @@ default_base_height = 0.230340071 m
 
 ### Phase 1：重建闭链 MJCF
 
-旧草稿 `serialleg_fidelity_cylinder_wheels_closedchain_spring.xml` 保留为参考；当前交付模型为 `serialleg_closed_chain_v2_spring.xml`，几何来自 `robot_lab_serialleg` 历史闭链模型。
+旧草稿闭链/弹簧 MJCF 已清理；当前交付模型为 `serialleg_closed_chain_v3_train_obb_trim.xml`。
 
 要做：
 
@@ -139,9 +133,9 @@ default_base_height = 0.230340071 m
 验收：
 
 - `uv run` 的 MuJoCo 编译检查通过。
-- `se3-joint-viewer --closedchain-spring` 可打开并拖动主动杆。
+- `se3-joint-viewer` 可打开并拖动主动杆。
 - 默认站姿无明显爆约束、穿地或自碰问题。
-- 交付闭链 MJCF 文件路径和查看命令。查看命令必须固定 `base_link`，允许主动拖动 `LF/LB/RF/RB` 主动杆，其他杆件在重力下自由响应，且 300 N 气弹簧力实际生效。
+- 交付闭链 MJCF 文件路径和查看命令。查看命令必须固定 `base_link`，允许主动拖动 `LF/LB/RF/RB` 主动杆，其他杆件在重力下自由响应。
 
 ### Phase 2：共享配置和索引重构
 
@@ -167,7 +161,7 @@ default_base_height = 0.230340071 m
 修改 `src/se3_train/robot_cfg.py`：
 
 - 默认 variant 改为闭链。
-- `openchain/default` 显式返回旧 XML，`closedchain/closedchain_spring` 返回新 XML。
+- `openchain` 显式返回旧 XML，`closedchain/default` 返回当前闭链 XML。
 - leg actuator target 从旧 `[lf0, lf1, rf0, rf1]` 改为 `[lf0, l_drive_bar, rf0, r_drive_bar]`。
 - 初始状态只给 policy joints 和必要被动输出 joint；被动闭链 joint 的初值必须由默认站姿反解或 `mj_forward` 稳定处理。
 - 训练端 actuator force 日志和 torque penalty 按 actuator 名称取，不按列号猜。

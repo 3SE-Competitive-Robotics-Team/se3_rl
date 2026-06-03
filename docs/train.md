@@ -6,34 +6,29 @@
 
 训练和仿真用的 MJCF 与 mesh 文件已放在 `assets/robots/serialleg/`。重新导出模型时，保持 MJCF 中的关节名和 mesh 相对路径不变。
 
-当前默认模型是闭链四连杆无气弹簧常力版本，用来先单独验证闭链机构对平地基模的影响：
+当前默认模型是闭链四连杆无气弹簧常力版本，用来先单独验证闭链机构对平地基模的影响。默认训练入口已使用 OBB 裁剪碰撞版：base 为 3 个保守 box，轮子为窄接地 cylinder，四个主腿 link 各使用一个沿视觉 mesh 长轴拟合并裁掉关节重叠的有向 box，`drive_bar/coupler` 不参与 collision。
 
 ```text
-assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml
+assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml
 ```
 
-带 300 N 气弹簧常力的同构 MJCF 必须保留为对照模型，后续只有在默认闭链基模稳定后再显式启用：
+MJCF 目录保留当前闭链训练模型、解析四连杆等效开树模型和旧开链模型。训练端默认 `SE3_ROBOT_MJCF_VARIANT=closedchain` 使用无气弹簧常力版本；需要降低闭链求解成本时用 `SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate`，它移除 `drive_bar/coupler/equality`，但通过解析 FK/IK 保持 policy 的 `LB/RB` 虚拟主动杆语义，并沿用闭链训练版的 base/腿/轮碰撞体；需要回退定位时用 `SE3_ROBOT_MJCF_VARIANT=openchain`。临时测试其它导出文件时，用 `SE3_ROBOT_MJCF` 显式指定路径。
+
+policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.46945 rad`，对应腿长下限约 `0.14 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
+
+当前无气弹簧默认站姿按“腿长 0.16 m、base_link 距地约 0.22 m、轮心落在整机质心投影下、base/腿部几何离地”的几何平衡点重标定：
 
 ```text
-assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_spring.xml
-```
-
-训练端默认 `SE3_ROBOT_MJCF_VARIANT=closedchain` 使用无气弹簧常力版本；需要 A/B 对照时用 `SE3_ROBOT_MJCF_VARIANT=closedchain_spring` 或直接通过 `SE3_ROBOT_MJCF` 指向带弹簧文件。
-
-policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.7 rad`，当前默认夹角为 `1.22 rad`，不是后主动杆的绝对角。
-
-当前无气弹簧默认站姿按“base_link 距地约 0.23 m、轮心接近整机质心投影、base/腿部几何离地”的几何平衡点重标定：
-
-```text
-default_dof_pos = [-0.2275, -1.4475, 0.2275, 1.4475, 0.0, 0.0]
-default_output_knee_pos = [-1.163001511, 1.163000657]
-default_coupler_pos = [1.296413806, -1.296416824]
-default_base_height = 0.230340071 m
+default_dof_pos = [-0.275422946189, -1.592100148957, 0.275422946189, 1.592100148957, 0.0, 0.0]
+default_output_knee_pos = [-1.242259649307, 1.242259649307]
+default_coupler_pos = [1.401266340000, -1.401269410000]
+default_base_height = 0.22 m
 ```
 
 这只是两轮倒立系统的 reset 几何基点；零轮速开环 PD 仍不能替代策略的轮子平衡反馈。旧开链模型仍保留为显式回退 variant：
 
 ```bash
+SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 uv run se3-sim2sim --model assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml --viewer none --max-steps 200
 ```
@@ -42,7 +37,7 @@ uv run se3-sim2sim --model assets/robots/serialleg/mjcf/serialleg_fidelity_cylin
 
 ```bash
 uv run python scripts/check_closedchain_model.py
-uv run se3-joint-viewer --closedchain-spring
+uv run se3-joint-viewer --geom-view both
 ```
 
 ### 安装依赖
@@ -63,6 +58,9 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --g
 
 # 开链回退 smoke（仅用于 A/B 定位）
 SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+
+# 解析四连杆等效开树 smoke（训练加速 A/B）
+SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # GPU smoke
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
@@ -154,10 +152,38 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999
 需要保存 Rerun 回放文件：
 
 ```bash
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000 --rerun-record replays/se3_wheel_leg.rrd
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000 --rerun-record replays/local_manual/model_4999__walk-sweep.rrd
 ```
 
-`replays/` 和 `.rrd` 文件是本地验证产物，不提交。
+Rerun 录制后拉回本地必须按固定命名存放，避免不同机器、不同 run、不同 course 的 `.rrd` 互相覆盖：
+
+```text
+remote_artifacts/<experiment_id>/rrd/<run_label>/<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].rrd
+remote_artifacts/<experiment_id>/summaries/<run_label>/<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].json
+remote_artifacts/<experiment_id>/logs/<run_label>/<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].log
+```
+
+字段约定：
+- `experiment_id`：本次实验的稳定名字，格式为 `<topic>_<YYYYMMDD>`；如果实验本身按小时批次区分，可用 `<topic>_<YYYYMMDD_HHMM>`。多机器或 A/B 对比时把机器/分支写进 topic，例如 `l40s_unilab_vs_mjlab_20260603`。
+- `run_label`：同一实验内的短标签，只用小写字母、数字、下划线或连字符，例如 `mjlab`、`unilab`、`jump_pretrain`、`recovery_gru`。
+- `checkpoint`：直接使用 checkpoint 文件名去掉 `.pt`，例如 `model_4999`，不要写成 `latest`、`final` 或 `best`。
+- `course`：使用 sim2sim 的 course 名，例如 `walk-sweep`、`jump-sweep`；手工单场景也必须写一个稳定名字，例如 `manual-stand`。
+- `case`：同一 checkpoint + course 下的初始姿态、目标高度或特殊扰动，例如 `roll90`、`h0p4`、`yaw-pid-off`；没有区分项时省略。
+- `rec-<YYYYMMDD-HHMMSS>`：录制开始时间，使用远程训练机本地时间；跨机器 A/B 时统一使用北京时间。
+- `rN`：只有在同一 checkpoint、course、case 重新录制且需要保留旧文件时使用，从 `r2` 开始。
+
+示例：
+
+```text
+remote_artifacts/l40s_unilab_vs_mjlab_20260603/rrd/unilab/model_1800__walk-sweep__rec-20260603-141927.rrd
+remote_artifacts/l40s_unilab_vs_mjlab_20260603/summaries/unilab/model_1800__walk-sweep__rec-20260603-141927.json
+remote_artifacts/recovery_roll_sweep_20260603/rrd/recovery_gru/model_1200__recovery-sweep__roll90__rec-20260603-133809.rrd
+remote_artifacts/jump_height_ab_20260603/rrd/pretrain/model_900__jump-sweep__h0p4__rec-20260603-104522.rrd
+```
+
+远程录制时可以先写 `.rrd.tmp`，确认文件非空后再原子重命名为最终 `.rrd`；拉回本地时只拉最终 `.rrd`、同名 `.json` summary 和同名 `.log`。禁止把远程绝对路径或机器随机目录名直接塞进 `.rrd` 文件名；除 `rec-<YYYYMMDD-HHMMSS>` 外的来源信息写到 `state/recorded.tsv` 或 summary JSON 里。
+
+`replays/`、`remote_artifacts/` 和 `.rrd` 文件是本地验证产物，不提交。
 
 ## Sim2Sim 验证
 

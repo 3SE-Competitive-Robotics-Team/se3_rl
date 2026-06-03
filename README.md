@@ -16,6 +16,7 @@ src/
 ├── se3_shared/    # 训练和 sim2sim 共享配置，包含关节语义、PD 增益、动作缩放、延迟参数
 ├── se3_train/     # MJLab 训练环境，含 MDP（奖励、观测、事件）和 PPO 配置
 ├── se3_sim2sim/   # MuJoCo CPU 验证，Rerun 可视化
+├── se3_deploy/    # Jetson Orin NX recovery-only 真机 runtime
 └── se3_tools/     # 关节方向和默认姿态诊断工具
 ```
 
@@ -83,6 +84,14 @@ just sim-ckpt logs/.../model_4999.pt  # 指定 checkpoint
 just sim-headless                 # 无 GUI，快速验证
 ```
 
+### NX Recovery 部署
+
+```bash
+just nx-export-policy
+just nx-recovery-dry-run
+uv run se3-nx-recovery --checkpoint logs/deploy/model_2999_recovery_stand_gru.npz --port /dev/ttyUSB0
+```
+
 ### 代码质量
 
 ```bash
@@ -124,6 +133,7 @@ uv run se3-sim2sim --no-action-delay
 - [训练指南](docs/train.md)
 - [训练性能记录](docs/perf.md)
 - [wuyinyun 训练机器运维笔记](docs/wuyinyun.md)
+- [Jetson Orin NX 真机部署笔记](docs/nx_real_robot_deployment.md)
 - [GRU 反倒起身训练方案](docs/plan/gru_recovery_training.md)
 - [MoE 多速度域方案](docs/plan/moe_multi_speed.md)
 - [膝关节弹簧建模方案](docs/plan/knee_spring_modeling.md)
@@ -133,5 +143,6 @@ uv run se3-sim2sim --no-action-delay
 
 - 所有 Python 命令通过 `just` 或 `uv` 执行，不直接用 `python` 或 `pip`。
 - `.env`、`logs/`、`wandb/`、Rerun 回放文件不应提交。
+- 远程 Rerun 录制拉回本地时按 `docs/train.md` 的命名规范放到 `remote_artifacts/<experiment_id>/rrd/<run_label>/`，文件名带 `__rec-YYYYMMDD-HHMMSS`，不要使用 `latest`、`final` 或裸时间戳文件名。
 - 训练 checkpoint 较大，分享仓库时单独传 `model_*.pt`，不要提交到 Git。
 - 无外网环境训练用 `WANDB_MODE=offline`，否则 W&B 初始化失败会导致 checkpoint 无法保存。
