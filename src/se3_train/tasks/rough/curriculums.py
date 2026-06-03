@@ -1,0 +1,7 @@
+"""本任务使用的课程函数。"""
+
+from __future__ import annotations
+
+from se3_train.mdp.curriculums import commands_vel, push_disturbance
+
+__all__ = ["commands_vel", "push_disturbance"]

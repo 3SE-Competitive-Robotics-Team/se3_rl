@@ -8,7 +8,8 @@
 
 - `src/se3_train/mdp/efgcl_stabilizer.py`
 - `src/se3_train/mdp/jump_curriculums.py`
-- `src/se3_train/env_cfg.py`
+- `src/se3_train/tasks/jump_pretrain/env_cfg.py`
+- `src/se3_train/tasks/jump_finetune/env_cfg.py`
 
 ## 背景
 
@@ -34,7 +35,7 @@ EFGCL 只在以下条件同时满足时施加外部 wrench：
 - 空中力矩：参考轨迹阶段 `jump_stage == 1`
 - 对应辅助 scale 大于 0
 
-`SE3-WheelLegged-Jump-GRU` 会显式移除：
+`SE3-WheelLegged-Jump-FineTune-GRU` 会显式移除：
 
 ```python
 cfg.events.pop("efgcl_jump_guidance", None)

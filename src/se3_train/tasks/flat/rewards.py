@@ -1,0 +1,58 @@
+"""本任务使用的奖励函数。"""
+
+from __future__ import annotations
+
+from mjlab.envs.mdp.rewards import is_alive
+
+from se3_train.mdp.jump_rewards import (
+    flat_base_height_penalty_no_jump,
+    flat_base_lin_vel_z_no_jump,
+    flat_wheel_center_alignment_no_jump,
+    flat_wheel_ground_slip_no_jump,
+)
+from se3_train.mdp.rewards import (
+    action_rate,
+    ang_vel_xy,
+    angular_momentum,
+    bad_tilt,
+    collision,
+    contact_forces,
+    dof_pos_limits,
+    feet_contact_without_cmd,
+    joint_mirror,
+    leg_dof_acc,
+    leg_power,
+    leg_torques,
+    stand_still,
+    tracking_ang_vel,
+    tracking_height,
+    tracking_lin_vel,
+    tracking_orientation_l2,
+    wheel_torques,
+)
+
+__all__ = [
+    "action_rate",
+    "ang_vel_xy",
+    "angular_momentum",
+    "bad_tilt",
+    "collision",
+    "contact_forces",
+    "dof_pos_limits",
+    "feet_contact_without_cmd",
+    "flat_base_height_penalty_no_jump",
+    "flat_base_lin_vel_z_no_jump",
+    "flat_wheel_center_alignment_no_jump",
+    "flat_wheel_ground_slip_no_jump",
+    "is_alive",
+    "joint_mirror",
+    "leg_dof_acc",
+    "leg_power",
+    "leg_torques",
+    "stand_still",
+    "tracking_ang_vel",
+    "tracking_height",
+    "tracking_lin_vel",
+    "tracking_orientation_l2",
+    "wheel_torques",
+]
