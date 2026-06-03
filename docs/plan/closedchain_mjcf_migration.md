@@ -2,7 +2,7 @@
 
 ## 目标
 
-将 SerialLeg 训练和 sim2sim 的默认机器人模型从串联开链 MJCF 切换为显式闭链四连杆 MJCF。闭链模型成为唯一主模型；旧开链 XML 保留为显式 `openchain` variant，用于 A/B 定位和回退诊断。
+将 SerialLeg 训练和 sim2sim 的默认机器人模型从串联开链 MJCF 迁移到四连杆语义。当前默认入口是解析四连杆等效开树 `fourbar-surrogate`，真实闭链 OBB 模型保留为显式 `closedchain` A/B 对照；旧开链 XML 保留为显式 `openchain` variant，用于定位和回退诊断。
 
 第一版目标是跑通基础站立、行走、恢复和 sim2sim，不迁移跳跃参考轨迹、RSI 和轨迹跟踪。
 

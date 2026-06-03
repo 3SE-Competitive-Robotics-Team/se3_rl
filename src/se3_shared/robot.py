@@ -143,7 +143,7 @@ class RobotConfig(BaseModel):
     default_base_height: float = 0.22
     action_scale: tuple[float, ...] = (0.35, 0.25, 0.35, 0.25, 20.0, 20.0)
     sim_dt: float = 0.002
-    control_decimation: int = 5
+    control_decimation: int = 10
     action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
     termination: Termination = Termination()
 

@@ -7,10 +7,13 @@ from .action_delay import ActionDelayConfig, delay_seconds_to_steps
 from .fourbar import (
     FOURBAR_SURROGATE_MARKER,
     is_fourbar_surrogate_name_set,
+    output_to_policy_pos_np,
     output_to_policy_pos_torch,
+    output_to_policy_vel_np,
     output_to_policy_vel_torch,
     policy_to_output_pos_np,
     policy_to_output_pos_torch,
+    policy_to_output_torque_np,
     policy_to_output_torque_torch,
 )
 from .motor import DM8009P, M3508_HEXROLL, MotorSpec
@@ -30,9 +33,12 @@ __all__ = [
     "Termination",
     "delay_seconds_to_steps",
     "is_fourbar_surrogate_name_set",
+    "output_to_policy_pos_np",
     "output_to_policy_pos_torch",
+    "output_to_policy_vel_np",
     "output_to_policy_vel_torch",
     "policy_to_output_pos_np",
     "policy_to_output_pos_torch",
+    "policy_to_output_torque_np",
     "policy_to_output_torque_torch",
 ]

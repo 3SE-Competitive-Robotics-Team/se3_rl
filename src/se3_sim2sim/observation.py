@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from se3_shared import JointGroup, ObservationConfig
+from se3_shared import (
+    JointGroup,
+    ObservationConfig,
+    output_to_policy_pos_np,
+    output_to_policy_vel_np,
+)
 
 from .config import RobotConfig
 from .math_utils import rotate_inverse
@@ -14,11 +19,19 @@ _OBS_CFG = ObservationConfig()
 
 
 class ObservationBuilder:
-    def __init__(self, *, robot_cfg: RobotConfig, runtime: RuntimeSpec) -> None:
+    def __init__(
+        self,
+        *,
+        robot_cfg: RobotConfig,
+        runtime: RuntimeSpec,
+        default_dof_pos: np.ndarray,
+        fourbar_surrogate: bool = False,
+    ) -> None:
         self.robot_cfg = robot_cfg
         self.runtime = runtime
+        self.fourbar_surrogate = bool(fourbar_surrogate)
         self.commands_scale = np.asarray(robot_cfg.command_scale, dtype=np.float64)
-        self.default_dof_pos = np.asarray(robot_cfg.default_dof_pos, dtype=np.float64)
+        self.default_dof_pos = np.asarray(default_dof_pos, dtype=np.float64)
 
     def build(
         self,
@@ -44,10 +57,18 @@ class ObservationBuilder:
         # 前 5 维乘以 commands_scale，后 2 维（jump_flag, jump_target_height）直接追加
         obs.extend((np.asarray(command[:5], dtype=np.float64) * self.commands_scale).tolist())
 
-        leg_pos_rel = dof_pos[JointGroup.CTRL_LEGS] - self.default_dof_pos[JointGroup.CTRL_LEGS]
+        leg_pos = dof_pos[JointGroup.CTRL_LEGS]
+        default_leg_pos = self.default_dof_pos[JointGroup.CTRL_LEGS]
+        if self.fourbar_surrogate:
+            leg_pos = output_to_policy_pos_np(leg_pos)
+            default_leg_pos = output_to_policy_pos_np(default_leg_pos)
+        leg_pos_rel = leg_pos - default_leg_pos
         obs.extend(leg_pos_rel.tolist())
 
-        leg_vel = dof_vel[JointGroup.CTRL_LEGS] * _OBS_CFG.leg_vel_scale
+        leg_vel = dof_vel[JointGroup.CTRL_LEGS]
+        if self.fourbar_surrogate:
+            leg_vel = output_to_policy_vel_np(dof_pos[JointGroup.CTRL_LEGS], leg_vel)
+        leg_vel = leg_vel * _OBS_CFG.leg_vel_scale
         obs.extend(leg_vel.tolist())
 
         obs.extend(dof_pos[JointGroup.CTRL_WHEELS].tolist())

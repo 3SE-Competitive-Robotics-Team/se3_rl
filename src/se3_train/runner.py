@@ -81,10 +81,10 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 timer.mark_returns_done()
 
             loss_dict = self.alg.update()
+            timing = timer.finish()
             self._se3_last_async_logger_flush_s = (
                 async_logger.flush() if async_logger is not None else 0.0
             )
-            timing = timer.finish()
             self.current_learning_iteration = it
 
             self.logger.log(

@@ -1,6 +1,6 @@
 # SE3 Wheel Leg
 
-SerialLeg 轮腿机器人（6 维 policy 动作）的强化学习训练与 sim2sim 验证框架。默认模型是闭链四连杆 + 300 N 气弹簧 MJCF，动作顺序为 `[LF, LB, RF, RB, l_wheel, r_wheel]`。训练端用 MJLab（MuJoCo-Warp GPU 加速）跑 PPO，验证端用标准 MuJoCo CPU，两端通过 `se3_shared` 共享机器人常量、观测维度和动作延迟配置，保证 sim2sim gap 可控。
+SerialLeg 轮腿机器人（6 维 policy 动作）的强化学习训练与 sim2sim 验证框架。默认模型是解析四连杆等效开树 `serialleg_fourbar_surrogate_train.xml`，动作顺序为 `[LF, LB, RF, RB, l_wheel, r_wheel]`；真实闭链 OBB 模型仅作为显式 A/B 对照。训练端用 MJLab（MuJoCo-Warp GPU 加速）跑 PPO，验证端用标准 MuJoCo CPU，两端通过 `se3_shared` 共享机器人常量、观测维度和动作延迟配置，保证 sim2sim gap 可控。
 
 ## 前置条件
 

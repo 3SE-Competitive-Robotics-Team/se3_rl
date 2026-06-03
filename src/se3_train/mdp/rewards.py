@@ -13,11 +13,13 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared import output_to_policy_pos_torch
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
     active_rod_angle_terms,
     is_closedchain_model,
+    is_fourbar_surrogate_model,
     leg_actuator_ids,
     output_leg_mirror_diffs,
     policy_leg_joint_ids,
@@ -1271,7 +1273,12 @@ def recovery_stand_default_joint_pos(
     near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
 
     leg_ids = policy_leg_joint_ids(robot)
-    joint_error = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+    joint_pos = robot.data.joint_pos[:, leg_ids]
+    default_pos = robot.data.default_joint_pos[:, leg_ids]
+    if is_fourbar_surrogate_model(robot):
+        joint_pos = output_to_policy_pos_torch(joint_pos)
+        default_pos = output_to_policy_pos_torch(default_pos)
+    joint_error = joint_pos - default_pos
     penalty = torch.mean(joint_error**2, dim=1)
     result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
 

@@ -7,7 +7,15 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from se3_shared import ActionDelayConfig, JointGroup, Termination
+from se3_shared import (
+    FOURBAR_SURROGATE_MARKER,
+    ActionDelayConfig,
+    JointGroup,
+    Termination,
+    output_to_policy_pos_np,
+    output_to_policy_vel_np,
+    policy_to_output_torque_np,
+)
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared.motor import DM8009P, M3508_HEXROLL
 
@@ -38,6 +46,16 @@ def _model_has_joints(model: mujoco.MjModel, names: tuple[str, ...]) -> bool:
     """判断模型是否包含一组关节。"""
     available = set(_model_joint_names(model))
     return all(name in available for name in names)
+
+
+def _model_site_names(model: mujoco.MjModel) -> tuple[str, ...]:
+    """读取模型中的 site 名称。"""
+    names: list[str] = []
+    for sid in range(model.nsite):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SITE, sid)
+        if name:
+            names.append(name)
+    return tuple(names)
 
 
 def _policy_joint_names_for_model(model: mujoco.MjModel) -> tuple[str, ...]:
@@ -85,6 +103,7 @@ class WheelLeggedRobot:
         self.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
         self.model.opt.iterations = 100
         self.data = mujoco.MjData(self.model)
+        self.fourbar_surrogate = FOURBAR_SURROGATE_MARKER in set(_model_site_names(self.model))
         (
             self._ground_geom_ids,
             self._base_geom_ids,
@@ -99,7 +118,6 @@ class WheelLeggedRobot:
         self.sim_dt = float(self.model.opt.timestep)
         self.decimation = int(cfg.control_decimation)
         self.control_dt = self.sim_dt * self.decimation
-        self.obs = ObservationBuilder(robot_cfg=cfg, runtime=runtime)
         self.yaw_pid = YawPidController(cfg.yaw_pid)
 
         self.policy_joint_names = _policy_joint_names_for_model(self.model)
@@ -119,6 +137,12 @@ class WheelLeggedRobot:
             self.default_dof_pos = np.asarray(
                 [default_map[name] for name in self.policy_joint_names], dtype=np.float64
             )
+        self.obs = ObservationBuilder(
+            robot_cfg=cfg,
+            runtime=runtime,
+            default_dof_pos=self.default_dof_pos,
+            fourbar_surrogate=self.fourbar_surrogate,
+        )
         self.action_scale = as_float64(cfg.action_scale)
         self.torque_limits = as_float64(cfg.torque_limits)
         self.motor_actuator_names = tuple(f"{name}_motor" for name in self.policy_joint_names)
@@ -536,6 +560,8 @@ class WheelLeggedRobot:
         spec = mujoco.MjSpec.from_file(xml_path)
 
         joint_names = tuple(joint.name for joint in spec.joints if joint.name)
+        site_names = tuple(site.name for site in spec.sites if site.name)
+        fourbar_surrogate = FOURBAR_SURROGATE_MARKER in site_names
         if all(name in joint_names for name in JointGroup.POLICY_LEG_NAMES):
             leg_joint_names = JointGroup.POLICY_LEG_NAMES
         else:
@@ -551,8 +577,9 @@ class WheelLeggedRobot:
             act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
             act.biastype = mujoco.mjtBias.mjBIAS_NONE
             act.gainprm[0] = 1.0
-            act.forcelimited = True
-            act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
+            act.forcelimited = not fourbar_surrogate
+            if act.forcelimited:
+                act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
@@ -603,19 +630,40 @@ class WheelLeggedRobot:
         dof_vel = self.dof_vel
 
         leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
-        leg_default = self.default_dof_pos[JointGroup.CTRL_LEGS]
-        leg_target = action[:4] * leg_scale + leg_default
-        leg_target = self._clamp_active_rod_angle_target(leg_target)
-        leg_pos_err = leg_target - dof_pos[JointGroup.CTRL_LEGS]
-        leg_vel = dof_vel[JointGroup.CTRL_LEGS]
-        leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
-        leg_torque = _tn_clip(
-            leg_torque,
-            leg_vel,
-            DM8009P.stall_torque,
-            DM8009P.no_load_speed,
-            DM8009P.rated_torque,
-        )
+        output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
+        output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
+        if self.fourbar_surrogate:
+            policy_pos = output_to_policy_pos_np(output_leg_pos)
+            policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
+            policy_default = as_float64(_SHARED_ROBOT.default_dof_pos)[JointGroup.CTRL_LEGS]
+            policy_target = action[:4] * leg_scale + policy_default
+            policy_target = self._clamp_active_rod_angle_target(policy_target)
+            policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
+            policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
+            policy_torque = _tn_clip(
+                policy_torque,
+                policy_vel,
+                DM8009P.stall_torque,
+                DM8009P.no_load_speed,
+                DM8009P.rated_torque,
+            )
+            leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
+            leg_vel = policy_vel
+        else:
+            leg_default = self.default_dof_pos[JointGroup.CTRL_LEGS]
+            leg_target = action[:4] * leg_scale + leg_default
+            leg_target = self._clamp_active_rod_angle_target(leg_target)
+            leg_pos_err = leg_target - output_leg_pos
+            leg_vel = output_leg_vel
+            leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
+        if not self.fourbar_surrogate:
+            leg_torque = _tn_clip(
+                leg_torque,
+                leg_vel,
+                DM8009P.stall_torque,
+                DM8009P.no_load_speed,
+                DM8009P.rated_torque,
+            )
 
         wheel_scale = self.action_scale[JointGroup.WHEEL_ACTUATORS]
         wheel_vel_target = action[4:6] * wheel_scale
@@ -636,7 +684,7 @@ class WheelLeggedRobot:
 
     def _clamp_active_rod_angle_target(self, leg_target: np.ndarray) -> np.ndarray:
         """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
-        if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES:
+        if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES and not self.fourbar_surrogate:
             return leg_target
         target = np.asarray(leg_target, dtype=np.float64).copy()
         lower, upper = _SHARED_ROBOT.active_rod_angle_limits

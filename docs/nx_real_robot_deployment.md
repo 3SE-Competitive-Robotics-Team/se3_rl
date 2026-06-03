@@ -226,13 +226,12 @@ scp logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt \
   serialleg-nx:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/<timestamp>/
 ```
 
-## 真机 runtime 待补齐
+## 真机 runtime 后续补齐
 
-当前仓库已有 sim2sim 的 checkpoint 加载、观测组装和动作输出逻辑，但还没有独立的 NX 真机 runtime。下一步部署开发应补齐：
+当前仓库已经具备阶段一 recovery-only NX runtime、policy 导出入口和 USB CDC 协议框架。下一步部署开发应继续补齐：
 
-- policy 导出或轻量加载入口，优先复用 `src/se3_sim2sim/policy.py` 的 checkpoint 解析逻辑。
-- 真机观测适配层：IMU、关节编码器、轮速、上一帧动作和 command 输入。
-- USB CDC 协议：STM32 上行 policy 顺序物理状态，NX 下行 6 维 raw policy action。
+- 真机观测适配层实测校准：IMU、关节编码器、轮速、上一帧动作和 command 输入。
+- USB CDC 联调：STM32 上行 policy 顺序物理状态，NX 下行 6 维 raw policy action。
 - NX 上层状态机：禁能、recovery-only policy 运行、GRU hidden reset、故障/人工停止回退；阶段一不实现多 policy 切换。
 - STM32 底层安全状态机：CAN、电机闭环、急停、限幅、限速、通信超时和安全回退。
 - 频率与延迟对齐：policy/action 默认 50 Hz（`control_dt=0.02 s`，`control_decimation=10`），动作延迟和 actuator 限幅必须显式记录。

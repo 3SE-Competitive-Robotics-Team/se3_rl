@@ -18,9 +18,7 @@ from se3_shared import JointGroup, RobotConfig
 MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
 OPENCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
 FOURBAR_SURROGATE_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
-CLOSEDCHAIN_SPRING_MJCF_PATH = (
-    "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_spring.xml"
-)
+CLOSEDCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 
 _ROBOT_CFG = RobotConfig()
 DEFAULT_JOINT_ANGLES = _ROBOT_CFG.default_model_joint_pos
@@ -231,7 +229,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, default=Path(MJCF_PATH))
     parser.add_argument("--openchain", action="store_true")
     parser.add_argument("--fourbar-surrogate", action="store_true")
-    parser.add_argument("--closedchain-spring", action="store_true")
+    parser.add_argument("--closedchain", action="store_true")
+    parser.add_argument("--closedchain-spring", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--base-height", type=float, default=BASE_HEIGHT)
     parser.add_argument("--floor-contact", action="store_true")
     parser.add_argument("--drop-model-actuators", action="store_true")
@@ -253,8 +252,8 @@ def main() -> None:
         model_path = Path(OPENCHAIN_MJCF_PATH)
     elif args.fourbar_surrogate:
         model_path = Path(FOURBAR_SURROGATE_MJCF_PATH)
-    elif args.closedchain_spring:
-        model_path = Path(CLOSEDCHAIN_SPRING_MJCF_PATH)
+    elif args.closedchain or args.closedchain_spring:
+        model_path = Path(CLOSEDCHAIN_MJCF_PATH)
     else:
         model_path = args.model
     fixed_mjcf = _create_fixed_base_mjcf(

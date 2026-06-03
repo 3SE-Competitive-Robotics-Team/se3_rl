@@ -169,6 +169,96 @@ def output_knee_from_active_angle_np(active_angle: float) -> float:
     return _wrap_angle_np(_CALF_ZERO_ANGLE - phi)
 
 
+def output_knee_from_active_angle_np_array(active_angle: np.ndarray) -> np.ndarray:
+    """NumPy 向量版本：由主动杆夹角计算左腿输出膝关节角。"""
+    return np.vectorize(output_knee_from_active_angle_np, otypes=[np.float64])(
+        np.asarray(active_angle, dtype=np.float64)
+    )
+
+
+def active_angle_from_output_knee_np(
+    output_knee: np.ndarray,
+    *,
+    right_side: bool,
+) -> np.ndarray:
+    """NumPy 版本：用二分法把输出膝角反解为主动杆夹角。"""
+    target = np.asarray(output_knee, dtype=np.float64)
+    target = -target if right_side else target
+    low = np.zeros_like(target) + _ACTIVE_LOWER
+    high = np.zeros_like(target) + _ACTIVE_UPPER
+    target = np.clip(
+        target,
+        output_knee_from_active_angle_np_array(high).min(),
+        output_knee_from_active_angle_np_array(low).max(),
+    )
+    for _ in range(16):
+        mid = (low + high) * 0.5
+        value = output_knee_from_active_angle_np_array(mid)
+        go_high = value > target
+        low = np.where(go_high, mid, low)
+        high = np.where(go_high, high, mid)
+    return (low + high) * 0.5
+
+
+def output_to_policy_pos_np(output_pos: np.ndarray) -> np.ndarray:
+    """NumPy 版本：把开树输出关节反解回 policy 主动杆语义。"""
+    arr = np.asarray(output_pos, dtype=np.float64)
+    original_shape = arr.shape
+    out = arr.reshape(-1, 4).copy()
+    left_alpha = active_angle_from_output_knee_np(out[:, 1], right_side=False)
+    right_alpha = active_angle_from_output_knee_np(out[:, 3], right_side=True)
+    out[:, 1] = out[:, 0] - left_alpha
+    out[:, 3] = out[:, 2] + right_alpha
+    return out.reshape(original_shape)
+
+
+def output_knee_jacobian_np(active_angle: np.ndarray, *, right_side: bool) -> np.ndarray:
+    """NumPy 版本：计算输出膝角对主动杆夹角的数值雅可比。"""
+    eps = 1.0e-3
+    angle = np.asarray(active_angle, dtype=np.float64)
+    lo = np.clip(angle - eps, _ACTIVE_LOWER, _ACTIVE_UPPER)
+    hi = np.clip(angle + eps, _ACTIVE_LOWER, _ACTIVE_UPPER)
+    value = (
+        output_knee_from_active_angle_np_array(hi) - output_knee_from_active_angle_np_array(lo)
+    ) / np.maximum(hi - lo, 1.0e-6)
+    return -value if right_side else value
+
+
+def output_to_policy_vel_np(output_pos: np.ndarray, output_vel: np.ndarray) -> np.ndarray:
+    """NumPy 版本：把开树输出速度反解回 policy 主动杆速度语义。"""
+    pos = np.asarray(output_pos, dtype=np.float64).reshape(-1, 4)
+    vel_arr = np.asarray(output_vel, dtype=np.float64)
+    original_shape = vel_arr.shape
+    out = vel_arr.reshape(-1, 4).copy()
+    left_alpha = active_angle_from_output_knee_np(pos[:, 1], right_side=False)
+    right_alpha = active_angle_from_output_knee_np(pos[:, 3], right_side=True)
+    left_j = output_knee_jacobian_np(left_alpha, right_side=False)
+    right_j = output_knee_jacobian_np(right_alpha, right_side=True)
+    left_alpha_dot = out[:, 1] / _safe_denominator_np(left_j)
+    right_alpha_dot = out[:, 3] / _safe_denominator_np(right_j)
+    out[:, 1] = out[:, 0] - left_alpha_dot
+    out[:, 3] = out[:, 2] + right_alpha_dot
+    return out.reshape(original_shape)
+
+
+def policy_to_output_torque_np(policy_pos: np.ndarray, policy_torque: np.ndarray) -> np.ndarray:
+    """NumPy 版本：把 policy 主动杆力矩映射为开树输出关节力矩。"""
+    pos = np.asarray(policy_pos, dtype=np.float64).reshape(-1, 4)
+    torque_arr = np.asarray(policy_torque, dtype=np.float64)
+    original_shape = torque_arr.shape
+    out = torque_arr.reshape(-1, 4).copy()
+    torque_rows = torque_arr.reshape(-1, 4)
+    left_alpha = np.clip(pos[:, 0] - pos[:, 1], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = np.clip(pos[:, 3] - pos[:, 2], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    left_j = output_knee_jacobian_np(left_alpha, right_side=False)
+    right_j = output_knee_jacobian_np(right_alpha, right_side=True)
+    out[:, 0] = torque_rows[:, 0] + torque_rows[:, 1]
+    out[:, 1] = -torque_rows[:, 1] / _safe_denominator_np(left_j)
+    out[:, 2] = torque_rows[:, 2] + torque_rows[:, 3]
+    out[:, 3] = torque_rows[:, 3] / _safe_denominator_np(right_j)
+    return out.reshape(original_shape)
+
+
 def _wrap_angle_torch(angle: torch.Tensor) -> torch.Tensor:
     return torch.remainder(angle + math.pi, 2.0 * math.pi) - math.pi
 
@@ -176,6 +266,11 @@ def _wrap_angle_torch(angle: torch.Tensor) -> torch.Tensor:
 def _safe_denominator_torch(value: torch.Tensor) -> torch.Tensor:
     sign = torch.where(value < 0.0, -torch.ones_like(value), torch.ones_like(value))
     return torch.where(torch.abs(value) < 1.0e-6, sign * 1.0e-6, value)
+
+
+def _safe_denominator_np(value: np.ndarray) -> np.ndarray:
+    sign = np.where(value < 0.0, -np.ones_like(value), np.ones_like(value))
+    return np.where(np.abs(value) < 1.0e-6, sign * 1.0e-6, value)
 
 
 def _wrap_angle_np(angle: float) -> float:

@@ -26,7 +26,7 @@ import mujoco
 import numpy as np
 
 _MJCF = Path(__file__).resolve().parent.parent / (
-    "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml"
+    "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 )
 
 # 气弹簧恒力（来自 MJCF actuator biasprm="300 0 0"）
@@ -62,9 +62,7 @@ class LegModel:
         self.adr_drive = _jadr(self.model, "l_drive_bar_Joint")
         self.adr_coupler = _jadr(self.model, "l_coupler_Joint")
         # 气弹簧 tendon id
-        self.ten_spring = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_TENDON, "l_knee_spring"
-        )
+        self.ten_spring = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_TENDON, "l_knee_spring")
         # base 固定在原点直立
         self.data.qpos[0:7] = [0, 0, 0.22, 1, 0, 0, 0]
         # 被动角初值（取 standing keyframe）
@@ -103,7 +101,9 @@ class LegModel:
                 jac[:, k] = (rp - r) / eps
             passive = passive - np.linalg.solve(jac, r)
         else:
-            raise RuntimeError(f"闭链求解未收敛: lf0={lf0}, drive={drive}, |r|={np.linalg.norm(r):.2e}")
+            raise RuntimeError(
+                f"闭链求解未收敛: lf0={lf0}, drive={drive}, |r|={np.linalg.norm(r):.2e}"
+            )
         # 收敛后记住，作为下一次初值（连续 sweep 加速）
         self._passive_guess = passive.copy()
         self._fk(lf0, passive[0], drive, passive[1])
