@@ -296,7 +296,7 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<ste
 如果在远程机录制 `.rrd` 后再拉回本地，按 `docs/train.md` 的 Rerun 命名规范存放：
 
 ```text
-remote_artifacts/<experiment_id>/rrd/wuyinyun/model_<step>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>.rrd
+remote_artifacts/<experiment_id>/rrd/wuyinyun/<task_name>__model_<step>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>.rrd
 ```
 
 不要把文件放成 `replay.rrd`、`latest.rrd`、`final.rrd` 或只带时间戳的名字。

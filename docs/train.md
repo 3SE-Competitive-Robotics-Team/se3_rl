@@ -158,14 +158,15 @@ uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999
 Rerun 录制后拉回本地必须按固定命名存放，避免不同机器、不同 run、不同 course 的 `.rrd` 互相覆盖：
 
 ```text
-remote_artifacts/<experiment_id>/rrd/<run_label>/<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].rrd
-remote_artifacts/<experiment_id>/summaries/<run_label>/<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].json
-remote_artifacts/<experiment_id>/logs/<run_label>/<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].log
+remote_artifacts/<experiment_id>/rrd/<run_label>/<task_name>__<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].rrd
+remote_artifacts/<experiment_id>/summaries/<run_label>/<task_name>__<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].json
+remote_artifacts/<experiment_id>/logs/<run_label>/<task_name>__<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].log
 ```
 
 字段约定：
 - `experiment_id`：本次实验的稳定名字，格式为 `<topic>_<YYYYMMDD>`；如果实验本身按小时批次区分，可用 `<topic>_<YYYYMMDD_HHMM>`。多机器或 A/B 对比时把机器/分支写进 topic，例如 `l40s_unilab_vs_mjlab_20260603`。
 - `run_label`：同一实验内的短标签，只用小写字母、数字、下划线或连字符，例如 `mjlab`、`unilab`、`jump_pretrain`、`recovery_gru`。
+- `task_name`：训练任务名，直接使用任务 ID 或它的稳定短名；长期值守拉回本地的 `.rrd` 文件名至少必须能从这里看出任务名。
 - `checkpoint`：直接使用 checkpoint 文件名去掉 `.pt`，例如 `model_4999`，不要写成 `latest`、`final` 或 `best`。
 - `course`：使用 sim2sim 的 course 名，例如 `walk-sweep`、`jump-sweep`；手工单场景也必须写一个稳定名字，例如 `manual-stand`。
 - `case`：同一 checkpoint + course 下的初始姿态、目标高度或特殊扰动，例如 `roll90`、`h0p4`、`yaw-pid-off`；没有区分项时省略。
@@ -175,15 +176,37 @@ remote_artifacts/<experiment_id>/logs/<run_label>/<checkpoint>__<course>[__<case
 示例：
 
 ```text
-remote_artifacts/l40s_unilab_vs_mjlab_20260603/rrd/unilab/model_1800__walk-sweep__rec-20260603-141927.rrd
-remote_artifacts/l40s_unilab_vs_mjlab_20260603/summaries/unilab/model_1800__walk-sweep__rec-20260603-141927.json
-remote_artifacts/recovery_roll_sweep_20260603/rrd/recovery_gru/model_1200__recovery-sweep__roll90__rec-20260603-133809.rrd
-remote_artifacts/jump_height_ab_20260603/rrd/pretrain/model_900__jump-sweep__h0p4__rec-20260603-104522.rrd
+remote_artifacts/l40s_unilab_vs_mjlab_20260603/rrd/unilab/SE3-WheelLegged-Flat-GRU__model_1800__walk-sweep__rec-20260603-141927.rrd
+remote_artifacts/l40s_unilab_vs_mjlab_20260603/summaries/unilab/SE3-WheelLegged-Flat-GRU__model_1800__walk-sweep__rec-20260603-141927.json
+remote_artifacts/recovery_roll_sweep_20260603/rrd/recovery_gru/SE3-WheelLegged-Recovery-GRU__model_1200__manual-recovery__roll90__rec-20260603-133809.rrd
+remote_artifacts/jump_height_ab_20260603/rrd/pretrain/SE3-WheelLegged-Jump-PreTrain-GRU__model_900__jump-sweep__h0p4__rec-20260603-104522.rrd
 ```
 
 远程录制时可以先写 `.rrd.tmp`，确认文件非空后再原子重命名为最终 `.rrd`；拉回本地时只拉最终 `.rrd`、同名 `.json` summary 和同名 `.log`。禁止把远程绝对路径或机器随机目录名直接塞进 `.rrd` 文件名；除 `rec-<YYYYMMDD-HHMMSS>` 外的来源信息写到 `state/recorded.tsv` 或 summary JSON 里。
 
 `replays/`、`remote_artifacts/` 和 `.rrd` 文件是本地验证产物，不提交。
+
+### `xyh` 分支训练值守规范
+
+`xyh` 个人分支当前只值守两个任务：`SE3-WheelLegged-Recovery-GRU`（含本轮明确指定的 `SE3-WheelLegged-Recovery-Stand-GRU` 变体）和 `SE3-WheelLegged-Flat-GRU` 平地基模。其他任务出现的 bug 先记录但不展开修复，除非它直接阻塞这两个任务的训练、checkpoint 保存或 Rerun 录制。
+
+Recovery 任务每个 checkpoint 必须录制两类倒地自启 Rerun：`roll90` 和 `pitch-flip`。`roll90` 使用 `--initial-roll-deg 90`；`pitch-flip` 使用 `--initial-pitch-deg 180` 表示 pitch 轴反转。文件名中的 `case` 分别写成 `roll90`、`pitch-flip`。
+
+```bash
+uv run se3-sim2sim \
+  --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/<checkpoint>.pt \
+  --initial-roll-deg 90 \
+  --no-rerun-spawn \
+  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-GRU__<checkpoint>__manual-recovery__roll90__rec-<YYYYMMDD-HHMMSS>.rrd
+
+uv run se3-sim2sim \
+  --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/<checkpoint>.pt \
+  --initial-pitch-deg 180 \
+  --no-rerun-spawn \
+  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-GRU__<checkpoint>__manual-recovery__pitch-flip__rec-<YYYYMMDD-HHMMSS>.rrd
+```
+
+Recovery 和平地基模长训期间，每 10 分钟检查一次训练状态。每发现一个新 checkpoint，都要按数字排序确认 checkpoint 编号，录制对应 Rerun，拉回本地，并向负责人汇报。汇报至少包含：任务名、远程机器、分支/commit、run timestamp、checkpoint、当前奖励值、相对上一个 checkpoint 的奖励提升量、Rerun 本地路径，以及是否看到明显异常。奖励指标优先使用 W&B 或训练日志里的同一条 mean reward；如果指标名变化，汇报时写明实际使用的指标名，不能混用不同口径计算提升量。
 
 ## Sim2Sim 验证
 
