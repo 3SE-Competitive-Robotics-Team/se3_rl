@@ -153,6 +153,17 @@ def _upright_factor(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     return torch.clamp(-projected_gravity_z, 0.0, 0.7) / 0.7
 
 
+def _near_upright_gate(
+    projected_gravity_z: torch.Tensor,
+    gate_start_deg: float,
+    gate_full_deg: float,
+) -> torch.Tensor:
+    """按机身倾角生成渐进直立门控，避免恢复早期被站立姿态惩罚束缚。"""
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-projected_gravity_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    return torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+
 def _upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     """全姿态直立分数：倒置为 0，侧躺为 2，直立为 4。"""
     return torch.clamp(2.0 * (1.0 - projected_gravity_z), min=0.0, max=4.0)
@@ -1240,6 +1251,72 @@ def recovery_stand_leg_alignment(
                 "RecoveryStand/wheel_fore_aft_offset_m": _masked_mean(fore_aft_offset, active),
                 "RecoveryStand/wheel_alignment_ok_rate": _masked_mean(alignment_ok.float(), active),
                 "RecoveryStand/leg_alignment_gate": _masked_mean(near_upright_gate, active),
+            }
+        )
+
+    return result
+
+
+def recovery_stand_default_joint_pos(
+    env: ManagerBasedRlEnv,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 15.0,
+    max_penalty: float = 3.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """接近直立后惩罚腿部主动关节偏离默认位置，避免恢复完成后停在怪异腿型。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene[asset_cfg.name]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
+
+    leg_ids = policy_leg_joint_ids(robot)
+    joint_error = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+    penalty = torch.mean(joint_error**2, dim=1)
+    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/default_joint_pos_penalty": _masked_mean(result, active),
+                "RecoveryStand/default_joint_pos_error_rad": _masked_mean(
+                    torch.sqrt(torch.mean(joint_error**2, dim=1)), active
+                ),
+                "RecoveryStand/default_joint_pos_gate": _masked_mean(near_upright_gate, active),
+            }
+        )
+
+    return result
+
+
+def recovery_stand_joint_mirror(
+    env: ManagerBasedRlEnv,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 15.0,
+    hip_weight: float = 1.0,
+    knee_weight: float = 1.0,
+    max_penalty: float = 3.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """接近直立后惩罚左右腿镜像误差，避免用非对称腿型换取短期站稳。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene[asset_cfg.name]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
+
+    hip_diff, knee_diff = output_leg_mirror_diffs(robot, robot.data.joint_pos)
+    penalty = float(hip_weight) * hip_diff**2 + float(knee_weight) * knee_diff**2
+    normalizer = max(float(hip_weight) + float(knee_weight), 1.0e-6)
+    penalty = penalty / normalizer
+    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/joint_mirror_penalty": _masked_mean(result, active),
+                "RecoveryStand/hip_mirror_error_rad": _masked_mean(torch.abs(hip_diff), active),
+                "RecoveryStand/knee_mirror_error_rad": _masked_mean(torch.abs(knee_diff), active),
+                "RecoveryStand/joint_mirror_gate": _masked_mean(near_upright_gate, active),
             }
         )
 

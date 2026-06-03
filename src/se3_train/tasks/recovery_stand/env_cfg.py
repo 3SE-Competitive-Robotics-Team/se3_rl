@@ -279,6 +279,28 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "max_penalty": 8.0,
             },
         ),
+        "recovery_default_joint_pos": RewardTermCfg(
+            func=rewards.recovery_stand_default_joint_pos,
+            weight=-1.0,
+            params={
+                "gate_start_deg": 60.0,
+                "gate_full_deg": 15.0,
+                "max_penalty": 3.0,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "recovery_joint_mirror": RewardTermCfg(
+            func=rewards.recovery_stand_joint_mirror,
+            weight=-2.0,
+            params={
+                "gate_start_deg": 60.0,
+                "gate_full_deg": 15.0,
+                "hip_weight": 1.5,
+                "knee_weight": 1.0,
+                "max_penalty": 3.0,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
         "recovery_leg_alignment": RewardTermCfg(
             func=rewards.recovery_stand_leg_alignment,
             weight=-2.0,
