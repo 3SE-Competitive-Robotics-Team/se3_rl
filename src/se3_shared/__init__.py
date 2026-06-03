@@ -4,12 +4,22 @@
 """
 
 from .action_delay import ActionDelayConfig, delay_seconds_to_steps
+from .fourbar import (
+    FOURBAR_SURROGATE_MARKER,
+    is_fourbar_surrogate_name_set,
+    output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
+    policy_to_output_pos_np,
+    policy_to_output_pos_torch,
+    policy_to_output_torque_torch,
+)
 from .motor import DM8009P, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
     "DM8009P",
+    "FOURBAR_SURROGATE_MARKER",
     "M3508_HEXROLL",
     "ActionDelayConfig",
     "Joint",
@@ -19,4 +29,10 @@ __all__ = [
     "RobotConfig",
     "Termination",
     "delay_seconds_to_steps",
+    "is_fourbar_surrogate_name_set",
+    "output_to_policy_pos_torch",
+    "output_to_policy_vel_torch",
+    "policy_to_output_pos_np",
+    "policy_to_output_pos_torch",
+    "policy_to_output_torque_torch",
 ]

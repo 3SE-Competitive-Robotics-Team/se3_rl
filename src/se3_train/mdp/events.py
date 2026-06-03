@@ -248,7 +248,7 @@ def reset_root_state_full_angle_random(
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
     mark_recovery_episode: bool = False,
-    recovery_command_height: float = 0.22,
+    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
 ) -> None:
     """统一 reset：随机倾倒角和水平倾倒轴，不区分 roll/pitch 来源。"""
     if env_ids is None:
@@ -425,7 +425,7 @@ def reset_root_state_full(
     recovery_state_cache_path: str | None = None,
     recovery_state_cache_prob: float = 0.0,
     recovery_grace_steps: int = 400,
-    recovery_command_height: float = 0.22,
+    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
 ) -> None:
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:

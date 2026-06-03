@@ -15,7 +15,7 @@ import numpy as np
 
 from se3_shared import RobotConfig
 
-DEFAULT_MODEL = Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml")
+DEFAULT_MODEL = Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml")
 # SW 总装坐标经 *_xi 坐标系导出后，MuJoCo 局部轴为 [SW_Z, SW_X, SW_Y]。
 # 训练模型额外把同侧 P1/P2 投影到同一 MuJoCo y 平面，避免气弹簧产生侧向力。
 ZERO_POSE_SPRING_BASE_POS = {

@@ -213,7 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mjcf",
         type=Path,
-        default=Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v2_spring.xml"),
+        default=Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"),
     )
     parser.add_argument(
         "--manifest",

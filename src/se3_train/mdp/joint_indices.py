@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from se3_shared import JointGroup
+from se3_shared import JointGroup, is_fourbar_surrogate_name_set
 from se3_shared import RobotConfig as SharedRobotConfig
 
 _SHARED_ROBOT = SharedRobotConfig()
@@ -17,6 +17,11 @@ def is_closedchain_model(entity: Any) -> bool:
     """判断当前 MJCF 是否包含闭链主动驱动杆。"""
     joint_names = set(_entity_names(entity, "joint_names"))
     return all(name in joint_names for name in ("l_drive_bar_Joint", "r_drive_bar_Joint"))
+
+
+def is_fourbar_surrogate_model(entity: Any) -> bool:
+    """判断当前 MJCF 是否为解析四连杆等效开树模型。"""
+    return is_fourbar_surrogate_name_set(_entity_names(entity, "site_names"))
 
 
 def policy_leg_joint_ids(entity: Any) -> tuple[int, ...]:
@@ -63,7 +68,7 @@ def active_leg_mirror_diffs(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆坐标下的左右镜像误差。"""
     lf0_id, lb_id, rf0_id, rb_id = policy_leg_joint_ids(entity)
-    if is_closedchain_model(entity):
+    if is_closedchain_model(entity) or is_fourbar_surrogate_model(entity):
         return joint_pos[:, lf0_id] + joint_pos[:, rf0_id], joint_pos[:, lb_id] + joint_pos[
             :, rb_id
         ]
@@ -76,7 +81,7 @@ def output_leg_mirror_diffs(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """返回输出腿坐标下的左右镜像误差。"""
     lf0_id, lf1_id, rf0_id, rf1_id = output_leg_joint_ids(entity)
-    if is_closedchain_model(entity):
+    if is_closedchain_model(entity) or is_fourbar_surrogate_model(entity):
         return joint_pos[:, lf0_id] + joint_pos[:, rf0_id], joint_pos[:, lf1_id] + joint_pos[
             :, rf1_id
         ]

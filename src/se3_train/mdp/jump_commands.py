@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import recovery_state
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.joint_indices import (
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 
 # 重力加速度（仿真用标准值）
 _G = 9.81
+_DEFAULT_STANDING_HEIGHT = SharedRobotConfig().default_base_height
 
 # 成功起跳阈值：vz > 1.0 m/s，对应约 5cm 以上跳跃。
 _VZ_SUCCESS_THRESHOLD = 1.0
@@ -346,7 +348,9 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         recovery_mask = recovery_state.recovery_active_mask(self._env).to(device=self.device)
         if not recovery_mask.any():
             return
-        command_height = float(getattr(self._env, "_recovery_command_height", 0.22))
+        command_height = float(
+            getattr(self._env, "_recovery_command_height", _DEFAULT_STANDING_HEIGHT)
+        )
         self._command[recovery_mask, 0:4] = 0.0
         self._command[recovery_mask, 4] = command_height
         self._command[recovery_mask, 5] = 0.0
@@ -688,7 +692,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 class RecoveryStandCommandCfg(JumpCommandCfg):
     """纯倒地自起任务的固定站立指令。"""
 
-    target_height: float = 0.22
+    target_height: float = _DEFAULT_STANDING_HEIGHT
 
     def build(self, env: ManagerBasedRlEnv) -> RecoveryStandCommandTerm:
         return RecoveryStandCommandTerm(self, env)

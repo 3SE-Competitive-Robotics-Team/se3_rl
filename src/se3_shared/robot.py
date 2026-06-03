@@ -125,18 +125,25 @@ class RobotConfig(BaseModel):
         M3508_HEXROLL.rated_torque,
         M3508_HEXROLL.rated_torque,
     )
-    default_dof_pos: tuple[float, ...] = (-0.2275, -1.4475, 0.2275, 1.4475, 0.0, 0.0)
-    default_output_knee_pos: tuple[float, float] = (-1.163001511, 1.163000657)
-    default_coupler_pos: tuple[float, float] = (1.296413806, -1.296416824)
-    active_rod_angle_limits: tuple[float, float] = (0.0, 1.7)
+    default_dof_pos: tuple[float, ...] = (
+        -0.275422946189,
+        -1.592100148957,
+        0.275422946189,
+        1.592100148957,
+        0.0,
+        0.0,
+    )
+    default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
+    default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
+    active_rod_angle_limits: tuple[float, float] = (0.0, 1.469449651507)
     active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
         (1.0, -1.0),
         (-1.0, 1.0),
     )
-    default_base_height: float = 0.230340071
+    default_base_height: float = 0.22
     action_scale: tuple[float, ...] = (0.35, 0.25, 0.35, 0.25, 20.0, 20.0)
     sim_dt: float = 0.002
-    control_decimation: int = 10
+    control_decimation: int = 5
     action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
     termination: Termination = Termination()
 

@@ -9,9 +9,16 @@ import torch
 from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 
-from se3_shared import ActionDelayConfig, JointGroup
+from se3_shared import (
+    DM8009P,
+    ActionDelayConfig,
+    JointGroup,
+    output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
+    policy_to_output_torque_torch,
+)
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_train.mdp.joint_indices import is_closedchain_model
+from se3_train.mdp.joint_indices import is_closedchain_model, is_fourbar_surrogate_model
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -80,12 +87,17 @@ class SerialLegDelayedAction(ActionTerm):
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
         self._closedchain = is_closedchain_model(self._entity)
+        self._fourbar_surrogate = is_fourbar_surrogate_model(self._entity)
         self._active_rod_angle_limits = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_limits,
             device=self.device,
         )
         self._active_rod_angle_coeffs = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_coeffs,
+            device=self.device,
+        )
+        self._policy_leg_defaults = torch.tensor(
+            tuple(_SHARED_ROBOT.default_dof_pos[i] for i in JointGroup.LEG_ACTUATORS),
             device=self.device,
         )
         self._action_dim = 6
@@ -131,23 +143,37 @@ class SerialLegDelayedAction(ActionTerm):
         self._action_fifo[0] = self._raw_actions
         self._delayed_actions = self._action_fifo[self._delay_steps, self._env_indices]
 
-        leg_target = (
-            self._delayed_actions[:, :4] * self._leg_action_scales
-            + self._entity.data.default_joint_pos[:, self._leg_joint_ids]
-        )
-        leg_target = self._clamp_active_rod_angles(leg_target)
-        leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
+        if self._fourbar_surrogate:
+            policy_target = self._delayed_actions[:, :4] * self._leg_action_scales
+            policy_target = policy_target + self._policy_leg_defaults
+            policy_target = self._clamp_active_rod_angles(policy_target)
+            output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
+            output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
+            policy_pos = output_to_policy_pos_torch(output_pos)
+            policy_vel = output_to_policy_vel_torch(output_pos, output_vel)
+            policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
+            policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
+            policy_torque = self._clip_active_motor_torque(policy_torque, policy_vel)
+            leg_torque = policy_to_output_torque_torch(policy_pos, policy_torque)
+            self._entity.set_joint_effort_target(leg_torque, joint_ids=self._leg_joint_ids)
+        else:
+            leg_target = (
+                self._delayed_actions[:, :4] * self._leg_action_scales
+                + self._entity.data.default_joint_pos[:, self._leg_joint_ids]
+            )
+            leg_target = self._clamp_active_rod_angles(leg_target)
+            leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
+            self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
         wheel_target = (
             self._delayed_actions[:, 4:6] * float(self.cfg.wheel_scale)
             + self._entity.data.default_joint_vel[:, self._wheel_joint_ids]
         )
 
-        self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
         self._entity.set_joint_velocity_target(wheel_target, joint_ids=self._wheel_joint_ids)
 
     def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
         """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
-        if not self._closedchain:
+        if not (self._closedchain or self._fourbar_surrogate):
             return leg_target
         target = leg_target.clone()
         lower, upper = self._active_rod_angle_limits
@@ -160,6 +186,21 @@ class SerialLegDelayedAction(ActionTerm):
             )
             target[:, back_idx] = (angle - front_coef * target[:, front_idx]) / back_coef
         return target
+
+    def _clip_active_motor_torque(
+        self, torque: torch.Tensor, velocity: torch.Tensor
+    ) -> torch.Tensor:
+        """按虚拟主动杆速度应用 DM8009P T-N 包络限幅。"""
+        saturation = float(DM8009P.stall_torque)
+        velocity_limit = float(DM8009P.no_load_speed)
+        effort_limit = float(DM8009P.rated_torque)
+        vel_at_effort_limit = velocity_limit * (1.0 + effort_limit / saturation)
+        clipped_velocity = velocity.clamp(-vel_at_effort_limit, vel_at_effort_limit)
+        top = saturation * (1.0 - clipped_velocity / velocity_limit)
+        bottom = saturation * (-1.0 - clipped_velocity / velocity_limit)
+        max_effort = torch.clamp(top, max=effort_limit)
+        min_effort = torch.clamp(bottom, min=-effort_limit)
+        return torque.clamp(min_effort, max_effort)
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)

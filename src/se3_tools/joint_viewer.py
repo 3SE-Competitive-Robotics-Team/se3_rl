@@ -17,6 +17,7 @@ from se3_shared import JointGroup, RobotConfig
 
 MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train.xml"
 OPENCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
+FOURBAR_SURROGATE_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
 CLOSEDCHAIN_SPRING_MJCF_PATH = (
     "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_spring.xml"
 )
@@ -24,9 +25,10 @@ CLOSEDCHAIN_SPRING_MJCF_PATH = (
 _ROBOT_CFG = RobotConfig()
 DEFAULT_JOINT_ANGLES = _ROBOT_CFG.default_model_joint_pos
 
-BASE_HEIGHT = 0.45
+BASE_HEIGHT = _ROBOT_CFG.default_base_height
 VIEWER_JOINT_DAMPING = 6.0
 VIEWER_POSITION_KP = 40.0
+VIEWER_FULL_ROTATION_CTRL_RANGE = (-6.283185307179586, 6.283185307179586)
 
 LEG_CTRL_RANGES = {
     # 前主动杆是整腿摆动的共模参考，物理上可整周转；只有两主动杆夹角受 tendon 限位。
@@ -70,10 +72,35 @@ def _viewer_actuator_xml(xml: str, *, position_kp: float = VIEWER_POSITION_KP) -
     return "\n".join(lines)
 
 
+def _joint_ctrl_ranges_from_xml(
+    xml: str,
+    fallback: dict[str, tuple[float, float]],
+) -> dict[str, tuple[float, float]]:
+    root = ET.fromstring(xml)
+    joints = {joint.get("name"): joint for joint in root.iter("joint") if joint.get("name")}
+    ranges: dict[str, tuple[float, float]] = {}
+    for joint_name, fallback_range in fallback.items():
+        joint = joints.get(joint_name)
+        if joint is None:
+            ranges[joint_name] = fallback_range
+            continue
+        if joint.get("limited", "").lower() == "false":
+            ranges[joint_name] = VIEWER_FULL_ROTATION_CTRL_RANGE
+            continue
+        range_text = joint.get("range")
+        if range_text:
+            low, high = (float(value) for value in range_text.split())
+            ranges[joint_name] = (low, high)
+        else:
+            ranges[joint_name] = fallback_range
+    return ranges
+
+
 def _viewer_actuator_inner_lines(xml: str, *, position_kp: float = VIEWER_POSITION_KP) -> list[str]:
     lines = []
     closedchain = 'name="l_active_rod_angle"' in xml and 'name="r_active_rod_angle"' in xml
-    leg_ranges = LEG_CTRL_RANGES if closedchain else OPENCHAIN_LEG_CTRL_RANGES
+    fallback_leg_ranges = LEG_CTRL_RANGES if closedchain else OPENCHAIN_LEG_CTRL_RANGES
+    leg_ranges = _joint_ctrl_ranges_from_xml(xml, fallback_leg_ranges)
     for joint_name, (ctrl_min, ctrl_max) in leg_ranges.items():
         lines.append(
             f'    <position name="{joint_name}_viewer_pos" joint="{joint_name}" '
@@ -200,6 +227,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, default=Path(MJCF_PATH))
     parser.add_argument("--openchain", action="store_true")
+    parser.add_argument("--fourbar-surrogate", action="store_true")
     parser.add_argument("--closedchain-spring", action="store_true")
     parser.add_argument("--base-height", type=float, default=BASE_HEIGHT)
     parser.add_argument("--floor-contact", action="store_true")
@@ -220,6 +248,8 @@ def main() -> None:
     base_height = float(args.base_height)
     if args.openchain:
         model_path = Path(OPENCHAIN_MJCF_PATH)
+    elif args.fourbar_surrogate:
+        model_path = Path(FOURBAR_SURROGATE_MJCF_PATH)
     elif args.closedchain_spring:
         model_path = Path(CLOSEDCHAIN_SPRING_MJCF_PATH)
     else:

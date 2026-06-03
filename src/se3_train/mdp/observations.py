@@ -11,9 +11,13 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import ObservationConfig
+from se3_shared import ObservationConfig, output_to_policy_pos_torch, output_to_policy_vel_torch
 from se3_train.mdp.contact_utils import contact_force_nonfinite_env_mask, finite_contact_force_norm
-from se3_train.mdp.joint_indices import policy_leg_joint_ids, wheel_joint_ids
+from se3_train.mdp.joint_indices import (
+    is_fourbar_surrogate_model,
+    policy_leg_joint_ids,
+    wheel_joint_ids,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -57,6 +61,10 @@ def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """腿部主动杆位置（相对默认位姿），4D。"""
     robot = env.scene["robot"]
     leg_ids = policy_leg_joint_ids(robot)
+    if is_fourbar_surrogate_model(robot):
+        pos = output_to_policy_pos_torch(robot.data.joint_pos[:, leg_ids])
+        default_pos = output_to_policy_pos_torch(robot.data.default_joint_pos[:, leg_ids])
+        return _finite_clamp(pos - default_pos)
     return _finite_clamp(
         robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
     )
@@ -65,8 +73,15 @@ def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def leg_joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """腿部主动杆速度,缩放 0.25,4D。"""
     robot = env.scene["robot"]
+    leg_ids = policy_leg_joint_ids(robot)
+    if is_fourbar_surrogate_model(robot):
+        vel = output_to_policy_vel_torch(
+            robot.data.joint_pos[:, leg_ids],
+            robot.data.joint_vel[:, leg_ids],
+        )
+        return _finite_clamp(vel * _OBS_CFG.leg_vel_scale)
     return _finite_clamp(
-        robot.data.joint_vel[:, policy_leg_joint_ids(robot)] * _OBS_CFG.leg_vel_scale
+        robot.data.joint_vel[:, leg_ids] * _OBS_CFG.leg_vel_scale
     )
 
 
