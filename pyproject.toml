@@ -35,7 +35,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "src"
-module-name = ["se3_train", "se3_sim2sim", "se3_shared", "se3_tools"]
+module-name = ["se3_train", "se3_sim2sim", "se3_shared", "se3_tools", "se3_flow_match"]
 
 [tool.uv.sources]
 torch = [
@@ -83,7 +83,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["se3_train", "se3_sim2sim", "se3_shared", "se3_tools"]
+known-first-party = ["se3_train", "se3_sim2sim", "se3_shared", "se3_tools", "se3_flow_match"]
 
 [tool.ruff.format]
 quote-style = "double"
