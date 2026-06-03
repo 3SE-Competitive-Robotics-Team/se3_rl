@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--control-decimation",
         type=int,
         default=robot_defaults.control_decimation,
-        help="Number of MuJoCo steps per policy action. Default 5 gives 100 Hz control at 0.002s sim_dt.",
+        help="Number of MuJoCo steps per policy action. Default 10 gives 50 Hz control at 0.002s sim_dt.",
     )
     parser.add_argument("--viewer", choices=["rerun", "none"], default="rerun")
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")

@@ -15,6 +15,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
     active_leg_mirror_diffs,
@@ -32,6 +33,7 @@ _PRETRAIN_MAX_WHEEL_HEIGHT_ATTR = "_jump_pretrain_max_wheel_height"
 _PRETRAIN_PREV_JUMP_FLAG_ATTR = "_jump_pretrain_prev_jump_flag"
 _ACTION_SMOOTH_PREV_ATTR = "_jump_action_smooth_prev_action"
 _ACTION_SMOOTH_PREV_PREV_ATTR = "_jump_action_smooth_prev_prev_action"
+_ROBOT_DEFAULTS = SharedRobotConfig()
 
 
 def _get_jump_term(env: ManagerBasedRlEnv, command_name: str) -> JumpCommandTerm:
@@ -154,7 +156,16 @@ def _update_pretrain_max_heights(
 
 def _fixed_time_mask(env: ManagerBasedRlEnv, term: JumpCommandTerm, start_s: float) -> torch.Tensor:
     """返回从指定秒数之后开始激活的固定时间窗掩码。"""
-    control_dt = max(float(getattr(env, "physics_dt", 0.002)) * 5.0, 1.0e-4)
+    control_dt = getattr(env, "step_dt", None)
+    if control_dt is None:
+        cfg = getattr(env, "cfg", None)
+        decimation = getattr(
+            env,
+            "decimation",
+            getattr(cfg, "decimation", _ROBOT_DEFAULTS.control_decimation),
+        )
+        control_dt = float(getattr(env, "physics_dt", _ROBOT_DEFAULTS.sim_dt)) * int(decimation)
+    control_dt = max(float(control_dt), 1.0e-4)
     start_step = max(0, round(float(start_s) / control_dt))
     return term.traj_step >= start_step
 
