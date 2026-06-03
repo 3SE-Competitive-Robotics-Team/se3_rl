@@ -185,15 +185,11 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 ### MJLab 环境结构
 ```
 se3_train/
-├── __init__.py      # 调用 tasks.register_all_tasks()
+├── __init__.py      # register_mjlab_task 注册 4 个任务
+├── env_cfg.py       # ManagerBasedRlEnvCfg 工厂函数
+├── rl_cfg.py        # PPO 超参数（Optuna 调优值）
 ├── robot_cfg.py     # EntityCfg（MJCF + 初始状态）
 ├── cli.py           # 命令行入口
-├── tasks/           # 每个训练任务的最小独立单元
-│   ├── rough/       # SE3-WheelLegged-Rough
-│   ├── flat/        # SE3-WheelLegged-Flat-GRU
-│   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
-│   ├── jump/        # SE3-WheelLegged-Jump-GRU
-│   └── jump_obs42/  # SE3-WheelLegged-Jump-Obs42-GRU
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
     ├── observations.py     # 32 维 actor 观测（含跳跃扩展）
@@ -208,11 +204,6 @@ se3_train/
     ├── events.py           # 域随机化事件 + RSI 轨迹注入
     └── terminations.py     # 超时终止 + 腿部接触终止
 ```
-
-每个 `tasks/<task>/` 目录包含 `__init__.py`、`env_cfg.py`、`rl_cfg.py`、`observations.py`、
-`rewards.py`、`commands.py`、`curriculums.py`、`terminations.py` 和 `events.py`。新增训练任务时
-复制最接近的 task 目录，在 `tasks/__init__.py` 注册即可；不要恢复旧的 `se3_train/env_cfg.py`
-或 `se3_train/rl_cfg.py` 汇总入口。
 
 ### 跳跃轨迹优化结构
 ```

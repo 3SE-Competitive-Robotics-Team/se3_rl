@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 from se3_train.mdp.jump_commands import JumpCommandTerm
 
-# GRU rollout 步数，对应 jump/jump_pretrain task rl_cfg.py 的 num_steps_per_env=64
+# GRU rollout 步数，对应 rl_cfg.py 中 se3_jump_*_gru_ppo_runner_cfg 的 num_steps_per_env=64
 # 如果修改了 rl_cfg 里的 num_steps_per_env，需要同步更新此常量
 _GRU_STEPS_PER_ENV = 64
 
