@@ -178,6 +178,30 @@ def apply_loco_task_mode_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
+    cfg.rewards["wheel_idle_action_rate"] = RewardTermCfg(
+        func=rewards.wheel_idle_action_rate,
+        weight=-0.4,
+        params={
+            "command_name": "velocity_height",
+            "idle_command_threshold": 0.08,
+            "max_penalty": 80.0,
+        },
+    )
+    cfg.rewards["wheel_idle_motion"] = RewardTermCfg(
+        func=rewards.wheel_idle_motion_penalty,
+        weight=-2.0,
+        params={
+            "command_name": "velocity_height",
+            "sensor_name": "wheel_sensor",
+            "wheel_radius": 0.059,
+            "idle_command_threshold": 0.08,
+            "contact_force_threshold": 1.0,
+            "base_speed_scale": 0.18,
+            "wheel_speed_scale": 0.22,
+            "max_penalty": 9.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
     cfg.rewards["wheel_straight_yaw_drift"] = RewardTermCfg(
         func=rewards.wheel_straight_yaw_drift,
         weight=0.0,

@@ -1003,6 +1003,101 @@ def wheel_feet_distance(
     return penalty * gate
 
 
+def wheel_idle_action_rate(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    idle_command_threshold: float = 0.08,
+    max_penalty: float = 80.0,
+) -> torch.Tensor:
+    """WHEEL 零指令静站时额外压低动作变化。"""
+    cmd = env.command_manager.get_command(command_name)
+    cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    idle = cmd_norm < float(idle_command_threshold)
+    raw = torch.sum((env.action_manager.action - env.action_manager.prev_action) ** 2, dim=1)
+    penalty = torch.clamp(raw, max=float(max_penalty))
+    gate = mode_weight(env, command_name, TaskMode.WHEEL) * idle.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_wheel_idle_action_rate": _mean_on_mask(penalty, active),
+                "TaskMode/diag_wheel_idle_command_ratio": _mean_on_mask(
+                    idle.float(),
+                    mode_weight(env, command_name, TaskMode.WHEEL) > 0.0,
+                ),
+            }
+        )
+
+    return penalty * gate
+
+
+def wheel_idle_motion_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    wheel_radius: float = _WHEEL_RADIUS,
+    idle_command_threshold: float = 0.08,
+    contact_force_threshold: float = 1.0,
+    base_speed_scale: float = 0.18,
+    wheel_speed_scale: float = 0.22,
+    max_penalty: float = 9.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """WHEEL 零指令静站时惩罚机身水平运动和接地轮滚动。"""
+    cmd = env.command_manager.get_command(command_name)
+    cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    idle = cmd_norm < float(idle_command_threshold)
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+    has_contact = in_contact.any(dim=1)
+
+    robot = env.scene[asset_cfg.name]
+    base_vel_b = robot.data.root_link_lin_vel_b
+    base_vxy_sq = base_vel_b[:, 0] ** 2 + base_vel_b[:, 1] ** 2
+
+    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    contact_count = in_contact.float().sum(dim=1).clamp_min(1.0)
+    wheel_speed_sq = torch.sum((wheel_forward_speed**2) * in_contact.float(), dim=1)
+    wheel_speed_sq = wheel_speed_sq / contact_count
+
+    penalty = base_vxy_sq / (float(base_speed_scale) ** 2) + wheel_speed_sq / (
+        float(wheel_speed_scale) ** 2
+    )
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+    gate = mode_weight(env, command_name, TaskMode.WHEEL) * idle.float() * has_contact.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_wheel_idle_motion_penalty": _mean_on_mask(penalty, active),
+                "TaskMode/diag_wheel_idle_base_vxy": _mean_on_mask(
+                    torch.sqrt(base_vxy_sq),
+                    active,
+                ),
+                "TaskMode/diag_wheel_idle_wheel_speed_abs": _mean_on_mask(
+                    torch.sqrt(wheel_speed_sq),
+                    active,
+                ),
+            }
+        )
+
+    return penalty * gate
+
+
 def wheel_straight_yaw_drift(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1444,6 +1539,8 @@ __all__ = [
     "mode_tracking_ang_vel",
     "mode_tracking_lin_vel",
     "wheel_feet_distance",
+    "wheel_idle_action_rate",
+    "wheel_idle_motion_penalty",
     "wheel_in_place_linear_vel",
     "wheel_straight_lateral_vel",
     "wheel_straight_yaw_drift",
