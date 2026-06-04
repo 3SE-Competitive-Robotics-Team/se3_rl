@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import JointGroup
-from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
+from se3_train.mdp.commands import BasicCommandCfg, BasicCommandTerm
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
     DEFAULT_JUMP_TRAJ_PATHS,
@@ -57,7 +57,7 @@ def _ema_value(previous: float | None, value: float, alpha: float = 0.05) -> flo
 
 
 @dataclass
-class JumpCommandCfg(VelocityHeightCommandCfg):
+class JumpCommandCfg(BasicCommandCfg):
     """跳跃指令配置，继承速度/姿态/高度指令并扩展跳跃维度。"""
 
     jump_prob: float = 0.0
@@ -95,7 +95,7 @@ class JumpCommandCfg(VelocityHeightCommandCfg):
         return JumpCommandTerm(self, env)
 
 
-class JumpCommandTerm(VelocityHeightCommandTerm):
+class JumpCommandTerm(BasicCommandTerm):
     """跳跃指令项，在速度/姿态/高度之外维护参考相位。
 
     指令维度：[vx, ωz, pitch, roll, h, jump_flag, jump_target_height, jump_phase]（8 维）

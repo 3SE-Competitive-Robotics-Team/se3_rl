@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from se3_shared import TASK_MODE_SEMANTICS, TaskMode
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 
 from .config import RunConfig
@@ -19,13 +20,96 @@ from .robot import WheelLeggedRobot
 from .runtime_spec import RuntimeSpec
 
 
+class _TaskModeState:
+    """Tracks task_mode observation state for TaskMode policies in sim2sim."""
+
+    def __init__(self, mode: TaskMode) -> None:
+        self.mode = mode
+        self.prev_mode = mode
+        self._blend_step = 0
+        self._blend_total = 1
+        self._jump_stage = 0
+
+    @property
+    def mode_blend(self) -> float:
+        return min(float(self._blend_step) / float(self._blend_total), 1.0)
+
+    @property
+    def jump_stage_norm(self) -> float:
+        return float(self._jump_stage) / 2.0
+
+    def step(self, jump_active: bool) -> None:
+        self._blend_step = min(self._blend_step + 1, self._blend_total)
+        if jump_active:
+            self._jump_stage = 1
+        else:
+            if self._jump_stage == 1:
+                self._jump_stage = 2
+            elif self._jump_stage == 2:
+                self._jump_stage = 0
+
+    def set_jump_active(self) -> None:
+        if self.mode != TaskMode.JUMP:
+            self.prev_mode = self.mode
+            self.mode = TaskMode.JUMP
+            self._blend_step = 0
+            self._blend_total = 1
+        self._jump_stage = 1
+
+    def clear_jump(self) -> None:
+        self.prev_mode = TaskMode.JUMP
+        self.mode = TaskMode.WHEEL
+        self._blend_step = 0
+        self._blend_total = 1
+        self._jump_stage = 2
+
+    def build_obs(
+        self, jump_flag: float, jump_target_height: float, jump_phase: float
+    ) -> np.ndarray:
+        """Build the 13D task_mode observation vector."""
+        current_semantic = np.asarray(TASK_MODE_SEMANTICS[int(self.mode)], dtype=np.float64)
+        prev_semantic = np.asarray(TASK_MODE_SEMANTICS[int(self.prev_mode)], dtype=np.float64)
+        return np.concatenate(
+            [
+                current_semantic,
+                prev_semantic,
+                np.array(
+                    [
+                        self.mode_blend,
+                        jump_flag,
+                        jump_target_height,
+                        jump_phase,
+                        self.jump_stage_norm,
+                    ],
+                    dtype=np.float64,
+                ),
+            ]
+        )
+
+
 class Sim2SimWorkflow:
     def __init__(self, cfg: RunConfig) -> None:
         self.cfg = cfg.resolved()
-        self.runtime = RuntimeSpec(task=self.cfg.robot.task)
-        self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
         if self.cfg.policy.checkpoint is None:
             raise RuntimeError("启动 workflow 前必须先解析 policy checkpoint")
+
+        num_obs = PolicyRuntime.probe_num_obs(
+            self.cfg.policy.checkpoint, device=self.cfg.policy.device
+        )
+        self.runtime = RuntimeSpec(task=self.cfg.robot.task).with_num_obs(num_obs)
+        self._is_task_mode = self.runtime.policy.is_task_mode
+        self._task_mode_state: _TaskModeState | None = None
+        if self._is_task_mode:
+            print(
+                f"[sim2sim] 检测到 TaskMode checkpoint，mode={self.cfg.robot.task_mode.mode.name}"
+            )
+            self._task_mode_state = _TaskModeState(
+                mode=self.cfg.robot.task_mode.mode,
+            )
+        else:
+            print("[sim2sim] 检测到 32D jump checkpoint")
+
+        self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
         self.policy = PolicyRuntime(
             checkpoint=self.cfg.policy.checkpoint,
             device=self.cfg.policy.device,
@@ -36,7 +120,23 @@ class Sim2SimWorkflow:
         self._course = create_course(self.cfg.course, control_dt)
 
     def run(self) -> dict[str, object]:
-        obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
+        # Initialize task_mode state machine for TaskMode policies
+        _tm: _TaskModeState | None = None
+        if self._is_task_mode:
+            _tm = self._task_mode_state
+            assert _tm is not None
+            task_mode_obs_init = _tm.build_obs(0.0, float(self.robot.command[6]), 0.0)
+            obs = self.robot.reset(
+                fixed=self.cfg.fixed_reset,
+                randomize_root=self.cfg.randomize_root,
+            )
+            # Re-build obs with task_mode — reset() can't know about it
+            obs = self.robot.observation(task_mode_obs=task_mode_obs_init)
+        else:
+            obs = self.robot.reset(
+                fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root
+            )
+
         samples: list[dict[str, float]] = []
         model_diag = self.robot.diagnostics()
         if self.viewer is not None:
@@ -79,6 +179,8 @@ class Sim2SimWorkflow:
         if sched.enabled:
             _interval_steps_remaining = max(1, round(sched.interval_s / control_dt))
         _jump_active = self.robot.command[5] > 0.5  # 当前是否处于跳跃意图激活状态
+        if _jump_active and _tm is not None:
+            _tm.set_jump_active()
 
         # --- 历程初始化 ---
         if self._course is not None and self.cfg.course.mode == CourseType.JUMP_SWEEP:
@@ -110,12 +212,16 @@ class Sim2SimWorkflow:
                     self.robot.command[7] = float(
                         min(_traj_step, _traj_steps - 1) / max(_traj_steps - 1, 1)
                     )
+                    if _tm is not None and _traj_step == 0:
+                        _tm.set_jump_active()
                     _traj_step += 1
                     if _traj_step >= _traj_steps:
                         _traj_step = 0
                         _jump_active = False
                         self.robot.command[5] = 0.0
                         self.robot.command[7] = 0.0
+                        if _tm is not None:
+                            _tm.clear_jump()
                         if sched.enabled:
                             _interval_steps_remaining = max(1, round(sched.interval_s / control_dt))
                         # 跳跃历程：每次跳跃完成后切换到下一高度
@@ -146,7 +252,9 @@ class Sim2SimWorkflow:
                         _traj_steps = self._trajectory_steps_for_height(
                             float(self.robot.command[6])
                         )
-                        _jump_active = True  # 触发下一次跳跃
+                        _jump_active = True
+                        if _tm is not None:
+                            _tm.set_jump_active()
                 elif script_events and not _jump_active:
                     sim_time_s = (step - 1) * control_dt
                     if _next_script_event < len(script_events):
@@ -156,7 +264,9 @@ class Sim2SimWorkflow:
                             _traj_steps = self._trajectory_steps_for_height(
                                 float(self.robot.command[6])
                             )
-                            _jump_active = True  # 按脚本触发下一次跳跃
+                            _jump_active = True
+                            if _tm is not None:
+                                _tm.set_jump_active()
                             _next_script_event += 1
 
                 # --- 行走历程：每步推进 vx ---
@@ -166,9 +276,22 @@ class Sim2SimWorkflow:
 
                 if self.cfg.robot.yaw_pid.enabled:
                     self.robot.update_yaw_command()
+
+                # Build task_mode observation for TaskMode policies
+                _task_mode_obs: np.ndarray | None = None
+                if _tm is not None:
+                    _tm.step(jump_active=_jump_active)
+                    _task_mode_obs = _tm.build_obs(
+                        float(self.robot.command[5]),
+                        float(self.robot.command[6]),
+                        float(self.robot.command[7]),
+                    )
+                    obs = self.robot.observation(task_mode_obs=_task_mode_obs)
+                elif self.cfg.robot.yaw_pid.enabled:
                     obs = self.robot.observation()
+
                 action = self.policy.act(obs)
-                obs, reward, done, info = self.robot.step(action)
+                obs, reward, done, info = self.robot.step(action, task_mode_obs=_task_mode_obs)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
                 action_delta = (

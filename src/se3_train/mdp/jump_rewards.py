@@ -260,7 +260,7 @@ def _update_pretrain_max_heights(
 
 def _fixed_time_mask(env: ManagerBasedRlEnv, term, start_s: float) -> torch.Tensor:
     """返回从指定秒数之后开始激活的固定时间窗掩码。"""
-    control_dt = max(float(getattr(env, "physics_dt", 0.002)) * 5.0, 1.0e-4)
+    control_dt = max(float(getattr(env, "step_dt", 0.02)), 1.0e-4)
     start_step = max(0, round(float(start_s) / control_dt))
     return term.traj_step >= start_step
 

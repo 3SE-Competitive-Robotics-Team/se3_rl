@@ -58,4 +58,4 @@ jobs:
         run: uv run ruff check .
 
       - name: Smoke 测试
-        run: SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+        run: SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat --env.scene.num-envs 1 --gpu-ids None

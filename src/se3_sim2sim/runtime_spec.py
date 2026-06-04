@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 
@@ -10,6 +10,27 @@ from se3_shared import JointGroup, ObservationConfig
 
 _OBS_CFG = ObservationConfig()
 _JOINT_NAMES = JointGroup.joint_names()
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationTermSpec:
+    name: str
+    size: int
+
+
+_COMMON_OBS_TERMS = (
+    ObservationTermSpec("ang_vel", 3),
+    ObservationTermSpec("gravity", 3),
+    ObservationTermSpec("commands", 5),
+    ObservationTermSpec("leg_joint_pos", 4),
+    ObservationTermSpec("leg_joint_vel", 4),
+    ObservationTermSpec("wheel_pos", 2),
+    ObservationTermSpec("wheel_vel", 2),
+    ObservationTermSpec("actions", 6),
+)
+
+_JUMP_TAIL = (ObservationTermSpec("jump_commands", 3),)
+_TASK_MODE_TAIL = (ObservationTermSpec("task_mode", 13),)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,14 +55,18 @@ class PolicyArchitectureSpec:
     def is_recurrent(self) -> bool:
         return self.rnn_type is not None
 
+    @property
+    def is_task_mode(self) -> bool:
+        return self.num_obs == _OBS_CFG.task_mode_num_obs
+
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
-@dataclass(frozen=True, slots=True)
-class ObservationTermSpec:
-    name: str
-    size: int
+def _obs_terms_for(num_obs: int) -> tuple[ObservationTermSpec, ...]:
+    if num_obs == _OBS_CFG.task_mode_num_obs:
+        return _COMMON_OBS_TERMS + _TASK_MODE_TAIL
+    return _COMMON_OBS_TERMS + _JUMP_TAIL
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,18 +76,13 @@ class RuntimeSpec:
     policy: PolicyArchitectureSpec = PolicyArchitectureSpec()
     joint_names: tuple[str, ...] = _JOINT_NAMES
     actuator_names: tuple[str, ...] = _JOINT_NAMES
-    observation_terms: tuple[ObservationTermSpec, ...] = (
-        ObservationTermSpec("ang_vel", 3),
-        ObservationTermSpec("gravity", 3),
-        ObservationTermSpec("commands", 5),
-        ObservationTermSpec("leg_joint_pos", 4),
-        ObservationTermSpec("leg_joint_vel", 4),
-        ObservationTermSpec("wheel_pos", 2),
-        ObservationTermSpec("wheel_vel", 2),
-        ObservationTermSpec("actions", 6),
-        ObservationTermSpec("jump_commands", 3),  # [jump_flag, jump_target_height, jump_phase]
-    )
+    observation_terms: tuple[ObservationTermSpec, ...] = _COMMON_OBS_TERMS + _JUMP_TAIL
     clip_observations: float = 100.0
+
+    def with_num_obs(self, num_obs: int) -> RuntimeSpec:
+        """Return a new RuntimeSpec with the given num_obs and matching observation layout."""
+        new_policy = replace(self.policy, num_obs=num_obs)
+        return replace(self, policy=new_policy, observation_terms=_obs_terms_for(num_obs))
 
     @property
     def observation_slices(self) -> dict[str, slice]:

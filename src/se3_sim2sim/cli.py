@@ -7,7 +7,7 @@ import math
 import re
 from pathlib import Path
 
-from se3_shared import ActionDelayConfig
+from se3_shared import TASK_MODE_NAMES, ActionDelayConfig, TaskMode
 
 from .config import (
     MAX_YAW_RATE_RAD_S,
@@ -16,6 +16,7 @@ from .config import (
     PolicyConfig,
     RobotConfig,
     RunConfig,
+    TaskModeSimConfig,
     ViewerConfig,
     YawPidConfig,
 )
@@ -102,13 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--sim-dt",
         type=float,
         default=robot_defaults.sim_dt,
-        help="MuJoCo world timestep in seconds. Default is 0.002 for 500 Hz.",
+        help="MuJoCo world timestep in seconds. Default is 0.005 for 200 Hz.",
     )
     parser.add_argument(
         "--control-decimation",
         type=int,
         default=robot_defaults.control_decimation,
-        help="Number of MuJoCo steps per policy action. Default 5 gives 100 Hz control at 0.002s sim_dt.",
+        help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
     )
     parser.add_argument("--viewer", choices=["rerun", "none"], default="rerun")
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
@@ -150,8 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--yaw-pid",
         dest="yaw_pid",
         action="store_true",
-        default=yaw_defaults.enabled,
-        help="Enable yaw PID control. Enabled by default.",
+        default=None,
+        help="Enable yaw PID control. Enabled by default except GAIT task mode.",
     )
     parser.add_argument(
         "--no-yaw-pid",
@@ -227,6 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-tilt-deg", type=float, default=80.0)
     parser.add_argument("--fail-height-m", type=float, default=0.12)
 
+    # Task Mode
+    parser.add_argument(
+        "--task-mode",
+        type=str,
+        default=None,
+        choices=list(TASK_MODE_NAMES),
+        help="Task mode for TaskMode policies (auto-detected from checkpoint). "
+        "Options: wheel, gait, wheel_leg, gait_wheel, jump. "
+        "Ignored for 32D checkpoints.",
+    )
+
     # 历程（Course）：指令扫描序列
     parser.add_argument(
         "--course",
@@ -273,6 +285,12 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         min_delay_s=float(args.action_delay_min_ms) / 1000.0,
         max_delay_s=float(args.action_delay_max_ms) / 1000.0,
     )
+    task_mode_cfg = TaskModeSimConfig()
+    if args.task_mode is not None:
+        task_mode_cfg = TaskModeSimConfig(mode=TaskMode[args.task_mode.upper()])
+    yaw_pid_enabled = (
+        task_mode_cfg.mode != TaskMode.GAIT if args.yaw_pid is None else bool(args.yaw_pid)
+    )
     return RunConfig(
         robot=RobotConfig(
             model_path=args.model,
@@ -281,7 +299,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             control_decimation=int(args.control_decimation),
             command=tuple(float(v) for v in args.command),
             yaw_pid=YawPidConfig(
-                enabled=bool(args.yaw_pid),
+                enabled=yaw_pid_enabled,
                 target_yaw_rad=math.radians(float(args.yaw_target_deg)),
                 kp=float(args.yaw_kp),
                 ki=float(args.yaw_ki),
@@ -300,6 +318,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 target_height=float(args.jump_target_height),
                 events=tuple(args.jump_script),
             ),
+            task_mode=task_mode_cfg,
         ),
         policy=PolicyConfig(
             checkpoint=args.checkpoint,
