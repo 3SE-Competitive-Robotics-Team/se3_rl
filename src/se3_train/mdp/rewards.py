@@ -237,9 +237,15 @@ def _near_upright_gate(
     return torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
 
+def _smoothstep01(value: torch.Tensor) -> torch.Tensor:
+    """将 [0,1] 门控变成端点斜率为零的平滑曲线。"""
+    value = torch.clamp(value, 0.0, 1.0)
+    return value * value * (3.0 - 2.0 * value)
+
+
 def _upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
-    """全姿态直立分数：倒置为 0，侧躺为 2，直立为 4。"""
-    return torch.clamp(2.0 * (1.0 - projected_gravity_z), min=0.0, max=4.0)
+    """全姿态直立分数：倒置为 0，侧躺为 1，直立为 4。"""
+    return torch.square(1.0 - projected_gravity_z)
 
 
 def _recovery_penalty_gate(
@@ -1005,13 +1011,13 @@ def recovery_height(
     active = _recovery_reset_mask(env)
     cmd = env.command_manager.get_command(command_name)
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = sensor.data.heights[:, 0]
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
     target_height = cmd[:, 4]
     reward = torch.exp(-torch.square(height - target_height) / float(sigma))
     pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
     tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
     gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
-    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+    near_upright_gate = _smoothstep01((float(gate_start_deg) - tilt) / gate_span)
     near_upright_gate = torch.clamp(near_upright_gate, min=float(min_gate))
 
     if hasattr(env, "extras"):
@@ -1031,6 +1037,49 @@ def recovery_height(
         )
 
     return reward * near_upright_gate * active.float()
+
+
+def recovery_inverted_low_height_penalty(
+    env: ManagerBasedRlEnv,
+    height_sensor_name: str,
+    height_floor: float = _SHARED_ROBOT.default_base_height,
+    height_scale: float = 0.05,
+    max_normalized_low_height: float = 3.0,
+    tilt_start_deg: float = 140.0,
+    tilt_full_deg: float = 170.0,
+) -> torch.Tensor:
+    """只在接近完全倒置时惩罚低 base 高度，帮助策略脱离 upward 低梯度区。"""
+    active = _recovery_reset_mask(env)
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(tilt_full_deg) - float(tilt_start_deg), 1.0e-6)
+    inverted_gate = _smoothstep01((tilt - float(tilt_start_deg)) / gate_span)
+
+    low_height = torch.clamp(
+        (float(height_floor) - height) / max(float(height_scale), 1.0e-6),
+        min=0.0,
+        max=float(max_normalized_low_height),
+    )
+    penalty = torch.square(low_height) * inverted_gate * active.float()
+
+    if hasattr(env, "extras"):
+        inverted_region = active & (inverted_gate > 0.0)
+        low_height_active = inverted_region & (low_height > 0.0)
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/inverted_region_rate": _masked_mean(inverted_region.float(), active),
+                "RecoveryStand/inverted_height_gate": _masked_mean(inverted_gate, active),
+                "RecoveryStand/inverted_low_height_penalty": _masked_mean(penalty, active),
+                "RecoveryStand/inverted_low_height_rate": _masked_mean(
+                    low_height_active.float(), active
+                ),
+            }
+        )
+
+    return penalty
 
 
 def recovery_wheel_contact(

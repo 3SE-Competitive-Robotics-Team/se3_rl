@@ -210,6 +210,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=1.0,
             params={"delta_scale": 0.05, "max_reward": 2.0},
         ),
+        "recovery_inverted_low_height": RewardTermCfg(
+            func=rewards.recovery_inverted_low_height_penalty,
+            weight=-1.5,
+            params={
+                "height_sensor_name": "base_height_sensor",
+                "height_floor": 0.24,
+                "height_scale": 0.05,
+                "max_normalized_low_height": 3.0,
+                "tilt_start_deg": 140.0,
+                "tilt_full_deg": 170.0,
+            },
+        ),
         "recovery_height": RewardTermCfg(
             func=rewards.recovery_height,
             weight=3.0,
@@ -217,9 +229,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "command_name": "velocity_height",
                 "height_sensor_name": "base_height_sensor",
                 "sigma": 0.01,
-                "gate_start_deg": 120.0,
+                "gate_start_deg": 60.0,
                 "gate_full_deg": 15.0,
-                "min_gate": 0.25,
+                "min_gate": 0.0,
             },
         ),
         "recovery_wheel_contact": RewardTermCfg(

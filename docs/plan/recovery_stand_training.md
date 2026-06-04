@@ -175,7 +175,8 @@ jump_phase = 0.0
 |---|---|
 | `upward` | 全姿态扶正主梯度 |
 | `upward_progress` | 奖励姿态向直立方向改善 |
-| `recovery_height` | 接近固定站立高度，倒地时保留弱梯度；第二轮收紧高度梯度，避免低趴静止也拿到接近满分 |
+| `recovery_inverted_low_height` | 只在 `140°~170°` 倒置区平滑打开，惩罚低 base 高度，帮助策略脱离 `upward` 在完全倒置附近的低梯度区 |
+| `recovery_height` | 只在 `60°~15°` 近直立区平滑打开，跟踪固定站立高度，避免倒地阶段用高度项套利 |
 | `recovery_wheel_contact` | 接近直立后鼓励轮子重新成为接地点 |
 | `recovery_nonwheel_clearance` | 接近直立后鼓励机身、腿部等非轮部件离地，避免靠身体/腿撑住的低趴解 |
 | `recovery_stillness` | 接近直立后鼓励机身线速度和轮速降到可交接范围，避免翻正后继续滚走 |
@@ -186,6 +187,12 @@ jump_phase = 0.0
 | `leg_power` | 轻量功率正则 |
 
 `recovery_leg_alignment` 不能等到完全接近直立才启动。roll90 早期回放已观察到策略在约 `80°` 倾角附近通过左右腿前后错位把机身撑起，因此该惩罚从 `135°` 开始逐步打开，防止把前后劈叉学成中间支撑路径。
+
+高度相关奖励拆成两个互补区间。倒置辅助项使用
+`smoothstep((tilt_deg - 140) / 30) * clamp((0.24 - base_height) / 0.05, 0, 3)^2`，
+只负责在接近完全倒置时惩罚低 base 高度；近直立高度跟踪使用
+`smoothstep((60 - tilt_deg) / 45) * exp(-(base_height - target_height)^2 / 0.01)`，
+只在姿态已经接近正确后接管固定高度。
 
 过程语义：
 
