@@ -11,21 +11,30 @@ if TYPE_CHECKING:
 
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 
+_FLOW_MATCH_GRU_STEPS_PER_ENV = 64
+
 
 def _lerp(
-    step: int,
+    progress_step: int,
     start_step: int,
     ramp_steps: int,
     initial_value: float,
     final_value: float,
 ) -> float:
     """按 step 线性插值。"""
-    if step < start_step:
+    if progress_step < start_step:
         return float(initial_value)
     if ramp_steps <= 0:
         return float(final_value)
-    progress = min(1.0, max(0.0, (step - start_step) / ramp_steps))
+    progress = min(1.0, max(0.0, (progress_step - start_step) / ramp_steps))
     return float(initial_value) + (float(final_value) - float(initial_value)) * progress
+
+
+def _stage_progress(stage: dict) -> int:
+    """读取课程阶段阈值，优先使用 PPO iter，兼容旧 step 键。"""
+    if "iter" in stage:
+        return int(stage["iter"])
+    return int(stage["step"])
 
 
 def _set_reward_weight(env: ManagerBasedRlEnv, term_name: str, weight: float) -> float | None:
@@ -68,15 +77,17 @@ def wheel_expert_motion_curriculum(
     velocity_stages: list[dict],
     profile_stages: list[dict],
     reward_weight_stages: list[dict],
+    steps_per_iter: int = _FLOW_MATCH_GRU_STEPS_PER_ENV,
 ) -> dict[str, torch.Tensor]:
-    """WHEEL 专家课程：同步速度范围、运动画像比例和专项惩罚权重。"""
+    """WHEEL 专家课程：按 PPO iter 同步速度、画像比例和专项惩罚权重。"""
     del env_ids
     term = env.command_manager.get_term(command_name)
     cfg = term.cfg
     step = env.common_step_counter
+    policy_iter = int(step) // max(int(steps_per_iter), 1)
 
     for stage in velocity_stages:
-        if step >= stage["step"]:
+        if policy_iter >= _stage_progress(stage):
             if "lin_vel_x_range" in stage:
                 cfg.lin_vel_x_range = stage["lin_vel_x_range"]
             if "ang_vel_yaw_range" in stage:
@@ -84,12 +95,13 @@ def wheel_expert_motion_curriculum(
 
     current_profiles = getattr(cfg, "wheel_profile_probabilities", (1.0, 0.0, 0.0))
     for stage in profile_stages:
-        if step >= stage["step"]:
+        if policy_iter >= _stage_progress(stage):
             current_profiles = stage["wheel_profile_probabilities"]
     cfg.wheel_profile_probabilities = tuple(float(value) for value in current_profiles)
 
     logs: dict[str, torch.Tensor] = {
         "step_counter": torch.tensor(float(step)),
+        "policy_iter": torch.tensor(float(policy_iter)),
         "lin_vel_x_max": torch.tensor(float(cfg.lin_vel_x_range[1])),
         "ang_vel_yaw_max": torch.tensor(float(cfg.ang_vel_yaw_range[1])),
         "wheel_profile_mixed": torch.tensor(float(cfg.wheel_profile_probabilities[0])),
@@ -99,10 +111,12 @@ def wheel_expert_motion_curriculum(
 
     for stage in reward_weight_stages:
         term_name = stage["term_name"]
+        start_progress = int(stage.get("start_iter", stage.get("start_step", 0)))
+        ramp_progress = int(stage.get("ramp_iters", stage.get("ramp_steps", 0)))
         weight = _lerp(
-            int(step),
-            int(stage["start_step"]),
-            int(stage.get("ramp_steps", 0)),
+            int(policy_iter),
+            start_progress,
+            ramp_progress,
             float(stage["initial_weight"]),
             float(stage["final_weight"]),
         )
