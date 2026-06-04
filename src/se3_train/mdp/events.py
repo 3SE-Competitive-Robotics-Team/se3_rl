@@ -253,6 +253,12 @@ def reset_root_state_full_angle_random(
     pitch_flip_axis_jitter_range: tuple[float, float] = (0.0, 0.0),
     pitch_flip_height_range: tuple[float, float] = (0.10, 0.16),
     pitch_flip_clearance_range: tuple[float, float] = (0.0, 0.02),
+    pitch_flip_default_joint_prob: float = 0.0,
+    pitch_flip_default_joint_height_range: tuple[float, float] = (
+        _SHARED_ROBOT.default_base_height,
+        _SHARED_ROBOT.default_base_height,
+    ),
+    pitch_flip_default_joint_yaw_range: tuple[float, float] = (0.0, 0.0),
     pos_xy_range: tuple[float, float] = (-0.1, 0.1),
     lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     ang_vel_range: tuple[float, float] = (-0.8, 0.8),
@@ -295,6 +301,19 @@ def reset_root_state_full_angle_random(
         "pitch_flip_clearance_range",
         pitch_flip_clearance_range,
     )
+    pitch_flip_default_joint_prob = float(
+        _stage_value(stage, "pitch_flip_default_joint_prob", pitch_flip_default_joint_prob)
+    )
+    pitch_flip_default_joint_height_range = _stage_value(
+        stage,
+        "pitch_flip_default_joint_height_range",
+        pitch_flip_default_joint_height_range,
+    )
+    pitch_flip_default_joint_yaw_range = _stage_value(
+        stage,
+        "pitch_flip_default_joint_yaw_range",
+        pitch_flip_default_joint_yaw_range,
+    )
     pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
@@ -320,6 +339,7 @@ def reset_root_state_full_angle_random(
     tilt_axis = _sample_range(tilt_axis_range, (n,))
     yaw = _sample_range(yaw_range, (n,))
     pitch_flip_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
+    pitch_flip_default_joint_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
     if pitch_flip_prob > 0.0:
         pitch_flip_mask = torch.rand(n, device=env.device) < pitch_flip_prob
         if pitch_flip_mask.any():
@@ -333,6 +353,18 @@ def reset_root_state_full_angle_random(
             tilt_axis[pitch_flip_mask] = pitch_flip_sign * (0.5 * torch.pi) + _sample_range(
                 pitch_flip_axis_jitter_range, (n_pitch_flip,)
             )
+            if pitch_flip_default_joint_prob > 0.0:
+                pitch_flip_default_joint_mask = pitch_flip_mask.clone()
+                if pitch_flip_default_joint_prob < 1.0:
+                    pitch_flip_default_joint_mask &= (
+                        torch.rand(n, device=env.device) < pitch_flip_default_joint_prob
+                    )
+                if pitch_flip_default_joint_mask.any():
+                    n_default_pitch_flip = int(pitch_flip_default_joint_mask.sum().item())
+                    yaw[pitch_flip_default_joint_mask] = _sample_range(
+                        pitch_flip_default_joint_yaw_range,
+                        (n_default_pitch_flip,),
+                    )
     tilt_quat = _quat_from_horizontal_axis_angle(tilt_axis, tilt)
     yaw_quat = quat_from_euler_xyz(
         torch.zeros_like(yaw),
@@ -358,8 +390,39 @@ def reset_root_state_full_angle_random(
             pitch_flip_height,
             pitch_flip_safe_height,
         )
+        if pitch_flip_default_joint_mask.any():
+            n_default_pitch_flip = int(pitch_flip_default_joint_mask.sum().item())
+            default_safe_height = _full_angle_safe_base_height(
+                z_row[pitch_flip_default_joint_mask],
+                _sample_range(pitch_flip_clearance_range, (n_default_pitch_flip,)),
+            )
+            default_height = _sample_range(
+                pitch_flip_default_joint_height_range,
+                (n_default_pitch_flip,),
+            )
+            base_height[pitch_flip_default_joint_mask] = torch.maximum(
+                default_height,
+                default_safe_height,
+            )
     pitch_flip_reset = recovery_state.ensure_bool_buffer(env, "_recovery_pitch_flip_reset_mask")
     pitch_flip_reset[env_ids] = pitch_flip_mask
+    if pitch_flip_default_joint_prob > 0.0:
+        pitch_flip_default_joint_reset = recovery_state.ensure_bool_buffer(
+            env,
+            "_recovery_pitch_flip_default_joint_mask",
+        )
+        pitch_flip_default_joint_reset[env_ids] = pitch_flip_default_joint_mask
+    else:
+        pitch_flip_default_joint_reset = getattr(
+            env,
+            "_recovery_pitch_flip_default_joint_mask",
+            None,
+        )
+        if (
+            isinstance(pitch_flip_default_joint_reset, torch.Tensor)
+            and pitch_flip_default_joint_reset.shape[0] == env.num_envs
+        ):
+            pitch_flip_default_joint_reset[env_ids] = False
 
     pos[:, 0:3] += env.scene.env_origins[env_ids]
     pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
@@ -369,6 +432,8 @@ def reset_root_state_full_angle_random(
     vel = torch.zeros(n, 6, device=env.device)
     vel[:, 0:3] = _sample_range(lin_vel_range, (n, 3))
     vel[:, 3:6] = _sample_range(ang_vel_range, (n, 3))
+    if pitch_flip_default_joint_mask.any():
+        vel[pitch_flip_default_joint_mask] = 0.0
 
     if mark_recovery_episode:
         recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
@@ -433,6 +498,9 @@ def reset_root_state_full_angle_random(
             {
                 "Reset/full_angle_random_ratio": 1.0,
                 "Reset/pitch_flip_ratio": pitch_flip_mask.float().mean().item(),
+                "Reset/pitch_flip_default_joint_planned_ratio": (
+                    pitch_flip_default_joint_mask.float().mean().item()
+                ),
                 "Reset/pitch_flip_mean_height_m": (
                     base_height[pitch_flip_mask].mean().item() if pitch_flip_mask.any() else 0.0
                 ),
@@ -1232,8 +1300,21 @@ def reset_joints(
             )
 
     pitch_flip_mask = getattr(env, "_recovery_pitch_flip_reset_mask", None)
+    planned_pitch_flip_default_joint_mask = getattr(
+        env,
+        "_recovery_pitch_flip_default_joint_mask",
+        None,
+    )
     pitch_flip_default_joint_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
     if (
+        isinstance(planned_pitch_flip_default_joint_mask, torch.Tensor)
+        and planned_pitch_flip_default_joint_mask.shape[0] == env.num_envs
+    ):
+        pitch_flip_default_joint_mask = planned_pitch_flip_default_joint_mask[env_ids].to(
+            device=env.device,
+            dtype=torch.bool,
+        )
+    elif (
         isinstance(pitch_flip_mask, torch.Tensor)
         and pitch_flip_mask.shape[0] == env.num_envs
         and pitch_flip_default_joint_prob > 0.0
@@ -1246,13 +1327,13 @@ def reset_joints(
             pitch_flip_default_joint_mask &= (
                 torch.rand(len(env_ids), device=env.device) < pitch_flip_default_joint_prob
             )
-        if pitch_flip_default_joint_mask.any():
-            default_joint_rows = pitch_flip_default_joint_mask.nonzero().flatten()
-            joint_pos[pitch_flip_default_joint_mask] = asset.data.default_joint_pos[
-                env_ids[pitch_flip_default_joint_mask]
-            ]
-            joint_pos[default_joint_rows[:, None], wheel_ids] = 0.0
-            joint_vel[pitch_flip_default_joint_mask] = 0.0
+    if pitch_flip_default_joint_mask.any():
+        default_joint_rows = pitch_flip_default_joint_mask.nonzero().flatten()
+        joint_pos[pitch_flip_default_joint_mask] = asset.data.default_joint_pos[
+            env_ids[pitch_flip_default_joint_mask]
+        ]
+        joint_pos[default_joint_rows[:, None], wheel_ids] = 0.0
+        joint_vel[pitch_flip_default_joint_mask] = 0.0
 
     if hasattr(env, "extras"):
         env.extras.setdefault("log", {})["Reset/pitch_flip_default_joint_ratio"] = (

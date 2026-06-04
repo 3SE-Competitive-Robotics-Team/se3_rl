@@ -174,8 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--yaw-pid",
         dest="yaw_pid",
         action="store_true",
-        default=yaw_defaults.enabled,
-        help="Enable yaw PID control. Enabled by default.",
+        default=None,
+        help="Enable yaw PID control. Defaults to enabled only for upright resets.",
     )
     parser.add_argument(
         "--no-yaw-pid",
@@ -290,6 +290,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _yaw_pid_enabled_from_args(args: argparse.Namespace) -> bool:
+    """倒地自起 reset 默认不注入 yaw PID 指令，避免倒置 yaw 奇异点污染 actor 输入。"""
+    if args.yaw_pid is not None:
+        return bool(args.yaw_pid)
+    initial_tilt_requested = (
+        abs(float(args.initial_roll_deg)) > 1.0e-6
+        or abs(float(args.initial_pitch_deg)) > 1.0e-6
+    )
+    return bool(RobotConfig().yaw_pid.enabled and not initial_tilt_requested)
+
+
 def config_from_args(args: argparse.Namespace) -> RunConfig:
     action_delay = ActionDelayConfig(
         enabled=not bool(args.no_action_delay),
@@ -312,7 +323,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             ),
             command=tuple(float(v) for v in args.command),
             yaw_pid=YawPidConfig(
-                enabled=bool(args.yaw_pid),
+                enabled=_yaw_pid_enabled_from_args(args),
                 target_yaw_rad=math.radians(float(args.yaw_target_deg)),
                 kp=float(args.yaw_kp),
                 ki=float(args.yaw_ki),
