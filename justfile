@@ -49,16 +49,16 @@ check-code: fmt lint
 
 # CPU smoke 验证（5 轮，不上传 W&B）— 修改训练代码后必跑
 smoke:
-    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # GPU smoke 验证（5 轮，不上传 W&B）
 smoke-gpu:
-    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
 
-# 平地地形训练（需要 GPU + .env）
+# FlowMatch WHEEL 单标签训练（需要 GPU + .env）
 train:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
-    uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+    uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
 
 # 崎岖地形训练（需要 GPU + .env）
 train-rough:
@@ -68,7 +68,7 @@ train-rough:
 # CPU 调试训练（极慢，仅用于调试）
 train-cpu:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
-    uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+    uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # ---- 评估 / 回放 ----
 
@@ -76,12 +76,12 @@ train-cpu:
 
 # mjlab play 行走回放（自动选最新 checkpoint，本地 viewer）
 play:
-    uv run se3-play SE3-WheelLegged-Flat-GRU --num-envs 1
+    uv run se3-play SE3-WheelLegged-FlowMatch-Wheel-GRU --num-envs 1
 
 # mjlab play 行走回放（指定 checkpoint）
 # 用法: just play-ckpt logs/.../model_4999.pt
 play-ckpt checkpoint:
-    uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+    uv run se3-play SE3-WheelLegged-FlowMatch-Wheel-GRU --checkpoint-file {{checkpoint}} --num-envs 1
 
 # mjlab play 跳跃回放（自动选最新 checkpoint，本地 viewer）
 play-jump:

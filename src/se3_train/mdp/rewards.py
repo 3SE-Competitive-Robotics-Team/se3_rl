@@ -72,6 +72,15 @@ def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) ->
     return torch.exp(-(error**2) / sigma) * gate
 
 
+def tracking_ang_vel_l2(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """偏航角速度 L2 惩罚,抑制零 yaw 指令下的原地转向套利。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    ang_vel_z = robot.data.root_link_ang_vel_b[:, 2]
+    error = ang_vel_z - cmd[:, 1]
+    return error**2
+
+
 def tracking_orientation_l2(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     """pitch/roll 姿态 L2 惩罚，提供 Tron 风格的持续回正梯度。
 

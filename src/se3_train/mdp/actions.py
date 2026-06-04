@@ -9,7 +9,7 @@ import torch
 from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 
-from se3_shared import ActionDelayConfig, JointGroup
+from se3_shared import M3508_HEXROLL, ActionDelayConfig, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 
 if TYPE_CHECKING:
@@ -27,6 +27,8 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     wheel_actuator_names: tuple[str, ...] = ("l_wheel_Joint", "r_wheel_Joint")
     leg_scale: float = _SHARED_ROBOT.action_scale[JointGroup.LEG_ACTUATORS[0]]
     wheel_scale: float = _SHARED_ROBOT.action_scale[JointGroup.WHEEL_ACTUATORS[0]]
+    wheel_lock_damping: float | None = None
+    freeze_wheels: bool = False
     action_delay_enabled: bool = _DEFAULT_DELAY.enabled
     action_delay_s: float = _DEFAULT_DELAY.delay_s
     action_delay_randomize: bool = _DEFAULT_DELAY.randomize
@@ -114,13 +116,41 @@ class SerialLegDelayedAction(ActionTerm):
             + self._entity.data.default_joint_pos[:, self._leg_joint_ids]
         )
         leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
-        wheel_target = (
-            self._delayed_actions[:, 4:6] * float(self.cfg.wheel_scale)
-            + self._entity.data.default_joint_vel[:, self._wheel_joint_ids]
-        )
+        wheel_locked = float(self.cfg.wheel_scale) == 0.0
+        if wheel_locked:
+            wheel_target = torch.zeros_like(self._entity.data.joint_vel[:, self._wheel_joint_ids])
+        else:
+            wheel_target = (
+                self._delayed_actions[:, 4:6] * float(self.cfg.wheel_scale)
+                + self._entity.data.default_joint_vel[:, self._wheel_joint_ids]
+            )
 
         self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
         self._entity.set_joint_velocity_target(wheel_target, joint_ids=self._wheel_joint_ids)
+        if wheel_locked and self.cfg.wheel_lock_damping is not None:
+            wheel_vel = self._entity.data.joint_vel[:, self._wheel_joint_ids]
+            brake_torque = -float(self.cfg.wheel_lock_damping) * wheel_vel
+            brake_torque = torch.clamp(
+                brake_torque,
+                min=-float(M3508_HEXROLL.rated_torque),
+                max=float(M3508_HEXROLL.rated_torque),
+            )
+            self._entity.set_joint_effort_target(brake_torque, joint_ids=self._wheel_joint_ids)
+        if wheel_locked and self.cfg.freeze_wheels:
+            zeros = torch.zeros(
+                self.num_envs,
+                len(self._wheel_joint_ids),
+                device=self.device,
+                dtype=self._entity.data.joint_pos.dtype,
+            )
+            self._entity.write_joint_state_to_sim(
+                zeros,
+                zeros,
+                joint_ids=self._wheel_joint_ids,
+            )
+
+        if hasattr(self._env, "extras") and isinstance(self._env.extras.get("log"), dict):
+            self._env.extras["log"]["Action/wheel_scale"] = float(self.cfg.wheel_scale)
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)

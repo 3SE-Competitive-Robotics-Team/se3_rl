@@ -1,23 +1,26 @@
-"""速度 + 姿态指令生成器。
+"""基础指令和速度 + 姿态指令生成器。
 
 指令:(lin_vel_x, ang_vel_yaw, pitch, roll, height)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
+from mjlab.utils.lab_api.math import matrix_from_quat
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+    from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 
 @dataclass
-class VelocityHeightCommandCfg(CommandTermCfg):
-    """速度 + 姿态 + 高度指令生成器的配置。"""
+class BasicCommandCfg(CommandTermCfg):
+    """基础指令配置，提供所有任务共享的速度、姿态和高度采样参数。"""
 
     lin_vel_x_range: tuple[float, float] = (-1.5, 1.5)
     ang_vel_yaw_range: tuple[float, float] = (-3.0, 3.0)
@@ -30,23 +33,36 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     standing_ratio: float = 0.1
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
 
-    def build(self, env: ManagerBasedRlEnv) -> VelocityHeightCommandTerm:
-        return VelocityHeightCommandTerm(self, env)
+    @dataclass
+    class VizCfg:
+        """速度跟踪调试可视化参数。"""
+
+        z_offset: float = 0.25
+        scale: float = 0.8
+        command_color: tuple[float, float, float, float] = (0.2, 0.2, 0.6, 0.65)
+        actual_color: tuple[float, float, float, float] = (0.0, 0.6, 1.0, 0.75)
+        width: float = 0.015
+
+    viz: VizCfg = field(default_factory=VizCfg)
+
+    def build(self, env: ManagerBasedRlEnv) -> BasicCommandTerm:
+        return BasicCommandTerm(self, env)
 
 
-class VelocityHeightCommandTerm(CommandTerm):
-    """速度 + 姿态 + 高度的指令项。
+class BasicCommandTerm(CommandTerm):
+    """基础指令项。
 
     指令维度: [lin_vel_x, ang_vel_yaw, pitch, roll, height]
     """
 
-    cfg: VelocityHeightCommandCfg
+    cfg: BasicCommandCfg
 
-    def __init__(self, cfg: VelocityHeightCommandCfg, env: ManagerBasedRlEnv):
+    def __init__(self, cfg: BasicCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
         # 5 维指令: [lin_vel_x, ang_vel_yaw, pitch, roll, height]
         self._command = torch.zeros(self.num_envs, 5, device=self.device)
         self._standing_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._robot = env.scene["robot"]
 
     @property
     def command(self) -> torch.Tensor:
@@ -135,3 +151,58 @@ class VelocityHeightCommandTerm(CommandTerm):
     def _update_metrics(self) -> None:
         """更新指令指标。"""
         pass
+
+    def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
+        """绘制期望线速度和实际线速度箭头。"""
+        env_indices = visualizer.get_env_indices(self.num_envs)
+        if not env_indices:
+            return
+
+        commands = self.command.cpu().numpy()
+        base_pos_ws = self._robot.data.root_link_pos_w.cpu().numpy()
+        base_mat_ws = matrix_from_quat(self._robot.data.root_link_quat_w).cpu().numpy()
+        lin_vel_bs = self._robot.data.root_link_lin_vel_b.cpu().numpy()
+
+        local_offset = np.array([0.0, 0.0, self.cfg.viz.z_offset])
+        for env_idx in env_indices:
+            base_pos_w = base_pos_ws[env_idx]
+            if np.linalg.norm(base_pos_w) < 1e-6:
+                continue
+
+            base_mat_w = base_mat_ws[env_idx]
+            start = base_pos_w + base_mat_w @ local_offset
+            command_vec_b = np.array([commands[env_idx, 0], 0.0, 0.0]) * self.cfg.viz.scale
+            actual_vec_b = (
+                np.array([lin_vel_bs[env_idx, 0], lin_vel_bs[env_idx, 1], 0.0]) * self.cfg.viz.scale
+            )
+
+            if np.linalg.norm(command_vec_b) > 1e-4:
+                visualizer.add_arrow(
+                    start,
+                    start + base_mat_w @ command_vec_b,
+                    color=self.cfg.viz.command_color,
+                    width=self.cfg.viz.width,
+                    label="期望速度",
+                )
+            if np.linalg.norm(actual_vec_b) > 1e-4:
+                visualizer.add_arrow(
+                    start,
+                    start + base_mat_w @ actual_vec_b,
+                    color=self.cfg.viz.actual_color,
+                    width=self.cfg.viz.width,
+                    label="实际速度",
+                )
+
+
+@dataclass
+class VelocityHeightCommandCfg(BasicCommandCfg):
+    """速度 + 姿态 + 高度指令生成器的配置。"""
+
+    def build(self, env: ManagerBasedRlEnv) -> VelocityHeightCommandTerm:
+        return VelocityHeightCommandTerm(self, env)
+
+
+class VelocityHeightCommandTerm(BasicCommandTerm):
+    """普通速度 + 姿态 + 高度指令项。"""
+
+    cfg: VelocityHeightCommandCfg
