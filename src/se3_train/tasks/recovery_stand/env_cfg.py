@@ -23,7 +23,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """纯倒地自起到固定站立态的训练环境。"""
 
     cfg = flat_env_cfg(play=play)
-    cfg.episode_length_s = 9999.0 if play else 5.0
+    cfg.episode_length_s = 9999.0 if play else 10.0
 
     left_wheel_sensor_cfg = ContactSensorCfg(
         name="left_wheel_sensor",
@@ -111,11 +111,31 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "lin_vel_range": (-0.15, 0.15),
                 "ang_vel_range": (-0.8, 0.8),
                 "curriculum_stages": [
-                    {"iteration": 0, "pitch_flip_default_joint_prob": 0.0},
-                    {"iteration": 100, "pitch_flip_default_joint_prob": 0.15},
-                    {"iteration": 200, "pitch_flip_default_joint_prob": 0.35},
-                    {"iteration": 350, "pitch_flip_default_joint_prob": 0.60},
-                    {"iteration": 600, "pitch_flip_default_joint_prob": 1.0},
+                    {
+                        "iteration": 0,
+                        "pitch_flip_prob": 0.25,
+                        "pitch_flip_default_joint_prob": 0.0,
+                    },
+                    {
+                        "iteration": 90,
+                        "pitch_flip_prob": 0.40,
+                        "pitch_flip_default_joint_prob": 0.35,
+                    },
+                    {
+                        "iteration": 140,
+                        "pitch_flip_prob": 0.60,
+                        "pitch_flip_default_joint_prob": 0.70,
+                    },
+                    {
+                        "iteration": 220,
+                        "pitch_flip_prob": 0.80,
+                        "pitch_flip_default_joint_prob": 1.0,
+                    },
+                    {
+                        "iteration": 400,
+                        "pitch_flip_prob": 1.0,
+                        "pitch_flip_default_joint_prob": 1.0,
+                    },
                 ],
                 "use_iterations": True,
                 "steps_per_policy_iter": 64,
