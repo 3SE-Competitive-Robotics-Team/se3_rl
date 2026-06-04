@@ -223,24 +223,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "height_sensor_name": "base_height_sensor",
             },
         ),
-        "flat_base_height": RewardTermCfg(
-            func=rewards.flat_base_height_penalty_no_jump,
-            weight=-8.0,
-            params={
-                "command_name": "velocity_height",
-                "height_sensor_name": "base_height_sensor",
-                "sigma": 0.05,
-            },
-        ),
-        "flat_base_lin_vel_z": RewardTermCfg(
-            func=rewards.flat_base_lin_vel_z_no_jump,
-            weight=-1.5,
-            params={
-                "command_name": "velocity_height",
-                "low_speed_threshold": 0.10,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
         "bad_tilt": RewardTermCfg(
             func=rewards.bad_tilt,
             weight=-6.0,
@@ -307,44 +289,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "flat_wheel_ground_slip": RewardTermCfg(
-            func=rewards.flat_wheel_ground_slip_no_jump,
-            weight=-8.0,
-            params={
-                "command_name": "velocity_height",
-                "sensor_name": "wheel_sensor",
-                "wheel_radius": 0.059,
-                "contact_force_threshold": 1.0,
-                "longitudinal_scale": 0.28,
-                "lateral_scale": 0.20,
-                "max_penalty": 9.0,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
-        "flat_wheel_center_alignment": RewardTermCfg(
-            func=rewards.flat_wheel_center_alignment_no_jump,
-            weight=-3.0,
-            params={
-                "command_name": "velocity_height",
-                "contact_sensor_name": "wheel_sensor",
-                "contact_force_threshold": 1.0,
-                "low_speed_threshold": 0.10,
-                "center_lead_gain": 0.03,
-                "center_tolerance": 0.05,
-                "max_penalty": 4.0,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
-        "flat_wheel_contact": RewardTermCfg(
-            func=rewards.flat_wheel_contact_penalty_no_jump,
-            weight=-8.0,
-            params={
-                "command_name": "velocity_height",
-                "sensor_name": "wheel_sensor",
-                "idle_command_threshold": 0.08,
-                "contact_force_threshold": 1.0,
-            },
-        ),
         "upright_wheel_contact": RewardTermCfg(
             func=rewards.upright_wheel_contact_penalty,
             weight=-10.0,
@@ -363,32 +307,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "sensor_name": "leg_contact_sensor",
                 "force_threshold": 1.0,
                 "min_upright_gate": 0.35,
-            },
-        ),
-        "idle_wheel_motion": RewardTermCfg(
-            func=rewards.idle_wheel_motion_penalty_no_jump,
-            weight=-2.0,
-            params={
-                "command_name": "velocity_height",
-                "sensor_name": "wheel_sensor",
-                "wheel_radius": 0.059,
-                "idle_command_threshold": 0.08,
-                "contact_force_threshold": 1.0,
-                "base_speed_scale": 0.18,
-                "wheel_speed_scale": 0.22,
-                "max_penalty": 9.0,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
-        "flat_action_smoothness": RewardTermCfg(
-            func=rewards.action_smoothness_no_jump,
-            weight=-0.04,
-            params={
-                "command_name": "velocity_height",
-                "idle_command_threshold": 0.08,
-                "idle_scale": 1.5,
-                "moving_scale": 0.5,
-                "max_penalty": 80.0,
             },
         ),
         # 业界标准:移除显式 termination 惩罚,改用 alive reward 隐式机制
@@ -517,7 +435,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "reset_joints": EventTermCfg(
                 func=events.reset_joints,
                 mode="reset",
-                params={"asset_cfg": SceneEntityCfg("robot")},
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "align_root_height_to_wheels": True,
+                    "wheel_clearance": 0.001,
+                },
             ),
         }
         cfg.episode_length_s = 9999.0
@@ -535,7 +457,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "reset_joints": EventTermCfg(
                 func=events.reset_joints,
                 mode="reset",
-                params={"asset_cfg": SceneEntityCfg("robot")},
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "align_root_height_to_wheels": True,
+                    "wheel_clearance": 0.001,
+                },
             ),
             "friction": EventTermCfg(
                 func=events.randomize_friction,

@@ -15,14 +15,16 @@ from .fourbar import (
     policy_to_output_pos_torch,
     policy_to_output_torque_np,
     policy_to_output_torque_torch,
+    policy_to_output_vel_torch,
 )
-from .motor import DM8009P, M3508_HEXROLL, MotorSpec
+from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
     "DM8009P",
     "FOURBAR_SURROGATE_MARKER",
+    "M3508_C620_14",
     "M3508_HEXROLL",
     "ActionDelayConfig",
     "Joint",
@@ -41,4 +43,5 @@ __all__ = [
     "policy_to_output_pos_torch",
     "policy_to_output_torque_np",
     "policy_to_output_torque_torch",
+    "policy_to_output_vel_torch",
 ]

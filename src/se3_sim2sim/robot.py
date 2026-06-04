@@ -17,7 +17,7 @@ from se3_shared import (
     policy_to_output_torque_np,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_shared.motor import DM8009P, M3508_HEXROLL
+from se3_shared.motor import DM8009P, M3508_C620_14
 
 from .config import RobotConfig
 from .diagnostics import model_diagnostics
@@ -593,7 +593,7 @@ class WheelLeggedRobot:
             act.biastype = mujoco.mjtBias.mjBIAS_NONE
             act.gainprm[0] = 1.0
             act.forcelimited = True
-            act.forcerange[:] = np.array([-M3508_HEXROLL.rated_torque, M3508_HEXROLL.rated_torque])
+            act.forcerange[:] = np.array([-M3508_C620_14.rated_torque, M3508_C620_14.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
@@ -622,7 +622,7 @@ class WheelLeggedRobot:
 
         与训练端 DcMotorActuatorCfg 行为一致：
         - 腿部: torque = kp*(pos_target - pos) + kd*(0 - vel), clamp by DM8009P T-N
-        - 轮子: torque = kd*(vel_target - vel), clamp by M3508_HEXROLL T-N
+        - 轮子: torque = kd*(vel_target - vel), clamp by M3508_C620_14 T-N
         """
         action = np.asarray(action, dtype=np.float64)
 
@@ -672,9 +672,9 @@ class WheelLeggedRobot:
         wheel_torque = _tn_clip(
             wheel_torque,
             wheel_vel,
-            M3508_HEXROLL.stall_torque,
-            M3508_HEXROLL.no_load_speed,
-            M3508_HEXROLL.rated_torque,
+            M3508_C620_14.stall_torque,
+            M3508_C620_14.no_load_speed,
+            M3508_C620_14.rated_torque,
         )
 
         # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。

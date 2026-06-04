@@ -6,9 +6,14 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared import output_to_policy_pos_torch, output_to_policy_vel_torch
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
-from se3_train.mdp.joint_indices import policy_leg_joint_ids, wheel_joint_ids
+from se3_train.mdp.joint_indices import (
+    is_fourbar_surrogate_model,
+    policy_leg_joint_ids,
+    wheel_joint_ids,
+)
 from se3_train.mdp.leg_alignment import wheel_alignment_ok
 
 if TYPE_CHECKING:
@@ -23,6 +28,19 @@ def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf >= env.max_episode_length
+
+
+def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回 policy 主动杆语义下的腿部位置、默认位置和速度。"""
+    leg_ids = policy_leg_joint_ids(robot)
+    leg_pos = robot.data.joint_pos[:, leg_ids]
+    leg_default = robot.data.default_joint_pos[:, leg_ids]
+    leg_vel = robot.data.joint_vel[:, leg_ids]
+    if is_fourbar_surrogate_model(robot):
+        leg_pos = output_to_policy_pos_torch(leg_pos)
+        leg_default = output_to_policy_pos_torch(leg_default)
+        leg_vel = output_to_policy_vel_torch(robot.data.joint_pos[:, leg_ids], leg_vel)
+    return leg_pos, leg_default, leg_vel
 
 
 class BadOrientationDelayed:
@@ -193,10 +211,7 @@ def catastrophic_state(
         & torch.isfinite(projected_gravity).all(dim=1)
     )
 
-    leg_ids = policy_leg_joint_ids(robot)
-    leg_pos = joint_pos[:, leg_ids]
-    leg_default = robot.data.default_joint_pos[:, leg_ids]
-    leg_vel = joint_vel[:, leg_ids]
+    leg_pos, leg_default, leg_vel = _policy_leg_state_and_default(robot)
     base_height = root_pos[:, 2] - env.scene.env_origins[:, 2]
 
     leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)

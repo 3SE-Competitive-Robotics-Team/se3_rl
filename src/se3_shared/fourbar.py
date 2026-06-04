@@ -21,6 +21,12 @@ _CALF_LEN = math.hypot(_CALF_X, _CALF_Z)
 _CALF_ZERO_ANGLE = math.atan2(_CALF_Z, _CALF_X)
 _ACTIVE_LOWER = 0.0
 _ACTIVE_UPPER = 1.469449651507
+_LUT_SIZE = 8192
+_TORCH_LUT_CACHE: dict[
+    tuple[str, torch.dtype],
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+] = {}
+_NP_LUT_CACHE: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
 
 
 def is_fourbar_surrogate_name_set(site_names: tuple[str, ...]) -> bool:
@@ -30,6 +36,14 @@ def is_fourbar_surrogate_name_set(site_names: tuple[str, ...]) -> bool:
 
 def output_knee_from_active_angle_torch(active_angle: torch.Tensor) -> torch.Tensor:
     """由主动杆夹角计算左腿输出膝关节角。"""
+    alpha_grid, knee_grid, _, _, _ = _fourbar_lut(active_angle.device, active_angle.dtype)
+    return _interp_lut(active_angle, alpha_grid, knee_grid)
+
+
+def _output_knee_from_active_angle_analytic_torch(
+    active_angle: torch.Tensor,
+) -> torch.Tensor:
+    """解析计算左腿输出膝关节角，作为 LUT 构建和精度校验的真值。"""
     alpha = active_angle.clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
     beta = -alpha
     cos_b = torch.cos(beta)
@@ -49,7 +63,8 @@ def output_knee_from_active_angle_torch(active_angle: torch.Tensor) -> torch.Ten
     cz = _KNEE_Z + along * ez + height * ex
 
     phi = torch.atan2(cz - _KNEE_Z, cx - _KNEE_X)
-    return _wrap_angle_torch(torch.as_tensor(_CALF_ZERO_ANGLE, device=phi.device) - phi)
+    zero = torch.as_tensor(_CALF_ZERO_ANGLE, device=phi.device, dtype=phi.dtype)
+    return _wrap_angle_torch(zero - phi)
 
 
 def policy_to_output_pos_torch(policy_pos: torch.Tensor) -> torch.Tensor:
@@ -86,36 +101,33 @@ def output_to_policy_vel_torch(output_pos: torch.Tensor, output_vel: torch.Tenso
     return out
 
 
+def policy_to_output_vel_torch(policy_pos: torch.Tensor, policy_vel: torch.Tensor) -> torch.Tensor:
+    """把虚拟主动杆速度映射为开树输出关节速度。"""
+    out = policy_vel.clone()
+    left_alpha = (policy_pos[:, 0] - policy_pos[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = (policy_pos[:, 3] - policy_pos[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    left_j = output_knee_jacobian_torch(left_alpha, right_side=False)
+    right_j = output_knee_jacobian_torch(right_alpha, right_side=True)
+    out[:, 1] = left_j * (policy_vel[:, 0] - policy_vel[:, 1])
+    out[:, 3] = right_j * (policy_vel[:, 3] - policy_vel[:, 2])
+    return out
+
+
 def active_angle_from_output_knee_torch(
     output_knee: torch.Tensor,
     *,
     right_side: bool,
 ) -> torch.Tensor:
-    """用二分法把输出膝角反解为主动杆夹角。"""
+    """用 LUT 把输出膝角反解为主动杆夹角。"""
     target = -output_knee if right_side else output_knee
-    low = torch.zeros_like(target) + _ACTIVE_LOWER
-    high = torch.zeros_like(target) + _ACTIVE_UPPER
-    target = target.clamp(
-        output_knee_from_active_angle_torch(high).min(),
-        output_knee_from_active_angle_torch(low).max(),
-    )
-    for _ in range(16):
-        mid = (low + high) * 0.5
-        value = output_knee_from_active_angle_torch(mid)
-        go_high = value > target
-        low = torch.where(go_high, mid, low)
-        high = torch.where(go_high, high, mid)
-    return (low + high) * 0.5
+    _, _, inverse_knee_grid, inverse_alpha_grid, _ = _fourbar_lut(target.device, target.dtype)
+    return _interp_lut(target, inverse_knee_grid, inverse_alpha_grid)
 
 
 def output_knee_jacobian_torch(active_angle: torch.Tensor, *, right_side: bool) -> torch.Tensor:
     """计算输出膝角对主动杆夹角的数值雅可比。"""
-    eps = 1.0e-3
-    lo = (active_angle - eps).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
-    hi = (active_angle + eps).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
-    value = (output_knee_from_active_angle_torch(hi) - output_knee_from_active_angle_torch(lo)) / (
-        hi - lo
-    ).clamp_min(1.0e-6)
+    alpha_grid, _, _, _, jacobian_grid = _fourbar_lut(active_angle.device, active_angle.dtype)
+    value = _interp_lut(active_angle, alpha_grid, jacobian_grid)
     return -value if right_side else value
 
 
@@ -137,43 +149,51 @@ def policy_to_output_torque_torch(
 
 def policy_to_output_pos_np(policy_pos: np.ndarray) -> np.ndarray:
     """NumPy 版本：把 policy 主动杆语义映射为开树输出关节。"""
-    out = np.asarray(policy_pos, dtype=np.float64).copy()
-    left_alpha = np.clip(out[0] - out[1], _ACTIVE_LOWER, _ACTIVE_UPPER)
-    right_alpha = np.clip(out[3] - out[2], _ACTIVE_LOWER, _ACTIVE_UPPER)
-    out[1] = output_knee_from_active_angle_np(left_alpha)
-    out[3] = -output_knee_from_active_angle_np(right_alpha)
-    return out
+    arr = np.asarray(policy_pos, dtype=np.float64)
+    original_shape = arr.shape
+    out = arr.reshape(-1, 4).copy()
+    left_alpha = np.clip(out[:, 0] - out[:, 1], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = np.clip(out[:, 3] - out[:, 2], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    out[:, 1] = output_knee_from_active_angle_np_array(left_alpha)
+    out[:, 3] = -output_knee_from_active_angle_np_array(right_alpha)
+    return out.reshape(original_shape)
 
 
 def output_knee_from_active_angle_np(active_angle: float) -> float:
     """NumPy 版本：由主动杆夹角计算左腿输出膝关节角。"""
+    alpha_grid, knee_grid, _, _, _ = _fourbar_lut_np()
     alpha = float(np.clip(active_angle, _ACTIVE_LOWER, _ACTIVE_UPPER))
+    return float(np.interp(alpha, alpha_grid, knee_grid))
+
+
+def _output_knee_from_active_angle_analytic_np_array(active_angle: np.ndarray) -> np.ndarray:
+    """解析计算左腿输出膝角，作为 NumPy LUT 构建真值。"""
+    alpha = np.clip(np.asarray(active_angle, dtype=np.float64), _ACTIVE_LOWER, _ACTIVE_UPPER)
     beta = -alpha
-    cos_b = math.cos(beta)
-    sin_b = math.sin(beta)
+    cos_b = np.cos(beta)
+    sin_b = np.sin(beta)
     px = cos_b * _DRIVE_X + sin_b * _DRIVE_Z
     pz = -sin_b * _DRIVE_X + cos_b * _DRIVE_Z
 
     dx = px - _KNEE_X
     dz = pz - _KNEE_Z
-    dist = math.sqrt(max(dx * dx + dz * dz, 1.0e-12))
+    dist = np.sqrt(np.maximum(dx * dx + dz * dz, 1.0e-12))
     ex = dx / dist
     ez = dz / dist
 
     along = (_CALF_LEN**2 - _COUPLER_LEN**2 + dist * dist) / (2.0 * dist)
-    height = math.sqrt(max(_CALF_LEN**2 - along * along, 0.0))
+    height = np.sqrt(np.maximum(_CALF_LEN**2 - along * along, 0.0))
     cx = _KNEE_X + along * ex - height * ez
     cz = _KNEE_Z + along * ez + height * ex
 
-    phi = math.atan2(cz - _KNEE_Z, cx - _KNEE_X)
-    return _wrap_angle_np(_CALF_ZERO_ANGLE - phi)
+    phi = np.arctan2(cz - _KNEE_Z, cx - _KNEE_X)
+    return _wrap_angle_np_array(_CALF_ZERO_ANGLE - phi)
 
 
 def output_knee_from_active_angle_np_array(active_angle: np.ndarray) -> np.ndarray:
     """NumPy 向量版本：由主动杆夹角计算左腿输出膝关节角。"""
-    return np.vectorize(output_knee_from_active_angle_np, otypes=[np.float64])(
-        np.asarray(active_angle, dtype=np.float64)
-    )
+    alpha_grid, knee_grid, _, _, _ = _fourbar_lut_np()
+    return _interp_lut_np(np.asarray(active_angle, dtype=np.float64), alpha_grid, knee_grid)
 
 
 def active_angle_from_output_knee_np(
@@ -181,23 +201,11 @@ def active_angle_from_output_knee_np(
     *,
     right_side: bool,
 ) -> np.ndarray:
-    """NumPy 版本：用二分法把输出膝角反解为主动杆夹角。"""
+    """NumPy 版本：用 LUT 把输出膝角反解为主动杆夹角。"""
     target = np.asarray(output_knee, dtype=np.float64)
     target = -target if right_side else target
-    low = np.zeros_like(target) + _ACTIVE_LOWER
-    high = np.zeros_like(target) + _ACTIVE_UPPER
-    target = np.clip(
-        target,
-        output_knee_from_active_angle_np_array(high).min(),
-        output_knee_from_active_angle_np_array(low).max(),
-    )
-    for _ in range(16):
-        mid = (low + high) * 0.5
-        value = output_knee_from_active_angle_np_array(mid)
-        go_high = value > target
-        low = np.where(go_high, mid, low)
-        high = np.where(go_high, high, mid)
-    return (low + high) * 0.5
+    _, _, inverse_knee_grid, inverse_alpha_grid, _ = _fourbar_lut_np()
+    return _interp_lut_np(target, inverse_knee_grid, inverse_alpha_grid)
 
 
 def output_to_policy_pos_np(output_pos: np.ndarray) -> np.ndarray:
@@ -214,13 +222,8 @@ def output_to_policy_pos_np(output_pos: np.ndarray) -> np.ndarray:
 
 def output_knee_jacobian_np(active_angle: np.ndarray, *, right_side: bool) -> np.ndarray:
     """NumPy 版本：计算输出膝角对主动杆夹角的数值雅可比。"""
-    eps = 1.0e-3
-    angle = np.asarray(active_angle, dtype=np.float64)
-    lo = np.clip(angle - eps, _ACTIVE_LOWER, _ACTIVE_UPPER)
-    hi = np.clip(angle + eps, _ACTIVE_LOWER, _ACTIVE_UPPER)
-    value = (
-        output_knee_from_active_angle_np_array(hi) - output_knee_from_active_angle_np_array(lo)
-    ) / np.maximum(hi - lo, 1.0e-6)
+    alpha_grid, _, _, _, jacobian_grid = _fourbar_lut_np()
+    value = _interp_lut_np(np.asarray(active_angle, dtype=np.float64), alpha_grid, jacobian_grid)
     return -value if right_side else value
 
 
@@ -259,6 +262,118 @@ def policy_to_output_torque_np(policy_pos: np.ndarray, policy_torque: np.ndarray
     return out.reshape(original_shape)
 
 
+def _fourbar_lut(
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回当前 device/dtype 上的四连杆转换查表。"""
+    device_key = str(torch.device(device))
+    cache_key = (device_key, dtype)
+    cached = _TORCH_LUT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    alpha_grid = torch.linspace(
+        _ACTIVE_LOWER,
+        _ACTIVE_UPPER,
+        _LUT_SIZE,
+        device=device,
+        dtype=dtype,
+    )
+    knee_grid = _output_knee_from_active_angle_analytic_torch(alpha_grid)
+    inverse_knee_grid, inverse_alpha_grid = _inverse_lut_grids(knee_grid, alpha_grid)
+
+    eps = torch.as_tensor(1.0e-3, device=device, dtype=dtype)
+    lo = (alpha_grid - eps).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    hi = (alpha_grid + eps).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    jacobian_grid = (
+        _output_knee_from_active_angle_analytic_torch(hi)
+        - _output_knee_from_active_angle_analytic_torch(lo)
+    ) / (hi - lo).clamp_min(1.0e-6)
+
+    cached = (alpha_grid, knee_grid, inverse_knee_grid, inverse_alpha_grid, jacobian_grid)
+    _TORCH_LUT_CACHE[cache_key] = cached
+    return cached
+
+
+def _inverse_lut_grids(
+    knee_grid: torch.Tensor,
+    alpha_grid: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """把单调膝角表整理成 searchsorted 需要的升序表。"""
+    increasing = bool(torch.all(knee_grid[1:] >= knee_grid[:-1]).item())
+    decreasing = bool(torch.all(knee_grid[1:] <= knee_grid[:-1]).item())
+    if increasing:
+        return knee_grid, alpha_grid
+    if decreasing:
+        return torch.flip(knee_grid, dims=(0,)), torch.flip(alpha_grid, dims=(0,))
+    raise RuntimeError("四连杆 LUT 的输出膝角表不是单调序列")
+
+
+def _interp_lut(
+    query: torch.Tensor,
+    x_grid: torch.Tensor,
+    y_grid: torch.Tensor,
+) -> torch.Tensor:
+    """在一维升序 LUT 上做线性插值。"""
+    q = query.clamp(x_grid[0], x_grid[-1])
+    idx_hi = torch.searchsorted(x_grid, q.contiguous()).clamp(1, x_grid.numel() - 1)
+    idx_lo = idx_hi - 1
+    x0 = x_grid[idx_lo]
+    x1 = x_grid[idx_hi]
+    y0 = y_grid[idx_lo]
+    y1 = y_grid[idx_hi]
+    weight = (q - x0) / (x1 - x0).clamp_min(torch.finfo(x_grid.dtype).eps)
+    return y0 + weight * (y1 - y0)
+
+
+def _fourbar_lut_np() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """返回 NumPy 侧共享的四连杆转换查表。"""
+    global _NP_LUT_CACHE
+
+    if _NP_LUT_CACHE is not None:
+        return _NP_LUT_CACHE
+
+    alpha_grid = np.linspace(_ACTIVE_LOWER, _ACTIVE_UPPER, _LUT_SIZE, dtype=np.float64)
+    knee_grid = _output_knee_from_active_angle_analytic_np_array(alpha_grid)
+    inverse_knee_grid, inverse_alpha_grid = _inverse_lut_grids_np(knee_grid, alpha_grid)
+
+    eps = 1.0e-3
+    lo = np.clip(alpha_grid - eps, _ACTIVE_LOWER, _ACTIVE_UPPER)
+    hi = np.clip(alpha_grid + eps, _ACTIVE_LOWER, _ACTIVE_UPPER)
+    jacobian_grid = (
+        _output_knee_from_active_angle_analytic_np_array(hi)
+        - _output_knee_from_active_angle_analytic_np_array(lo)
+    ) / np.maximum(hi - lo, 1.0e-6)
+
+    _NP_LUT_CACHE = (alpha_grid, knee_grid, inverse_knee_grid, inverse_alpha_grid, jacobian_grid)
+    return _NP_LUT_CACHE
+
+
+def _inverse_lut_grids_np(
+    knee_grid: np.ndarray,
+    alpha_grid: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """把 NumPy 单调膝角表整理成升序插值表。"""
+    increasing = bool(np.all(knee_grid[1:] >= knee_grid[:-1]))
+    decreasing = bool(np.all(knee_grid[1:] <= knee_grid[:-1]))
+    if increasing:
+        return knee_grid, alpha_grid
+    if decreasing:
+        return np.flip(knee_grid), np.flip(alpha_grid)
+    raise RuntimeError("四连杆 NumPy LUT 的输出膝角表不是单调序列")
+
+
+def _interp_lut_np(
+    query: np.ndarray,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+) -> np.ndarray:
+    """在 NumPy 一维升序 LUT 上做线性插值。"""
+    q = np.clip(query, x_grid[0], x_grid[-1])
+    return np.interp(q, x_grid, y_grid)
+
+
 def _wrap_angle_torch(angle: torch.Tensor) -> torch.Tensor:
     return torch.remainder(angle + math.pi, 2.0 * math.pi) - math.pi
 
@@ -275,3 +390,7 @@ def _safe_denominator_np(value: np.ndarray) -> np.ndarray:
 
 def _wrap_angle_np(angle: float) -> float:
     return float((angle + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+def _wrap_angle_np_array(angle: np.ndarray) -> np.ndarray:
+    return np.remainder(angle + math.pi, 2.0 * math.pi) - math.pi

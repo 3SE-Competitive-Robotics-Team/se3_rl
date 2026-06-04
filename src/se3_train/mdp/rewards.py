@@ -13,7 +13,7 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_shared import output_to_policy_pos_torch
+from se3_shared import output_to_policy_pos_torch, output_to_policy_vel_torch
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
@@ -21,7 +21,6 @@ from se3_train.mdp.joint_indices import (
     is_closedchain_model,
     is_fourbar_surrogate_model,
     leg_actuator_ids,
-    output_leg_mirror_diffs,
     policy_leg_joint_ids,
     wheel_actuator_ids,
     wheel_joint_ids,
@@ -58,6 +57,78 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
     if mask.any():
         return values[mask].float().mean().item()
     return 0.0
+
+
+def _policy_leg_pos_and_default(robot) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回 policy 主动杆语义下的腿部当前位置和默认位置。"""
+    leg_ids = policy_leg_joint_ids(robot)
+    joint_pos = robot.data.joint_pos[:, leg_ids]
+    default_pos = robot.data.default_joint_pos[:, leg_ids]
+    if is_fourbar_surrogate_model(robot):
+        joint_pos = output_to_policy_pos_torch(joint_pos)
+        default_pos = output_to_policy_pos_torch(default_pos)
+    return joint_pos, default_pos
+
+
+def _policy_leg_vel(robot) -> torch.Tensor:
+    """返回 policy 主动杆语义下的腿部速度。"""
+    leg_ids = policy_leg_joint_ids(robot)
+    joint_vel = robot.data.joint_vel[:, leg_ids]
+    if is_fourbar_surrogate_model(robot):
+        joint_vel = output_to_policy_vel_torch(robot.data.joint_pos[:, leg_ids], joint_vel)
+    return joint_vel
+
+
+def _policy_leg_torque_and_vel(
+    env: ManagerBasedRlEnv,
+    robot,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回 policy 主动杆语义下的腿部电机力矩和速度。"""
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is not None:
+        for term_name in action_manager.active_terms:
+            term = action_manager.get_term(term_name)
+            if getattr(term, "_entity", None) is not robot:
+                continue
+            torque = getattr(term, "policy_leg_torque", None)
+            vel = getattr(term, "policy_leg_vel", None)
+            if isinstance(torque, torch.Tensor) and isinstance(vel, torch.Tensor):
+                return torque, vel
+
+    if is_fourbar_surrogate_model(robot):
+        raise RuntimeError("fourbar reward 缺少主动杆力矩缓存，请检查 action term")
+    return robot.data.actuator_force[:, leg_actuator_ids(robot)], _policy_leg_vel(robot)
+
+
+def _policy_leg_acc(
+    env: ManagerBasedRlEnv,
+    robot,
+) -> torch.Tensor:
+    """返回 policy 主动杆语义下的腿部加速度。"""
+    if not is_fourbar_surrogate_model(robot):
+        return robot.data.joint_acc[:, policy_leg_joint_ids(robot)]
+
+    vel = _policy_leg_vel(robot)
+    prev = getattr(env, "_reward_policy_leg_vel_prev", None)
+    if not isinstance(prev, torch.Tensor) or prev.shape != vel.shape:
+        env._reward_policy_leg_vel_prev = vel.detach().clone()
+        return torch.zeros_like(vel)
+
+    dt = max(float(env.step_dt), 1.0e-6)
+    acc = (vel - prev) / dt
+    first_step = env.episode_length_buf <= 1
+    if first_step.any():
+        acc[first_step] = 0.0
+    prev[:] = vel.detach()
+    return acc
+
+
+def _policy_leg_mirror_diffs(robot) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回 policy 主动杆语义下的左右腿镜像误差。"""
+    joint_pos, _ = _policy_leg_pos_and_default(robot)
+    if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot):
+        return joint_pos[:, 0] + joint_pos[:, 2], joint_pos[:, 1] + joint_pos[:, 3]
+    return joint_pos[:, 0] - joint_pos[:, 2], joint_pos[:, 1] - joint_pos[:, 3]
 
 
 def _recovery_hard_tilt_mask(
@@ -414,9 +485,9 @@ def leg_torques(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     recovery_scale: float | None = None,
 ) -> torch.Tensor:
-    """腿部电机力矩平方和，按 actuator 名称排除气弹簧。"""
+    """腿部主动杆电机力矩平方和。"""
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force[:, leg_actuator_ids(robot)]
+    torques, _ = _policy_leg_torque_and_vel(env, robot)
     penalty = torch.sum(torques**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -441,10 +512,10 @@ def wheel_torques(
 def leg_dof_acc(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """腿部关节加速度平方和(排除轮子)。"""
+    """腿部主动杆加速度平方和(排除轮子)。"""
     robot = env.scene[asset_cfg.name]
-    acc = robot.data.joint_acc
-    return torch.sum(acc[:, policy_leg_joint_ids(robot)] ** 2, dim=1)
+    acc = _policy_leg_acc(env, robot)
+    return torch.sum(acc**2, dim=1)
 
 
 def leg_power(
@@ -452,10 +523,9 @@ def leg_power(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     recovery_scale: float | None = None,
 ) -> torch.Tensor:
-    """腿部关节 |力矩 * 速度| 之和。"""
+    """腿部主动杆电机 |力矩 * 速度| 之和。"""
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force[:, leg_actuator_ids(robot)]
-    vel = robot.data.joint_vel[:, policy_leg_joint_ids(robot)]
+    torques, vel = _policy_leg_torque_and_vel(env, robot)
     penalty = torch.sum(torch.abs(torques * vel), dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -490,8 +560,8 @@ def stand_still(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    leg_ids = policy_leg_joint_ids(robot)
-    diff = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    diff = joint_pos - default_pos
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
@@ -1272,12 +1342,7 @@ def recovery_stand_default_joint_pos(
     pg_z = robot.data.projected_gravity_b[:, 2]
     near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
 
-    leg_ids = policy_leg_joint_ids(robot)
-    joint_pos = robot.data.joint_pos[:, leg_ids]
-    default_pos = robot.data.default_joint_pos[:, leg_ids]
-    if is_fourbar_surrogate_model(robot):
-        joint_pos = output_to_policy_pos_torch(joint_pos)
-        default_pos = output_to_policy_pos_torch(default_pos)
+    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
     joint_error = joint_pos - default_pos
     penalty = torch.mean(joint_error**2, dim=1)
     result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
@@ -1311,7 +1376,7 @@ def recovery_stand_joint_mirror(
     pg_z = robot.data.projected_gravity_b[:, 2]
     near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
 
-    hip_diff, knee_diff = output_leg_mirror_diffs(robot, robot.data.joint_pos)
+    hip_diff, knee_diff = _policy_leg_mirror_diffs(robot)
     penalty = float(hip_weight) * hip_diff**2 + float(knee_weight) * knee_diff**2
     normalizer = max(float(hip_weight) + float(knee_weight), 1.0e-6)
     penalty = penalty / normalizer
@@ -1434,7 +1499,7 @@ def joint_mirror(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    hip_diff, knee_diff = output_leg_mirror_diffs(robot, robot.data.joint_pos)
+    hip_diff, knee_diff = _policy_leg_mirror_diffs(robot)
     diff = torch.stack((hip_diff, knee_diff), dim=1)
     num_pairs = 2
     return torch.sum(diff**2, dim=1) / num_pairs * gate
@@ -1531,6 +1596,17 @@ def dof_pos_limits(
                 front_coef * robot.data.joint_pos[:, front_id]
                 + back_coef * robot.data.joint_pos[:, back_id]
             )
+            penalties.append(-(angle - float(lower)).clip(max=0.0))
+            penalties.append((angle - float(upper)).clip(min=0.0))
+        return torch.stack(penalties, dim=1).sum(dim=1)
+
+    if is_fourbar_surrogate_model(robot):
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        pos = output_to_policy_pos_torch(robot.data.joint_pos[:, policy_leg_joint_ids(robot)])
+        penalties = []
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+            angle = front_coef * pos[:, front_idx] + back_coef * pos[:, back_idx]
             penalties.append(-(angle - float(lower)).clip(max=0.0))
             penalties.append((angle - float(upper)).clip(min=0.0))
         return torch.stack(penalties, dim=1).sum(dim=1)

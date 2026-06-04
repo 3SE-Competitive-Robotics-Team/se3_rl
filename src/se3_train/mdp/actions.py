@@ -18,7 +18,11 @@ from se3_shared import (
     policy_to_output_torque_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_train.mdp.joint_indices import is_closedchain_model, is_fourbar_surrogate_model
+from se3_train.mdp.joint_indices import (
+    is_closedchain_model,
+    is_fourbar_surrogate_model,
+    leg_actuator_ids,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -88,6 +92,15 @@ class SerialLegDelayedAction(ActionTerm):
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
         self._closedchain = is_closedchain_model(self._entity)
         self._fourbar_surrogate = is_fourbar_surrogate_model(self._entity)
+        self._leg_actuator_ids = (
+            None
+            if self._fourbar_surrogate
+            else torch.tensor(
+                leg_actuator_ids(self._entity),
+                device=self.device,
+                dtype=torch.long,
+            )
+        )
         self._active_rod_angle_limits = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_limits,
             device=self.device,
@@ -100,6 +113,8 @@ class SerialLegDelayedAction(ActionTerm):
 
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
         self._delayed_actions = torch.zeros_like(self._raw_actions)
+        self._policy_leg_torque = torch.zeros(self.num_envs, 4, device=self.device)
+        self._policy_leg_vel = torch.zeros_like(self._policy_leg_torque)
         self._env_indices = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
         self._leg_kp = torch.full(
             (self.num_envs, 4),
@@ -137,6 +152,14 @@ class SerialLegDelayedAction(ActionTerm):
         return self._delayed_actions
 
     @property
+    def policy_leg_torque(self) -> torch.Tensor:
+        return self._policy_leg_torque
+
+    @property
+    def policy_leg_vel(self) -> torch.Tensor:
+        return self._policy_leg_vel
+
+    @property
     def delay_steps(self) -> torch.Tensor:
         return self._delay_steps
 
@@ -160,6 +183,8 @@ class SerialLegDelayedAction(ActionTerm):
             policy_torque = self._leg_kp * (policy_target - policy_pos)
             policy_torque -= self._leg_kd * policy_vel
             policy_torque = self._clip_active_motor_torque(policy_torque, policy_vel)
+            self._policy_leg_torque[:] = policy_torque
+            self._policy_leg_vel[:] = policy_vel
             leg_torque = policy_to_output_torque_torch(policy_pos, policy_torque)
             self._entity.set_joint_effort_target(leg_torque, joint_ids=self._leg_joint_ids)
         else:
@@ -170,6 +195,10 @@ class SerialLegDelayedAction(ActionTerm):
             leg_target = self._clamp_active_rod_angles(leg_target)
             leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
             self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
+            if self._leg_actuator_ids is None:
+                raise RuntimeError("非 fourbar 模型缺少腿部 actuator 索引")
+            self._policy_leg_torque[:] = self._entity.data.actuator_force[:, self._leg_actuator_ids]
+            self._policy_leg_vel[:] = self._entity.data.joint_vel[:, self._leg_joint_ids]
         wheel_target = (
             self._delayed_actions[:, 4:6] * float(self.cfg.wheel_scale)
             + self._entity.data.default_joint_vel[:, self._wheel_joint_ids]
@@ -244,6 +273,8 @@ class SerialLegDelayedAction(ActionTerm):
         resolved_env_ids = self._resolve_env_ids(env_ids)
         self._raw_actions[resolved_env_ids] = 0.0
         self._delayed_actions[resolved_env_ids] = 0.0
+        self._policy_leg_torque[resolved_env_ids] = 0.0
+        self._policy_leg_vel[resolved_env_ids] = 0.0
         self._action_fifo[:, resolved_env_ids] = 0.0
         self._resample_delay(resolved_env_ids)
 

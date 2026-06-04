@@ -262,7 +262,7 @@ LF/RF：lf0_Joint/rf0_Joint 主动前杆
 LB/RB：l_drive_bar_Joint/r_drive_bar_Joint 主动后驱动杆
 lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 action
 腿部：action × (0.35, 0.25, 0.35, 0.25) + default_dof_pos
-轮子：action × 20.0 rad/s
+轮子：action × 45.0 rad/s
 ```
 
 当前无气弹簧默认姿态使用 base 高度约 0.22 m 的中等腿长分支：`default_dof_pos=(-0.275422946189, -1.592100148957, 0.275422946189, 1.592100148957, 0, 0)`，`default_output_knee_pos=(-1.242259649307, 1.242259649307)`，`default_coupler_pos=(1.40126634, -1.40126941)`，`default_base_height=0.22`。该点用于 reset 几何和质心投影对齐；两轮倒立平衡仍依赖策略的轮子反馈，不应把零 action 开环自稳当成验收条件。

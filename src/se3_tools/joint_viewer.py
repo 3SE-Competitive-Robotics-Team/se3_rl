@@ -13,7 +13,7 @@ from pathlib import Path
 import mujoco
 import mujoco.viewer
 
-from se3_shared import JointGroup, RobotConfig
+from se3_shared import M3508_C620_14, JointGroup, RobotConfig
 
 MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
 OPENCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
@@ -45,7 +45,10 @@ OPENCHAIN_LEG_CTRL_RANGES = {
     "rf1_Joint": (-0.6, 0.8),
 }
 
-WHEEL_VEL_CTRL_RANGES = {name: (-30.0, 30.0) for name in JointGroup.WHEEL_NAMES}
+WHEEL_VIEWER_VEL_LIMIT = _ROBOT_CFG.action_scale[JointGroup.WHEEL_ACTUATORS[0]]
+WHEEL_VEL_CTRL_RANGES = {
+    name: (-WHEEL_VIEWER_VEL_LIMIT, WHEEL_VIEWER_VEL_LIMIT) for name in JointGroup.WHEEL_NAMES
+}
 
 
 def _filter_geom_view(xml: str, geom_view: str) -> str:
@@ -113,7 +116,8 @@ def _viewer_actuator_inner_lines(xml: str, *, position_kp: float = VIEWER_POSITI
     for joint_name, (ctrl_min, ctrl_max) in WHEEL_VEL_CTRL_RANGES.items():
         lines.append(
             f'    <velocity name="{joint_name}_viewer_vel" joint="{joint_name}" '
-            f'kv="0.5" ctrlrange="{ctrl_min} {ctrl_max}" forcerange="-2 2" />'
+            f'kv="0.5" ctrlrange="{ctrl_min} {ctrl_max}" '
+            f'forcerange="{-M3508_C620_14.rated_torque:g} {M3508_C620_14.rated_torque:g}" />'
         )
     return lines
 
@@ -165,6 +169,24 @@ def _set_floor_contact(xml: str, *, enabled: bool) -> str:
     return "".join(lines)
 
 
+def _set_named_joint_damping(
+    xml: str,
+    joint_names: tuple[str, ...],
+    damping: float,
+) -> str:
+    """为指定关节覆盖阻尼，避免 viewer 的稳定阻尼把轮子刹停。"""
+    root = ET.fromstring(xml)
+    targets = set(joint_names)
+    changed = False
+    for joint in root.iter("joint"):
+        if joint.get("name") in targets:
+            joint.set("damping", f"{float(damping):g}")
+            changed = True
+    if not changed:
+        return xml
+    return ET.tostring(root, encoding="unicode")
+
+
 def _create_fixed_base_mjcf(
     source_path: str | Path,
     *,
@@ -187,6 +209,7 @@ def _create_fixed_base_mjcf(
 
     xml = xml.replace('damping="0" />', f'damping="{viewer_joint_damping}" />')
     xml = xml.replace('damping="0"', f'damping="{viewer_joint_damping}"')
+    xml = _set_named_joint_damping(xml, JointGroup.WHEEL_NAMES, 0.0)
 
     xml = xml.replace(
         '<body name="base_link" pos="0 0 0.301">',

@@ -115,8 +115,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "bad_tilt",
         "flat_base_height",
         "flat_base_lin_vel_z",
+        "flat_action_smoothness",
+        "flat_wheel_contact",
         "flat_wheel_ground_slip",
         "flat_wheel_center_alignment",
+        "idle_wheel_motion",
         "is_alive",
     ):
         cfg.rewards.pop(reward_name, None)

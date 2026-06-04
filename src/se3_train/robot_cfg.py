@@ -5,7 +5,7 @@ import mujoco
 from mjlab.actuator import DcMotorActuatorCfg, IdealPdActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
-from se3_shared import DM8009P, M3508_HEXROLL, JointGroup
+from se3_shared import DM8009P, M3508_C620_14, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
@@ -89,9 +89,9 @@ def get_serialleg_cfg() -> EntityCfg:
                     target_names_expr=_WHEEL_JOINT_NAMES,
                     stiffness=0.0,
                     damping=_ROBOT_CFG.wheel_kd,
-                    saturation_effort=M3508_HEXROLL.stall_torque,
-                    velocity_limit=M3508_HEXROLL.no_load_speed,
-                    effort_limit=M3508_HEXROLL.rated_torque,
+                    saturation_effort=M3508_C620_14.stall_torque,
+                    velocity_limit=M3508_C620_14.no_load_speed,
+                    effort_limit=M3508_C620_14.rated_torque,
                 ),
             ),
         ),

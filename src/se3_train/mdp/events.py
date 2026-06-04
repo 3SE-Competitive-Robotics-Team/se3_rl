@@ -18,12 +18,18 @@ from mjlab.utils.lab_api.math import (
     sample_uniform,
 )
 
-from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared import (
+    RobotConfig as SharedRobotConfig,
+)
+from se3_shared import (
+    output_to_policy_pos_torch,
+    policy_to_output_pos_torch,
+    policy_to_output_vel_torch,
+)
 from se3_train.mdp import recovery_state
 from se3_train.mdp.joint_indices import (
-    active_rod_angle_terms,
     is_closedchain_model,
-    policy_joint_ids,
+    is_fourbar_surrogate_model,
     policy_leg_joint_ids,
     tensor_ids,
     wheel_joint_ids,
@@ -42,6 +48,8 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
 _FULL_ANGLE_RESET_BBOX_MIN = (-0.278, -0.242, -0.323)
 _FULL_ANGLE_RESET_BBOX_MAX = (0.278, 0.242, 0.111)
+_FOURBAR_WHEEL_RADIUS_M = 0.060
+_DEFAULT_RESET_WHEEL_CLEARANCE_M = 0.001
 
 
 def _stage_value(stage: dict, key: str, default):
@@ -834,6 +842,164 @@ def _sample_joint_offset(
     )
 
 
+def _leg_values(
+    values: torch.Tensor,
+    leg_ids: torch.Tensor,
+    rows: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """读取局部 reset 张量中的腿部 4 维值。"""
+    if rows is None:
+        return values[:, leg_ids]
+    return values[rows[:, None], leg_ids]
+
+
+def _write_leg_values(
+    values: torch.Tensor,
+    leg_ids: torch.Tensor,
+    new_values: torch.Tensor,
+    rows: torch.Tensor | None = None,
+) -> None:
+    """写回局部 reset 张量中的腿部 4 维值。"""
+    if rows is None:
+        values[:, leg_ids] = new_values
+    else:
+        values[rows[:, None], leg_ids] = new_values
+
+
+def _model_leg_pos_to_policy(asset: Entity, leg_pos: torch.Tensor) -> torch.Tensor:
+    """把模型可写的腿部位置转成 policy 主动杆语义。"""
+    if is_fourbar_surrogate_model(asset):
+        return output_to_policy_pos_torch(leg_pos)
+    return leg_pos.clone()
+
+
+def _policy_leg_pos_to_model(asset: Entity, policy_pos: torch.Tensor) -> torch.Tensor:
+    """把 policy 主动杆语义腿部位置转成模型可写关节。"""
+    if is_fourbar_surrogate_model(asset):
+        return policy_to_output_pos_torch(policy_pos)
+    return policy_pos
+
+
+def _policy_leg_vel_to_model(
+    asset: Entity,
+    policy_pos: torch.Tensor,
+    policy_vel: torch.Tensor,
+) -> torch.Tensor:
+    """把 policy 主动杆语义腿部速度转成模型可写关节速度。"""
+    if is_fourbar_surrogate_model(asset):
+        return policy_to_output_vel_torch(policy_pos, policy_vel)
+    return policy_vel
+
+
+def _clamp_active_rod_policy_pose(asset: Entity, policy_pos: torch.Tensor) -> None:
+    """在 policy 主动杆语义下裁剪同侧两杆夹角。"""
+    if not (is_closedchain_model(asset) or is_fourbar_surrogate_model(asset)):
+        return
+    lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+    for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+        front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+        angle = torch.clamp(
+            front_coef * policy_pos[:, front_idx] + back_coef * policy_pos[:, back_idx],
+            min=float(lower),
+            max=float(upper),
+        )
+        policy_pos[:, back_idx] = (angle - front_coef * policy_pos[:, front_idx]) / back_coef
+
+
+def _apply_policy_leg_reset(
+    asset: Entity,
+    joint_pos: torch.Tensor,
+    joint_vel: torch.Tensor,
+    leg_ids: torch.Tensor,
+    policy_pos: torch.Tensor,
+    policy_vel: torch.Tensor,
+    *,
+    rows: torch.Tensor | None = None,
+) -> None:
+    """把 policy 主动杆语义 reset 姿态写回模型关节。"""
+    _clamp_active_rod_policy_pose(asset, policy_pos)
+    _write_leg_values(joint_pos, leg_ids, _policy_leg_pos_to_model(asset, policy_pos), rows)
+    _write_leg_values(
+        joint_vel,
+        leg_ids,
+        _policy_leg_vel_to_model(asset, policy_pos, policy_vel),
+        rows,
+    )
+
+
+def _reset_wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
+    """缓存 reset 高度校正用的左右轮 body 索引。"""
+    attr_name = f"_reset_wheel_body_ids_{asset_cfg.name}"
+    cached = getattr(env, attr_name, None)
+    if isinstance(cached, list) and len(cached) == 2:
+        return cached
+    robot = env.scene[asset_cfg.name]
+    body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
+    if len(body_ids) != 2:
+        raise RuntimeError(f"必须找到左右轮 body，实际找到: {body_names}")
+    setattr(env, attr_name, body_ids)
+    return body_ids
+
+
+def _non_jump_reset_mask(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+) -> torch.Tensor:
+    """返回允许按轮底高度校正的 reset 样本，jump_flag=1 时跳过。"""
+    mask = torch.ones(len(env_ids), device=env.device, dtype=torch.bool)
+    if not hasattr(env, "command_manager"):
+        return mask
+    try:
+        cmd = env.command_manager.get_command(command_name)
+    except Exception:
+        return mask
+    if cmd.shape[-1] > 5:
+        mask &= cmd[env_ids, 5] <= 0.5
+    return mask
+
+
+def _lift_root_to_wheel_clearance(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset: Entity,
+    asset_cfg: SceneEntityCfg,
+    min_clearance: float,
+    command_name: str,
+) -> None:
+    """在 flat reset 后把轮底最小高度抬到指定离地间隙。"""
+    if min_clearance < 0.0 or len(env_ids) == 0:
+        return
+
+    active_local = _non_jump_reset_mask(env, env_ids, command_name)
+    if not active_local.any():
+        return
+    active_env_ids = env_ids[active_local]
+
+    env.sim.forward()
+    body_ids = _reset_wheel_body_ids(env, asset_cfg)
+    wheel_pos_w = asset.data.body_link_pos_w[active_env_ids][:, body_ids, :]
+    ground_z = env.scene.env_origins[active_env_ids, 2].unsqueeze(1)
+    wheel_bottom = wheel_pos_w[:, :, 2] - ground_z - _FOURBAR_WHEEL_RADIUS_M
+    min_wheel_bottom = wheel_bottom.min(dim=1).values
+    lift = torch.clamp(float(min_clearance) - min_wheel_bottom, min=0.0)
+
+    if lift.any():
+        pos = asset.data.root_link_pos_w[active_env_ids].clone()
+        quat = asset.data.root_link_quat_w[active_env_ids].clone()
+        pos[:, 2] += lift
+        asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
+        env.sim.forward()
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log["Reset/wheel_clearance_before_min_m"] = float(min_wheel_bottom.min().item())
+        log["Reset/wheel_clearance_after_min_m"] = float((min_wheel_bottom + lift).min().item())
+        log["Reset/wheel_clearance_lift_max_m"] = float(lift.max().item())
+        log["Reset/wheel_clearance_lift_mean_m"] = float(lift.mean().item())
+        log["Reset/wheel_clearance_lift_ratio"] = float((lift > 0.0).float().mean().item())
+
+
 def _clamp_policy_leg_pose(
     asset: Entity,
     joint_pos: torch.Tensor,
@@ -843,19 +1009,10 @@ def _clamp_policy_leg_pose(
     rows: torch.Tensor | None = None,
 ) -> None:
     """按模型语义裁剪腿部关节：闭链裁剪主动杆夹角，开链裁剪单关节限位。"""
-    if is_closedchain_model(asset):
-        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
-        row_index = slice(None) if rows is None else rows
-        for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(asset):
-            angle = torch.clamp(
-                front_coef * joint_pos[row_index, front_id]
-                + back_coef * joint_pos[row_index, back_id],
-                min=float(lower),
-                max=float(upper),
-            )
-            joint_pos[row_index, back_id] = (
-                angle - front_coef * joint_pos[row_index, front_id]
-            ) / back_coef
+    if is_closedchain_model(asset) or is_fourbar_surrogate_model(asset):
+        policy_pos = _model_leg_pos_to_policy(asset, _leg_values(joint_pos, leg_ids, rows))
+        _clamp_active_rod_policy_pose(asset, policy_pos)
+        _write_leg_values(joint_pos, leg_ids, _policy_leg_pos_to_model(asset, policy_pos), rows)
         return
 
     soft_limits = asset.data.soft_joint_pos_limits
@@ -890,6 +1047,9 @@ def reset_joints(
     offset_iter: int = 0,
     recovery_joint_offset_range: float = 0.0,
     recovery_joint_vel_range: tuple[float, float] = (0.0, 0.0),
+    align_root_height_to_wheels: bool = False,
+    wheel_clearance: float = _DEFAULT_RESET_WHEEL_CLEARANCE_M,
+    command_name: str = "velocity_height",
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
@@ -919,44 +1079,60 @@ def reset_joints(
 
     leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
     if hip_joint_offset_range is not None or knee_joint_offset_range is not None:
-        hip_ids = leg_ids[torch.tensor([0, 2], device=env.device)]
-        knee_ids = leg_ids[torch.tensor([1, 3], device=env.device)]
+        policy_leg_pos = _model_leg_pos_to_policy(asset, joint_pos[:, leg_ids])
+        policy_leg_vel = torch.zeros_like(policy_leg_pos)
         if hip_joint_offset_range is not None:
-            joint_pos[:, hip_ids] += _sample_joint_offset(
+            policy_leg_pos[:, (0, 2)] += _sample_joint_offset(
                 env,
                 hip_joint_offset_range,
                 (len(env_ids), 2),
             )
         if knee_joint_offset_range is not None:
-            joint_pos[:, knee_ids] += _sample_joint_offset(
+            policy_leg_pos[:, (1, 3)] += _sample_joint_offset(
                 env,
                 knee_joint_offset_range,
                 (len(env_ids), 2),
             )
-        joint_vel[:, leg_ids] = sample_uniform(
+        policy_leg_vel[:] = sample_uniform(
             torch.tensor(float(joint_vel_range[0]), device=env.device),
             torch.tensor(float(joint_vel_range[1]), device=env.device),
             (len(env_ids), len(leg_ids)),
             env.device,
         )
 
-        _clamp_policy_leg_pose(asset, joint_pos, env_ids, leg_ids)
+        _apply_policy_leg_reset(
+            asset,
+            joint_pos,
+            joint_vel,
+            leg_ids,
+            policy_leg_pos,
+            policy_leg_vel,
+        )
     elif joint_offset_range > 0.0:
+        policy_leg_pos = _model_leg_pos_to_policy(asset, joint_pos[:, leg_ids])
+        policy_leg_vel = torch.zeros_like(policy_leg_pos)
         offset = sample_uniform(
             torch.tensor(-float(joint_offset_range), device=env.device),
             torch.tensor(float(joint_offset_range), device=env.device),
             (len(env_ids), len(leg_ids)),
             env.device,
         )
-        joint_pos[:, leg_ids] += offset
-        joint_vel[:, leg_ids] = sample_uniform(
+        policy_leg_pos += offset
+        policy_leg_vel[:] = sample_uniform(
             torch.tensor(float(joint_vel_range[0]), device=env.device),
             torch.tensor(float(joint_vel_range[1]), device=env.device),
             (len(env_ids), len(leg_ids)),
             env.device,
         )
 
-        _clamp_policy_leg_pose(asset, joint_pos, env_ids, leg_ids)
+        _apply_policy_leg_reset(
+            asset,
+            joint_pos,
+            joint_vel,
+            leg_ids,
+            policy_leg_pos,
+            policy_leg_vel,
+        )
 
     if hasattr(env, "extras"):
         log = env.extras.setdefault("log", {})
@@ -972,21 +1148,33 @@ def reset_joints(
         if local_recovery.any():
             n_recovery = int(local_recovery.sum().item())
             local_ids = local_recovery.nonzero().flatten()
+            policy_leg_pos = _model_leg_pos_to_policy(
+                asset, _leg_values(joint_pos, leg_ids, local_ids)
+            )
+            policy_leg_vel = torch.zeros_like(policy_leg_pos)
             offset = sample_uniform(
                 torch.tensor(-float(recovery_joint_offset_range), device=env.device),
                 torch.tensor(float(recovery_joint_offset_range), device=env.device),
                 (n_recovery, len(leg_ids)),
                 env.device,
             )
-            joint_pos[local_ids[:, None], leg_ids] += offset
-            joint_vel[local_ids[:, None], leg_ids] = sample_uniform(
+            policy_leg_pos += offset
+            policy_leg_vel[:] = sample_uniform(
                 torch.tensor(float(recovery_joint_vel_range[0]), device=env.device),
                 torch.tensor(float(recovery_joint_vel_range[1]), device=env.device),
                 (n_recovery, len(leg_ids)),
                 env.device,
             )
 
-            _clamp_policy_leg_pose(asset, joint_pos, env_ids, leg_ids, rows=local_ids)
+            _apply_policy_leg_reset(
+                asset,
+                joint_pos,
+                joint_vel,
+                leg_ids,
+                policy_leg_pos,
+                policy_leg_vel,
+                rows=local_ids,
+            )
 
     cache_reset_mask = getattr(env, "_recovery_cache_reset_mask", None)
     cache_joint_pos = getattr(env, "_recovery_cached_joint_pos", None)
@@ -1065,6 +1253,15 @@ def reset_joints(
             pass
 
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    if align_root_height_to_wheels:
+        _lift_root_to_wheel_clearance(
+            env,
+            env_ids,
+            asset,
+            asset_cfg,
+            float(wheel_clearance),
+            command_name,
+        )
 
 
 def push_robots(
@@ -1306,33 +1503,31 @@ def randomize_default_dof_pos(
 
     asset: Entity = env.scene[asset_cfg.name]
     n = len(env_ids)
-    ctrl_ids = tensor_ids(policy_joint_ids(asset), device=env.device)
-
-    offset = sample_uniform(
-        torch.tensor(offset_range[0], device=env.device),
-        torch.tensor(offset_range[1], device=env.device),
-        (n, len(ctrl_ids)),
-        env.device,
-    )
 
     default_joint_pos = asset.data.default_joint_pos.clone()
-    default_joint_pos[env_ids[:, None], ctrl_ids] += offset
 
-    # 裁剪到关节限制范围内。
-    soft_limits = asset.data.soft_joint_pos_limits
-    if soft_limits is not None:
-        default_joint_pos[env_ids[:, None], ctrl_ids] = torch.clamp(
-            default_joint_pos[env_ids[:, None], ctrl_ids],
-            soft_limits[env_ids[:, None], ctrl_ids, 0],
-            soft_limits[env_ids[:, None], ctrl_ids, 1],
-        )
-    selected_joint_pos = default_joint_pos[env_ids].clone()
-    _clamp_policy_leg_pose(
-        asset,
-        selected_joint_pos,
-        env_ids,
-        tensor_ids(policy_leg_joint_ids(asset), device=env.device),
+    leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
+    leg_offset = sample_uniform(
+        torch.tensor(offset_range[0], device=env.device),
+        torch.tensor(offset_range[1], device=env.device),
+        (n, len(leg_ids)),
+        env.device,
     )
+    selected_joint_pos = default_joint_pos[env_ids].clone()
+    policy_leg_pos = _model_leg_pos_to_policy(asset, selected_joint_pos[:, leg_ids])
+    policy_leg_pos += leg_offset
+    _clamp_active_rod_policy_pose(asset, policy_leg_pos)
+    selected_joint_pos[:, leg_ids] = _policy_leg_pos_to_model(asset, policy_leg_pos)
+
+    if not (is_closedchain_model(asset) or is_fourbar_surrogate_model(asset)):
+        soft_limits = asset.data.soft_joint_pos_limits
+        if soft_limits is not None:
+            selected_joint_pos[:, leg_ids] = torch.clamp(
+                selected_joint_pos[:, leg_ids],
+                soft_limits[env_ids[:, None], leg_ids, 0],
+                soft_limits[env_ids[:, None], leg_ids, 1],
+            )
+
     default_joint_pos[env_ids] = selected_joint_pos
 
     asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
