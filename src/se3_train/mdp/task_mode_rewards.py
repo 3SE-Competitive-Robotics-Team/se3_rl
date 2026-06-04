@@ -966,18 +966,60 @@ def gait_pose(
     return reward * gate
 
 
-def wheel_default_pose(
+def wheel_joint_mirror(
     env: ManagerBasedRlEnv,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """wheel mode 下约束腿保持默认姿态。"""
-    robot = env.scene[asset_cfg.name]
-    diff = (
-        robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
-    )
+    """WHEEL 模式左右腿关节镜像惩罚，公式与 flat joint_mirror 一致。"""
+    penalty = rewards.joint_mirror(env, asset_cfg=asset_cfg)
     gate = mode_weight(env, command_name, TaskMode.WHEEL)
-    return torch.sum(diff**2, dim=1) * gate
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"]["TaskMode/diag_wheel_joint_mirror"] = _mean_on_mask(
+            penalty,
+            active,
+        )
+
+    return penalty * gate
+
+
+def wheel_feet_distance(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    min_feet_distance: float,
+    max_feet_distance: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """WHEEL 模式左右轮心水平距离越界惩罚。
+
+    参考 tron1 WF 的 feet_distance：只在左右轮心距离小于下限或大于上限时产生代价。
+    """
+    robot = env.scene[asset_cfg.name]
+    body_ids = _wheel_body_ids(env, asset_cfg)
+    wheel_pos = robot.data.body_link_pos_w[:, body_ids, :2]
+    feet_distance = torch.linalg.norm(wheel_pos[:, 0, :] - wheel_pos[:, 1, :], dim=1)
+    penalty = torch.clamp(float(min_feet_distance) - feet_distance, min=0.0)
+    penalty += torch.clamp(feet_distance - float(max_feet_distance), min=0.0)
+    gate = mode_weight(env, command_name, TaskMode.WHEEL)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_wheel_feet_distance_m": _mean_on_mask(
+                    feet_distance,
+                    active,
+                ),
+                "TaskMode/diag_wheel_feet_distance_penalty": _mean_on_mask(
+                    penalty,
+                    active,
+                ),
+            }
+        )
+
+    return penalty * gate
 
 
 def gait_no_wheel_drive(
@@ -1322,7 +1364,8 @@ __all__ = [
     "mode_stand_still",
     "mode_tracking_ang_vel",
     "mode_tracking_lin_vel",
-    "wheel_default_pose",
+    "wheel_feet_distance",
+    "wheel_joint_mirror",
     "wheel_stumble",
     "wheel_swing_clearance",
 ]
