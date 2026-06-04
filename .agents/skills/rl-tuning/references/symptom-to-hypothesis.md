@@ -37,7 +37,7 @@
 接受新平衡点，把 `height_range` 中值和 `stand_still.default_height` 改为 0.26m。无需重训。
 
 **文件**
-`src/se3_train/mdp/commands.py:26`，`src/se3_train/env_cfg.py:246,581`
+`src/se3_train/mdp/commands.py:26`，`src/se3_train/tasks/flat/env_cfg.py`
 
 ---
 
@@ -55,8 +55,8 @@
 | RSI vz_max=2.8 m/s 固定，覆盖上限 0.40m，课程已要求 0.8m | `events.py:72` | 大 |
 | rated_torque=20 N·m，全行程可用功 52J < 0.8m 所需 99J | `robot.py:97-99` | 大 |
 | `jump_takeoff_drive` stage 门控 bug，地面期梯度实际失效 | `jump_rewards.py:113` | 中 |
-| 课程扩到 0.8m 后 tolerance=0.2 产生不可消除惩罚 | `env_cfg.py:716` | 中 |
-| expand_iter=1000 太短，策略没学会 0.5m 就被要求 0.8m | `env_cfg.py:785` | 中 |
+| 课程扩到 0.8m 后 tolerance=0.2 产生不可消除惩罚 | `src/se3_train/tasks/jump_pretrain/env_cfg.py` | 中 |
+| expand_iter=1000 太短，策略没学会 0.5m 就被要求 0.8m | `src/se3_train/tasks/jump_pretrain/curriculums.py` | 中 |
 
 **关键思路**：先算物理上限再看奖励设计。52J < 99J 意味着不管奖励怎么设计，用 rated_torque 就跳不到 0.8m。
 

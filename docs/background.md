@@ -57,7 +57,7 @@
 
 ## 训练速度课程
 
-来自 `env_cfg.py`（`lin_vel_x_range`）：
+来自 `src/se3_train/tasks/flat/env_cfg.py`（`lin_vel_x_range`）：
 
 | 阶段 | 指令速度范围 |
 |------|------------|
@@ -143,7 +143,7 @@ E_spring = 0.5 × k × Δx²
 - 当前：`kp_range=(0.9, 1.1)`，`kd_range=(0.9, 1.1)`（已收窄）
 - 若未来再提升 `torque_limits`，需再次评估是否需要进一步收窄
 
-`leg_dof_acc`（关节加速度惩罚，`env_cfg.py:251`）是监测这个问题的代理指标：若训练中 `Episode_Reward/leg_dof_acc` 绝对值持续偏大（>0.2），说明 PD 振荡严重，应检查 `torque_limits` 与 `kp_range` 的匹配。
+`leg_dof_acc`（关节加速度惩罚，`src/se3_train/tasks/flat/env_cfg.py`）是监测这个问题的代理指标：若训练中 `Episode_Reward/leg_dof_acc` 绝对值持续偏大（>0.2），说明 PD 振荡严重，应检查 `torque_limits` 与 `kp_range` 的匹配。
 
 ---
 
