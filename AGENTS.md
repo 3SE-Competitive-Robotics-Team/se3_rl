@@ -80,6 +80,20 @@ just clean       # 清理 logs/ wandb/ replays/
 
 如需自定义参数，仍可直接用原始 `uv run` 命令（见 `justfile` 内对应配方）。
 
+### MJLab Viser 训练值守（必开）
+
+每次启动任何 `se3-train` 训练或 smoke 训练时，必须同步显式开启一个 MJLab Viser viewer（口语中也可能写作 visor）窗口，用肉眼检查机器人姿态、接触和奖励/诊断面板。不要只看 W&B 曲线或终端日志，也不要依赖 `--viewer auto`；必须在命令里写 `--viewer viser`。
+
+```bash
+# 有 checkpoint 时，观察训练策略
+uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file <checkpoint> --viewer viser --num-envs 1
+
+# 新 run 尚未保存 checkpoint 时，先打开同任务环境确认模型和接触；首个 checkpoint 出现后立刻切到 trained policy
+uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 1
+```
+
+Viser 默认使用 `http://localhost:8080`。远程训练时必须把 8080 端口转发到本地并确认浏览器能打开 Controls / Rewards / Visualization 面板；如果没有可见 Viser 窗口，本次训练视为未完成启动检查。
+
 跳跃任务专用命令（just 暂未封装，直接用 uv run）：
 
 ```bash
@@ -162,6 +176,7 @@ Smoke 模式特点：
 
 ### 可视化
 - **动态日志/回放**（sim2sim 轨迹、训练曲线、实时诊断）：必须使用 `rerun-sdk`，禁止 matplotlib
+- **训练值守**：每次 `se3-train` 启动后必须显式开启 MJLab Viser viewer（`se3-play --viewer viser`），并确认浏览器窗口可见；远程训练必须转发默认 8080 端口。
 - **静态分析小工具**（参数曲线、几何示意图、包络线等一次性绘图脚本）：允许使用 matplotlib，放在 `scripts/` 目录，参考 `scripts/plot_tn_envelope.py`
 - 可视化是仓库长期建设的一部分，必须严肃对待
 

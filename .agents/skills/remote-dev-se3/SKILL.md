@@ -153,7 +153,7 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 ### 启动训练（标准流程）
 
 ```bash
-ssh wuyinyun "bash -s" << 'ENDSSH'
+ssh <SSH_ALIAS> "bash -s" << 'ENDSSH'
 WANDB_KEY=$(grep WANDB_API_KEY ~/project/se3_wheel_leg/.env | cut -d= -f2-)
 
 # 清理同名旧 session
@@ -166,7 +166,10 @@ tmux new-session -d -s train -x 220 -y 50
 tmux send-keys -t train "export HTTP_PROXY=http://127.0.0.1:17890" Enter
 tmux send-keys -t train "export HTTPS_PROXY=http://127.0.0.1:17890" Enter
 tmux send-keys -t train "export WANDB_API_KEY=${WANDB_KEY}" Enter
-tmux send-keys -t train "export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\$LD_LIBRARY_PATH" Enter
+# A800 容器依赖 CUDA Forward Compatibility，必须让 compat libcuda 通过 ldconfig 生效。
+# 不要 export /usr/local/cuda-*/lib64 或 /usr/local/nvidia/lib64 到 LD_LIBRARY_PATH，
+# 否则会优先加载宿主 12.2 libcuda，Warp 会禁用 CUDA Graphs。
+tmux send-keys -t train "unset LD_LIBRARY_PATH" Enter
 tmux send-keys -t train "source ~/.local/bin/env" Enter
 tmux send-keys -t train "cd ~/project/se3_wheel_leg" Enter
 tmux send-keys -t train "uv run --env-file .env se3-train <TASK_NAME> --env.scene.num-envs <NUM_ENVS>" Enter
@@ -174,6 +177,10 @@ tmux send-keys -t train "uv run --env-file .env se3-train <TASK_NAME> --env.scen
 tmux list-sessions
 ENDSSH
 ```
+
+启动后必须在 tmux 输出中确认 Warp 报 `Driver 12.6`，且没有 `CUDA Graphs disabled`。如果仍看到 `Driver 12.2 < 12.4`，先停止训练并修正容器库路径，不要继续长训。
+
+> `gpufree` 不使用上面的 A800 compat 处理；按 `machines/gpufree.md` 先 `source /root/gpufree-data/se3_env.sh`，让 `.venv` 中的 cuDNN / CUDA 依赖排在系统库前面。
 
 ### 查看训练状态
 

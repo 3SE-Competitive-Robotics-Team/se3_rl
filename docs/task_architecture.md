@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
+| `flat_mlp/` | `SE3-WheelLegged-Flat-MLP` | 平地行走 MLP 基模 |
 | `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，从平地 GRU checkpoint warm start |
 | `recovery_stand/` | `SE3-WheelLegged-Recovery-Stand-GRU` | 纯倒地自起到站立 GRU 任务 |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
@@ -110,9 +111,9 @@ git diff --check
 
 ```bash
 uv run python - <<'PY'
-from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, recovery_stand, rough
+from se3_train.tasks import flat, flat_mlp, jump_finetune, jump_pretrain, recovery, recovery_stand, rough
 
-for module in (rough, flat, recovery, recovery_stand, jump_pretrain, jump_finetune):
+for module in (rough, flat, flat_mlp, recovery, recovery_stand, jump_pretrain, jump_finetune):
     cfg = module.env_cfg(play=True)
     rl = module.rl_cfg(smoke=True)
     print(module.TASK_ID, len(cfg.observations["actor"].terms), rl.max_iterations)

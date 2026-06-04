@@ -76,6 +76,15 @@ just train-rough # Rough 地形，1024 envs
 just train-cpu   # CPU 调试训练（极慢）
 ```
 
+每次启动训练或 smoke 时，必须同步显式开启 MJLab Viser viewer（口语 visor）窗口，不要只看 W&B 或终端日志：
+
+```bash
+uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file logs/rsl_rl/se3_wheel_leg/<run>/model_<iter>.pt --viewer viser --num-envs 1
+uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 1  # 新 run 暂无 checkpoint 时
+```
+
+Viser 默认地址是 `http://localhost:8080`；远程训练时必须转发 8080 端口并确认浏览器窗口可见。
+
 ### Sim2sim 验证
 
 ```bash

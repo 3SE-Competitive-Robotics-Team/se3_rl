@@ -51,6 +51,10 @@ check-code: fmt lint
 smoke:
     SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
+# 平地 MLP 基模 CPU smoke 验证（5 轮，不上传 W&B）
+smoke-flat-mlp:
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
+
 # 显式回退开链模型的 CPU smoke，用于 A/B 定位闭链问题
 smoke-openchain:
     SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
@@ -75,6 +79,11 @@ smoke-recovery-stand:
 train:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
     uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+
+# 平地 MLP 基模训练（需要 GPU + .env）
+train-flat-mlp:
+    @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
+    uv run --env-file .env se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1024
 
 # 倒地自启正式训练（从零训练，不从旧 checkpoint 续训）
 train-recovery:

@@ -66,6 +66,31 @@ SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=closedchain uv run se3-train SE3-WheelLegged-
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 ```
 
+### MJLab Viser 训练值守（必开）
+
+每次启动 `se3-train`（包括 smoke、CPU 调试、本地 GPU、远程长训）时，必须同步开启一个 MJLab Viser viewer 窗口。Viser 是 MJLab 的浏览器 viewer；口语里可能写成 visor，但命令行参数必须写 `--viewer viser`。它用于肉眼检查机器人是否站姿异常、腿部是否错误触地、接触/奖励/诊断面板是否符合预期。
+
+不要只看 W&B 或终端日志，也不要依赖 `--viewer auto`。启动训练后的检查项是：
+- 终端打印 Viser 地址，默认 `http://localhost:8080`。
+- 浏览器能打开 Controls / Rewards / Visualization 面板。
+- 当前任务至少有一个 env 正常渲染，接触和姿态没有显著异常。
+
+已有 checkpoint 时，用 trained policy 打开：
+
+```bash
+uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file logs/rsl_rl/se3_wheel_leg/<run>/model_<iter>.pt --viewer viser --num-envs 1
+uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --checkpoint-file logs/rsl_rl/se3_wheel_leg/<run>/model_<iter>.pt --viewer viser --num-envs 1
+```
+
+新 run 第一个 checkpoint 尚未生成时，先用零动作打开同任务环境，确认模型、地面接触和 viewer 管线；首个 checkpoint 出现后立刻切到 trained policy：
+
+```bash
+uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 1
+uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --agent zero --viewer viser --num-envs 1
+```
+
+远程训练时必须把 Viser 默认 8080 端口转发到本地。没有可见 Viser 窗口的训练，视为没有完成启动值守检查。
+
 ### 本地/单卡 GPU 训练
 
 需要 NVIDIA GPU + CUDA 12.4+。本节是本地/单卡示例，环境数用 1024；`codex/xyh` 远程正式训练档位见下一节。
@@ -145,7 +170,7 @@ logs/rsl_rl/se3_wheel_leg/2026-05-05_23-13-57/
 
 ## 评估/回放
 
-项目不用 `se3-play`，回放和验证走 `se3-sim2sim`，Rerun 负责可视化：
+训练启动后的实时值守必须用 `se3-play --viewer viser`。正式 sim2sim 回放和验证仍走 `se3-sim2sim`，Rerun 负责记录轨迹、控制量曲线和可复查的 `.rrd` 文件：
 
 ```bash
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000
