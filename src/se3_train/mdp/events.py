@@ -266,9 +266,11 @@ def push_robots(
     """随机速度推动。"""
     asset: Entity = env.scene[asset_cfg.name]
     vel_w = asset.data.root_link_vel_w[env_ids]
+    active_velocity_range = getattr(env, "_push_velocity_range", velocity_range)
 
     range_list = [
-        velocity_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]
+        active_velocity_range.get(key, (0.0, 0.0))
+        for key in ["x", "y", "z", "roll", "pitch", "yaw"]
     ]
     ranges = torch.tensor(range_list, device=env.device)
     vel_w += sample_uniform(ranges[:, 0], ranges[:, 1], vel_w.shape, device=env.device)
