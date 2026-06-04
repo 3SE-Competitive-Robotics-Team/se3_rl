@@ -248,6 +248,11 @@ def reset_root_state_full_angle_random(
     yaw_range: tuple[float, float] = (-torch.pi, torch.pi),
     height_range: tuple[float, float] = (0.26, 0.36),
     clearance_range: tuple[float, float] = (0.02, 0.05),
+    pitch_flip_prob: float = 0.0,
+    pitch_flip_tilt_range: tuple[float, float] = (torch.pi, torch.pi),
+    pitch_flip_axis_jitter_range: tuple[float, float] = (0.0, 0.0),
+    pitch_flip_height_range: tuple[float, float] = (0.10, 0.16),
+    pitch_flip_clearance_range: tuple[float, float] = (0.0, 0.02),
     pos_xy_range: tuple[float, float] = (-0.1, 0.1),
     lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     ang_vel_range: tuple[float, float] = (-0.8, 0.8),
@@ -275,6 +280,21 @@ def reset_root_state_full_angle_random(
     yaw_range = _stage_value(stage, "yaw_range", yaw_range)
     height_range = _stage_value(stage, "height_range", height_range)
     clearance_range = _stage_value(stage, "clearance_range", clearance_range)
+    pitch_flip_prob = float(_stage_value(stage, "pitch_flip_prob", pitch_flip_prob))
+    pitch_flip_tilt_range = _stage_value(stage, "pitch_flip_tilt_range", pitch_flip_tilt_range)
+    pitch_flip_axis_jitter_range = _stage_value(
+        stage,
+        "pitch_flip_axis_jitter_range",
+        pitch_flip_axis_jitter_range,
+    )
+    pitch_flip_height_range = _stage_value(
+        stage, "pitch_flip_height_range", pitch_flip_height_range
+    )
+    pitch_flip_clearance_range = _stage_value(
+        stage,
+        "pitch_flip_clearance_range",
+        pitch_flip_clearance_range,
+    )
     pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
@@ -299,6 +319,20 @@ def reset_root_state_full_angle_random(
     tilt = _sample_range(tilt_range, (n,))
     tilt_axis = _sample_range(tilt_axis_range, (n,))
     yaw = _sample_range(yaw_range, (n,))
+    pitch_flip_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
+    if pitch_flip_prob > 0.0:
+        pitch_flip_mask = torch.rand(n, device=env.device) < pitch_flip_prob
+        if pitch_flip_mask.any():
+            n_pitch_flip = int(pitch_flip_mask.sum().item())
+            pitch_flip_sign = torch.where(
+                torch.rand(n_pitch_flip, device=env.device) < 0.5,
+                torch.tensor(-1.0, device=env.device),
+                torch.tensor(1.0, device=env.device),
+            )
+            tilt[pitch_flip_mask] = _sample_range(pitch_flip_tilt_range, (n_pitch_flip,))
+            tilt_axis[pitch_flip_mask] = pitch_flip_sign * (0.5 * torch.pi) + _sample_range(
+                pitch_flip_axis_jitter_range, (n_pitch_flip,)
+            )
     tilt_quat = _quat_from_horizontal_axis_angle(tilt_axis, tilt)
     yaw_quat = quat_from_euler_xyz(
         torch.zeros_like(yaw),
@@ -313,6 +347,17 @@ def reset_root_state_full_angle_random(
         _sample_range(clearance_range, (n,)),
     )
     base_height = torch.maximum(sampled_height, safe_height)
+    if pitch_flip_mask.any():
+        n_pitch_flip = int(pitch_flip_mask.sum().item())
+        pitch_flip_safe_height = _full_angle_safe_base_height(
+            z_row[pitch_flip_mask],
+            _sample_range(pitch_flip_clearance_range, (n_pitch_flip,)),
+        )
+        pitch_flip_height = _sample_range(pitch_flip_height_range, (n_pitch_flip,))
+        base_height[pitch_flip_mask] = torch.maximum(
+            pitch_flip_height,
+            pitch_flip_safe_height,
+        )
 
     pos[:, 0:3] += env.scene.env_origins[env_ids]
     pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
@@ -385,6 +430,10 @@ def reset_root_state_full_angle_random(
         log.update(
             {
                 "Reset/full_angle_random_ratio": 1.0,
+                "Reset/pitch_flip_ratio": pitch_flip_mask.float().mean().item(),
+                "Reset/pitch_flip_mean_height_m": (
+                    base_height[pitch_flip_mask].mean().item() if pitch_flip_mask.any() else 0.0
+                ),
                 "Reset/curriculum_progress": float(curriculum_progress),
                 "Reset/curriculum_tilt_max_deg": float(tilt_range[1]) * 180.0 / 3.141592653589793,
                 "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
