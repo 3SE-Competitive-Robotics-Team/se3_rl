@@ -505,22 +505,6 @@ def single_label_env_cfg(
 def wheel_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """构造纯平地 WHEEL 专家训练环境。"""
     cfg = single_label_env_cfg(TaskMode.WHEEL, play=play)
-    cfg.scene.terrain = TerrainEntityCfg(
-        terrain_type="generator",
-        terrain_generator=TerrainGeneratorCfg(
-            curriculum=False,
-            size=(8.0, 8.0),
-            border_width=20.0,
-            border_height=1.0,
-            num_rows=1,
-            num_cols=1,
-            color_scheme="height",
-            sub_terrains={"flat": BoxFlatTerrainCfg(proportion=1.0)},
-            difficulty_range=(0.0, 0.0),
-            add_lights=True,
-        ),
-        max_init_terrain_level=0,
-    )
 
     if not play:
         cfg.curriculum["command_vel"].params["velocity_stages"] = [
