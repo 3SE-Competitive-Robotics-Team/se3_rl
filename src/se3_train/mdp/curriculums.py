@@ -48,14 +48,18 @@ def push_disturbance(
     """
     del env_ids
     step = env.common_step_counter
-    current_max = 0.5
+    current_velocity_range: dict[str, tuple[float, float]] = {"x": (0.0, 0.0), "y": (0.0, 0.0)}
 
     for stage in push_stages:
         if step >= stage["step"]:
-            velocity_range = stage["velocity_range"]
-            current_max = max(abs(velocity_range["x"][0]), abs(velocity_range["x"][1]))
-            if hasattr(env, "_push_velocity_range"):
-                env._push_velocity_range = velocity_range
+            current_velocity_range = stage["velocity_range"]
+
+    # interval push 事件读取这个动态配置，避免课程项只更新监控值而不影响实际扰动。
+    env._push_velocity_range = current_velocity_range
+    current_max = max(
+        max(abs(axis_range[0]), abs(axis_range[1]))
+        for axis_range in current_velocity_range.values()
+    )
 
     return {
         "step_counter": torch.tensor(float(step)),
