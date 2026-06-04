@@ -101,6 +101,16 @@ class SerialLegDelayedAction(ActionTerm):
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
         self._delayed_actions = torch.zeros_like(self._raw_actions)
         self._env_indices = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        self._leg_kp = torch.full(
+            (self.num_envs, 4),
+            float(_SHARED_ROBOT.leg_kp),
+            device=self.device,
+        )
+        self._leg_kd = torch.full(
+            (self.num_envs, 4),
+            float(_SHARED_ROBOT.leg_kd),
+            device=self.device,
+        )
 
         self._delay_cfg = cfg.delay_config()
         self._sim_dt = float(env.physics_dt)
@@ -147,8 +157,8 @@ class SerialLegDelayedAction(ActionTerm):
             output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
             policy_pos = output_to_policy_pos_torch(output_pos)
             policy_vel = output_to_policy_vel_torch(output_pos, output_vel)
-            policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
-            policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
+            policy_torque = self._leg_kp * (policy_target - policy_pos)
+            policy_torque -= self._leg_kd * policy_vel
             policy_torque = self._clip_active_motor_torque(policy_torque, policy_vel)
             leg_torque = policy_to_output_torque_torch(policy_pos, policy_torque)
             self._entity.set_joint_effort_target(leg_torque, joint_ids=self._leg_joint_ids)
@@ -171,6 +181,33 @@ class SerialLegDelayedAction(ActionTerm):
         """返回当前 env 随机化后的腿部默认位姿，坐标系与 policy 动作一致。"""
         output_default = self._entity.data.default_joint_pos[:, self._leg_joint_ids]
         return output_to_policy_pos_torch(output_default)
+
+    def set_leg_pd_gain_scale(
+        self,
+        env_ids: torch.Tensor | slice | None,
+        kp_scale: torch.Tensor,
+        kd_scale: torch.Tensor,
+    ) -> None:
+        """同步 startup 域随机化采样到 fourbar 手写腿部 PD 控制器。"""
+        if not self._fourbar_surrogate:
+            return
+        resolved_env_ids = self._resolve_env_ids(env_ids)
+        if resolved_env_ids.numel() == 0:
+            return
+        kp_scale = kp_scale.to(device=self.device).reshape(-1, 1)
+        kd_scale = kd_scale.to(device=self.device).reshape(-1, 1)
+        if kp_scale.shape[0] != resolved_env_ids.numel():
+            raise ValueError(
+                "kp_scale env 数量与 env_ids 不一致: "
+                f"{kp_scale.shape[0]} != {resolved_env_ids.numel()}"
+            )
+        if kd_scale.shape[0] != resolved_env_ids.numel():
+            raise ValueError(
+                "kd_scale env 数量与 env_ids 不一致: "
+                f"{kd_scale.shape[0]} != {resolved_env_ids.numel()}"
+            )
+        self._leg_kp[resolved_env_ids] = float(_SHARED_ROBOT.leg_kp) * kp_scale
+        self._leg_kd[resolved_env_ids] = float(_SHARED_ROBOT.leg_kd) * kd_scale
 
     def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
         """闭链下按同侧两主动杆夹角裁剪后杆目标。"""

@@ -1274,6 +1274,24 @@ def randomize_pd_gains(
             env.sim.model.actuator_biasprm[env_ids, aid, 2] = default_biasprm[
                 aid, 2
             ] * kd_scale.squeeze(-1)
+    _sync_action_leg_pd_gains(env, env_ids, kp_scale, kd_scale)
+
+
+def _sync_action_leg_pd_gains(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    kp_scale: torch.Tensor,
+    kd_scale: torch.Tensor,
+) -> None:
+    """把 actuator 域随机化的同一组增益同步给自定义 action term。"""
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is None:
+        return
+    for term_name in action_manager.active_terms:
+        term = action_manager.get_term(term_name)
+        setter = getattr(term, "set_leg_pd_gain_scale", None)
+        if setter is not None:
+            setter(env_ids, kp_scale, kd_scale)
 
 
 def randomize_default_dof_pos(
