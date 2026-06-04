@@ -135,14 +135,15 @@ def generate_cache(
     max_torque: float,
 ) -> None:
     """生成并保存倒地稳定初态缓存。"""
+    robot_cfg = RobotConfig()
     model = mujoco.MjModel.from_xml_path(str(mjcf_path))
-    model.opt.timestep = 0.002
+    model.opt.timestep = robot_cfg.sim_dt
     model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
     model.opt.iterations = 100
     data = mujoco.MjData(model)
     rng = np.random.default_rng(seed)
-    default_joint_pos = np.asarray(RobotConfig().default_dof_pos, dtype=np.float64)
+    default_joint_pos = np.asarray(robot_cfg.default_dof_pos, dtype=np.float64)
     full_default = np.zeros(10, dtype=np.float64)
     full_default[[0, 1, 2, 5, 6, 7]] = default_joint_pos
 

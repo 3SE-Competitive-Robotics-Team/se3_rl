@@ -1,14 +1,14 @@
 # 控制频率基准
 
-本项目默认采用 **500 Hz 物理仿真 + 50 Hz policy/action 更新**：
+本项目默认采用 **200 Hz 物理仿真 + 50 Hz policy/action 更新**：
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
-| `RobotConfig.sim_dt` | `0.002 s` | MuJoCo / MJLab 物理积分步长，500 Hz |
-| `RobotConfig.control_decimation` | `10` | 每 10 个物理步执行一次 policy action |
+| `RobotConfig.sim_dt` | `0.005 s` | MuJoCo / MJLab 物理积分步长，200 Hz |
+| `RobotConfig.control_decimation` | `4` | 每 4 个物理步执行一次 policy action |
 | `RobotConfig.control_dt` | `0.020 s` | policy/action 更新周期，50 Hz |
 
-这个频率基准对齐 Unitree 官方 `unitree_rl_mjlab`、`unitree_rl_lab` 和 `unitree_rl_gym` 的常见配置：`0.005 s * 4 = 0.020 s`。我们保留更小的 `0.002 s` 物理步长，是为了闭链四连杆、轮地接触和跳跃落地阶段有更细的积分精度；只通过 `control_decimation=10` 把策略频率降到 50 Hz。
+这个频率基准对齐 Unitree 官方 `unitree_rl_mjlab`、`unitree_rl_lab` 和 `unitree_rl_gym` 的常见训练配置：`0.005 s * 4 = 0.020 s`。因此 policy 仍以 50 Hz 更新，但每个 policy step 只执行 4 个 MuJoCo / MJLab 物理步。
 
 ## 统一来源
 

@@ -267,7 +267,7 @@ lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 actio
 
 当前无气弹簧默认姿态使用 base 高度约 0.22 m 的中等腿长分支：`default_dof_pos=(-0.275422946189, -1.592100148957, 0.275422946189, 1.592100148957, 0, 0)`，`default_output_knee_pos=(-1.242259649307, 1.242259649307)`，`default_coupler_pos=(1.40126634, -1.40126941)`，`default_base_height=0.22`。该点用于 reset 几何和质心投影对齐；两轮倒立平衡仍依赖策略的轮子反馈，不应把零 action 开环自稳当成验收条件。
 
-默认控制频率配置在 `se3_shared.RobotConfig` 中：`sim_dt=0.002`（物理仿真 500 Hz）、`control_decimation=10`，因此 policy/action 更新周期为 `0.02 s`（50 Hz）。该基准对齐 Unitree 官方 RL 仓库常用的 50 Hz policy；修改频率时必须同步训练端、sim2sim、真机 runtime 和所有按秒换算 step 的奖励/课程逻辑。详细记录见 `docs/control_frequency.md`。
+默认控制频率配置在 `se3_shared.RobotConfig` 中：`sim_dt=0.005`（物理仿真 200 Hz）、`control_decimation=4`，因此 policy/action 更新周期为 `0.02 s`（50 Hz）。该基准对齐 Unitree 官方 RL 仓库常用的 50 Hz policy；修改频率时必须同步训练端、sim2sim、真机 runtime 和所有按秒换算 step 的奖励/课程逻辑。详细记录见 `docs/control_frequency.md`。
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 

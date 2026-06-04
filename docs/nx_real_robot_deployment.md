@@ -234,7 +234,7 @@ scp logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt \
 - USB CDC 联调：STM32 上行 policy 顺序物理状态，NX 下行 6 维 raw policy action。
 - NX 上层状态机：禁能、recovery-only policy 运行、GRU hidden reset、故障/人工停止回退；阶段一不实现多 policy 切换。
 - STM32 底层安全状态机：CAN、电机闭环、急停、限幅、限速、通信超时和安全回退。
-- 频率与延迟对齐：policy/action 默认 50 Hz（`control_dt=0.02 s`，`control_decimation=10`），动作延迟和 actuator 限幅必须显式记录。
+- 频率与延迟对齐：policy/action 默认 50 Hz（`control_dt=0.02 s`，`control_decimation=4`），动作延迟和 actuator 限幅必须显式记录。
 - 日志与回放：动态日志继续优先使用 Rerun，便于和 sim2sim 对齐排查。
 
 不要在 NX runtime 或 STM32 firmware 中各自发明一套关节顺序、动作缩放常量或控制频率；应以 `se3_shared` 作为部署 contract 的单一来源，避免部署端和训练端漂移。当前频率基准见 `docs/control_frequency.md`。
