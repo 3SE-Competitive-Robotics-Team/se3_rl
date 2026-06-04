@@ -12,6 +12,31 @@ if TYPE_CHECKING:
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 
 
+def _lerp(
+    step: int,
+    start_step: int,
+    ramp_steps: int,
+    initial_value: float,
+    final_value: float,
+) -> float:
+    """按 step 线性插值。"""
+    if step < start_step:
+        return float(initial_value)
+    if ramp_steps <= 0:
+        return float(final_value)
+    progress = min(1.0, max(0.0, (step - start_step) / ramp_steps))
+    return float(initial_value) + (float(final_value) - float(initial_value)) * progress
+
+
+def _set_reward_weight(env: ManagerBasedRlEnv, term_name: str, weight: float) -> float | None:
+    """运行期更新 RewardManager 中指定项权重；缺项时跳过。"""
+    reward_manager = getattr(env, "reward_manager", None)
+    if reward_manager is None or term_name not in reward_manager.active_terms:
+        return None
+    reward_manager.get_term_cfg(term_name).weight = float(weight)
+    return float(weight)
+
+
 def commands_vel(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -34,6 +59,58 @@ def commands_vel(
         "lin_vel_x_max": torch.tensor(cfg.lin_vel_x_range[1]),
         "ang_vel_yaw_max": torch.tensor(cfg.ang_vel_yaw_range[1]),
     }
+
+
+def wheel_expert_motion_curriculum(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    velocity_stages: list[dict],
+    profile_stages: list[dict],
+    reward_weight_stages: list[dict],
+) -> dict[str, torch.Tensor]:
+    """WHEEL 专家课程：同步速度范围、运动画像比例和专项惩罚权重。"""
+    del env_ids
+    term = env.command_manager.get_term(command_name)
+    cfg = term.cfg
+    step = env.common_step_counter
+
+    for stage in velocity_stages:
+        if step >= stage["step"]:
+            if "lin_vel_x_range" in stage:
+                cfg.lin_vel_x_range = stage["lin_vel_x_range"]
+            if "ang_vel_yaw_range" in stage:
+                cfg.ang_vel_yaw_range = stage["ang_vel_yaw_range"]
+
+    current_profiles = getattr(cfg, "wheel_profile_probabilities", (1.0, 0.0, 0.0))
+    for stage in profile_stages:
+        if step >= stage["step"]:
+            current_profiles = stage["wheel_profile_probabilities"]
+    cfg.wheel_profile_probabilities = tuple(float(value) for value in current_profiles)
+
+    logs: dict[str, torch.Tensor] = {
+        "step_counter": torch.tensor(float(step)),
+        "lin_vel_x_max": torch.tensor(float(cfg.lin_vel_x_range[1])),
+        "ang_vel_yaw_max": torch.tensor(float(cfg.ang_vel_yaw_range[1])),
+        "wheel_profile_mixed": torch.tensor(float(cfg.wheel_profile_probabilities[0])),
+        "wheel_profile_straight": torch.tensor(float(cfg.wheel_profile_probabilities[1])),
+        "wheel_profile_turn": torch.tensor(float(cfg.wheel_profile_probabilities[2])),
+    }
+
+    for stage in reward_weight_stages:
+        term_name = stage["term_name"]
+        weight = _lerp(
+            int(step),
+            int(stage["start_step"]),
+            int(stage.get("ramp_steps", 0)),
+            float(stage["initial_weight"]),
+            float(stage["final_weight"]),
+        )
+        applied = _set_reward_weight(env, term_name, weight)
+        if applied is not None:
+            logs[f"{term_name}_weight"] = torch.tensor(applied)
+
+    return logs
 
 
 def commands_vel_linear(

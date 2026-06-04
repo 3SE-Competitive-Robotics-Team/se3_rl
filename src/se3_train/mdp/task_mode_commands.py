@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 _TASK_COMMAND_DIM = 11
 _VZ_SUCCESS_THRESHOLD = 1.0
+_WHEEL_PROFILE_MIXED = 0
+_WHEEL_PROFILE_STRAIGHT = 1
+_WHEEL_PROFILE_TURN = 2
 
 # terrain_types 列索引对应 sub_terrains 的 insertion order:
 # 0=flat, 1=random_rough, 2=wave, 3=open_stairs, 4=random_spread_boxes, 5=discrete_obstacles
@@ -82,6 +85,15 @@ class TaskModeCommandCfg(BasicCommandCfg):
     enable_mode_switch: bool = True
     """是否允许 episode 内切换模式。"""
 
+    wheel_profile_probabilities: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    """WHEEL 内部指令画像采样概率:mixed/straight/turn。"""
+
+    wheel_straight_min_speed: float = 0.2
+    """straight 画像下 x 速度指令的最小绝对值。"""
+
+    wheel_turn_min_yaw: float = 0.2
+    """turn 画像下 yaw 角速度指令的最小绝对值。"""
+
     def build(self, env: ManagerBasedRlEnv) -> TaskModeCommandTerm:
         return TaskModeCommandTerm(self, env)
 
@@ -124,6 +136,9 @@ class TaskModeCommandTerm(BasicCommandTerm):
         self._mode_elapsed_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._mode_switch_steps = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
         self._mode_blend_steps = torch.ones(self.num_envs, dtype=torch.long, device=self.device)
+        self._wheel_profile = torch.full(
+            (self.num_envs,), _WHEEL_PROFILE_MIXED, dtype=torch.long, device=self.device
+        )
         self._sync_mode_columns(torch.arange(self.num_envs, device=self.device))
 
     @property
@@ -219,6 +234,7 @@ class TaskModeCommandTerm(BasicCommandTerm):
             jump_ids = env_ids[self._mode[env_ids] == int(TaskMode.JUMP)]
             non_jump_ids = env_ids[self._mode[env_ids] != int(TaskMode.JUMP)]
             self._clear_non_jump_state(non_jump_ids)
+            self._apply_mode_command_shape(env_ids)
             if len(jump_ids) > 0:
                 self._start_jump(jump_ids)
             self._sync_mode_columns(env_ids)
@@ -449,6 +465,10 @@ class TaskModeCommandTerm(BasicCommandTerm):
         if len(jump_ids) > 0:
             self._zero_locomotion_command(jump_ids)
 
+        wheel_ids = env_ids[self._mode[env_ids] == int(TaskMode.WHEEL)]
+        if len(wheel_ids) > 0:
+            self._apply_wheel_command_profiles(wheel_ids)
+
         gait_ids = env_ids[self._mode[env_ids] == int(TaskMode.GAIT)]
         if len(gait_ids) > 0:
             # 纯步态先限制速度，避免初期被高速轮式目标带偏。
@@ -466,6 +486,81 @@ class TaskModeCommandTerm(BasicCommandTerm):
             self._command[gait_wheel_ids, 0] = torch.clamp(
                 self._command[gait_wheel_ids, 0], -1.2, 1.2
             )
+
+        non_wheel_ids = env_ids[self._mode[env_ids] != int(TaskMode.WHEEL)]
+        if len(non_wheel_ids) > 0:
+            self._wheel_profile[non_wheel_ids] = _WHEEL_PROFILE_MIXED
+
+    def _apply_wheel_command_profiles(self, env_ids: torch.Tensor) -> None:
+        """按 WHEEL 内部画像修整指令，不增加观测维度。"""
+        if len(env_ids) == 0:
+            return
+        probs = torch.tensor(
+            self.cfg.wheel_profile_probabilities,
+            device=self.device,
+            dtype=torch.float,
+        )
+        if probs.numel() != 3:
+            raise ValueError(
+                f"wheel_profile_probabilities 需要 3 项，实际得到 {probs.numel()} 项。"
+            )
+        probs = torch.clamp(probs, min=0.0)
+        if probs.sum() <= 0.0:
+            probs = torch.tensor((1.0, 0.0, 0.0), device=self.device, dtype=torch.float)
+        else:
+            probs = probs / probs.sum()
+        profile = torch.multinomial(probs, len(env_ids), replacement=True)
+        self._wheel_profile[env_ids] = profile
+
+        straight_ids = env_ids[profile == _WHEEL_PROFILE_STRAIGHT]
+        if len(straight_ids) > 0:
+            self._standing_mask[straight_ids] = False
+            self._command[straight_ids, 0] = self._sample_min_abs_command(
+                len(straight_ids),
+                self.cfg.lin_vel_x_range,
+                self.cfg.wheel_straight_min_speed,
+            )
+            self._command[straight_ids, 1:4] = 0.0
+
+        turn_ids = env_ids[profile == _WHEEL_PROFILE_TURN]
+        if len(turn_ids) > 0:
+            self._standing_mask[turn_ids] = False
+            self._command[turn_ids, 0] = 0.0
+            self._command[turn_ids, 1] = self._sample_min_abs_command(
+                len(turn_ids),
+                self.cfg.ang_vel_yaw_range,
+                self.cfg.wheel_turn_min_yaw,
+            )
+            self._command[turn_ids, 2:4] = 0.0
+
+    def _sample_min_abs_command(
+        self,
+        count: int,
+        value_range: tuple[float, float],
+        min_abs: float,
+    ) -> torch.Tensor:
+        """在给定范围内采样绝对值不小于 min_abs 的指令。"""
+        lo, hi = float(value_range[0]), float(value_range[1])
+        min_abs = max(float(min_abs), 0.0)
+        result = torch.zeros(count, device=self.device)
+
+        pos_max = max(hi, 0.0)
+        neg_max = max(-lo, 0.0)
+        pos_ok = pos_max >= min_abs
+        neg_ok = neg_max >= min_abs
+        if not pos_ok and not neg_ok:
+            return result
+
+        choose_pos = torch.rand(count, device=self.device) < 0.5
+        if pos_ok and not neg_ok:
+            choose_pos = torch.ones(count, device=self.device, dtype=torch.bool)
+        elif neg_ok and not pos_ok:
+            choose_pos = torch.zeros(count, device=self.device, dtype=torch.bool)
+
+        pos_mag = min_abs + torch.rand(count, device=self.device) * max(pos_max - min_abs, 0.0)
+        neg_mag = min_abs + torch.rand(count, device=self.device) * max(neg_max - min_abs, 0.0)
+        result = torch.where(choose_pos, pos_mag, -neg_mag)
+        return torch.clamp(result, lo, hi)
 
     def _sync_mode_columns(self, env_ids: torch.Tensor) -> None:
         """把内部 mode 状态写入 command 追加列。"""
@@ -486,6 +581,23 @@ class TaskModeCommandTerm(BasicCommandTerm):
             log[f"TaskMode/{TASK_MODE_NAMES[int(mode)]}_ratio"] = (
                 (self._mode == int(mode)).float().mean().item()
             )
+        wheel = self._mode == int(TaskMode.WHEEL)
+        if wheel.any():
+            wheel_count = torch.clamp(wheel.float().sum(), min=1.0)
+            log["TaskMode/diag_wheel_profile_mixed_ratio"] = (
+                ((self._wheel_profile == _WHEEL_PROFILE_MIXED) & wheel).float().sum() / wheel_count
+            ).item()
+            log["TaskMode/diag_wheel_profile_straight_ratio"] = (
+                ((self._wheel_profile == _WHEEL_PROFILE_STRAIGHT) & wheel).float().sum()
+                / wheel_count
+            ).item()
+            log["TaskMode/diag_wheel_profile_turn_ratio"] = (
+                ((self._wheel_profile == _WHEEL_PROFILE_TURN) & wheel).float().sum() / wheel_count
+            ).item()
+        else:
+            log["TaskMode/diag_wheel_profile_mixed_ratio"] = 0.0
+            log["TaskMode/diag_wheel_profile_straight_ratio"] = 0.0
+            log["TaskMode/diag_wheel_profile_turn_ratio"] = 0.0
         log["TaskMode/mode_blend_mean"] = self._command[:, 9].mean().item()
 
 

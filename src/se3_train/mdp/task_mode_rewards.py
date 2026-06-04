@@ -1003,6 +1003,104 @@ def wheel_feet_distance(
     return penalty * gate
 
 
+def wheel_straight_yaw_drift(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    min_speed: float = 0.2,
+    max_yaw_command: float = 0.05,
+) -> torch.Tensor:
+    """WHEEL 直线跑样本的 yaw 漂移惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    straight = (torch.abs(cmd[:, 0]) > float(min_speed)) & (
+        torch.abs(cmd[:, 1]) < float(max_yaw_command)
+    )
+    robot = env.scene["robot"]
+    yaw_rate = robot.data.root_link_ang_vel_b[:, 2]
+    penalty = yaw_rate**2
+    gate = mode_weight(env, command_name, TaskMode.WHEEL) * straight.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_wheel_straight_sample_ratio": _mean_on_mask(
+                    straight.float(),
+                    mode_weight(env, command_name, TaskMode.WHEEL) > 0.0,
+                ),
+                "TaskMode/diag_wheel_straight_yaw_rate_abs": _mean_on_mask(
+                    torch.abs(yaw_rate),
+                    active,
+                ),
+            }
+        )
+
+    return penalty * gate
+
+
+def wheel_straight_lateral_vel(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    min_speed: float = 0.2,
+    max_yaw_command: float = 0.05,
+) -> torch.Tensor:
+    """WHEEL 直线跑样本的横向速度惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    straight = (torch.abs(cmd[:, 0]) > float(min_speed)) & (
+        torch.abs(cmd[:, 1]) < float(max_yaw_command)
+    )
+    robot = env.scene["robot"]
+    lateral_vel = robot.data.root_link_lin_vel_b[:, 1]
+    penalty = lateral_vel**2
+    gate = mode_weight(env, command_name, TaskMode.WHEEL) * straight.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_wheel_straight_lateral_vel_abs": _mean_on_mask(
+                    torch.abs(lateral_vel),
+                    active,
+                ),
+            }
+        )
+
+    return penalty * gate
+
+
+def wheel_in_place_linear_vel(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    max_linear_command: float = 0.05,
+    min_yaw_command: float = 0.2,
+) -> torch.Tensor:
+    """WHEEL 原地转样本的平移速度惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    in_place_turn = (torch.abs(cmd[:, 0]) < float(max_linear_command)) & (
+        torch.abs(cmd[:, 1]) > float(min_yaw_command)
+    )
+    robot = env.scene["robot"]
+    lin_vel_xy = robot.data.root_link_lin_vel_b[:, :2]
+    penalty = torch.sum(lin_vel_xy**2, dim=1)
+    gate = mode_weight(env, command_name, TaskMode.WHEEL) * in_place_turn.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_wheel_turn_sample_ratio": _mean_on_mask(
+                    in_place_turn.float(),
+                    mode_weight(env, command_name, TaskMode.WHEEL) > 0.0,
+                ),
+                "TaskMode/diag_wheel_turn_linear_vel_abs": _mean_on_mask(
+                    torch.linalg.norm(lin_vel_xy, dim=1),
+                    active,
+                ),
+            }
+        )
+
+    return penalty * gate
+
+
 def gait_no_wheel_drive(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1346,6 +1444,9 @@ __all__ = [
     "mode_tracking_ang_vel",
     "mode_tracking_lin_vel",
     "wheel_feet_distance",
+    "wheel_in_place_linear_vel",
+    "wheel_straight_lateral_vel",
+    "wheel_straight_yaw_drift",
     "wheel_stumble",
     "wheel_swing_clearance",
 ]

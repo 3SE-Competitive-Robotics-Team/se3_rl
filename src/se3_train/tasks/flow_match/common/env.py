@@ -178,6 +178,33 @@ def apply_loco_task_mode_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
+    cfg.rewards["wheel_straight_yaw_drift"] = RewardTermCfg(
+        func=rewards.wheel_straight_yaw_drift,
+        weight=0.0,
+        params={
+            "command_name": "velocity_height",
+            "min_speed": 0.2,
+            "max_yaw_command": 0.05,
+        },
+    )
+    cfg.rewards["wheel_straight_lateral_vel"] = RewardTermCfg(
+        func=rewards.wheel_straight_lateral_vel,
+        weight=0.0,
+        params={
+            "command_name": "velocity_height",
+            "min_speed": 0.2,
+            "max_yaw_command": 0.05,
+        },
+    )
+    cfg.rewards["wheel_in_place_linear_vel"] = RewardTermCfg(
+        func=rewards.wheel_in_place_linear_vel,
+        weight=0.0,
+        params={
+            "command_name": "velocity_height",
+            "max_linear_command": 0.05,
+            "min_yaw_command": 0.2,
+        },
+    )
     cfg.rewards["gait_no_wheel_drive"] = RewardTermCfg(
         func=rewards.gait_no_wheel_drive,
         weight=-4.0,
@@ -514,38 +541,77 @@ def wheel_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = single_label_env_cfg(TaskMode.WHEEL, play=play)
 
     if not play:
-        cfg.curriculum["command_vel"].params["velocity_stages"] = [
-            {
-                "step": 0,
-                "lin_vel_x_range": (0.0, 0.0),
-                "ang_vel_yaw_range": (0.0, 0.0),
+        cfg.curriculum["command_vel"] = CurriculumTermCfg(
+            func=curriculums.wheel_expert_motion_curriculum,
+            params={
+                "command_name": "velocity_height",
+                "velocity_stages": [
+                    {
+                        "step": 0,
+                        "lin_vel_x_range": (0.0, 0.0),
+                        "ang_vel_yaw_range": (0.0, 0.0),
+                    },
+                    {
+                        "step": 500,
+                        "lin_vel_x_range": (-0.5, 0.5),
+                        "ang_vel_yaw_range": (-0.5, 0.5),
+                    },
+                    {
+                        "step": 1500,
+                        "lin_vel_x_range": (-1.0, 1.0),
+                        "ang_vel_yaw_range": (-1.0, 1.0),
+                    },
+                    {
+                        "step": 2500,
+                        "lin_vel_x_range": (-1.5, 1.5),
+                        "ang_vel_yaw_range": (-2.0, 2.0),
+                    },
+                    {
+                        "step": 3500,
+                        "lin_vel_x_range": (-2.0, 2.0),
+                        "ang_vel_yaw_range": (-2.5, 2.5),
+                    },
+                    {
+                        "step": 4500,
+                        "lin_vel_x_range": (-2.5, 2.5),
+                        "ang_vel_yaw_range": (-3.0, 3.0),
+                    },
+                ],
+                "profile_stages": [
+                    {
+                        "step": 0,
+                        "wheel_profile_probabilities": (1.0, 0.0, 0.0),
+                    },
+                    {
+                        "step": 500,
+                        "wheel_profile_probabilities": (0.4, 0.35, 0.25),
+                    },
+                ],
+                "reward_weight_stages": [
+                    {
+                        "term_name": "wheel_straight_yaw_drift",
+                        "start_step": 500,
+                        "ramp_steps": 1500,
+                        "initial_weight": 0.0,
+                        "final_weight": -2.0,
+                    },
+                    {
+                        "term_name": "wheel_straight_lateral_vel",
+                        "start_step": 500,
+                        "ramp_steps": 1500,
+                        "initial_weight": 0.0,
+                        "final_weight": -1.0,
+                    },
+                    {
+                        "term_name": "wheel_in_place_linear_vel",
+                        "start_step": 500,
+                        "ramp_steps": 1500,
+                        "initial_weight": 0.0,
+                        "final_weight": -2.0,
+                    },
+                ],
             },
-            {
-                "step": 500,
-                "lin_vel_x_range": (-0.5, 0.5),
-                "ang_vel_yaw_range": (-0.5, 0.5),
-            },
-            {
-                "step": 1500,
-                "lin_vel_x_range": (-1.0, 1.0),
-                "ang_vel_yaw_range": (-1.0, 1.0),
-            },
-            {
-                "step": 2500,
-                "lin_vel_x_range": (-1.5, 1.5),
-                "ang_vel_yaw_range": (-2.0, 2.0),
-            },
-            {
-                "step": 3500,
-                "lin_vel_x_range": (-2.0, 2.0),
-                "ang_vel_yaw_range": (-2.5, 2.5),
-            },
-            {
-                "step": 4500,
-                "lin_vel_x_range": (-2.5, 2.5),
-                "ang_vel_yaw_range": (-3.0, 3.0),
-            },
-        ]
+        )
 
     cfg.terminations["leg_contact"] = TerminationTermCfg(
         func=terminations.BodyContactDelayed(),
