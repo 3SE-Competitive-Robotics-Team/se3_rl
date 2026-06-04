@@ -54,7 +54,6 @@ from se3_train.mdp.task_mode_rewards import (
     mode_tracking_ang_vel,
     mode_tracking_lin_vel,
     wheel_feet_distance,
-    wheel_joint_mirror,
     wheel_stumble,
     wheel_swing_clearance,
 )
@@ -106,7 +105,6 @@ __all__ = [
     "tracking_ang_vel_l2",
     "tracking_orientation_l2",
     "wheel_feet_distance",
-    "wheel_joint_mirror",
     "wheel_stumble",
     "wheel_swing_clearance",
 ]

@@ -966,25 +966,6 @@ def gait_pose(
     return reward * gate
 
 
-def wheel_joint_mirror(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """WHEEL 模式左右腿关节镜像惩罚，公式与 flat joint_mirror 一致。"""
-    penalty = rewards.joint_mirror(env, asset_cfg=asset_cfg)
-    gate = mode_weight(env, command_name, TaskMode.WHEEL)
-
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        active = gate > 0.0
-        env.extras["log"]["TaskMode/diag_wheel_joint_mirror"] = _mean_on_mask(
-            penalty,
-            active,
-        )
-
-    return penalty * gate
-
-
 def wheel_feet_distance(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1365,7 +1346,6 @@ __all__ = [
     "mode_tracking_ang_vel",
     "mode_tracking_lin_vel",
     "wheel_feet_distance",
-    "wheel_joint_mirror",
     "wheel_stumble",
     "wheel_swing_clearance",
 ]

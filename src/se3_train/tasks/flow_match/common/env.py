@@ -133,7 +133,7 @@ def apply_task_mode_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
 def apply_loco_task_mode_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     """挂载四种 loco mode 的奖励和软约束。"""
     cfg.rewards.pop("flat_wheel_center_alignment", None)
-    cfg.rewards.pop("joint_mirror", None)
+    cfg.rewards["joint_mirror"].weight = -0.179
 
     wheel_modes = (int(TaskMode.WHEEL),)
     gait_modes = (int(TaskMode.GAIT),)
@@ -166,11 +166,6 @@ def apply_loco_task_mode_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             "modes": wheel_modes,
             "asset_cfg": SceneEntityCfg("robot"),
         },
-    )
-    cfg.rewards["wheel_joint_mirror"] = RewardTermCfg(
-        func=rewards.wheel_joint_mirror,
-        weight=-0.179,
-        params={"command_name": "velocity_height", "asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["wheel_feet_distance"] = RewardTermCfg(
         func=rewards.wheel_feet_distance,
