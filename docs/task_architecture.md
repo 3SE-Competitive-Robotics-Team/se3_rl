@@ -10,8 +10,7 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
-| `flow_match/wheel/` | `SE3-WheelLegged-FlowMatch-Wheel-GRU` | FlowMatch `WHEEL=0` 单标签能力任务 |
-| `flow_match/wheel_vio/` | `SE3-WheelLegged-FlowMatch-Wheel-VIO` | FlowMatch `WHEEL=0` 单标签普通 VIO/MLP 能力任务 |
+| `flow_match/wheel/` | `SE3-WheelLegged-FlowMatch-Wheel-GRU` | FlowMatch `WHEEL=0` 单标签一段式 rough 课程能力任务 |
 | `flow_match/gait_pretrain/` | `SE3-WheelLegged-FlowMatch-Gait-PreTrain-GRU` | FlowMatch `GAIT=1` 单标签预训练任务 |
 | `flow_match/gait_finetune/` | `SE3-WheelLegged-FlowMatch-Gait-FineTune-GRU` | FlowMatch `GAIT=1` 单标签地形与速度 FineTune 任务 |
 | `flow_match/wheel_leg/` | `SE3-WheelLegged-FlowMatch-WheelLeg-GRU` | FlowMatch `WHEEL_LEG=2` 单标签能力任务 |
@@ -22,7 +21,7 @@
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
-FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 保留已经训练过的 `PreTrain` 和 `FineTune` 两个入口，`WHEEL` 同时保留 GRU 和普通 VIO/MLP 两个策略结构入口。
+FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 保留已经训练过的 `PreTrain` 和 `FineTune` 两个入口，`WHEEL` 使用 `SE3-WheelLegged-FlowMatch-Wheel-GRU` 一段式入口，从平地课程逐步过渡到 random rough。
 
 ## 单个 task 的目录结构
 
@@ -125,14 +124,12 @@ from se3_train.tasks.flow_match import (
     jump,
     wheel,
     wheel_leg,
-    wheel_vio,
 )
 
 for module in (
     rough,
     flat,
     wheel,
-    wheel_vio,
     gait_pretrain,
     gait_finetune,
     wheel_leg,

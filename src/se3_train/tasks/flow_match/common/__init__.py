@@ -15,12 +15,13 @@ from .env import (
     loco_light_terrain_env_cfg,
     single_label_env_cfg,
     task_mode_env_cfg,
+    wheel_env_cfg,
+    wheel_rough_terrain_cfg,
 )
 from .rl_cfg import (
     gait_finetune_gru_ppo_runner_cfg,
     gait_pretrain_gru_ppo_runner_cfg,
     single_label_gru_ppo_runner_cfg,
-    single_label_vio_ppo_runner_cfg,
 )
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "loco_light_terrain_env_cfg",
     "single_label_env_cfg",
     "single_label_gru_ppo_runner_cfg",
-    "single_label_vio_ppo_runner_cfg",
     "task_mode_env_cfg",
+    "wheel_env_cfg",
+    "wheel_rough_terrain_cfg",
 ]

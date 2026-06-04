@@ -9,14 +9,12 @@ from . import (
     jump,
     wheel,
     wheel_leg,
-    wheel_vio,
 )
 
 
 def register() -> None:
     """注册 FlowMatch task 组内全部正式任务。"""
     wheel.register()
-    wheel_vio.register()
     gait_pretrain.register()
     gait_finetune.register()
     wheel_leg.register()

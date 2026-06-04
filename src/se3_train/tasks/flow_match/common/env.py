@@ -359,6 +359,30 @@ def loco_light_terrain_cfg() -> TerrainGeneratorCfg:
     )
 
 
+def wheel_rough_terrain_cfg() -> TerrainGeneratorCfg:
+    """WHEEL 专家使用的平地到 rough 单阶段地形课程。"""
+    return TerrainGeneratorCfg(
+        curriculum=True,
+        size=(8.0, 8.0),
+        border_width=20.0,
+        border_height=1.0,
+        num_rows=5,
+        num_cols=2,
+        color_scheme="height",
+        sub_terrains={
+            "flat": BoxFlatTerrainCfg(proportion=0.90),
+            "random_rough": HfRandomUniformTerrainCfg(
+                proportion=0.10,
+                noise_range=(0.005, 0.045),
+                noise_step=0.005,
+                border_width=0.25,
+            ),
+        },
+        difficulty_range=(0.0, 0.7),
+        add_lights=True,
+    )
+
+
 def gait_finetune_light_terrain_cfg() -> TerrainGeneratorCfg:
     """GAIT fine-tune 使用的低强度崎岖和低矮障碍地形。"""
     return TerrainGeneratorCfg(
@@ -499,6 +523,63 @@ def single_label_env_cfg(
             terrain_generator=loco_light_terrain_cfg(),
             max_init_terrain_level=1,
         )
+    return cfg
+
+
+def wheel_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """构造一段式 WHEEL 专家训练环境。"""
+    cfg = single_label_env_cfg(TaskMode.WHEEL, play=play)
+    cfg.scene.terrain = TerrainEntityCfg(
+        terrain_type="generator",
+        terrain_generator=wheel_rough_terrain_cfg(),
+        max_init_terrain_level=0,
+    )
+
+    if not play:
+        cfg.curriculum["command_vel"].params["velocity_stages"] = [
+            {
+                "step": 0,
+                "lin_vel_x_range": (0.0, 0.0),
+                "ang_vel_yaw_range": (0.0, 0.0),
+            },
+            {
+                "step": 500,
+                "lin_vel_x_range": (-0.5, 0.5),
+                "ang_vel_yaw_range": (-0.5, 0.5),
+            },
+            {
+                "step": 1500,
+                "lin_vel_x_range": (-1.0, 1.0),
+                "ang_vel_yaw_range": (-1.0, 1.0),
+            },
+            {
+                "step": 2500,
+                "lin_vel_x_range": (-1.5, 1.5),
+                "ang_vel_yaw_range": (-2.0, 2.0),
+            },
+            {
+                "step": 3500,
+                "lin_vel_x_range": (-2.0, 2.0),
+                "ang_vel_yaw_range": (-2.5, 2.5),
+            },
+            {
+                "step": 4500,
+                "lin_vel_x_range": (-2.5, 2.5),
+                "ang_vel_yaw_range": (-3.0, 3.0),
+            },
+        ]
+        cfg.curriculum["wheel_terrain_distribution"] = CurriculumTermCfg(
+            func=curriculums.terrain_distribution_linear,
+            params={
+                "start_step": 0,
+                "end_step": 20000,
+                "start_proportions": (0.95, 0.05),
+                "end_proportions": (0.35, 0.65),
+                "start_max_level": 0,
+                "end_max_level": 4,
+            },
+        )
+
     return cfg
 
 

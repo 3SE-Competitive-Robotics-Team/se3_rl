@@ -67,7 +67,7 @@ def commands_vel_linear(
     }
 
 
-def gait_terrain_distribution_linear(
+def terrain_distribution_linear(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     start_step: int,
@@ -77,7 +77,7 @@ def gait_terrain_distribution_linear(
     start_max_level: int = 0,
     end_max_level: int | None = None,
 ) -> dict[str, torch.Tensor]:
-    """按训练步数线性提高 GAIT 崎岖地形和低矮障碍物占比。"""
+    """按训练步数线性调整地形类型占比和最大难度等级。"""
     terrain = env.scene.terrain
     if terrain is None or terrain.terrain_origins is None:
         return {
@@ -149,6 +149,29 @@ def gait_terrain_distribution_linear(
     if num_cols >= 5:
         extras["stairs_down_ratio"] = torch.mean((terrain_types == 4).float())
     return extras
+
+
+def gait_terrain_distribution_linear(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    start_step: int,
+    end_step: int,
+    start_proportions: tuple[float, ...],
+    end_proportions: tuple[float, ...],
+    start_max_level: int = 0,
+    end_max_level: int | None = None,
+) -> dict[str, torch.Tensor]:
+    """兼容旧 GAIT 课程名，实际使用通用地形占比课程。"""
+    return terrain_distribution_linear(
+        env=env,
+        env_ids=env_ids,
+        start_step=start_step,
+        end_step=end_step,
+        start_proportions=start_proportions,
+        end_proportions=end_proportions,
+        start_max_level=start_max_level,
+        end_max_level=end_max_level,
+    )
 
 
 def push_disturbance(
