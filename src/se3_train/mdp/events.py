@@ -358,6 +358,8 @@ def reset_root_state_full_angle_random(
             pitch_flip_height,
             pitch_flip_safe_height,
         )
+    pitch_flip_reset = recovery_state.ensure_bool_buffer(env, "_recovery_pitch_flip_reset_mask")
+    pitch_flip_reset[env_ids] = pitch_flip_mask
 
     pos[:, 0:3] += env.scene.env_origins[env_ids]
     pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
@@ -1096,6 +1098,7 @@ def reset_joints(
     offset_iter: int = 0,
     recovery_joint_offset_range: float = 0.0,
     recovery_joint_vel_range: tuple[float, float] = (0.0, 0.0),
+    pitch_flip_default_joint_prob: float = 0.0,
     align_root_height_to_wheels: bool = False,
     wheel_clearance: float = _DEFAULT_RESET_WHEEL_CLEARANCE_M,
     command_name: str = "velocity_height",
@@ -1116,6 +1119,9 @@ def reset_joints(
     hip_joint_offset_range = _stage_value(stage, "hip_joint_offset_range", hip_joint_offset_range)
     knee_joint_offset_range = _stage_value(
         stage, "knee_joint_offset_range", knee_joint_offset_range
+    )
+    pitch_flip_default_joint_prob = float(
+        _stage_value(stage, "pitch_flip_default_joint_prob", pitch_flip_default_joint_prob)
     )
 
     asset: Entity = env.scene[asset_cfg.name]
@@ -1224,6 +1230,34 @@ def reset_joints(
                 policy_leg_vel,
                 rows=local_ids,
             )
+
+    pitch_flip_mask = getattr(env, "_recovery_pitch_flip_reset_mask", None)
+    pitch_flip_default_joint_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
+    if (
+        isinstance(pitch_flip_mask, torch.Tensor)
+        and pitch_flip_mask.shape[0] == env.num_envs
+        and pitch_flip_default_joint_prob > 0.0
+    ):
+        pitch_flip_default_joint_mask = pitch_flip_mask[env_ids].to(
+            device=env.device,
+            dtype=torch.bool,
+        )
+        if pitch_flip_default_joint_prob < 1.0:
+            pitch_flip_default_joint_mask &= (
+                torch.rand(len(env_ids), device=env.device) < pitch_flip_default_joint_prob
+            )
+        if pitch_flip_default_joint_mask.any():
+            default_joint_rows = pitch_flip_default_joint_mask.nonzero().flatten()
+            joint_pos[pitch_flip_default_joint_mask] = asset.data.default_joint_pos[
+                env_ids[pitch_flip_default_joint_mask]
+            ]
+            joint_pos[default_joint_rows[:, None], wheel_ids] = 0.0
+            joint_vel[pitch_flip_default_joint_mask] = 0.0
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {})["Reset/pitch_flip_default_joint_ratio"] = (
+            pitch_flip_default_joint_mask.float().mean().item()
+        )
 
     cache_reset_mask = getattr(env, "_recovery_cache_reset_mask", None)
     cache_joint_pos = getattr(env, "_recovery_cached_joint_pos", None)

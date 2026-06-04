@@ -117,6 +117,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hip_joint_offset_range": (-0.50, 0.55),
                 "knee_joint_offset_range": (-0.45, 0.65),
                 "joint_vel_range": (-0.8, 0.8),
+                "pitch_flip_default_joint_prob": 1.0,
             },
         ),
     }
