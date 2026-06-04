@@ -96,10 +96,6 @@ class SerialLegDelayedAction(ActionTerm):
             _SHARED_ROBOT.active_rod_angle_coeffs,
             device=self.device,
         )
-        self._policy_leg_defaults = torch.tensor(
-            tuple(_SHARED_ROBOT.default_dof_pos[i] for i in JointGroup.LEG_ACTUATORS),
-            device=self.device,
-        )
         self._action_dim = 6
 
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
@@ -145,7 +141,7 @@ class SerialLegDelayedAction(ActionTerm):
 
         if self._fourbar_surrogate:
             policy_target = self._delayed_actions[:, :4] * self._leg_action_scales
-            policy_target = policy_target + self._policy_leg_defaults
+            policy_target = policy_target + self._current_policy_leg_defaults()
             policy_target = self._clamp_active_rod_angles(policy_target)
             output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
             output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
@@ -170,6 +166,11 @@ class SerialLegDelayedAction(ActionTerm):
         )
 
         self._entity.set_joint_velocity_target(wheel_target, joint_ids=self._wheel_joint_ids)
+
+    def _current_policy_leg_defaults(self) -> torch.Tensor:
+        """返回当前 env 随机化后的腿部默认位姿，坐标系与 policy 动作一致。"""
+        output_default = self._entity.data.default_joint_pos[:, self._leg_joint_ids]
+        return output_to_policy_pos_torch(output_default)
 
     def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
         """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
