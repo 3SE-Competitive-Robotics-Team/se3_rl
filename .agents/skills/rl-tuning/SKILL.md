@@ -149,7 +149,7 @@ sleep 300 && ssh wuyinyun "grep -E 'diag_max_airborne_vz|diag_tilt_airborne|diag
 ## 本项目特定参考
 
 - 机器人参数、默认姿态、PD 增益：`src/se3_shared/robot.py`
-- 训练环境配置：`src/se3_train/env_cfg.py`
+- 训练环境配置：`src/se3_train/tasks/<task>/env_cfg.py`
 - 跳跃奖励函数：`src/se3_train/mdp/jump_rewards.py`
 - 跳跃状态机：`src/se3_train/mdp/jump_commands.py`
 - RSI 实现：`src/se3_train/mdp/events.py`

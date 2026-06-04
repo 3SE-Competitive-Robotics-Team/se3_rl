@@ -346,7 +346,7 @@ ssh wuyinyun "kill <PID1> <PID2>"
 
 ### ContactSensor 初始化失败
 
-如果训练日志出现传感器找不到 body 的报错，检查 MJCF 中的 body 名称是否与 `env_cfg.py` 中 `ContactMatch pattern` 匹配：
+如果训练日志出现传感器找不到 body 的报错，检查 MJCF 中的 body 名称是否与对应任务 `env_cfg.py` 里的 `ContactMatch pattern` 匹配：
 - 碰撞传感器：`base_link|lf0_Link|lf1_Link|rf0_Link|rf1_Link`
 - 轮子传感器：`l_wheel_Link|r_wheel_Link`
 
