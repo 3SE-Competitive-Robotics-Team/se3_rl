@@ -359,30 +359,6 @@ def loco_light_terrain_cfg() -> TerrainGeneratorCfg:
     )
 
 
-def wheel_rough_terrain_cfg() -> TerrainGeneratorCfg:
-    """WHEEL 专家使用的平地到 rough 单阶段地形课程。"""
-    return TerrainGeneratorCfg(
-        curriculum=True,
-        size=(8.0, 8.0),
-        border_width=20.0,
-        border_height=1.0,
-        num_rows=5,
-        num_cols=2,
-        color_scheme="height",
-        sub_terrains={
-            "flat": BoxFlatTerrainCfg(proportion=0.90),
-            "random_rough": HfRandomUniformTerrainCfg(
-                proportion=0.10,
-                noise_range=(0.005, 0.045),
-                noise_step=0.005,
-                border_width=0.25,
-            ),
-        },
-        difficulty_range=(0.0, 0.7),
-        add_lights=True,
-    )
-
-
 def gait_finetune_light_terrain_cfg() -> TerrainGeneratorCfg:
     """GAIT fine-tune 使用的低强度崎岖和低矮障碍地形。"""
     return TerrainGeneratorCfg(
@@ -527,11 +503,22 @@ def single_label_env_cfg(
 
 
 def wheel_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """构造一段式 WHEEL 专家训练环境。"""
+    """构造纯平地 WHEEL 专家训练环境。"""
     cfg = single_label_env_cfg(TaskMode.WHEEL, play=play)
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=wheel_rough_terrain_cfg(),
+        terrain_generator=TerrainGeneratorCfg(
+            curriculum=False,
+            size=(8.0, 8.0),
+            border_width=20.0,
+            border_height=1.0,
+            num_rows=1,
+            num_cols=1,
+            color_scheme="height",
+            sub_terrains={"flat": BoxFlatTerrainCfg(proportion=1.0)},
+            difficulty_range=(0.0, 0.0),
+            add_lights=True,
+        ),
         max_init_terrain_level=0,
     )
 
@@ -568,17 +555,44 @@ def wheel_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "ang_vel_yaw_range": (-3.0, 3.0),
             },
         ]
-        cfg.curriculum["wheel_terrain_distribution"] = CurriculumTermCfg(
-            func=curriculums.terrain_distribution_linear,
-            params={
-                "start_step": 0,
-                "end_step": 20000,
-                "start_proportions": (0.95, 0.05),
-                "end_proportions": (0.35, 0.65),
-                "start_max_level": 0,
-                "end_max_level": 4,
-            },
-        )
+
+    cfg.terminations["leg_contact"] = TerminationTermCfg(
+        func=terminations.BodyContactDelayed(),
+        time_out=False,
+        params={
+            "sensor_name": "leg_contact_sensor",
+            "force_threshold": 0.2,
+            "delay_steps": 20,
+        },
+    )
+    cfg.terminations["base_link_contact"] = TerminationTermCfg(
+        func=terminations.BodyContactDelayed(),
+        time_out=False,
+        params={
+            "sensor_name": "collision_sensor",
+            "force_threshold": 1.0,
+            "delay_steps": 20,
+        },
+    )
+    cfg.rewards["is_terminated"] = RewardTermCfg(func=rewards.is_terminated, weight=-100.0)
+    cfg.rewards["leg_contact_penalty"] = RewardTermCfg(
+        func=terminations.BodyContactGracePenalty(),
+        weight=-100.0,
+        params={
+            "sensor_name": "leg_contact_sensor",
+            "force_threshold": 0.2,
+            "delay_steps": 20,
+        },
+    )
+    cfg.rewards["base_link_contact_penalty"] = RewardTermCfg(
+        func=terminations.BodyContactGracePenalty(),
+        weight=-100.0,
+        params={
+            "sensor_name": "collision_sensor",
+            "force_threshold": 1.0,
+            "delay_steps": 20,
+        },
+    )
 
     return cfg
 
@@ -671,7 +685,7 @@ def gait_pretrain_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     cfg.rewards = _gait_pretrain_rewards()
-    cfg.episode_length_s = 10.0
+    cfg.episode_length_s = 20.0
     return cfg
 
 

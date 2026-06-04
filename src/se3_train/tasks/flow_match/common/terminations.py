@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from se3_train.mdp.terminations import (
+    BodyContactDelayed,
+    BodyContactGracePenalty,
     BodyContactPenalty,
     bad_orientation_delayed,
     base_link_contact_delayed,
@@ -12,6 +14,8 @@ from se3_train.mdp.terminations import (
 )
 
 __all__ = [
+    "BodyContactDelayed",
+    "BodyContactGracePenalty",
     "BodyContactPenalty",
     "bad_orientation_delayed",
     "base_link_contact_delayed",
