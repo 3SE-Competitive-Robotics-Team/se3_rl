@@ -72,10 +72,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         )
 
-    # 去掉轴向姿态惩罚和旧 recovery 专属奖励；自起能力由 upward + 同一套 locomotion reward 学出来。
+    # 去掉轴向姿态惩罚和旧 recovery 专属奖励；高度奖励保留全姿态梯度。
     for reward_name in (
         "tracking_orientation_l2",
-        "tracking_height",
         "tracking_lin_yaw_joint",
         "bad_tilt",
         "angular_momentum",
@@ -101,8 +100,19 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if "tracking_ang_vel" in cfg.rewards:
         cfg.rewards["tracking_ang_vel"].weight = 1.5
 
-    # 对齐 robot_lab 的自起训练比例:upward 是主目标,动作平滑只保留很轻的正则。
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
+    cfg.rewards["tracking_height"] = RewardTermCfg(
+        func=rewards.tracking_height,
+        weight=2.49,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.0025,
+            "height_sensor_name": "base_height_sensor",
+            "use_upright_gate": False,
+        },
+    )
+
+    # 自起训练中 upward 是主目标；高度奖励提供全姿态抬升梯度，动作平滑只保留很轻的正则。
+    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=2.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
     cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.01)
