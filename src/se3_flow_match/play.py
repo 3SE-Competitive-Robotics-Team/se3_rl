@@ -47,6 +47,7 @@ _GAIT_COMMAND = {
 }
 _WHEEL_ACTION_SCALE = 20.0
 _GAIT_HEIGHT = 0.35
+_SCRIPT_COMMAND_HOLD_S = 1.0e6
 
 
 @dataclass(frozen=True)
@@ -123,11 +124,12 @@ class ScriptedFlowPolicy:
         """重置 policy 和脚本状态。"""
         self.runtime.reset()
         self.current_mode = self.default_mode
+        has_initial_event = bool(self.events and self.events[0].time_s <= 0.0)
         if self.events and self.events[0].time_s <= 0.0:
             self.current_mode = self.events[0].mode
         self.prev_mode = self.current_mode
-        self.switch_time_s = 0.0
-        self.next_event_idx = 1 if self.events and self.events[0].time_s <= 0.0 else 0
+        self.switch_time_s = -self.blend_s if has_initial_event else 0.0
+        self.next_event_idx = 1 if has_initial_event else 0
         self.runtime.set_task_mode(self.current_mode)
         self._sync_env_contract(self.current_mode, self.prev_mode, 1.0)
 
@@ -293,6 +295,7 @@ def _set_command_shape(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
     """按当前 mode 限制 command 范围，并修正已经采样的 command。"""
     term = env.command_manager.get_term(_COMMAND_NAME)
     cfg = term.cfg
+    _hold_script_command(term)
     shape = _GAIT_COMMAND if mode == TaskMode.GAIT else _WHEEL_COMMAND
     for name, value in shape.items():
         setattr(cfg, name, value)
@@ -310,6 +313,16 @@ def _set_command_shape(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
         standing_mask = getattr(term, "_standing_mask", None)
         if isinstance(standing_mask, torch.Tensor):
             standing_mask[:] = False
+
+
+def _hold_script_command(term: object) -> None:
+    """脚本 play 自己控制 mode 时间线，禁止 command term 中途重采样。"""
+    cfg = getattr(term, "cfg", None)
+    if cfg is not None and hasattr(cfg, "resampling_time_range"):
+        cfg.resampling_time_range = (_SCRIPT_COMMAND_HOLD_S, _SCRIPT_COMMAND_HOLD_S)
+    time_left = getattr(term, "time_left", None)
+    if isinstance(time_left, torch.Tensor):
+        time_left[:] = _SCRIPT_COMMAND_HOLD_S
 
 
 def _overwrite_script_actor_obs(
