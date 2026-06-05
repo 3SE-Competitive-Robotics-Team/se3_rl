@@ -115,15 +115,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     },
                     {
                         "iteration": 140,
-                        "pitch_flip_prob": 0.60,
+                        "pitch_flip_prob": 0.50,
                     },
                     {
                         "iteration": 220,
-                        "pitch_flip_prob": 0.80,
+                        "pitch_flip_prob": 0.55,
                     },
                     {
                         "iteration": 400,
-                        "pitch_flip_prob": 1.0,
+                        "pitch_flip_prob": 0.60,
                     },
                 ],
                 "use_iterations": True,
@@ -286,6 +286,19 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "gate_start_deg": 60.0,
                 "gate_full_deg": 15.0,
                 "min_gate": 0.0,
+            },
+        ),
+        "recovery_near_upright_low_height": RewardTermCfg(
+            func=rewards.recovery_near_upright_low_height_penalty,
+            weight=-4.0,
+            params={
+                "command_name": "velocity_height",
+                "height_sensor_name": "base_height_sensor",
+                "height_tolerance": 0.02,
+                "height_scale": 0.04,
+                "max_normalized_low_height": 4.0,
+                "gate_start_deg": 60.0,
+                "gate_full_deg": 15.0,
             },
         ),
         "recovery_wheel_contact": RewardTermCfg(

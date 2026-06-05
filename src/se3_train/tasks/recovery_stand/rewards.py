@@ -5,6 +5,7 @@ from __future__ import annotations
 from se3_train.mdp.rewards import (
     recovery_height,
     recovery_inverted_low_height_penalty,
+    recovery_near_upright_low_height_penalty,
     recovery_stand_default_joint_pos,
     recovery_stand_joint_mirror,
     recovery_stand_leg_alignment,
@@ -22,6 +23,7 @@ __all__ = [
     *_RECOVERY_REWARD_ALL,
     "recovery_height",
     "recovery_inverted_low_height_penalty",
+    "recovery_near_upright_low_height_penalty",
     "recovery_stand_default_joint_pos",
     "recovery_stand_joint_mirror",
     "recovery_stand_orientation_penalty",
