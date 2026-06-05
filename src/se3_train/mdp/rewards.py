@@ -70,6 +70,33 @@ def _policy_leg_pos_and_default(robot) -> tuple[torch.Tensor, torch.Tensor]:
     return joint_pos, default_pos
 
 
+def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回主动杆夹角到上下限的最小余量诊断。"""
+    lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+    if is_fourbar_surrogate_model(robot):
+        pos = output_to_policy_pos_torch(robot.data.joint_pos[:, policy_leg_joint_ids(robot)])
+        angles = []
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+            angles.append(front_coef * pos[:, front_idx] + back_coef * pos[:, back_idx])
+        angle_tensor = torch.stack(angles, dim=1)
+    else:
+        angles = []
+        for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(robot):
+            angles.append(
+                front_coef * robot.data.joint_pos[:, front_id]
+                + back_coef * robot.data.joint_pos[:, back_id]
+            )
+        angle_tensor = torch.stack(angles, dim=1)
+
+    lower_margin = angle_tensor - float(lower)
+    upper_margin = float(upper) - angle_tensor
+    min_lower = torch.min(lower_margin, dim=1).values
+    min_upper = torch.min(upper_margin, dim=1).values
+    min_margin = torch.minimum(min_lower, min_upper)
+    return min_margin, min_lower, min_upper
+
+
 def _policy_leg_vel(robot) -> torch.Tensor:
     """返回 policy 主动杆语义下的腿部速度。"""
     leg_ids = policy_leg_joint_ids(robot)
@@ -1291,9 +1318,10 @@ def recovery_stand_zero_velocity_penalty(
     gate_full_deg: float = 15.0,
     base_speed_scale: float = 0.05,
     wheel_speed_scale: float = 0.05,
+    base_ang_vel_scale: float = 0.5,
     max_penalty: float = 8.0,
 ) -> torch.Tensor:
-    """接近直立后强惩罚机体平动和轮速，避免零命令自起后继续溜车。"""
+    """接近直立后强惩罚机体平动、角速度和轮速，避免自起后继续晃动。"""
     active = _recovery_reset_mask(env)
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
@@ -1303,6 +1331,7 @@ def recovery_stand_zero_velocity_penalty(
 
     base_vxy = robot.data.root_link_lin_vel_b[:, :2]
     base_speed_sq = torch.sum(base_vxy**2, dim=1)
+    base_ang_vel_sq = torch.sum(robot.data.root_link_ang_vel_b**2, dim=1)
     wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
     wheel_forward_speed = torch.stack(
         (
@@ -1312,8 +1341,10 @@ def recovery_stand_zero_velocity_penalty(
         dim=1,
     )
     wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
-    penalty = base_speed_sq / (float(base_speed_scale) ** 2) + wheel_speed_sq / (
-        float(wheel_speed_scale) ** 2
+    penalty = (
+        base_speed_sq / (float(base_speed_scale) ** 2)
+        + wheel_speed_sq / (float(wheel_speed_scale) ** 2)
+        + base_ang_vel_sq / (float(base_ang_vel_scale) ** 2)
     )
     result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
 
@@ -1323,11 +1354,41 @@ def recovery_stand_zero_velocity_penalty(
                 "RecoveryStand/zero_velocity_penalty": _masked_mean(result, active),
                 "RecoveryStand/base_vxy_speed": _masked_mean(torch.sqrt(base_speed_sq), active),
                 "RecoveryStand/wheel_idle_speed": _masked_mean(torch.sqrt(wheel_speed_sq), active),
+                "RecoveryStand/base_ang_vel_norm": _masked_mean(
+                    torch.sqrt(base_ang_vel_sq), active
+                ),
                 "RecoveryStand/zero_velocity_gate": _masked_mean(near_upright_gate, active),
             }
         )
 
     return result
+
+
+def recovery_stand_limit_action_diagnostics(
+    env: ManagerBasedRlEnv,
+    action_saturation_threshold: float = 0.95,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """记录主动杆限位余量和 action 饱和率，不直接参与奖励。"""
+    active = _recovery_reset_mask(env)
+    robot = env.scene[asset_cfg.name]
+    min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
+    action = env.action_manager.action
+    max_abs_action = torch.max(torch.abs(action), dim=1).values
+    saturated = max_abs_action > float(action_saturation_threshold)
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "RecoveryStand/active_rod_margin_rad": _masked_mean(min_margin, active),
+                "RecoveryStand/active_rod_lower_margin_rad": _masked_mean(lower_margin, active),
+                "RecoveryStand/active_rod_upper_margin_rad": _masked_mean(upper_margin, active),
+                "RecoveryStand/max_abs_action": _masked_mean(max_abs_action, active),
+                "RecoveryStand/raw_action_saturation_rate": _masked_mean(saturated.float(), active),
+            }
+        )
+
+    return torch.zeros(env.num_envs, device=env.device)
 
 
 def recovery_stand_leg_alignment(

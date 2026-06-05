@@ -224,7 +224,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "upright_angle_deg": 15.0,
         "max_abs_roll_deg": 3.0,
         "max_abs_pitch_deg": 5.0,
-        "height_tolerance": 0.05,
+        "height_tolerance": 0.02,
         "ang_vel_threshold": 0.5,
         "lin_vel_threshold": 0.05,
         "wheel_speed_threshold": 0.05,
@@ -282,7 +282,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "command_name": "velocity_height",
                 "height_sensor_name": "base_height_sensor",
-                "sigma": 0.01,
+                "sigma": 0.001,
                 "gate_start_deg": 60.0,
                 "gate_full_deg": 15.0,
                 "min_gate": 0.0,
@@ -338,11 +338,20 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-0.5,
             params={
                 "wheel_radius": 0.059,
-                "gate_start_deg": 45.0,
+                "gate_start_deg": 60.0,
                 "gate_full_deg": 15.0,
                 "base_speed_scale": 0.05,
                 "wheel_speed_scale": 0.05,
-                "max_penalty": 8.0,
+                "base_ang_vel_scale": 0.5,
+                "max_penalty": 10.0,
+            },
+        ),
+        "recovery_limit_action_diagnostics": RewardTermCfg(
+            func=rewards.recovery_stand_limit_action_diagnostics,
+            weight=0.0,
+            params={
+                "action_saturation_threshold": 0.95,
+                "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
         "recovery_default_joint_pos": RewardTermCfg(
