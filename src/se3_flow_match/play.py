@@ -15,7 +15,8 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 import se3_train  # noqa: F401
-from se3_shared import TASK_MODE_NAMES, TaskMode
+from se3_shared import TASK_MODE_NAMES, JointGroup, TaskMode
+from se3_shared.grounded_pose import solve_grounded_pose
 
 from .registry import TASK_SPECS
 from .runtime import FlowPolicyRuntime
@@ -45,6 +46,7 @@ _GAIT_COMMAND = {
     "yaw_deadband": 0.1,
 }
 _WHEEL_ACTION_SCALE = 20.0
+_GAIT_HEIGHT = 0.35
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,42 @@ class ModeEvent:
 
     time_s: float
     mode: TaskMode
+
+
+class ScriptModeContract:
+    """脚本 play 里随 mode 切换的环境物理契约。"""
+
+    def __init__(self, env: ManagerBasedRlEnv) -> None:
+        """缓存 wheel/gait 两套默认关节姿态。"""
+        robot = env.scene["robot"]
+        self._wheel_default_joint_pos = robot.data.default_joint_pos.clone()
+        self._gait_default_joint_pos = self._wheel_default_joint_pos.clone()
+        gait_pose = solve_grounded_pose(
+            _GAIT_HEIGHT,
+            keep_wheel_x=False,
+            align_com_x=True,
+        )
+        if not gait_pose.success:
+            raise ValueError(f"无法求解 GAIT play 默认姿态：{gait_pose.message}")
+        joint_ids = torch.tensor(
+            JointGroup.ALL,
+            device=robot.data.default_joint_pos.device,
+            dtype=torch.long,
+        )
+        q6 = torch.tensor(
+            gait_pose.q6,
+            device=robot.data.default_joint_pos.device,
+            dtype=robot.data.default_joint_pos.dtype,
+        )
+        self._gait_default_joint_pos[:, joint_ids] = q6
+
+    def apply(self, env: ManagerBasedRlEnv, mode: TaskMode) -> None:
+        """应用当前 mode 的 default_joint_pos。"""
+        robot = env.scene["robot"]
+        if mode == TaskMode.GAIT:
+            robot.data.default_joint_pos[:] = self._gait_default_joint_pos
+        else:
+            robot.data.default_joint_pos[:] = self._wheel_default_joint_pos
 
 
 class ScriptedFlowPolicy:
@@ -77,6 +115,7 @@ class ScriptedFlowPolicy:
         self.prev_mode = default_mode
         self.switch_time_s = 0.0
         self.next_event_idx = 0
+        self.contract = ScriptModeContract(env.unwrapped)
         self.runtime.set_task_mode(default_mode)
         self._sync_env_contract(default_mode, default_mode, 1.0)
 
@@ -119,6 +158,7 @@ class ScriptedFlowPolicy:
     def _sync_env_contract(self, current: TaskMode, prev: TaskMode, blend: float) -> None:
         """同步脚本 mode 到 env 的 command 和动作物理语义。"""
         env = self.env.unwrapped
+        self.contract.apply(env, current)
         _set_command_mode(env, current, prev, blend)
         _set_command_shape(env, current)
         _set_action_mode(env, current)
