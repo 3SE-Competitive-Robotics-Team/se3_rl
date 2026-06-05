@@ -394,7 +394,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "sensor_name": "wheel_sensor",
             "wheel_radius": 0.059,
             "contact_force_threshold": 1.0,
-            "k_gain": 0.03,
             "tolerance": 0.05,
             "max_penalty": 9.0,
             "min_landing_vz": -0.3,
