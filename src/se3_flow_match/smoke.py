@@ -18,7 +18,7 @@ from .losses import flow_matching_loss
 from .model import FlowVelocityField
 from .play import run_flow_play
 from .sampler import sample_actions, sample_actions_from_context
-from .train import train_flow_student
+from .train import _sample_training_window, _training_loss_weights, train_flow_student
 
 
 class _AnalyticVelocityField(torch.nn.Module):
@@ -42,6 +42,7 @@ def main() -> None:
     """运行 synthetic 和 tiny real smoke。"""
     torch.manual_seed(42)
     _run_synthetic_smoke()
+    _assert_reset_window_is_supervised()
     _run_real_pipeline_smoke()
 
 
@@ -135,6 +136,7 @@ def _run_real_pipeline_smoke() -> None:
             transition_ratio=0.25,
             burn_in_steps=4,
             loss_steps=8,
+            reset_window_ratio=0.5,
         )
         run_flow_play(
             checkpoint=checkpoint_path,
@@ -190,6 +192,34 @@ def _make_synthetic_teacher(config: FlowPolicyConfig) -> tuple[torch.Tensor, tor
     temporal = torch.linspace(-0.3, 0.3, steps).view(1, steps, 1)
     actions = torch.tanh(obs @ weights + temporal)
     return obs, actions
+
+
+def _assert_reset_window_is_supervised() -> None:
+    """确认 reset 起点窗口不会被 burn-in mask 清掉。"""
+    modes = torch.zeros(4, 12, dtype=torch.long)
+    starts = torch.tensor([0, 3, 0, 5], dtype=torch.long)
+    weights = _training_loss_weights(modes, starts, burn_in_steps=4)
+    if not torch.all(weights[starts == 0, :4] > 0.0):
+        raise RuntimeError("synthetic smoke 失败：reset 窗口冷启动动作未参与监督")
+    if not torch.all(weights[starts != 0, :4] == 0.0):
+        raise RuntimeError("synthetic smoke 失败：非 reset 窗口 burn-in mask 未生效")
+
+    obs = torch.randn(8, 24, 42)
+    actions = torch.randn(8, 24, 6)
+    dones = torch.zeros(8, 24, dtype=torch.bool)
+    sampled_modes = torch.zeros(8, 24, dtype=torch.long)
+    *_batch, sampled_starts = _sample_training_window(
+        obs,
+        actions,
+        dones,
+        sampled_modes,
+        batch_size=8,
+        burn_in_steps=4,
+        loss_steps=8,
+        reset_window_ratio=0.5,
+    )
+    if not (sampled_starts == 0).any():
+        raise RuntimeError("synthetic smoke 失败：训练 batch 未混入 reset 起点窗口")
 
 
 def _assert_sampler_direction(config: FlowPolicyConfig) -> None:
