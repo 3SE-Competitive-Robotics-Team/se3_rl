@@ -19,6 +19,32 @@ from se3_shared import TASK_MODE_NAMES, TaskMode
 
 from .registry import TASK_SPECS
 from .runtime import FlowPolicyRuntime
+from .task_mode import overwrite_task_mode_obs
+
+_SCRIPT_TASK_ID = "SE3-WheelLegged-FlowMatch-Loco-Script-GRU"
+_COMMAND_NAME = "velocity_height"
+_ACTION_NAME = "delayed_action"
+_WHEEL_COMMAND = {
+    "lin_vel_x_range": (-2.5, 2.5),
+    "ang_vel_yaw_range": (-3.0, 3.0),
+    "pitch_range": (-0.2, 0.2),
+    "roll_range": (-0.1, 0.1),
+    "height_range": (0.20, 0.32),
+    "standing_height_range": (0.20, 0.32),
+    "lin_vel_deadband": 0.1,
+    "yaw_deadband": 0.1,
+}
+_GAIT_COMMAND = {
+    "lin_vel_x_range": (0.05, 1.5),
+    "ang_vel_yaw_range": (0.0, 0.0),
+    "pitch_range": (0.0, 0.0),
+    "roll_range": (0.0, 0.0),
+    "height_range": (0.35, 0.35),
+    "standing_height_range": (0.35, 0.35),
+    "lin_vel_deadband": 0.03,
+    "yaw_deadband": 0.1,
+}
+_WHEEL_ACTION_SCALE = 20.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +78,7 @@ class ScriptedFlowPolicy:
         self.switch_time_s = 0.0
         self.next_event_idx = 0
         self.runtime.set_task_mode(default_mode)
+        self._sync_env_contract(default_mode, default_mode, 1.0)
 
     def reset(self) -> None:
         """重置 policy 和脚本状态。"""
@@ -63,6 +90,7 @@ class ScriptedFlowPolicy:
         self.switch_time_s = 0.0
         self.next_event_idx = 1 if self.events and self.events[0].time_s <= 0.0 else 0
         self.runtime.set_task_mode(self.current_mode)
+        self._sync_env_contract(self.current_mode, self.prev_mode, 1.0)
 
     def __call__(self, obs_dict: object) -> torch.Tensor:
         """按 env 时间更新 mode 条件后调用 Flow policy。"""
@@ -77,7 +105,23 @@ class ScriptedFlowPolicy:
             self.next_event_idx += 1
         blend = min(max((t - self.switch_time_s) / self.blend_s, 0.0), 1.0)
         self.runtime.set_task_mode(self.current_mode, prev_mode=self.prev_mode, blend=blend)
-        return self.runtime(obs_dict)
+        self._sync_env_contract(self.current_mode, self.prev_mode, blend)
+        return self.runtime(
+            _overwrite_script_actor_obs(
+                obs_dict,
+                self.env.unwrapped,
+                self.current_mode,
+                self.prev_mode,
+                blend,
+            )
+        )
+
+    def _sync_env_contract(self, current: TaskMode, prev: TaskMode, blend: float) -> None:
+        """同步脚本 mode 到 env 的 command 和动作物理语义。"""
+        env = self.env.unwrapped
+        _set_command_mode(env, current, prev, blend)
+        _set_command_shape(env, current)
+        _set_action_mode(env, current)
 
 
 def run_flow_play(
@@ -144,7 +188,7 @@ def _run_headless(env: RslRlVecEnvWrapper, policy: ScriptedFlowPolicy, *, max_st
 def _task_id_for_play(mode: TaskMode, *, has_script: bool) -> str:
     """选择 play 环境。"""
     if has_script:
-        return "SE3-WheelLegged-FlowMatch-Wheel-GRU"
+        return _SCRIPT_TASK_ID
     for spec in TASK_SPECS.values():
         if spec.mode == mode:
             return spec.task_id
@@ -178,6 +222,113 @@ def _parse_script(raw: str) -> list[ModeEvent]:
         events.append(ModeEvent(time_s=time_s, mode=_parse_mode(mode_raw)))
     events.sort(key=lambda event: event.time_s)
     return events
+
+
+def _set_command_mode(
+    env: ManagerBasedRlEnv, current: TaskMode, prev: TaskMode, blend: float
+) -> None:
+    """把脚本 mode 写入 env command term，保证观测和 viewer 一致。"""
+    term = env.command_manager.get_term(_COMMAND_NAME)
+    command = term.command
+    if command.shape[1] < 11:
+        return
+    command[:, 5:8] = 0.0
+    command[:, 8] = float(int(current))
+    command[:, 9] = float(blend)
+    command[:, 10] = float(int(prev))
+    _fill_long_tensor(term, "_mode", int(current))
+    _fill_long_tensor(term, "_prev_mode", int(prev))
+    _fill_long_tensor(term, "_jump_stage", 0)
+    _fill_long_tensor(term, "_traj_step", 0)
+    _fill_long_tensor(term, "_jump_cool_down", 0)
+    mode_blend_steps = getattr(term, "_mode_blend_steps", None)
+    if isinstance(mode_blend_steps, torch.Tensor):
+        mode_blend_steps[:] = 1
+    mode_elapsed_steps = getattr(term, "_mode_elapsed_steps", None)
+    if isinstance(mode_elapsed_steps, torch.Tensor):
+        mode_elapsed_steps[:] = max(round(float(blend) * 1000.0), 0)
+
+
+def _set_command_shape(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
+    """按当前 mode 限制 command 范围，并修正已经采样的 command。"""
+    term = env.command_manager.get_term(_COMMAND_NAME)
+    cfg = term.cfg
+    shape = _GAIT_COMMAND if mode == TaskMode.GAIT else _WHEEL_COMMAND
+    for name, value in shape.items():
+        setattr(cfg, name, value)
+    command = term.command
+    if command.shape[1] < 5:
+        return
+    command[:, 0] = command[:, 0].clamp(*shape["lin_vel_x_range"])
+    command[:, 1] = command[:, 1].clamp(*shape["ang_vel_yaw_range"])
+    command[:, 2] = command[:, 2].clamp(*shape["pitch_range"])
+    command[:, 3] = command[:, 3].clamp(*shape["roll_range"])
+    command[:, 4] = command[:, 4].clamp(*shape["height_range"])
+    _apply_deadband(command, shape)
+    if mode == TaskMode.GAIT:
+        command[:, 4] = float(shape["height_range"][0])
+        standing_mask = getattr(term, "_standing_mask", None)
+        if isinstance(standing_mask, torch.Tensor):
+            standing_mask[:] = False
+
+
+def _overwrite_script_actor_obs(
+    obs_dict: object,
+    env: ManagerBasedRlEnv,
+    current: TaskMode,
+    prev: TaskMode,
+    blend: float,
+) -> object:
+    """覆盖本步 policy 输入里的 command 和 task_mode，避免 viewer 取 obs 慢一拍。"""
+    if not isinstance(obs_dict, dict) or "actor" not in obs_dict:
+        return obs_dict
+    actor = obs_dict["actor"]
+    if not isinstance(actor, torch.Tensor) or actor.ndim != 2 or actor.shape[1] != 42:
+        return obs_dict
+    out_actor = actor.clone()
+    command = env.command_manager.get_command(_COMMAND_NAME)
+    scale = torch.tensor((2.0, 0.25, 5.0, 5.0, 5.0), device=out_actor.device, dtype=out_actor.dtype)
+    out_actor[:, 6:11] = command[:, :5].to(device=out_actor.device, dtype=out_actor.dtype) * scale
+    out_actor = overwrite_task_mode_obs(out_actor, current, prev=prev, blend=blend)
+    out = dict(obs_dict)
+    out["actor"] = out_actor
+    return out
+
+
+def _set_action_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
+    """按 mode 切换轮子动作物理语义。"""
+    action_term = env.action_manager.get_term(_ACTION_NAME)
+    if mode == TaskMode.GAIT:
+        action_term.cfg.wheel_scale = 0.0
+        action_term.cfg.wheel_lock_damping = 0.0
+        action_term.cfg.freeze_wheels = True
+    else:
+        action_term.cfg.wheel_scale = _WHEEL_ACTION_SCALE
+        action_term.cfg.wheel_lock_damping = None
+        action_term.cfg.freeze_wheels = False
+
+
+def _apply_deadband(command: torch.Tensor, shape: dict[str, object]) -> None:
+    """对当前 command 应用 mode 对应死区。"""
+    lin_deadband = float(shape["lin_vel_deadband"])
+    yaw_deadband = float(shape["yaw_deadband"])
+    command[:, 0] = torch.where(
+        command[:, 0].abs() < lin_deadband,
+        torch.zeros_like(command[:, 0]),
+        command[:, 0],
+    )
+    command[:, 1] = torch.where(
+        command[:, 1].abs() < yaw_deadband,
+        torch.zeros_like(command[:, 1]),
+        command[:, 1],
+    )
+
+
+def _fill_long_tensor(term: object, name: str, value: int) -> None:
+    """如果 term 有指定 long tensor，就整体写入固定值。"""
+    tensor = getattr(term, name, None)
+    if isinstance(tensor, torch.Tensor):
+        tensor[:] = int(value)
 
 
 def build_parser() -> argparse.ArgumentParser:

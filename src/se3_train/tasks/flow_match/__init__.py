@@ -7,6 +7,7 @@ from . import (
     gait_pretrain,
     gait_wheel,
     jump,
+    loco_script,
     wheel,
     wheel_leg,
 )
@@ -20,6 +21,7 @@ def register() -> None:
     wheel_leg.register()
     gait_wheel.register()
     jump.register()
+    loco_script.register()
 
 
 __all__ = ["register"]

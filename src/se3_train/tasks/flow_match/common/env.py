@@ -524,6 +524,23 @@ def loco_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     return cfg
 
 
+def loco_script_play_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """Flow 脚本切换 play 环境，由外部脚本显式写入 mode。"""
+    cfg = loco_env_cfg(play=play)
+    command = cfg.commands["velocity_height"]
+    command.mode_probabilities = (1.0, 0.0, 0.0, 0.0, 0.0)
+    command.enable_mode_switch = False
+    command.jump_prob = 0.0
+    command.lin_vel_x_range = (-2.5, 2.5)
+    command.ang_vel_yaw_range = (-3.0, 3.0)
+    command.height_range = _STANDING_HEIGHT_RANGE
+    command.standing_height_range = _STANDING_HEIGHT_RANGE
+    command.jump_height_range = (0.0, 0.0)
+    if play:
+        command.debug_vis = True
+    return cfg
+
+
 def single_label_env_cfg(
     mode: TaskMode,
     play: bool = False,
