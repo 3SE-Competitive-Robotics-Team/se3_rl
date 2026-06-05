@@ -456,11 +456,12 @@ def _wheel_action_contract(
     """检查 wheel action 语义是否明显漂移。"""
     expert_wheel = float(expert_summary["wheel_action_abs_mean"])
     flow_wheel = float(flow_summary["wheel_action_abs_mean"])
-    ratio = flow_wheel / max(expert_wheel, 1.0e-6)
     if task_mode == TaskMode.GAIT:
-        mismatch = ratio > 2.0 or ratio < 0.5
-        reason = "GAIT 下 Flow wheel action 与 expert raw action 幅值比例异常"
+        ratio = None if expert_wheel < 1.0e-6 else flow_wheel / expert_wheel
+        mismatch = flow_wheel > 0.05
+        reason = "GAIT 下 Flow wheel action 应接近 0，避免锁轮语义在 wheel env 中变成真实轮速"
     else:
+        ratio = flow_wheel / max(expert_wheel, 1.0e-6)
         mismatch = flow_wheel < max(0.05, expert_wheel * 0.35)
         reason = "WHEEL 下 Flow wheel action 明显低于 expert，轮驱动可能没学到"
     return {
