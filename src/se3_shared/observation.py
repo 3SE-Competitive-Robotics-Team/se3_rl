@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class ObservationConfig(BaseModel):
-    """31D actor 策略输入的缩放系数，修改一处即两端同步生效。critic 额外包含特权观测（lin_vel 3D + contact 2D + height 1D）。
+    """32D actor 策略输入的缩放系数，修改一处即两端同步生效。critic 额外包含特权观测（lin_vel 3D + contact 2D + height 1D）。
 
     观测布局（32 维）：
         [0:3]   base_ang_vel       × 0.25

@@ -1,13 +1,10 @@
 # ruff: noqa: F401
 from __future__ import annotations
 
-from dataclasses import replace
-
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.rewards import is_alive as mjlab_is_alive
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
@@ -27,7 +24,7 @@ from mjlab.viewer import ViewerConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 from se3_train.robot_cfg import get_serialleg_cfg
-from se3_train.tasks.flat import events, observations
+from se3_train.tasks.flat import events
 from se3_train.tasks.jump_finetune import commands, curriculums, rewards, terminations
 from se3_train.tasks.jump_pretrain.env_cfg import env_cfg as pretrain_env_cfg
 
@@ -56,22 +53,6 @@ def _apply_jump_command(
     }
 
 
-def _apply_jump_observations(cfg: ManagerBasedRlEnvCfg) -> None:
-    """在观测中追加 3 维跳跃指令(jump_flag, jump_target_height, jump_phase)。
-
-    actor 从 31 维扩展到 32 维(+jump_phase);critic 同步扩展。
-    """
-    jump_obs_term = ObservationTermCfg(func=observations.jump_commands_obs)
-
-    actor_terms = dict(cfg.observations["actor"].terms)
-    actor_terms["jump_commands"] = jump_obs_term
-    cfg.observations["actor"] = replace(cfg.observations["actor"], terms=actor_terms)
-
-    critic_terms = dict(cfg.observations["critic"].terms)
-    critic_terms["jump_commands"] = jump_obs_term
-    cfg.observations["critic"] = replace(cfg.observations["critic"], terms=critic_terms)
-
-
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """跳跃精细训练环境配置(从 PreTrain checkpoint fine-tune)。
 
@@ -87,7 +68,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     # fine-tune 保持中等跳跃占比,避免完整 tracking 重新压过行走梯度。
     _apply_jump_command(cfg, jump_prob=0.12)
-    _apply_jump_observations(cfg)
     cfg.commands["velocity_height"].rsi_takeoff_prob = 1.0  # fine-tune 全量使用轨迹起点初始化
 
     # -------------------------------------------------------------------------
