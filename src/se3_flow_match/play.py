@@ -117,6 +117,7 @@ class ScriptedFlowPolicy:
         self.switch_time_s = 0.0
         self.next_event_idx = 0
         self.contract = ScriptModeContract(env.unwrapped)
+        self.script_command: torch.Tensor | None = None
         self.runtime.set_task_mode(default_mode)
         self._sync_env_contract(default_mode, default_mode, 1.0)
 
@@ -130,6 +131,7 @@ class ScriptedFlowPolicy:
         self.prev_mode = self.current_mode
         self.switch_time_s = -self.blend_s if has_initial_event else 0.0
         self.next_event_idx = 1 if has_initial_event else 0
+        self.script_command = None
         self.runtime.set_task_mode(self.current_mode)
         self._sync_env_contract(self.current_mode, self.prev_mode, 1.0)
 
@@ -143,6 +145,10 @@ class ScriptedFlowPolicy:
             self.prev_mode = self.current_mode
             self.current_mode = event.mode
             self.switch_time_s = event.time_s
+            self.script_command = _shape_command(
+                self.script_command,
+                self.current_mode,
+            )
             self.next_event_idx += 1
         blend = min(max((t - self.switch_time_s) / self.blend_s, 0.0), 1.0)
         self.runtime.set_task_mode(self.current_mode, prev_mode=self.prev_mode, blend=blend)
@@ -162,7 +168,7 @@ class ScriptedFlowPolicy:
         env = self.env.unwrapped
         self.contract.apply(env, current)
         _set_command_mode(env, current, prev, blend)
-        _set_command_shape(env, current)
+        self.script_command = _set_command_shape(env, current, self.script_command)
         _set_action_mode(env, current)
 
 
@@ -291,7 +297,11 @@ def _set_command_mode(
         mode_elapsed_steps[:] = max(round(float(blend) * 1000.0), 0)
 
 
-def _set_command_shape(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
+def _set_command_shape(
+    env: ManagerBasedRlEnv,
+    mode: TaskMode,
+    script_command: torch.Tensor | None,
+) -> torch.Tensor:
     """按当前 mode 限制 command 范围，并修正已经采样的 command。"""
     term = env.command_manager.get_term(_COMMAND_NAME)
     cfg = term.cfg
@@ -301,18 +311,36 @@ def _set_command_shape(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
         setattr(cfg, name, value)
     command = term.command
     if command.shape[1] < 5:
-        return
-    command[:, 0] = command[:, 0].clamp(*shape["lin_vel_x_range"])
-    command[:, 1] = command[:, 1].clamp(*shape["ang_vel_yaw_range"])
-    command[:, 2] = command[:, 2].clamp(*shape["pitch_range"])
-    command[:, 3] = command[:, 3].clamp(*shape["roll_range"])
-    command[:, 4] = command[:, 4].clamp(*shape["height_range"])
+        raise ValueError(f"{_COMMAND_NAME} command 必须至少 5D，实际为 {tuple(command.shape)}")
+    if script_command is None or script_command.shape != command[:, :5].shape:
+        script_command = command[:, :5].clone()
+    script_command = _shape_command(script_command, mode)
+    command[:, :5] = script_command.to(device=command.device, dtype=command.dtype)
     _apply_deadband(command, shape)
+    script_command = command[:, :5].clone()
     if mode == TaskMode.GAIT:
         command[:, 4] = float(shape["height_range"][0])
+        script_command[:, 4] = float(shape["height_range"][0])
         standing_mask = getattr(term, "_standing_mask", None)
         if isinstance(standing_mask, torch.Tensor):
             standing_mask[:] = False
+    return script_command
+
+
+def _shape_command(command: torch.Tensor | None, mode: TaskMode) -> torch.Tensor | None:
+    """把脚本保存的 raw command 修整到当前 mode 合法范围。"""
+    if command is None:
+        return None
+    out = command.clone()
+    shape = _GAIT_COMMAND if mode == TaskMode.GAIT else _WHEEL_COMMAND
+    out[:, 0] = out[:, 0].clamp(*shape["lin_vel_x_range"])
+    out[:, 1] = out[:, 1].clamp(*shape["ang_vel_yaw_range"])
+    out[:, 2] = out[:, 2].clamp(*shape["pitch_range"])
+    out[:, 3] = out[:, 3].clamp(*shape["roll_range"])
+    out[:, 4] = out[:, 4].clamp(*shape["height_range"])
+    if mode == TaskMode.GAIT:
+        out[:, 4] = float(shape["height_range"][0])
+    return out
 
 
 def _hold_script_command(term: object) -> None:
