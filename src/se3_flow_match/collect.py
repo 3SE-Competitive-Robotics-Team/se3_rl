@@ -95,7 +95,8 @@ def collect_teacher_rollouts(
     torch.save(payload, output)
     print(
         f"[flow-collect] saved {output} obs={tuple(payload['obs'].shape)} "
-        f"actions={tuple(payload['actions'].shape)} commands={tuple(payload['commands'].shape)}"
+        f"actions={tuple(payload['actions'].shape)} commands={tuple(payload['commands'].shape)}",
+        flush=True,
     )
 
 
@@ -165,7 +166,8 @@ def _collect_one_task(
             command_batches_cpu.append(commands.detach().cpu().contiguous())
             print(
                 f"[flow-collect] task={spec.name} batch={batch_idx + 1}/{command_batches} "
-                f"hold_steps={hold_steps}"
+                f"hold_steps={hold_steps}",
+                flush=True,
             )
 
         obs = torch.cat(obs_batches, dim=0)

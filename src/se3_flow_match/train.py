@@ -90,7 +90,7 @@ def train_flow_student(
         step += 1
         last_loss = float(loss_info.loss.detach().cpu())
         if step % 50 == 0 or step == 1:
-            print(f"[flow-train] step={step} loss={last_loss:.6f}")
+            print(f"[flow-train] step={step} loss={last_loss:.6f}", flush=True)
 
     save_flow_checkpoint(
         output,
@@ -110,7 +110,7 @@ def train_flow_student(
             "dataset_metadata": dataset.metadata,
         },
     )
-    print(f"[flow-train] saved {output} final_loss={last_loss:.6f}")
+    print(f"[flow-train] saved {output} final_loss={last_loss:.6f}", flush=True)
 
 
 def _augment_transitions(

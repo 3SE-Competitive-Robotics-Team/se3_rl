@@ -33,6 +33,7 @@ se3-flow-collect = "se3_flow_match.collect:main"
 se3-flow-train = "se3_flow_match.train:main"
 se3-flow-play = "se3_flow_match.play:main"
 se3-flow-smoke = "se3_flow_match.smoke:main"
+se3-flow-monitor = "se3_flow_match.monitor:main"
 
 [build-system]
 requires = ["uv_build==0.11.8"]
