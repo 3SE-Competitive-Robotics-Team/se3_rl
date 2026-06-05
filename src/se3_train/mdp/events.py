@@ -239,6 +239,164 @@ def _full_angle_safe_base_height(
     return -min_z + clearance
 
 
+def reset_root_state_robotlab_full_random(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    pos_xy_range: tuple[float, float] = (-0.5, 0.5),
+    height_offset_range: tuple[float, float] = (0.0, 0.2),
+    roll_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
+    pitch_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
+    yaw_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
+    lin_vel_range: tuple[float, float] = (-0.5, 0.5),
+    ang_vel_range: tuple[float, float] = (-0.5, 0.5),
+    clearance_range: tuple[float, float] = (0.0, 0.05),
+    mark_recovery_episode: bool = False,
+    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
+) -> None:
+    """按 RobotLab Go2W 语义随机化 root：默认状态叠加 xyz/rpy 和速度扰动。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    _pre_resample_jump_command_for_reset(env, env_ids)
+
+    asset: Entity = env.scene[asset_cfg.name]
+    default_root_state = asset.data.default_root_state
+    assert default_root_state is not None
+    root_states = default_root_state[env_ids].clone()
+
+    def _sample_range(value_range: tuple[float, float], shape: tuple[int, ...]) -> torch.Tensor:
+        return sample_uniform(
+            torch.tensor(float(value_range[0]), device=env.device),
+            torch.tensor(float(value_range[1]), device=env.device),
+            shape,
+            env.device,
+        )
+
+    n = len(env_ids)
+    pos = root_states[:, 0:3].clone()
+    pos[:, 0] += _sample_range(pos_xy_range, (n,))
+    pos[:, 1] += _sample_range(pos_xy_range, (n,))
+
+    roll = _sample_range(roll_range, (n,))
+    pitch = _sample_range(pitch_range, (n,))
+    yaw = _sample_range(yaw_range, (n,))
+    quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
+    new_quat = quat_mul(root_states[:, 3:7], quat_delta)
+    z_row = _quat_z_row(new_quat)
+
+    sampled_height = root_states[:, 2] + _sample_range(height_offset_range, (n,))
+    safe_height = _full_angle_safe_base_height(
+        z_row,
+        _sample_range(clearance_range, (n,)),
+    )
+    base_height = torch.maximum(sampled_height, safe_height)
+
+    pos[:, 0:3] += env.scene.env_origins[env_ids]
+    pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
+
+    vel = root_states[:, 7:13].clone()
+    vel[:, 0:3] += _sample_range(lin_vel_range, (n, 3))
+    vel[:, 3:6] += _sample_range(ang_vel_range, (n, 3))
+
+    pitch_flip_reset = recovery_state.ensure_bool_buffer(env, "_recovery_pitch_flip_reset_mask")
+    pitch_flip_reset[env_ids] = False
+
+    init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
+    init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
+    if mark_recovery_episode:
+        recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
+        recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
+        env._recovery_command_height = float(recovery_command_height)
+        init_tilt_buf = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
+        init_yaw_buf = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
+        init_roll_buf = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
+        init_pitch_buf = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
+        init_tilt_buf[env_ids] = init_tilt
+        init_yaw_buf[env_ids] = init_yaw
+        init_roll_buf[env_ids] = init_roll
+        init_pitch_buf[env_ids] = init_pitch
+    else:
+        for name in (
+            "_recovery_reset_mask",
+            "_recovery_episode_mask",
+            "_recovery_cache_reset_mask",
+        ):
+            values = getattr(env, name, None)
+            if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
+                values[env_ids] = False
+
+    asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
+    asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
+
+    if not hasattr(env, "_jump_pose_ref_pos_w"):
+        env._jump_pose_ref_pos_w = torch.zeros((env.num_envs, 3), device=env.device)
+    if not hasattr(env, "_jump_pose_ref_yaw"):
+        env._jump_pose_ref_yaw = torch.zeros(env.num_envs, device=env.device)
+    env._jump_pose_ref_pos_w[env_ids] = pos
+    env._jump_pose_ref_yaw[env_ids] = init_yaw
+
+    init_tilt_deg = torch.rad2deg(init_tilt)
+    sampled_roll_deg = torch.rad2deg(roll)
+    sampled_pitch_deg = torch.rad2deg(pitch)
+    sampled_yaw_deg = torch.rad2deg(yaw)
+    init_roll_deg = torch.rad2deg(init_roll)
+    init_pitch_deg = torch.rad2deg(init_pitch)
+    init_yaw_deg = torch.rad2deg(init_yaw)
+    root_lin_vel_norm = torch.linalg.norm(vel[:, 0:3], dim=1)
+    root_ang_vel_norm = torch.linalg.norm(vel[:, 3:6], dim=1)
+    bins = torch.bucketize(
+        init_tilt_deg,
+        torch.tensor((30.0, 75.0, 130.0), device=env.device),
+    )
+    tilt_bins = getattr(env, "_reset_init_tilt_bin", None)
+    if not isinstance(tilt_bins, torch.Tensor) or tilt_bins.shape[0] != env.num_envs:
+        tilt_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._reset_init_tilt_bin = tilt_bins
+    tilt_bins[env_ids] = bins
+
+    stand_bins = torch.bucketize(
+        init_tilt_deg,
+        torch.tensor((30.0, 60.0, 90.0, 135.0), device=env.device),
+    )
+    stand_tilt_bins = getattr(env, "_recovery_stand_init_tilt_bin", None)
+    if not isinstance(stand_tilt_bins, torch.Tensor) or stand_tilt_bins.shape[0] != env.num_envs:
+        stand_tilt_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._recovery_stand_init_tilt_bin = stand_tilt_bins
+    stand_tilt_bins[env_ids] = stand_bins
+
+    log_values = {
+        "Reset/robotlab_full_random_ratio": 1.0,
+        "Reset/full_angle_random_ratio": 1.0,
+        "Reset/pitch_flip_ratio": 0.0,
+        "Reset/curriculum_progress": 0.0,
+        "Reset/curriculum_tilt_max_deg": 180.0,
+        "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
+        "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
+        "Reset/mean_abs_sampled_roll_deg": sampled_roll_deg.abs().mean().item(),
+        "Reset/mean_abs_sampled_pitch_deg": sampled_pitch_deg.abs().mean().item(),
+        "Reset/mean_abs_sampled_yaw_deg": sampled_yaw_deg.abs().mean().item(),
+        "Reset/mean_abs_roll_deg": init_roll_deg.abs().mean().item(),
+        "Reset/mean_abs_pitch_deg": init_pitch_deg.abs().mean().item(),
+        "Reset/mean_abs_yaw_deg": init_yaw_deg.abs().mean().item(),
+        "Reset/mean_base_height_m": base_height.mean().item(),
+        "Reset/min_base_height_m": base_height.min().item(),
+        "Reset/max_base_height_m": base_height.max().item(),
+        "Reset/root_lin_vel_norm": root_lin_vel_norm.mean().item(),
+        "Reset/root_ang_vel_norm": root_ang_vel_norm.mean().item(),
+        "Reset/safe_height_clamp_ratio": (base_height > sampled_height).float().mean().item(),
+        "Reset/init_tilt_bin_upright_noise_ratio": (bins == 0).float().mean().item(),
+        "Reset/init_tilt_bin_near_fall_ratio": (bins == 1).float().mean().item(),
+        "Reset/init_tilt_bin_hard_tilt_ratio": (bins == 2).float().mean().item(),
+        "Reset/init_tilt_bin_inverted_ratio": (bins == 3).float().mean().item(),
+    }
+    env._reset_robotlab_full_random_log_values = log_values
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log.update(log_values)
+
+
 def reset_root_state_full_angle_random(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,

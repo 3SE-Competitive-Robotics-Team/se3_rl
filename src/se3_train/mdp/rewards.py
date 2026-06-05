@@ -59,6 +59,22 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
     return 0.0
 
 
+def _masked_min(values: torch.Tensor, mask: torch.Tensor) -> float:
+    """计算 mask 内最小值；空 mask 返回 0。"""
+    if mask.any():
+        return values[mask].float().min().item()
+    return 0.0
+
+
+def _log_cached_reset_diagnostics(env: ManagerBasedRlEnv) -> None:
+    """将 reset 事件缓存的诊断量转发到训练 logger。"""
+    if not hasattr(env, "extras") or not isinstance(env.extras.get("log"), dict):
+        return
+    values = getattr(env, "_reset_robotlab_full_random_log_values", None)
+    if isinstance(values, dict):
+        env.extras["log"].update(values)
+
+
 def _accumulate_command_curriculum_metric(
     env: ManagerBasedRlEnv,
     name: str,
@@ -122,6 +138,28 @@ def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.
     min_upper = torch.min(upper_margin, dim=1).values
     min_margin = torch.minimum(min_lower, min_upper)
     return min_margin, min_lower, min_upper
+
+
+def _contact_diagnostic_stats(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """读取接触传感器，返回接触率、单 env 最大力和平均力。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        zeros = torch.zeros(env.num_envs, device=env.device)
+        return zeros, zeros, zeros
+
+    force_mag = finite_contact_force_norm(data.force)
+    if force_mag.ndim == 1:
+        force_mag = force_mag.unsqueeze(1)
+    contact = force_mag > float(force_threshold)
+    contact_ratio = contact.float().mean(dim=1)
+    max_force = force_mag.max(dim=1).values
+    mean_force = force_mag.mean(dim=1)
+    return contact_ratio, max_force, mean_force
 
 
 def _policy_leg_vel(robot) -> torch.Tensor:
@@ -331,6 +369,7 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
                 "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
             }
         )
+        _log_cached_reset_diagnostics(env)
 
     return reward
 
@@ -710,9 +749,39 @@ def leg_power(
 
 def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
     """当前动作与上一动作差值的平方和。"""
-    penalty = torch.sum((env.action_manager.action - env.action_manager.prev_action) ** 2, dim=1)
+    action = env.action_manager.action
+    penalty = torch.sum((action - env.action_manager.prev_action) ** 2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        action_abs = torch.abs(action)
+        leg_action_abs = action_abs[:, :4]
+        wheel_action_abs = action_abs[:, 4:6]
+        max_abs_action = torch.max(action_abs, dim=1).values
+        max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
+        max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
+        saturation_threshold = 0.95
+        env.extras["log"].update(
+            {
+                "Locomotion/max_abs_action": max_abs_action.mean().item(),
+                "Locomotion/max_abs_leg_action": max_abs_leg_action.mean().item(),
+                "Locomotion/max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+                "Locomotion/raw_action_saturation_rate": (max_abs_action > saturation_threshold)
+                .float()
+                .mean()
+                .item(),
+                "Locomotion/leg_action_saturation_rate": (max_abs_leg_action > saturation_threshold)
+                .float()
+                .mean()
+                .item(),
+                "Locomotion/wheel_action_saturation_rate": (
+                    max_abs_wheel_action > saturation_threshold
+                )
+                .float()
+                .mean()
+                .item(),
+            }
+        )
     return penalty
 
 
@@ -750,6 +819,290 @@ def stand_still(
     if ignore_recovery:
         result = result * (~_recovery_reset_mask(env)).float()
     return result
+
+
+def joint_pos_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    stand_still_scale: float = 5.0,
+    velocity_threshold: float = 0.5,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """按 RobotLab 语义惩罚腿部关节偏离默认姿态，静止命令下惩罚更强。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    gate = _upright_factor(pg_z)
+
+    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    joint_error = torch.linalg.norm(joint_pos - default_pos, dim=1)
+    command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    body_vel = torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2], dim=1)
+    moving = (command_norm > float(command_threshold)) | (body_vel > float(velocity_threshold))
+    scale = torch.where(
+        moving,
+        torch.ones_like(joint_error),
+        torch.full_like(joint_error, float(stand_still_scale)),
+    )
+    penalty = joint_error * scale * gate
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "Locomotion/joint_pos_penalty": _masked_mean(penalty, active),
+                "Locomotion/joint_pos_penalty_moving_rate": _masked_mean(moving.float(), active),
+            }
+        )
+
+    return penalty
+
+
+def recovery_diagnostics(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    base_height_sensor_name: str,
+    wheel_sensor_name: str,
+    leg_contact_sensor_name: str,
+    collision_sensor_name: str,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    force_threshold: float = 1.0,
+    contact_force_threshold: float = 35.0,
+    action_saturation_threshold: float = 0.95,
+    active_rod_margin_warning: float = 0.05,
+) -> torch.Tensor:
+    """记录 recovery one-policy 诊断量，返回 0 以避免改变奖励语义。"""
+    if not hasattr(env, "extras"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    log = env.extras.setdefault("log", {})
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+
+    pg = robot.data.projected_gravity_b
+    pg_z = pg[:, 2]
+    tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    roll_deg = torch.rad2deg(torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0)))
+    pitch_deg = torch.rad2deg(torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0)))
+    upright_gate = _upright_factor(pg_z)
+    upright_15 = tilt_deg < 15.0
+    upright_30 = tilt_deg < 30.0
+    side_region = (tilt_deg >= 60.0) & (tilt_deg <= 120.0)
+    inverted_130 = tilt_deg > 130.0
+    inverted_150 = tilt_deg > 150.0
+
+    base_lin_vel = robot.data.root_link_lin_vel_b
+    base_ang_vel = robot.data.root_link_ang_vel_b
+    base_vxy = torch.linalg.norm(base_lin_vel[:, :2], dim=1)
+    base_vz_abs = torch.abs(base_lin_vel[:, 2])
+    base_ang_xy = torch.linalg.norm(base_ang_vel[:, :2], dim=1)
+    base_ang_norm = torch.linalg.norm(base_ang_vel, dim=1)
+
+    height_sensor: TerrainHeightSensor = env.scene[base_height_sensor_name]
+    base_height = torch.nan_to_num(
+        height_sensor.data.heights[:, 0],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    target_height = (
+        cmd[:, 4]
+        if cmd.shape[1] > 4
+        else torch.full_like(base_height, _SHARED_ROBOT.default_base_height)
+    )
+    height_error = base_height - target_height
+    height_abs_error = torch.abs(height_error)
+    height_low_1cm = base_height < (target_height - 0.01)
+    height_low_2cm = base_height < (target_height - 0.02)
+    height_low_4cm = base_height < (target_height - 0.04)
+    height_ok_1cm = height_abs_error < 0.01
+    height_ok_2cm = height_abs_error < 0.02
+    height_ok_5cm = height_abs_error < 0.05
+
+    cmd_vx = cmd[:, 0]
+    cmd_yaw = cmd[:, 1]
+    cmd_speed = torch.linalg.norm(cmd[:, :2], dim=1)
+    moving = torch.abs(cmd_vx) >= 0.2
+    turning = torch.abs(cmd_yaw) >= 0.2
+    standing = cmd_speed < 0.1
+
+    action = env.action_manager.action
+    prev_action = env.action_manager.prev_action
+    action_abs = torch.abs(action)
+    action_delta = action - prev_action
+    max_abs_action = torch.max(action_abs, dim=1).values
+    leg_action_abs = action_abs[:, :4]
+    wheel_action_abs = action_abs[:, 4:6]
+    max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
+    max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
+    action_saturated = max_abs_action > float(action_saturation_threshold)
+    leg_action_saturated = max_abs_leg_action > float(action_saturation_threshold)
+    wheel_action_saturated = max_abs_wheel_action > float(action_saturation_threshold)
+
+    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    joint_error = joint_pos - default_pos
+    joint_error_norm = torch.linalg.norm(joint_error, dim=1)
+    joint_vel_norm = torch.linalg.norm(_policy_leg_vel(robot), dim=1)
+    min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
+    near_active_rod_limit = min_margin < float(active_rod_margin_warning)
+    lower_limit_close = lower_margin < float(active_rod_margin_warning)
+    upper_limit_close = upper_margin < float(active_rod_margin_warning)
+    limit_penalty = dof_pos_limits(env, asset_cfg=asset_cfg)
+
+    wheel_contact_ratio, wheel_max_force, wheel_mean_force = _contact_diagnostic_stats(
+        env, wheel_sensor_name, force_threshold
+    )
+    leg_contact_ratio, leg_max_force, _ = _contact_diagnostic_stats(
+        env, leg_contact_sensor_name, force_threshold
+    )
+    collision_ratio, collision_max_force, _ = _contact_diagnostic_stats(
+        env, collision_sensor_name, force_threshold
+    )
+    wheel_force_excess = torch.clamp(wheel_max_force - float(contact_force_threshold), min=0.0)
+
+    log.update(
+        {
+            "Recovery/diag_cmd_vx_mean": cmd_vx.mean().item(),
+            "Recovery/diag_cmd_vx_abs_mean": torch.abs(cmd_vx).mean().item(),
+            "Recovery/diag_cmd_vx_std": cmd_vx.float().std(unbiased=False).item(),
+            "Recovery/diag_cmd_yaw_rate_mean": cmd_yaw.mean().item(),
+            "Recovery/diag_cmd_yaw_rate_abs_mean": torch.abs(cmd_yaw).mean().item(),
+            "Recovery/diag_cmd_yaw_rate_std": cmd_yaw.float().std(unbiased=False).item(),
+            "Recovery/diag_cmd_speed_mean": cmd_speed.mean().item(),
+            "Recovery/diag_cmd_moving_ratio": moving.float().mean().item(),
+            "Recovery/diag_cmd_turning_ratio": turning.float().mean().item(),
+            "Recovery/diag_cmd_standing_ratio": standing.float().mean().item(),
+            "Recovery/diag_cmd_height_m": target_height.mean().item(),
+            "Recovery/diag_tilt_deg_mean": tilt_deg.mean().item(),
+            "Recovery/diag_tilt_deg_max": tilt_deg.max().item(),
+            "Recovery/diag_abs_roll_deg": torch.abs(roll_deg).mean().item(),
+            "Recovery/diag_abs_pitch_deg": torch.abs(pitch_deg).mean().item(),
+            "Recovery/diag_roll_deg_mean": roll_deg.mean().item(),
+            "Recovery/diag_pitch_deg_mean": pitch_deg.mean().item(),
+            "Recovery/diag_upright_gate": upright_gate.mean().item(),
+            "Recovery/diag_upright_15deg_rate": upright_15.float().mean().item(),
+            "Recovery/diag_upright_30deg_rate": upright_30.float().mean().item(),
+            "Recovery/diag_side_region_rate": side_region.float().mean().item(),
+            "Recovery/diag_inverted_130deg_rate": inverted_130.float().mean().item(),
+            "Recovery/diag_inverted_150deg_rate": inverted_150.float().mean().item(),
+            "Recovery/diag_base_height_m": base_height.mean().item(),
+            "Recovery/diag_base_height_min_m": base_height.min().item(),
+            "Recovery/diag_base_height_max_m": base_height.max().item(),
+            "Recovery/diag_height_error_signed_m": height_error.mean().item(),
+            "Recovery/diag_height_error_abs_m": height_abs_error.mean().item(),
+            "Recovery/diag_height_ok_1cm_rate": height_ok_1cm.float().mean().item(),
+            "Recovery/diag_height_ok_2cm_rate": height_ok_2cm.float().mean().item(),
+            "Recovery/diag_height_ok_5cm_rate": height_ok_5cm.float().mean().item(),
+            "Recovery/diag_height_low_1cm_rate": height_low_1cm.float().mean().item(),
+            "Recovery/diag_height_low_2cm_rate": height_low_2cm.float().mean().item(),
+            "Recovery/diag_height_low_4cm_rate": height_low_4cm.float().mean().item(),
+            "Recovery/diag_upright_low_height_rate": (upright_15 & height_low_2cm)
+            .float()
+            .mean()
+            .item(),
+            "Recovery/diag_near_upright_height_error_abs_m": _masked_mean(
+                height_abs_error, upright_30
+            ),
+            "Recovery/diag_inverted_height_error_abs_m": _masked_mean(
+                height_abs_error, inverted_130
+            ),
+            "Recovery/diag_base_vxy_speed": base_vxy.mean().item(),
+            "Recovery/diag_base_vz_abs": base_vz_abs.mean().item(),
+            "Recovery/diag_base_ang_vel_xy_norm": base_ang_xy.mean().item(),
+            "Recovery/diag_base_ang_vel_norm": base_ang_norm.mean().item(),
+            "Recovery/diag_near_upright_ang_vel_xy_norm": _masked_mean(base_ang_xy, upright_30),
+            "Recovery/diag_near_upright_vxy_speed": _masked_mean(base_vxy, upright_30),
+            "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
+            "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
+            "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
+            "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float().mean().item(),
+            "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_upright_action_saturation_rate": _masked_mean(
+                action_saturated.float(), upright_15
+            ),
+            "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean().item(),
+            "Recovery/diag_joint_error_norm_rad": joint_error_norm.mean().item(),
+            "Recovery/diag_near_upright_joint_error_norm_rad": _masked_mean(
+                joint_error_norm, upright_30
+            ),
+            "Recovery/diag_joint_vel_norm": joint_vel_norm.mean().item(),
+            "Recovery/diag_active_rod_margin_rad": min_margin.mean().item(),
+            "Recovery/diag_active_rod_margin_min_rad": min_margin.min().item(),
+            "Recovery/diag_active_rod_lower_margin_rad": lower_margin.mean().item(),
+            "Recovery/diag_active_rod_upper_margin_rad": upper_margin.mean().item(),
+            "Recovery/diag_active_rod_near_limit_rate": near_active_rod_limit.float().mean().item(),
+            "Recovery/diag_active_rod_near_lower_rate": lower_limit_close.float().mean().item(),
+            "Recovery/diag_active_rod_near_upper_rate": upper_limit_close.float().mean().item(),
+            "Recovery/diag_dof_pos_limits_raw": limit_penalty.mean().item(),
+            "Recovery/diag_dof_pos_limits_active_rate": (limit_penalty > 0.0).float().mean().item(),
+            "Recovery/diag_wheel_contact_ratio": wheel_contact_ratio.mean().item(),
+            "Recovery/diag_wheel_full_contact_rate": (wheel_contact_ratio >= 1.0)
+            .float()
+            .mean()
+            .item(),
+            "Recovery/diag_wheel_any_contact_rate": (wheel_contact_ratio > 0.0)
+            .float()
+            .mean()
+            .item(),
+            "Recovery/diag_wheel_max_force_n": wheel_max_force.mean().item(),
+            "Recovery/diag_wheel_mean_force_n": wheel_mean_force.mean().item(),
+            "Recovery/diag_wheel_force_excess_n": wheel_force_excess.mean().item(),
+            "Recovery/diag_leg_contact_rate": (leg_contact_ratio > 0.0).float().mean().item(),
+            "Recovery/diag_leg_contact_ratio": leg_contact_ratio.mean().item(),
+            "Recovery/diag_leg_max_force_n": leg_max_force.mean().item(),
+            "Recovery/diag_collision_contact_rate": (collision_ratio > 0.0).float().mean().item(),
+            "Recovery/diag_collision_contact_ratio": collision_ratio.mean().item(),
+            "Recovery/diag_collision_max_force_n": collision_max_force.mean().item(),
+            "Recovery/diag_onepolicy_ready_2cm_rate": (
+                upright_15 & height_ok_2cm & (wheel_contact_ratio >= 1.0)
+            )
+            .float()
+            .mean()
+            .item(),
+        }
+    )
+
+    for action_idx, action_name in enumerate(("lf", "lb", "rf", "rb", "left_wheel", "right_wheel")):
+        if action_idx >= action_abs.shape[1]:
+            continue
+        dim_saturated = action_abs[:, action_idx] > float(action_saturation_threshold)
+        log[f"Recovery/diag_action_abs_{action_name}"] = action_abs[:, action_idx].mean().item()
+        log[f"Recovery/diag_action_saturation_rate_{action_name}"] = (
+            dim_saturated.float().mean().item()
+        )
+
+    for joint_idx, joint_name in enumerate(("lf", "lb", "rf", "rb")):
+        if joint_idx >= joint_error.shape[1]:
+            continue
+        log[f"Recovery/diag_joint_error_abs_{joint_name}_rad"] = (
+            torch.abs(joint_error[:, joint_idx]).mean().item()
+        )
+
+    reset_bins = getattr(env, "_reset_init_tilt_bin", None)
+    if isinstance(reset_bins, torch.Tensor) and reset_bins.shape[0] == env.num_envs:
+        for bin_idx, bin_name in enumerate(("upright_noise", "near_fall", "hard_tilt", "inverted")):
+            bin_mask = reset_bins == bin_idx
+            log[f"Recovery/diag_tilt_deg_by_reset_bin/{bin_name}"] = _masked_mean(
+                tilt_deg, bin_mask
+            )
+            log[f"Recovery/diag_upright_15deg_rate_by_reset_bin/{bin_name}"] = _masked_mean(
+                upright_15.float(), bin_mask
+            )
+            log[f"Recovery/diag_height_error_abs_m_by_reset_bin/{bin_name}"] = _masked_mean(
+                height_abs_error, bin_mask
+            )
+            log[f"Recovery/diag_action_saturation_rate_by_reset_bin/{bin_name}"] = _masked_mean(
+                action_saturated.float(), bin_mask
+            )
+            log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_bin/{bin_name}"] = _masked_min(
+                min_margin, bin_mask
+            )
+
+    return torch.zeros(env.num_envs, device=env.device)
 
 
 def flat_leg_contact_penalty(
@@ -1897,7 +2250,8 @@ def feet_contact_without_cmd(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    stationary = torch.abs(cmd[:, 0]) < cmd_threshold
+    velocity_command = torch.linalg.norm(cmd[:, :2], dim=1)
+    stationary = velocity_command < cmd_threshold
 
     sensor: ContactSensor = env.scene[sensor_name]
     data = sensor.data

@@ -3,62 +3,47 @@
 from __future__ import annotations
 
 from mjlab.envs import ManagerBasedRlEnvCfg
-from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, rewards
+from . import events, rewards
+
+_ROBOT_DEFAULTS = SharedRobotConfig()
+_DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """统一全姿态随机的反倒自起训练环境。"""
 
     cfg = flat_env_cfg(play=play)
-    steps_per_policy_iter = 64
+    command_cfg = cfg.commands["velocity_height"]
+    command_cfg.resampling_time_range = (10.0, 10.0)
+    command_cfg.lin_vel_x_range = (-1.0, 1.0)
+    command_cfg.ang_vel_yaw_range = (-1.0, 1.0)
+    command_cfg.pitch_range = (0.0, 0.0)
+    command_cfg.roll_range = (0.0, 0.0)
+    command_cfg.height_range = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
+    command_cfg.standing_height_range = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
+    command_cfg.standing_ratio = 0.02
+    command_cfg.jump_prob = 0.0
 
     cfg.events["reset_root_state"] = EventTermCfg(
-        func=events.reset_root_state_full_angle_random,
+        func=events.reset_root_state_robotlab_full_random,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "tilt_range": (0.0, 3.141592653589793),
-            "tilt_axis_range": (-3.141592653589793, 3.141592653589793),
+            "pos_xy_range": (-0.5, 0.5),
+            "height_offset_range": (0.0, 0.2),
+            "roll_range": (-3.141592653589793, 3.141592653589793),
+            "pitch_range": (-3.141592653589793, 3.141592653589793),
             "yaw_range": (-3.141592653589793, 3.141592653589793),
-            "height_range": (0.26, 0.36),
-            "clearance_range": (0.02, 0.05),
-            "lin_vel_range": (-0.15, 0.15),
-            "ang_vel_range": (-0.8, 0.8),
-            "use_iterations": True,
-            "steps_per_policy_iter": steps_per_policy_iter,
-            "curriculum_stages": [
-                {
-                    "iteration": 0,
-                    "tilt_range": (0.0, 1.05),
-                    "lin_vel_range": (-0.05, 0.05),
-                    "ang_vel_range": (-0.2, 0.2),
-                },
-                {
-                    "iteration": 300,
-                    "tilt_range": (0.0, 1.57),
-                    "lin_vel_range": (-0.08, 0.08),
-                    "ang_vel_range": (-0.35, 0.35),
-                },
-                {
-                    "iteration": 700,
-                    "tilt_range": (0.0, 2.36),
-                    "lin_vel_range": (-0.12, 0.12),
-                    "ang_vel_range": (-0.6, 0.6),
-                },
-                {
-                    "iteration": 1100,
-                    "tilt_range": (0.0, 3.141592653589793),
-                    "lin_vel_range": (-0.15, 0.15),
-                    "ang_vel_range": (-0.8, 0.8),
-                },
-            ],
+            "lin_vel_range": (-0.5, 0.5),
+            "ang_vel_range": (-0.5, 0.5),
+            "clearance_range": (0.0, 0.05),
         },
     )
     cfg.events["reset_joints"] = EventTermCfg(
@@ -67,37 +52,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "joint_offset_range": 0.0,
-            "hip_joint_offset_range": (-0.10, 0.10),
-            "knee_joint_offset_range": (-0.10, 0.10),
-            "joint_vel_range": (-0.2, 0.2),
-            "use_iterations": True,
-            "steps_per_policy_iter": steps_per_policy_iter,
-            "curriculum_stages": [
-                {
-                    "iteration": 0,
-                    "hip_joint_offset_range": (-0.10, 0.10),
-                    "knee_joint_offset_range": (-0.10, 0.10),
-                    "joint_vel_range": (-0.2, 0.2),
-                },
-                {
-                    "iteration": 500,
-                    "hip_joint_offset_range": (-0.20, 0.25),
-                    "knee_joint_offset_range": (-0.20, 0.30),
-                    "joint_vel_range": (-0.4, 0.4),
-                },
-                {
-                    "iteration": 1000,
-                    "hip_joint_offset_range": (-0.35, 0.40),
-                    "knee_joint_offset_range": (-0.30, 0.45),
-                    "joint_vel_range": (-0.6, 0.6),
-                },
-                {
-                    "iteration": 1500,
-                    "hip_joint_offset_range": (-0.50, 0.55),
-                    "knee_joint_offset_range": (-0.45, 0.65),
-                    "joint_vel_range": (-0.8, 0.8),
-                },
-            ],
+            "joint_vel_range": (0.0, 0.0),
         },
     )
 
@@ -105,14 +60,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("bad_orientation", None)
     cfg.terminations.pop("leg_contact", None)
     cfg.terminations.pop("recovery_stagnation", None)
-    cfg.events.pop("push_robots", None)
-    if cfg.curriculum is not None:
-        cfg.curriculum.pop("push_disturbance", None)
+    cfg.curriculum = {}
+    if not play:
+        cfg.events["push_robots"] = EventTermCfg(
+            func=events.push_robots,
+            mode="interval",
+            interval_range_s=(10.0, 15.0),
+            params={
+                "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
 
     # 去掉轴向姿态惩罚和旧 recovery 专属奖励；自起能力由 upward + 同一套 locomotion reward 学出来。
     for reward_name in (
         "tracking_orientation_l2",
+        "tracking_height",
+        "tracking_lin_yaw_joint",
         "bad_tilt",
+        "angular_momentum",
+        "wheel_torques",
         "flat_base_height",
         "flat_base_lin_vel_z",
         "flat_action_smoothness",
@@ -125,21 +92,28 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ):
         cfg.rewards.pop(reward_name, None)
 
-    for reward_name in ("tracking_lin_vel", "tracking_ang_vel", "tracking_lin_yaw_joint"):
+    for reward_name in ("tracking_lin_vel", "tracking_ang_vel"):
         if reward_name in cfg.rewards:
             cfg.rewards[reward_name].params["use_upright_gate"] = True
+    if "tracking_lin_vel" in cfg.rewards:
+        cfg.rewards["tracking_lin_vel"].weight = 3.0
+        cfg.rewards["tracking_lin_vel"].params["vz_weight"] = 0.0
+    if "tracking_ang_vel" in cfg.rewards:
+        cfg.rewards["tracking_ang_vel"].weight = 1.5
 
     # 对齐 robot_lab 的自起训练比例:upward 是主目标,动作平滑只保留很轻的正则。
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
-    cfg.rewards["upward_progress"] = RewardTermCfg(
-        func=rewards.upward_progress,
-        weight=1.0,
-        params={"delta_scale": 0.05, "max_reward": 2.0},
-    )
+    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
+    cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
+    cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
     cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.01)
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
-        weight=-2.0e-5,
+        weight=-2.5e-5,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["leg_dof_acc"] = RewardTermCfg(
+        func=rewards.leg_dof_acc,
+        weight=-2.5e-7,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["leg_power"] = RewardTermCfg(
@@ -147,93 +121,88 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=-2.0e-5,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
-    cfg.rewards["tracking_height"] = RewardTermCfg(
-        func=rewards.tracking_height,
-        weight=2.49,
+    cfg.rewards["stand_still"] = RewardTermCfg(
+        func=rewards.stand_still,
+        weight=-2.0,
         params={
             "command_name": "velocity_height",
-            "sigma": 0.05,
-            "height_sensor_name": "base_height_sensor",
-            "use_upright_gate": True,
-            "min_upright_gate": 0.25,
+            "command_threshold": 0.1,
+            "default_height": _DEFAULT_STANDING_HEIGHT,
+            "height_tolerance": 40.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    cfg.rewards["joint_pos_penalty"] = RewardTermCfg(
+        func=rewards.joint_pos_penalty,
+        weight=-1.0,
+        params={
+            "command_name": "velocity_height",
+            "stand_still_scale": 5.0,
+            "velocity_threshold": 0.5,
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    cfg.rewards["joint_mirror"] = RewardTermCfg(
+        func=rewards.joint_mirror,
+        weight=-0.05,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["dof_pos_limits"] = RewardTermCfg(
+        func=rewards.dof_pos_limits,
+        weight=-5.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["collision"] = RewardTermCfg(
+        func=rewards.collision,
+        weight=-1.0,
+        params={"sensor_name": "collision_sensor", "asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["contact_forces"] = RewardTermCfg(
+        func=rewards.contact_forces,
+        weight=-1.5e-4,
+        params={
+            "threshold": 35.0,
+            "sensor_name": "wheel_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
     cfg.rewards["upright_leg_contact"] = RewardTermCfg(
         func=rewards.upright_leg_contact_penalty,
-        weight=-5.0,
+        weight=-1.0,
         params={
             "command_name": "velocity_height",
             "sensor_name": "leg_contact_sensor",
             "force_threshold": 1.0,
-            "min_upright_gate": 0.5,
+            "min_upright_gate": 0.0,
         },
     )
-    cfg.rewards["upright_wheel_contact"] = RewardTermCfg(
-        func=rewards.upright_wheel_contact_penalty,
-        weight=-3.0,
+    cfg.rewards["wheel_contact_without_cmd"] = RewardTermCfg(
+        func=rewards.feet_contact_without_cmd,
+        weight=0.1,
         params={
             "command_name": "velocity_height",
-            "sensor_name": "wheel_sensor",
             "force_threshold": 1.0,
-            "min_upright_gate": 0.5,
+            "cmd_threshold": 0.1,
+            "sensor_name": "wheel_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    cfg.rewards["upright_wheel_slip"] = RewardTermCfg(
-        func=rewards.upright_wheel_slip_penalty,
-        weight=-0.8,
+    cfg.rewards["diagnostics"] = RewardTermCfg(
+        func=rewards.recovery_diagnostics,
+        weight=1.0,
         params={
             "command_name": "velocity_height",
-            "wheel_radius": 0.059,
-            "idle_command_threshold": 0.08,
-            "straight_yaw_threshold": 0.20,
-            "min_upright_gate": 0.5,
-            "idle_wheel_speed_scale": 0.35,
-            "slip_speed_scale": 0.45,
-            "base_speed_scale": 0.20,
-            "max_penalty": 9.0,
+            "base_height_sensor_name": "base_height_sensor",
+            "wheel_sensor_name": "wheel_sensor",
+            "leg_contact_sensor_name": "leg_contact_sensor",
+            "collision_sensor_name": "collision_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "force_threshold": 1.0,
+            "contact_force_threshold": 35.0,
+            "action_saturation_threshold": 0.95,
+            "active_rod_margin_warning": 0.05,
         },
     )
-
-    if cfg.curriculum is not None:
-        cfg.curriculum["command_vel"] = CurriculumTermCfg(
-            func=curriculums.commands_vel,
-            params={
-                "command_name": "velocity_height",
-                "use_iterations": True,
-                "steps_per_policy_iter": steps_per_policy_iter,
-                "velocity_stages": [
-                    {
-                        "iteration": 0,
-                        "lin_vel_x_range": (0.0, 0.0),
-                        "ang_vel_yaw_range": (0.0, 0.0),
-                    },
-                    {
-                        "iteration": 250,
-                        "lin_vel_x_range": (-0.3, 0.3),
-                        "ang_vel_yaw_range": (-0.3, 0.3),
-                    },
-                    {
-                        "iteration": 600,
-                        "lin_vel_x_range": (-0.5, 0.5),
-                        "ang_vel_yaw_range": (-0.5, 0.5),
-                    },
-                    {
-                        "iteration": 1000,
-                        "lin_vel_x_range": (-1.0, 1.0),
-                        "ang_vel_yaw_range": (-0.5, 0.5),
-                    },
-                    {
-                        "iteration": 1500,
-                        "lin_vel_x_range": (-1.5, 1.5),
-                        "ang_vel_yaw_range": (-0.75, 0.75),
-                    },
-                    {
-                        "iteration": 2200,
-                        "lin_vel_x_range": (-1.5, 1.5),
-                        "ang_vel_yaw_range": (-1.0, 1.0),
-                    },
-                ],
-            },
-        )
 
     return cfg
