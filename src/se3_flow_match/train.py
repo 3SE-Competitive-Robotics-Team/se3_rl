@@ -44,6 +44,7 @@ def train_flow_student(
     tensor_dataset = TensorDataset(obs, actions, dones, action_weights)
     loader = DataLoader(tensor_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
     model = FlowVelocityField(config).to(device)
+    _init_obs_normalizer(model, obs)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     step = 0
@@ -139,6 +140,14 @@ def _action_weights_for_modes(modes: torch.Tensor) -> torch.Tensor:
     gait = modes == int(TaskMode.GAIT)
     weights[gait, 4:6] = 1.0
     return weights
+
+
+def _init_obs_normalizer(model: FlowVelocityField, obs: torch.Tensor) -> None:
+    """用离线数据集统计量初始化观测归一化。"""
+    flat = obs.reshape(-1, obs.shape[-1]).to(dtype=torch.float32)
+    mean = flat.mean(dim=0)
+    std = flat.std(dim=0).clamp_min(1.0e-4)
+    model.set_obs_statistics(mean, std)
 
 
 def build_parser() -> argparse.ArgumentParser:

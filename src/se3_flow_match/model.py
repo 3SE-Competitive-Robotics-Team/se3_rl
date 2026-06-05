@@ -104,6 +104,10 @@ class FlowVelocityField(nn.Module):
         context, self._hidden = self.rnn(projected.unsqueeze(1), self._hidden)
         return context.squeeze(1)
 
+    def set_obs_statistics(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """写入离线数据集观测均值和标准差。"""
+        self.obs_normalizer.set_statistics(mean, std)
+
     def reset_hidden(
         self, batch_size: int | None = None, device: torch.device | None = None
     ) -> None:
@@ -239,6 +243,19 @@ class _EmpiricalNormalizer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """执行经验均值方差归一化。"""
         return (x - self._mean) / (self._std + self.eps)
+
+    def set_statistics(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """写入固定观测统计量。"""
+        mean = mean.detach().reshape(1, -1).to(device=self._mean.device, dtype=self._mean.dtype)
+        std = std.detach().reshape(1, -1).to(device=self._std.device, dtype=self._std.dtype)
+        if mean.shape != self._mean.shape:
+            raise ValueError(
+                f"mean 形状必须是 {tuple(self._mean.shape)}，实际为 {tuple(mean.shape)}"
+            )
+        if std.shape != self._std.shape:
+            raise ValueError(f"std 形状必须是 {tuple(self._std.shape)}，实际为 {tuple(std.shape)}")
+        self._mean.copy_(mean)
+        self._std.copy_(std.clamp_min(1.0e-4))
 
 
 def _activation(name: str) -> nn.Module:

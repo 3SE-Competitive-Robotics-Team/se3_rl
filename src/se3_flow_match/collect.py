@@ -95,28 +95,31 @@ def _collect_one_task(
     env_cfg.scene.num_envs = int(num_envs)
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     try:
-        obs_dict, _ = env.reset()
-        actor_obs = _actor_obs(obs_dict)
-        teacher.reset(batch_size=num_envs)
         obs_steps: list[torch.Tensor] = []
         action_steps: list[torch.Tensor] = []
         done_steps: list[torch.Tensor] = []
         mode_steps: list[torch.Tensor] = []
 
-        for _ in range(steps):
-            actor_obs = overwrite_task_mode_obs(actor_obs, spec.mode)
-            action = teacher.act(actor_obs)
-            action = _apply_action_policy(action, spec.action_policy)
-            next_obs, _rew, terminated, truncated, _extras = env.step(action)
-            done = (terminated | truncated).to(dtype=torch.bool)
+        sequence_count = _sequence_count(steps, sequence_length)
+        for _ in range(sequence_count):
+            obs_dict, _ = env.reset()
+            actor_obs = _actor_obs(obs_dict)
+            teacher.reset(batch_size=num_envs)
 
-            obs_steps.append(actor_obs.detach().cpu())
-            action_steps.append(action.detach().cpu())
-            done_steps.append(done.detach().cpu())
-            mode_steps.append(torch.full((num_envs,), int(spec.mode), dtype=torch.long))
+            for _step in range(sequence_length):
+                actor_obs = overwrite_task_mode_obs(actor_obs, spec.mode)
+                raw_action = teacher.act(actor_obs)
+                target_action = _apply_action_policy(raw_action, spec.action_policy)
+                next_obs, _rew, terminated, truncated, _extras = env.step(raw_action)
+                done = (terminated | truncated).to(dtype=torch.bool)
 
-            teacher.reset_done(done)
-            actor_obs = _actor_obs(next_obs)
+                obs_steps.append(actor_obs.detach().cpu())
+                action_steps.append(target_action.detach().cpu())
+                done_steps.append(done.detach().cpu())
+                mode_steps.append(torch.full((num_envs,), int(spec.mode), dtype=torch.long))
+
+                teacher.reset_done(done)
+                actor_obs = _actor_obs(next_obs)
 
         obs = torch.stack(obs_steps, dim=1)
         actions = torch.stack(action_steps, dim=1)
@@ -129,6 +132,11 @@ def _collect_one_task(
         return obs, actions, dones, modes, names
     finally:
         env.close()
+
+
+def _sequence_count(steps: int, sequence_length: int) -> int:
+    """把 steps 解释为每个 env 采集的总步数，并按序列长度向上取整。"""
+    return max(1, (int(steps) + int(sequence_length) - 1) // int(sequence_length))
 
 
 def _actor_obs(obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
