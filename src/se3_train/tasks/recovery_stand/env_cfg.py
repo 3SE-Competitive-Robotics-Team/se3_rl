@@ -288,19 +288,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "min_gate": 0.0,
             },
         ),
-        "recovery_near_upright_low_height": RewardTermCfg(
-            func=rewards.recovery_near_upright_low_height_penalty,
-            weight=-4.0,
-            params={
-                "command_name": "velocity_height",
-                "height_sensor_name": "base_height_sensor",
-                "height_tolerance": 0.02,
-                "height_scale": 0.04,
-                "max_normalized_low_height": 4.0,
-                "gate_start_deg": 60.0,
-                "gate_full_deg": 15.0,
-            },
-        ),
         "recovery_wheel_contact": RewardTermCfg(
             func=rewards.recovery_stand_wheel_contact,
             weight=2.0,

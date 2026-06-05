@@ -1322,49 +1322,6 @@ def recovery_inverted_low_height_penalty(
     return penalty
 
 
-def recovery_near_upright_low_height_penalty(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    height_sensor_name: str,
-    height_tolerance: float = 0.02,
-    height_scale: float = 0.04,
-    max_normalized_low_height: float = 4.0,
-    gate_start_deg: float = 60.0,
-    gate_full_deg: float = 15.0,
-) -> torch.Tensor:
-    """接近直立后惩罚低于目标高度的低趴解。"""
-    active = _recovery_reset_mask(env)
-    cmd = env.command_manager.get_command(command_name)
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
-    target_height = cmd[:, 4]
-
-    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
-    near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
-    low_height = torch.clamp(
-        (target_height - float(height_tolerance) - height) / max(float(height_scale), 1.0e-6),
-        min=0.0,
-        max=float(max_normalized_low_height),
-    )
-    result = torch.square(low_height) * near_upright_gate * active.float()
-
-    if hasattr(env, "extras"):
-        low_height_active = active & (near_upright_gate > 0.0) & (low_height > 0.0)
-        env.extras.setdefault("log", {}).update(
-            {
-                "RecoveryStand/near_upright_low_height_penalty": _masked_mean(result, active),
-                "RecoveryStand/near_upright_low_height_rate": _masked_mean(
-                    low_height_active.float(), active
-                ),
-                "RecoveryStand/near_upright_low_height_gate": _masked_mean(
-                    near_upright_gate, active
-                ),
-            }
-        )
-
-    return result
-
-
 def recovery_wheel_contact(
     env: ManagerBasedRlEnv,
     sensor_name: str,
