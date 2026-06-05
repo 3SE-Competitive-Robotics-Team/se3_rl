@@ -17,6 +17,7 @@ from .fourbar import (
     policy_to_output_torque_torch,
     policy_to_output_vel_torch,
 )
+from .height_default import policy_default_from_height_np, policy_default_from_height_torch
 from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
 from .robot import Joint, JointGroup, RobotConfig, Termination
@@ -39,6 +40,8 @@ __all__ = [
     "output_to_policy_pos_torch",
     "output_to_policy_vel_np",
     "output_to_policy_vel_torch",
+    "policy_default_from_height_np",
+    "policy_default_from_height_torch",
     "policy_to_output_pos_np",
     "policy_to_output_pos_torch",
     "policy_to_output_torque_np",

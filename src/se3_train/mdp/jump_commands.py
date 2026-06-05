@@ -348,11 +348,20 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         recovery_mask = recovery_state.recovery_active_mask(self._env).to(device=self.device)
         if not recovery_mask.any():
             return
-        command_height = float(
-            getattr(self._env, "_recovery_command_height", _DEFAULT_STANDING_HEIGHT)
-        )
         self._command[recovery_mask, 0:4] = 0.0
-        self._command[recovery_mask, 4] = command_height
+        command_height_buf = getattr(self._env, "_recovery_command_height_buf", None)
+        if (
+            isinstance(command_height_buf, torch.Tensor)
+            and command_height_buf.shape[0] == self.num_envs
+        ):
+            self._command[recovery_mask, 4] = command_height_buf.to(device=self.device)[
+                recovery_mask
+            ]
+        else:
+            command_height = float(
+                getattr(self._env, "_recovery_command_height", _DEFAULT_STANDING_HEIGHT)
+            )
+            self._command[recovery_mask, 4] = command_height
         self._command[recovery_mask, 5] = 0.0
         self._command[recovery_mask, 7] = 0.0
 

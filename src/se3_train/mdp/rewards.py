@@ -13,7 +13,11 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_shared import output_to_policy_pos_torch, output_to_policy_vel_torch
+from se3_shared import (
+    output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
+    policy_default_from_height_torch,
+)
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
@@ -32,6 +36,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
+_FOURBAR_WHEEL_RADIUS_M = 0.06
 
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -113,9 +118,28 @@ def _policy_leg_pos_and_default(robot) -> tuple[torch.Tensor, torch.Tensor]:
     return joint_pos, default_pos
 
 
-def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """返回主动杆夹角到上下限的最小余量诊断。"""
-    lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+def _policy_leg_pos_and_height_default(
+    env: ManagerBasedRlEnv,
+    robot,
+    command_name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回当前腿部位置和随高度指令变化的默认腿部姿态。"""
+    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    if not (is_closedchain_model(robot) or is_fourbar_surrogate_model(robot)):
+        return joint_pos, default_pos
+    try:
+        cmd = env.command_manager.get_command(command_name)
+    except Exception:
+        return joint_pos, default_pos
+    height_default = policy_default_from_height_torch(cmd[:, 4], _SHARED_ROBOT).to(
+        device=joint_pos.device,
+        dtype=joint_pos.dtype,
+    )
+    return joint_pos, height_default
+
+
+def _active_rod_angles(robot) -> torch.Tensor:
+    """返回左右主动杆夹角。"""
     if is_fourbar_surrogate_model(robot):
         pos = output_to_policy_pos_torch(robot.data.joint_pos[:, policy_leg_joint_ids(robot)])
         angles = []
@@ -131,6 +155,13 @@ def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.
                 + back_coef * robot.data.joint_pos[:, back_id]
             )
         angle_tensor = torch.stack(angles, dim=1)
+    return angle_tensor
+
+
+def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回主动杆夹角到上下限的最小余量诊断。"""
+    lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+    angle_tensor = _active_rod_angles(robot)
 
     lower_margin = angle_tensor - float(lower)
     upper_margin = float(upper) - angle_tensor
@@ -138,6 +169,23 @@ def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.
     min_upper = torch.min(upper_margin, dim=1).values
     min_margin = torch.minimum(min_lower, min_upper)
     return min_margin, min_lower, min_upper
+
+
+def _wheel_clearance_stats(
+    env: ManagerBasedRlEnv,
+    robot,
+    asset_cfg: SceneEntityCfg,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回左右轮底离地最小高度和平均高度。"""
+    attr_name = f"_recovery_diag_wheel_body_ids_{asset_cfg.name}"
+    body_ids = getattr(env, attr_name, None)
+    if not isinstance(body_ids, list) or len(body_ids) != 2:
+        body_ids, _ = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
+        setattr(env, attr_name, body_ids)
+    wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
+    ground_z = env.scene.env_origins[:, 2].unsqueeze(1)
+    wheel_bottom = wheel_pos_w[:, :, 2] - ground_z - _FOURBAR_WHEEL_RADIUS_M
+    return wheel_bottom.min(dim=1).values, wheel_bottom.mean(dim=1)
 
 
 def _contact_diagnostic_stats(
@@ -794,28 +842,21 @@ def stand_still(
     ignore_recovery: bool = False,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """站立时关节偏差平方和,高度自适应 sigma。
-
-    当 cmd_height 偏离 default_height 时,惩罚自动放松,
-    避免高度指令与姿态惩罚的结构性矛盾。
-    衰减因子: exp(-height_tolerance * (cmd_h - default_h)²)
-    """
+    """站立时惩罚腿部偏离高度条件默认姿态。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    _ = default_height, height_tolerance
+    joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
     diff = joint_pos - default_pos
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
     vel_scale = (cmd_norm <= command_threshold).float()
 
-    height_deviation = cmd[:, 4] - default_height
-    height_scale = torch.exp(-height_tolerance * height_deviation**2)
-
-    result = reward * vel_scale * height_scale * gate
+    result = reward * vel_scale * gate
     if ignore_recovery:
         result = result * (~_recovery_reset_mask(env)).float()
     return result
@@ -835,7 +876,7 @@ def joint_pos_penalty(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
     joint_error = torch.linalg.norm(joint_pos - default_pos, dim=1)
     command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
     body_vel = torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2], dim=1)
@@ -940,15 +981,26 @@ def recovery_diagnostics(
     leg_action_saturated = max_abs_leg_action > float(action_saturation_threshold)
     wheel_action_saturated = max_abs_wheel_action > float(action_saturation_threshold)
 
-    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    joint_pos, fixed_default_pos = _policy_leg_pos_and_default(robot)
+    _, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
+    fixed_joint_error_norm = torch.linalg.norm(joint_pos - fixed_default_pos, dim=1)
     joint_error = joint_pos - default_pos
     joint_error_norm = torch.linalg.norm(joint_error, dim=1)
+    default_active_angles = []
+    for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+        front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+        default_active_angles.append(
+            front_coef * default_pos[:, front_idx] + back_coef * default_pos[:, back_idx]
+        )
+    default_active_angle = torch.stack(default_active_angles, dim=1)
     joint_vel_norm = torch.linalg.norm(_policy_leg_vel(robot), dim=1)
+    active_rod_angle = _active_rod_angles(robot)
     min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
     near_active_rod_limit = min_margin < float(active_rod_margin_warning)
     lower_limit_close = lower_margin < float(active_rod_margin_warning)
     upper_limit_close = upper_margin < float(active_rod_margin_warning)
     limit_penalty = dof_pos_limits(env, asset_cfg=asset_cfg)
+    wheel_clearance_min, wheel_clearance_mean = _wheel_clearance_stats(env, robot, asset_cfg)
 
     wheel_contact_ratio, wheel_max_force, wheel_mean_force = _contact_diagnostic_stats(
         env, wheel_sensor_name, force_threshold
@@ -960,6 +1012,32 @@ def recovery_diagnostics(
         env, collision_sensor_name, force_threshold
     )
     wheel_force_excess = torch.clamp(wheel_max_force - float(contact_force_threshold), min=0.0)
+
+    active_target_clamp_rate = 0.0
+    active_target_clamp_env = torch.zeros(env.num_envs, device=env.device)
+    active_target_mean = 0.0
+    active_target_error_env = torch.zeros(env.num_envs, device=env.device)
+    active_target_error_mean = 0.0
+    front_target_abs_mean = 0.0
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is not None:
+        for term_name in action_manager.active_terms:
+            term = action_manager.get_term(term_name)
+            if getattr(term, "_entity", None) is not robot:
+                continue
+            active_target = getattr(term, "active_rod_angle_target", None)
+            active_clamped = getattr(term, "active_rod_angle_target_clamped", None)
+            policy_target = getattr(term, "policy_leg_target", None)
+            if isinstance(active_target, torch.Tensor):
+                active_target_mean = active_target.float().mean().item()
+                active_target_error_env = torch.abs(active_target - active_rod_angle).mean(dim=1)
+                active_target_error_mean = active_target_error_env.mean().item()
+            if isinstance(active_clamped, torch.Tensor):
+                active_target_clamp_rate = active_clamped.float().mean().item()
+                active_target_clamp_env = active_clamped.float().mean(dim=1).to(device=env.device)
+            if isinstance(policy_target, torch.Tensor) and policy_target.shape[-1] >= 3:
+                front_target_abs_mean = torch.abs(policy_target[:, (0, 2)]).mean().item()
+            break
 
     log.update(
         {
@@ -974,6 +1052,10 @@ def recovery_diagnostics(
             "Recovery/diag_cmd_turning_ratio": turning.float().mean().item(),
             "Recovery/diag_cmd_standing_ratio": standing.float().mean().item(),
             "Recovery/diag_cmd_height_m": target_height.mean().item(),
+            "Recovery/diag_command_height_mean_m": target_height.mean().item(),
+            "Recovery/diag_command_height_std_m": target_height.float().std(unbiased=False).item(),
+            "Recovery/diag_command_height_min_m": target_height.min().item(),
+            "Recovery/diag_command_height_max_m": target_height.max().item(),
             "Recovery/diag_tilt_deg_mean": tilt_deg.mean().item(),
             "Recovery/diag_tilt_deg_max": tilt_deg.max().item(),
             "Recovery/diag_abs_roll_deg": torch.abs(roll_deg).mean().item(),
@@ -1016,6 +1098,8 @@ def recovery_diagnostics(
             "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
             "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
             "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_leg_action_abs_mean": leg_action_abs.mean().item(),
+            "Recovery/diag_wheel_action_abs_mean": wheel_action_abs.mean().item(),
             "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
             "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float().mean().item(),
             "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
@@ -1026,10 +1110,22 @@ def recovery_diagnostics(
             ),
             "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean().item(),
             "Recovery/diag_joint_error_norm_rad": joint_error_norm.mean().item(),
+            "Recovery/diag_fixed_default_joint_error_norm_rad": fixed_joint_error_norm.mean().item(),
+            "Recovery/diag_dynamic_default_joint_error_rad": joint_error_norm.mean().item(),
+            "Recovery/diag_default_active_angle_mean_rad": default_active_angle.mean().item(),
+            "Recovery/diag_default_lf0_mean_rad": default_pos[:, 0].mean().item(),
+            "Recovery/diag_active_target_mean_rad": active_target_mean,
+            "Recovery/diag_active_target_error_abs_rad": active_target_error_mean,
+            "Recovery/diag_active_target_clamp_rate": active_target_clamp_rate,
+            "Recovery/diag_front_target_abs_mean_rad": front_target_abs_mean,
             "Recovery/diag_near_upright_joint_error_norm_rad": _masked_mean(
                 joint_error_norm, upright_30
             ),
             "Recovery/diag_joint_vel_norm": joint_vel_norm.mean().item(),
+            "Recovery/diag_active_rod_angle_mean_rad": active_rod_angle.mean().item(),
+            "Recovery/diag_active_rod_angle_std_rad": active_rod_angle.float()
+            .std(unbiased=False)
+            .item(),
             "Recovery/diag_active_rod_margin_rad": min_margin.mean().item(),
             "Recovery/diag_active_rod_margin_min_rad": min_margin.min().item(),
             "Recovery/diag_active_rod_lower_margin_rad": lower_margin.mean().item(),
@@ -1039,6 +1135,12 @@ def recovery_diagnostics(
             "Recovery/diag_active_rod_near_upper_rate": upper_limit_close.float().mean().item(),
             "Recovery/diag_dof_pos_limits_raw": limit_penalty.mean().item(),
             "Recovery/diag_dof_pos_limits_active_rate": (limit_penalty > 0.0).float().mean().item(),
+            "Recovery/diag_wheel_clearance_min_m": wheel_clearance_min.min().item(),
+            "Recovery/diag_wheel_clearance_mean_m": wheel_clearance_mean.mean().item(),
+            "Recovery/diag_wheel_penetration_rate": (wheel_clearance_min < -0.001)
+            .float()
+            .mean()
+            .item(),
             "Recovery/diag_wheel_contact_ratio": wheel_contact_ratio.mean().item(),
             "Recovery/diag_wheel_full_contact_rate": (wheel_contact_ratio >= 1.0)
             .float()
@@ -1066,7 +1168,9 @@ def recovery_diagnostics(
         }
     )
 
-    for action_idx, action_name in enumerate(("lf", "lb", "rf", "rb", "left_wheel", "right_wheel")):
+    for action_idx, action_name in enumerate(
+        ("lf0", "left_active", "rf0", "right_active", "left_wheel", "right_wheel")
+    ):
         if action_idx >= action_abs.shape[1]:
             continue
         dim_saturated = action_abs[:, action_idx] > float(action_saturation_threshold)
@@ -1101,6 +1205,64 @@ def recovery_diagnostics(
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_bin/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
             )
+
+    for height_name, height_lo, height_hi in (
+        ("cmd_20_22cm", 0.20, 0.22),
+        ("cmd_22_24cm", 0.22, 0.24),
+        ("cmd_24_28cm", 0.24, 0.28),
+        ("cmd_28_32cm", 0.28, 0.32),
+        ("cmd_32_36cm", 0.32, 0.36),
+        ("cmd_36_38cm", 0.36, 0.38),
+    ):
+        height_mask = (target_height >= float(height_lo)) & (target_height < float(height_hi))
+        log[f"Recovery/diag_sample_rate_by_cmd_height/{height_name}"] = (
+            height_mask.float().mean().item()
+        )
+        log[f"Recovery/diag_upright_15deg_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            upright_15.float(), height_mask
+        )
+        log[f"Recovery/diag_upright_30deg_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            upright_30.float(), height_mask
+        )
+        log[f"Recovery/diag_joint_error_norm_by_cmd_height/{height_name}"] = _masked_mean(
+            joint_error_norm, height_mask
+        )
+        log[f"Recovery/diag_fixed_joint_error_norm_by_cmd_height/{height_name}"] = _masked_mean(
+            fixed_joint_error_norm, height_mask
+        )
+        log[f"Recovery/diag_active_target_error_abs_by_cmd_height/{height_name}"] = _masked_mean(
+            active_target_error_env, height_mask
+        )
+        log[f"Recovery/diag_active_target_clamp_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            active_target_clamp_env, height_mask
+        )
+        log[f"Recovery/diag_height_error_abs_by_cmd_height/{height_name}"] = _masked_mean(
+            height_abs_error, height_mask
+        )
+        log[f"Recovery/diag_height_error_signed_by_cmd_height/{height_name}"] = _masked_mean(
+            height_error, height_mask
+        )
+        log[f"Recovery/diag_raw_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            action_saturated.float(), height_mask
+        )
+        log[f"Recovery/diag_leg_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            leg_action_saturated.float(), height_mask
+        )
+        log[f"Recovery/diag_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(wheel_action_saturated.float(), height_mask)
+        )
+        log[f"Recovery/diag_active_rod_margin_min_by_cmd_height/{height_name}"] = _masked_min(
+            min_margin, height_mask
+        )
+        log[f"Recovery/diag_wheel_contact_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            (wheel_contact_ratio >= 1.0).float(), height_mask
+        )
+        log[f"Recovery/diag_leg_contact_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            (leg_contact_ratio > 0.0).float(), height_mask
+        )
+        log[f"Recovery/diag_wheel_clearance_min_by_cmd_height/{height_name}"] = _masked_min(
+            wheel_clearance_min, height_mask
+        )
 
     return torch.zeros(env.num_envs, device=env.device)
 
@@ -2010,6 +2172,7 @@ def recovery_stand_leg_alignment(
 
 def recovery_stand_default_joint_pos(
     env: ManagerBasedRlEnv,
+    command_name: str = "velocity_height",
     gate_start_deg: float = 60.0,
     gate_full_deg: float = 15.0,
     max_penalty: float = 3.0,
@@ -2021,7 +2184,7 @@ def recovery_stand_default_joint_pos(
     pg_z = robot.data.projected_gravity_b[:, 2]
     near_upright_gate = _near_upright_gate(pg_z, gate_start_deg, gate_full_deg)
 
-    joint_pos, default_pos = _policy_leg_pos_and_default(robot)
+    joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
     joint_error = joint_pos - default_pos
     penalty = torch.mean(joint_error**2, dim=1)
     result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()

@@ -29,6 +29,8 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
+    height_resample_on_reset_only: bool = False
+    """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
 
     def build(self, env: ManagerBasedRlEnv) -> VelocityHeightCommandTerm:
         return VelocityHeightCommandTerm(self, env)
@@ -47,6 +49,7 @@ class VelocityHeightCommandTerm(CommandTerm):
         # 5 维指令: [lin_vel_x, ang_vel_yaw, pitch, roll, height]
         self._command = torch.zeros(self.num_envs, 5, device=self.device)
         self._standing_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._resampling_for_reset = False
 
     @property
     def command(self) -> torch.Tensor:
@@ -55,9 +58,14 @@ class VelocityHeightCommandTerm(CommandTerm):
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         """重置指令项，并把跨 reset 缓存的终止诊断搬入日志。"""
         assert isinstance(env_ids, torch.Tensor)
-        extras = super().reset(env_ids)
-        self._log_bad_orientation_diagnostics(env_ids)
-        return extras
+        previous_resampling_for_reset = self._resampling_for_reset
+        self._resampling_for_reset = True
+        try:
+            extras = super().reset(env_ids)
+            self._log_bad_orientation_diagnostics(env_ids)
+            return extras
+        finally:
+            self._resampling_for_reset = previous_resampling_for_reset
 
     def _log_bad_orientation_diagnostics(self, env_ids: torch.Tensor) -> None:
         """上报 bad_orientation 在恢复样本和平地样本中的拆分来源。"""
@@ -115,6 +123,9 @@ class VelocityHeightCommandTerm(CommandTerm):
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         """为指定环境重新采样指令。"""
         n = len(env_ids)
+        resample_height = not self.cfg.height_resample_on_reset_only or bool(
+            getattr(self, "_resampling_for_reset", False)
+        )
 
         # 确定哪些环境处于站立状态。
         standing_count = int(n * self.cfg.standing_ratio)
@@ -129,7 +140,7 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._command[standing_ids, 1] = 0.0
         self._command[standing_ids, 2] = 0.0  # pitch = 0
         self._command[standing_ids, 3] = 0.0  # roll = 0
-        if len(standing_ids) > 0:
+        if len(standing_ids) > 0 and resample_height:
             standing_height = (
                 torch.rand(len(standing_ids), device=self.device)
                 * (self.cfg.standing_height_range[1] - self.cfg.standing_height_range[0])
@@ -159,17 +170,17 @@ class VelocityHeightCommandTerm(CommandTerm):
                 * (self.cfg.roll_range[1] - self.cfg.roll_range[0])
                 + self.cfg.roll_range[0]
             )
-            height = (
-                torch.rand(len(moving_ids), device=self.device)
-                * (self.cfg.height_range[1] - self.cfg.height_range[0])
-                + self.cfg.height_range[0]
-            )
-
             self._command[moving_ids, 0] = lin_vel
             self._command[moving_ids, 1] = yaw_vel
             self._command[moving_ids, 2] = pitch
             self._command[moving_ids, 3] = roll
-            self._command[moving_ids, 4] = height
+            if resample_height:
+                height = (
+                    torch.rand(len(moving_ids), device=self.device)
+                    * (self.cfg.height_range[1] - self.cfg.height_range[0])
+                    + self.cfg.height_range[0]
+                )
+                self._command[moving_ids, 4] = height
 
     def _update_command(self) -> None:
         """对速度指令施加死区。"""

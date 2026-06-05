@@ -420,6 +420,7 @@ def reset_root_state_full_angle_random(
     offset_iter: int = 0,
     mark_recovery_episode: bool = False,
     recovery_command_height: float = _SHARED_ROBOT.default_base_height,
+    recovery_command_height_range: tuple[float, float] | None = None,
 ) -> None:
     """统一 reset：随机倾倒角和水平倾倒轴，不区分 roll/pitch 来源。"""
     if env_ids is None:
@@ -456,6 +457,9 @@ def reset_root_state_full_angle_random(
     pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
+    recovery_command_height_range = _stage_value(
+        stage, "recovery_command_height_range", recovery_command_height_range
+    )
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -532,6 +536,21 @@ def reset_root_state_full_angle_random(
         recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
         recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
         env._recovery_command_height = float(recovery_command_height)
+        command_height = torch.full(
+            (n,),
+            float(recovery_command_height),
+            device=env.device,
+        )
+        if recovery_command_height_range is not None:
+            command_height = _sample_range(recovery_command_height_range, (n,))
+        command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
+        command_height_buf[env_ids] = command_height
+        if hasattr(env, "command_manager"):
+            try:
+                cmd = env.command_manager.get_command("velocity_height")
+                cmd[env_ids, 4] = command_height
+            except Exception:
+                pass
         init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
         init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
         init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
@@ -1115,6 +1134,52 @@ def _clamp_active_rod_policy_pose(asset: Entity, policy_pos: torch.Tensor) -> No
         policy_pos[:, back_idx] = (angle - front_coef * policy_pos[:, front_idx]) / back_coef
 
 
+def _sample_full_random_policy_leg_pose(
+    env: ManagerBasedRlEnv,
+    n: int,
+    front_joint_offset_range: float | tuple[float, float],
+    active_rod_angle_range: tuple[float, float] | None,
+) -> torch.Tensor:
+    """直接采样 lf0/rf0 与主动杆夹角，并构造 policy 语义下的四个腿部关节。"""
+    default = torch.tensor(
+        _SHARED_ROBOT.default_dof_pos[:4],
+        device=env.device,
+        dtype=torch.float32,
+    )
+    if isinstance(front_joint_offset_range, tuple):
+        front_lo, front_hi = front_joint_offset_range
+    else:
+        front_lo, front_hi = -float(front_joint_offset_range), float(front_joint_offset_range)
+    lower, upper = (
+        _SHARED_ROBOT.active_rod_angle_limits
+        if active_rod_angle_range is None
+        else active_rod_angle_range
+    )
+
+    policy_pos = torch.empty(n, 4, device=env.device)
+    policy_pos[:, 0] = default[0] + sample_uniform(
+        torch.tensor(float(front_lo), device=env.device),
+        torch.tensor(float(front_hi), device=env.device),
+        (n,),
+        env.device,
+    )
+    policy_pos[:, 2] = default[2] + sample_uniform(
+        torch.tensor(float(front_lo), device=env.device),
+        torch.tensor(float(front_hi), device=env.device),
+        (n,),
+        env.device,
+    )
+    active = sample_uniform(
+        torch.tensor(float(lower), device=env.device),
+        torch.tensor(float(upper), device=env.device),
+        (n, 2),
+        env.device,
+    )
+    policy_pos[:, 1] = policy_pos[:, 0] - active[:, 0]
+    policy_pos[:, 3] = policy_pos[:, 2] + active[:, 1]
+    return policy_pos
+
+
 def _apply_policy_leg_reset(
     asset: Entity,
     joint_pos: torch.Tensor,
@@ -1251,6 +1316,9 @@ def reset_joints(
     hip_joint_offset_range: float | tuple[float, float] | None = None,
     knee_joint_offset_range: float | tuple[float, float] | None = None,
     joint_randomization_prob: float = 1.0,
+    full_joint_randomization: bool = False,
+    full_front_joint_offset_range: float | tuple[float, float] = 1.0,
+    full_active_rod_angle_range: tuple[float, float] | None = None,
     curriculum_stages: list[dict] | None = None,
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
@@ -1278,6 +1346,15 @@ def reset_joints(
     knee_joint_offset_range = _stage_value(
         stage, "knee_joint_offset_range", knee_joint_offset_range
     )
+    full_joint_randomization = bool(
+        _stage_value(stage, "full_joint_randomization", full_joint_randomization)
+    )
+    full_front_joint_offset_range = _stage_value(
+        stage, "full_front_joint_offset_range", full_front_joint_offset_range
+    )
+    full_active_rod_angle_range = _stage_value(
+        stage, "full_active_rod_angle_range", full_active_rod_angle_range
+    )
     joint_randomization_prob = float(
         _stage_value(stage, "joint_randomization_prob", joint_randomization_prob)
     )
@@ -1293,7 +1370,8 @@ def reset_joints(
 
     leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
     randomization_enabled = (
-        hip_joint_offset_range is not None
+        full_joint_randomization
+        or hip_joint_offset_range is not None
         or knee_joint_offset_range is not None
         or joint_offset_range > 0.0
     )
@@ -1301,7 +1379,33 @@ def reset_joints(
         randomize_mask = torch.rand(len(env_ids), device=env.device) < joint_randomization_prob
     else:
         randomize_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
-    if hip_joint_offset_range is not None or knee_joint_offset_range is not None:
+    if full_joint_randomization:
+        if randomize_mask.any():
+            random_rows = randomize_mask.nonzero().flatten()
+            n_random = int(random_rows.numel())
+            policy_leg_pos = _sample_full_random_policy_leg_pose(
+                env,
+                n_random,
+                full_front_joint_offset_range,
+                full_active_rod_angle_range,
+            )
+            policy_leg_vel = sample_uniform(
+                torch.tensor(float(joint_vel_range[0]), device=env.device),
+                torch.tensor(float(joint_vel_range[1]), device=env.device),
+                (n_random, len(leg_ids)),
+                env.device,
+            )
+
+            _apply_policy_leg_reset(
+                asset,
+                joint_pos,
+                joint_vel,
+                leg_ids,
+                policy_leg_pos,
+                policy_leg_vel,
+                rows=random_rows,
+            )
+    elif hip_joint_offset_range is not None or knee_joint_offset_range is not None:
         if randomize_mask.any():
             random_rows = randomize_mask.nonzero().flatten()
             n_random = int(random_rows.numel())
@@ -1375,6 +1479,7 @@ def reset_joints(
         log["Reset/joint_curriculum_progress"] = float(curriculum_progress)
         log["Reset/joint_randomization_prob"] = float(joint_randomization_prob)
         log["Reset/joint_randomization_ratio"] = randomize_mask.float().mean().item()
+        log["Reset/full_joint_randomization"] = float(full_joint_randomization)
 
     recovery_mask = getattr(env, "_recovery_reset_mask", None)
     if (

@@ -295,8 +295,7 @@ def _yaw_pid_enabled_from_args(args: argparse.Namespace) -> bool:
     if args.yaw_pid is not None:
         return bool(args.yaw_pid)
     initial_tilt_requested = (
-        abs(float(args.initial_roll_deg)) > 1.0e-6
-        or abs(float(args.initial_pitch_deg)) > 1.0e-6
+        abs(float(args.initial_roll_deg)) > 1.0e-6 or abs(float(args.initial_pitch_deg)) > 1.0e-6
     )
     return bool(RobotConfig().yaw_pid.enabled and not initial_tilt_requested)
 

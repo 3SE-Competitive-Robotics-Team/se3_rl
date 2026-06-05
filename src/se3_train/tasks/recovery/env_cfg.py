@@ -14,6 +14,7 @@ from . import events, rewards
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
+_RECOVERY_STANDING_HEIGHT_RANGE = (0.20, 0.38)
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -26,8 +27,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.ang_vel_yaw_range = (-1.0, 1.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
-    command_cfg.height_range = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
-    command_cfg.standing_height_range = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
+    command_cfg.height_range = _RECOVERY_STANDING_HEIGHT_RANGE
+    command_cfg.standing_height_range = _RECOVERY_STANDING_HEIGHT_RANGE
+    command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.02
     command_cfg.jump_prob = 0.0
 
@@ -52,7 +54,36 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "joint_offset_range": 0.0,
-            "joint_vel_range": (0.0, 0.0),
+            "joint_vel_range": (-0.8, 0.8),
+            "joint_randomization_prob": 0.25,
+            "full_joint_randomization": True,
+            "full_front_joint_offset_range": 1.0,
+            "full_active_rod_angle_range": _ROBOT_DEFAULTS.active_rod_angle_limits,
+            "align_root_height_to_wheels": True,
+            "curriculum_stages": [
+                {
+                    "iteration": 0,
+                    "joint_randomization_prob": 0.25,
+                },
+                {
+                    "iteration": 90,
+                    "joint_randomization_prob": 0.40,
+                },
+                {
+                    "iteration": 140,
+                    "joint_randomization_prob": 0.60,
+                },
+                {
+                    "iteration": 220,
+                    "joint_randomization_prob": 0.80,
+                },
+                {
+                    "iteration": 400,
+                    "joint_randomization_prob": 1.0,
+                },
+            ],
+            "use_iterations": True,
+            "steps_per_policy_iter": 64,
         },
     )
 

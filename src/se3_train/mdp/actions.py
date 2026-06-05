@@ -68,7 +68,6 @@ class SerialLegDelayedAction(ActionTerm):
 
     def __init__(self, cfg: SerialLegDelayedActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg=cfg, env=env)
-
         try:
             leg_ids, leg_names = self._entity.find_joints_by_actuator_names(cfg.leg_actuator_names)
         except ValueError:
@@ -86,7 +85,6 @@ class SerialLegDelayedAction(ActionTerm):
             raise ValueError(
                 f"SerialLegDelayedAction expects 4 leg action scales, got {cfg.leg_scales}"
             )
-
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
@@ -105,6 +103,10 @@ class SerialLegDelayedAction(ActionTerm):
             _SHARED_ROBOT.active_rod_angle_limits,
             device=self.device,
         )
+        self._active_rod_angle_mid = torch.mean(self._active_rod_angle_limits)
+        self._active_rod_angle_half_range = (
+            self._active_rod_angle_limits[1] - self._active_rod_angle_limits[0]
+        ) * 0.5
         self._active_rod_angle_coeffs = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_coeffs,
             device=self.device,
@@ -115,6 +117,11 @@ class SerialLegDelayedAction(ActionTerm):
         self._delayed_actions = torch.zeros_like(self._raw_actions)
         self._policy_leg_torque = torch.zeros(self.num_envs, 4, device=self.device)
         self._policy_leg_vel = torch.zeros_like(self._policy_leg_torque)
+        self._policy_leg_target = torch.zeros_like(self._policy_leg_torque)
+        self._active_rod_angle_target = torch.zeros(self.num_envs, 2, device=self.device)
+        self._active_rod_angle_target_clamped = torch.zeros(
+            self.num_envs, 2, device=self.device, dtype=torch.bool
+        )
         self._env_indices = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
         self._leg_kp = torch.full(
             (self.num_envs, 4),
@@ -160,6 +167,18 @@ class SerialLegDelayedAction(ActionTerm):
         return self._policy_leg_vel
 
     @property
+    def policy_leg_target(self) -> torch.Tensor:
+        return self._policy_leg_target
+
+    @property
+    def active_rod_angle_target(self) -> torch.Tensor:
+        return self._active_rod_angle_target
+
+    @property
+    def active_rod_angle_target_clamped(self) -> torch.Tensor:
+        return self._active_rod_angle_target_clamped
+
+    @property
     def delay_steps(self) -> torch.Tensor:
         return self._delay_steps
 
@@ -173,9 +192,11 @@ class SerialLegDelayedAction(ActionTerm):
         self._delayed_actions = self._action_fifo[self._delay_steps, self._env_indices]
 
         if self._fourbar_surrogate:
-            policy_target = self._delayed_actions[:, :4] * self._leg_action_scales
-            policy_target = policy_target + self._current_policy_leg_defaults()
-            policy_target = self._clamp_active_rod_angles(policy_target)
+            policy_target = self._leg_action_to_policy_target(
+                self._delayed_actions[:, :4],
+                self._current_leg_action_defaults(),
+            )
+            self._policy_leg_target[:] = policy_target
             output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
             output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
             policy_pos = output_to_policy_pos_torch(output_pos)
@@ -188,11 +209,11 @@ class SerialLegDelayedAction(ActionTerm):
             leg_torque = policy_to_output_torque_torch(policy_pos, policy_torque)
             self._entity.set_joint_effort_target(leg_torque, joint_ids=self._leg_joint_ids)
         else:
-            leg_target = (
-                self._delayed_actions[:, :4] * self._leg_action_scales
-                + self._entity.data.default_joint_pos[:, self._leg_joint_ids]
+            leg_target = self._leg_action_to_policy_target(
+                self._delayed_actions[:, :4],
+                self._current_leg_action_defaults(),
             )
-            leg_target = self._clamp_active_rod_angles(leg_target)
+            self._policy_leg_target[:] = leg_target
             leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
             self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
             if self._leg_actuator_ids is None:
@@ -210,6 +231,44 @@ class SerialLegDelayedAction(ActionTerm):
         """返回当前 env 随机化后的腿部默认位姿，坐标系与 policy 动作一致。"""
         output_default = self._entity.data.default_joint_pos[:, self._leg_joint_ids]
         return output_to_policy_pos_torch(output_default)
+
+    def _current_leg_action_defaults(self) -> torch.Tensor:
+        """返回当前 action 固定零点。"""
+        if self._fourbar_surrogate:
+            return self._current_policy_leg_defaults()
+        return self._entity.data.default_joint_pos[:, self._leg_joint_ids]
+
+    def _leg_action_to_policy_target(
+        self,
+        leg_action: torch.Tensor,
+        policy_default: torch.Tensor,
+    ) -> torch.Tensor:
+        """把腿部 action 解释为前杆角和主动杆夹角目标。"""
+        if not (self._closedchain or self._fourbar_surrogate):
+            return leg_action * self._leg_action_scales + policy_default
+
+        lower, upper = self._active_rod_angle_limits
+        target = torch.empty_like(policy_default)
+        active_targets: list[torch.Tensor] = []
+        active_clamped: list[torch.Tensor] = []
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
+            front_target = (
+                policy_default[:, front_idx]
+                + leg_action[:, front_idx] * (self._leg_action_scales[front_idx])
+            )
+            active_default = self._active_rod_angle_mid
+            active_raw = (
+                active_default + leg_action[:, back_idx] * self._active_rod_angle_half_range
+            )
+            active_target = torch.clamp(active_raw, lower, upper)
+            target[:, front_idx] = front_target
+            target[:, back_idx] = (active_target - front_coef * front_target) / back_coef
+            active_targets.append(active_target)
+            active_clamped.append(active_target != active_raw)
+        self._active_rod_angle_target[:] = torch.stack(active_targets, dim=1)
+        self._active_rod_angle_target_clamped[:] = torch.stack(active_clamped, dim=1)
+        return target
 
     def set_leg_pd_gain_scale(
         self,

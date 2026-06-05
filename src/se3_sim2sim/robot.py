@@ -629,15 +629,13 @@ class WheelLeggedRobot:
         dof_pos = self.dof_pos
         dof_vel = self.dof_vel
 
-        leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
         output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
         output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
         if self.fourbar_surrogate:
             policy_pos = output_to_policy_pos_np(output_leg_pos)
             policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
-            policy_default = as_float64(_SHARED_ROBOT.default_dof_pos)[JointGroup.CTRL_LEGS]
-            policy_target = action[:4] * leg_scale + policy_default
-            policy_target = self._clamp_active_rod_angle_target(policy_target)
+            policy_default = self._policy_action_default()
+            policy_target = self._leg_action_to_policy_target(action[:4], policy_default)
             policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
             policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
             policy_torque = _tn_clip(
@@ -650,9 +648,8 @@ class WheelLeggedRobot:
             leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
             leg_vel = policy_vel
         else:
-            leg_default = self.default_dof_pos[JointGroup.CTRL_LEGS]
-            leg_target = action[:4] * leg_scale + leg_default
-            leg_target = self._clamp_active_rod_angle_target(leg_target)
+            leg_default = self._policy_action_default()
+            leg_target = self._leg_action_to_policy_target(action[:4], leg_default)
             leg_pos_err = leg_target - output_leg_pos
             leg_vel = output_leg_vel
             leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
@@ -682,6 +679,12 @@ class WheelLeggedRobot:
         self.last_ctrl[:] = ctrl
         return ctrl
 
+    def _policy_action_default(self) -> np.ndarray:
+        """返回腿部 action 固定零点。"""
+        if self.fourbar_surrogate:
+            return as_float64(_SHARED_ROBOT.default_dof_pos)[JointGroup.CTRL_LEGS]
+        return self.default_dof_pos[JointGroup.CTRL_LEGS]
+
     def _clamp_active_rod_angle_target(self, leg_target: np.ndarray) -> np.ndarray:
         """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
         if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES and not self.fourbar_surrogate:
@@ -696,6 +699,32 @@ class WheelLeggedRobot:
                 upper,
             )
             target[back_idx] = (angle - front_coef * target[front_idx]) / back_coef
+        return target
+
+    def _leg_action_to_policy_target(
+        self, leg_action: np.ndarray, policy_default: np.ndarray
+    ) -> np.ndarray:
+        """把腿部 action 解释为前杆角和主动杆夹角目标。"""
+        if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES and not self.fourbar_surrogate:
+            return np.asarray(leg_action, dtype=np.float64) * self.action_scale[
+                JointGroup.LEG_ACTUATORS
+            ] + np.asarray(policy_default, dtype=np.float64)
+
+        leg_action = np.asarray(leg_action, dtype=np.float64)
+        policy_default = np.asarray(policy_default, dtype=np.float64)
+        leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
+        target = np.empty_like(policy_default)
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        active_mid = 0.5 * (float(lower) + float(upper))
+        active_half_range = 0.5 * (float(upper) - float(lower))
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+            front_target = policy_default[front_idx] + leg_action[front_idx] * leg_scale[front_idx]
+            active_default = active_mid
+            active_raw = active_default + leg_action[back_idx] * active_half_range
+            active_target = np.clip(active_raw, lower, upper)
+            target[front_idx] = front_target
+            target[back_idx] = (active_target - front_coef * front_target) / back_coef
         return target
 
     def _sample_action_delay_steps(self) -> int:
