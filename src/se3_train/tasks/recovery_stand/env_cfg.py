@@ -343,15 +343,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "base_speed_scale": 0.05,
                 "wheel_speed_scale": 0.05,
                 "base_ang_vel_scale": 0.5,
-                "max_penalty": 10.0,
-            },
-        ),
-        "recovery_limit_action_diagnostics": RewardTermCfg(
-            func=rewards.recovery_stand_limit_action_diagnostics,
-            weight=0.0,
-            params={
                 "action_saturation_threshold": 0.95,
-                "asset_cfg": SceneEntityCfg("robot"),
+                "max_penalty": 10.0,
             },
         ),
         "recovery_default_joint_pos": RewardTermCfg(

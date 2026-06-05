@@ -1532,9 +1532,10 @@ def recovery_stand_zero_velocity_penalty(
     base_speed_scale: float = 0.05,
     wheel_speed_scale: float = 0.05,
     base_ang_vel_scale: float = 0.5,
+    action_saturation_threshold: float = 0.95,
     max_penalty: float = 8.0,
 ) -> torch.Tensor:
-    """接近直立后强惩罚机体平动、角速度和轮速，避免自起后继续晃动。"""
+    """接近直立后强惩罚机体平动、角速度和轮速，并记录限位诊断。"""
     active = _recovery_reset_mask(env)
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
@@ -1562,6 +1563,10 @@ def recovery_stand_zero_velocity_penalty(
     result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
 
     if hasattr(env, "extras"):
+        min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
+        action = env.action_manager.action
+        max_abs_action = torch.max(torch.abs(action), dim=1).values
+        saturated = max_abs_action > float(action_saturation_threshold)
         env.extras.setdefault("log", {}).update(
             {
                 "RecoveryStand/zero_velocity_penalty": _masked_mean(result, active),
@@ -1571,28 +1576,6 @@ def recovery_stand_zero_velocity_penalty(
                     torch.sqrt(base_ang_vel_sq), active
                 ),
                 "RecoveryStand/zero_velocity_gate": _masked_mean(near_upright_gate, active),
-            }
-        )
-
-    return result
-
-
-def recovery_stand_limit_action_diagnostics(
-    env: ManagerBasedRlEnv,
-    action_saturation_threshold: float = 0.95,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """记录主动杆限位余量和 action 饱和率，不直接参与奖励。"""
-    active = _recovery_reset_mask(env)
-    robot = env.scene[asset_cfg.name]
-    min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
-    action = env.action_manager.action
-    max_abs_action = torch.max(torch.abs(action), dim=1).values
-    saturated = max_abs_action > float(action_saturation_threshold)
-
-    if hasattr(env, "extras"):
-        env.extras.setdefault("log", {}).update(
-            {
                 "RecoveryStand/active_rod_margin_rad": _masked_mean(min_margin, active),
                 "RecoveryStand/active_rod_lower_margin_rad": _masked_mean(lower_margin, active),
                 "RecoveryStand/active_rod_upper_margin_rad": _masked_mean(upper_margin, active),
@@ -1601,7 +1584,7 @@ def recovery_stand_limit_action_diagnostics(
             }
         )
 
-    return torch.zeros(env.num_envs, device=env.device)
+    return result
 
 
 def recovery_stand_leg_alignment(
