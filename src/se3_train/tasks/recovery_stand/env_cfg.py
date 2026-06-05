@@ -102,39 +102,28 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "pitch_flip_axis_jitter_range": (0.0, 0.0),
                 "pitch_flip_height_range": (0.10, 0.16),
                 "pitch_flip_clearance_range": (0.0, 0.02),
-                "pitch_flip_default_joint_prob": 0.0,
-                "pitch_flip_default_joint_height_range": (
-                    _DEFAULT_STANDING_HEIGHT,
-                    _DEFAULT_STANDING_HEIGHT,
-                ),
-                "pitch_flip_default_joint_yaw_range": (0.0, 0.0),
                 "lin_vel_range": (-0.15, 0.15),
                 "ang_vel_range": (-0.8, 0.8),
                 "curriculum_stages": [
                     {
                         "iteration": 0,
                         "pitch_flip_prob": 0.25,
-                        "pitch_flip_default_joint_prob": 0.0,
                     },
                     {
                         "iteration": 90,
                         "pitch_flip_prob": 0.40,
-                        "pitch_flip_default_joint_prob": 0.35,
                     },
                     {
                         "iteration": 140,
                         "pitch_flip_prob": 0.60,
-                        "pitch_flip_default_joint_prob": 0.70,
                     },
                     {
                         "iteration": 220,
                         "pitch_flip_prob": 0.80,
-                        "pitch_flip_default_joint_prob": 1.0,
                     },
                     {
                         "iteration": 400,
                         "pitch_flip_prob": 1.0,
-                        "pitch_flip_default_joint_prob": 1.0,
                     },
                 ],
                 "use_iterations": True,
@@ -152,6 +141,31 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "hip_joint_offset_range": (-0.50, 0.55),
                 "knee_joint_offset_range": (-0.45, 0.65),
                 "joint_vel_range": (-0.8, 0.8),
+                "joint_randomization_prob": 0.25,
+                "curriculum_stages": [
+                    {
+                        "iteration": 0,
+                        "joint_randomization_prob": 0.25,
+                    },
+                    {
+                        "iteration": 90,
+                        "joint_randomization_prob": 0.40,
+                    },
+                    {
+                        "iteration": 140,
+                        "joint_randomization_prob": 0.60,
+                    },
+                    {
+                        "iteration": 220,
+                        "joint_randomization_prob": 0.80,
+                    },
+                    {
+                        "iteration": 400,
+                        "joint_randomization_prob": 1.0,
+                    },
+                ],
+                "use_iterations": True,
+                "steps_per_policy_iter": 64,
             },
         ),
     }

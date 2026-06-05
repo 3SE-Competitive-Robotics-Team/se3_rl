@@ -253,12 +253,6 @@ def reset_root_state_full_angle_random(
     pitch_flip_axis_jitter_range: tuple[float, float] = (0.0, 0.0),
     pitch_flip_height_range: tuple[float, float] = (0.10, 0.16),
     pitch_flip_clearance_range: tuple[float, float] = (0.0, 0.02),
-    pitch_flip_default_joint_prob: float = 0.0,
-    pitch_flip_default_joint_height_range: tuple[float, float] = (
-        _SHARED_ROBOT.default_base_height,
-        _SHARED_ROBOT.default_base_height,
-    ),
-    pitch_flip_default_joint_yaw_range: tuple[float, float] = (0.0, 0.0),
     pos_xy_range: tuple[float, float] = (-0.1, 0.1),
     lin_vel_range: tuple[float, float] = (-0.15, 0.15),
     ang_vel_range: tuple[float, float] = (-0.8, 0.8),
@@ -301,19 +295,6 @@ def reset_root_state_full_angle_random(
         "pitch_flip_clearance_range",
         pitch_flip_clearance_range,
     )
-    pitch_flip_default_joint_prob = float(
-        _stage_value(stage, "pitch_flip_default_joint_prob", pitch_flip_default_joint_prob)
-    )
-    pitch_flip_default_joint_height_range = _stage_value(
-        stage,
-        "pitch_flip_default_joint_height_range",
-        pitch_flip_default_joint_height_range,
-    )
-    pitch_flip_default_joint_yaw_range = _stage_value(
-        stage,
-        "pitch_flip_default_joint_yaw_range",
-        pitch_flip_default_joint_yaw_range,
-    )
     pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
@@ -339,7 +320,6 @@ def reset_root_state_full_angle_random(
     tilt_axis = _sample_range(tilt_axis_range, (n,))
     yaw = _sample_range(yaw_range, (n,))
     pitch_flip_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
-    pitch_flip_default_joint_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
     if pitch_flip_prob > 0.0:
         pitch_flip_mask = torch.rand(n, device=env.device) < pitch_flip_prob
         if pitch_flip_mask.any():
@@ -353,18 +333,6 @@ def reset_root_state_full_angle_random(
             tilt_axis[pitch_flip_mask] = pitch_flip_sign * (0.5 * torch.pi) + _sample_range(
                 pitch_flip_axis_jitter_range, (n_pitch_flip,)
             )
-            if pitch_flip_default_joint_prob > 0.0:
-                pitch_flip_default_joint_mask = pitch_flip_mask.clone()
-                if pitch_flip_default_joint_prob < 1.0:
-                    pitch_flip_default_joint_mask &= (
-                        torch.rand(n, device=env.device) < pitch_flip_default_joint_prob
-                    )
-                if pitch_flip_default_joint_mask.any():
-                    n_default_pitch_flip = int(pitch_flip_default_joint_mask.sum().item())
-                    yaw[pitch_flip_default_joint_mask] = _sample_range(
-                        pitch_flip_default_joint_yaw_range,
-                        (n_default_pitch_flip,),
-                    )
     tilt_quat = _quat_from_horizontal_axis_angle(tilt_axis, tilt)
     yaw_quat = quat_from_euler_xyz(
         torch.zeros_like(yaw),
@@ -390,39 +358,8 @@ def reset_root_state_full_angle_random(
             pitch_flip_height,
             pitch_flip_safe_height,
         )
-        if pitch_flip_default_joint_mask.any():
-            n_default_pitch_flip = int(pitch_flip_default_joint_mask.sum().item())
-            default_safe_height = _full_angle_safe_base_height(
-                z_row[pitch_flip_default_joint_mask],
-                _sample_range(pitch_flip_clearance_range, (n_default_pitch_flip,)),
-            )
-            default_height = _sample_range(
-                pitch_flip_default_joint_height_range,
-                (n_default_pitch_flip,),
-            )
-            base_height[pitch_flip_default_joint_mask] = torch.maximum(
-                default_height,
-                default_safe_height,
-            )
     pitch_flip_reset = recovery_state.ensure_bool_buffer(env, "_recovery_pitch_flip_reset_mask")
     pitch_flip_reset[env_ids] = pitch_flip_mask
-    if pitch_flip_default_joint_prob > 0.0:
-        pitch_flip_default_joint_reset = recovery_state.ensure_bool_buffer(
-            env,
-            "_recovery_pitch_flip_default_joint_mask",
-        )
-        pitch_flip_default_joint_reset[env_ids] = pitch_flip_default_joint_mask
-    else:
-        pitch_flip_default_joint_reset = getattr(
-            env,
-            "_recovery_pitch_flip_default_joint_mask",
-            None,
-        )
-        if (
-            isinstance(pitch_flip_default_joint_reset, torch.Tensor)
-            and pitch_flip_default_joint_reset.shape[0] == env.num_envs
-        ):
-            pitch_flip_default_joint_reset[env_ids] = False
 
     pos[:, 0:3] += env.scene.env_origins[env_ids]
     pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
@@ -432,8 +369,6 @@ def reset_root_state_full_angle_random(
     vel = torch.zeros(n, 6, device=env.device)
     vel[:, 0:3] = _sample_range(lin_vel_range, (n, 3))
     vel[:, 3:6] = _sample_range(ang_vel_range, (n, 3))
-    if pitch_flip_default_joint_mask.any():
-        vel[pitch_flip_default_joint_mask] = 0.0
 
     if mark_recovery_episode:
         recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
@@ -498,9 +433,6 @@ def reset_root_state_full_angle_random(
             {
                 "Reset/full_angle_random_ratio": 1.0,
                 "Reset/pitch_flip_ratio": pitch_flip_mask.float().mean().item(),
-                "Reset/pitch_flip_default_joint_planned_ratio": (
-                    pitch_flip_default_joint_mask.float().mean().item()
-                ),
                 "Reset/pitch_flip_mean_height_m": (
                     base_height[pitch_flip_mask].mean().item() if pitch_flip_mask.any() else 0.0
                 ),
@@ -1160,13 +1092,13 @@ def reset_joints(
     joint_vel_range: tuple[float, float] = (0.0, 0.0),
     hip_joint_offset_range: float | tuple[float, float] | None = None,
     knee_joint_offset_range: float | tuple[float, float] | None = None,
+    joint_randomization_prob: float = 1.0,
     curriculum_stages: list[dict] | None = None,
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
     recovery_joint_offset_range: float = 0.0,
     recovery_joint_vel_range: tuple[float, float] = (0.0, 0.0),
-    pitch_flip_default_joint_prob: float = 0.0,
     align_root_height_to_wheels: bool = False,
     wheel_clearance: float = _DEFAULT_RESET_WHEEL_CLEARANCE_M,
     command_name: str = "velocity_height",
@@ -1188,9 +1120,10 @@ def reset_joints(
     knee_joint_offset_range = _stage_value(
         stage, "knee_joint_offset_range", knee_joint_offset_range
     )
-    pitch_flip_default_joint_prob = float(
-        _stage_value(stage, "pitch_flip_default_joint_prob", pitch_flip_default_joint_prob)
+    joint_randomization_prob = float(
+        _stage_value(stage, "joint_randomization_prob", joint_randomization_prob)
     )
+    joint_randomization_prob = min(max(joint_randomization_prob, 0.0), 1.0)
 
     asset: Entity = env.scene[asset_cfg.name]
 
@@ -1201,50 +1134,71 @@ def reset_joints(
     joint_pos[:, wheel_ids] = 0.0
 
     leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
+    randomization_enabled = (
+        hip_joint_offset_range is not None
+        or knee_joint_offset_range is not None
+        or joint_offset_range > 0.0
+    )
+    if randomization_enabled:
+        randomize_mask = torch.rand(len(env_ids), device=env.device) < joint_randomization_prob
+    else:
+        randomize_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
     if hip_joint_offset_range is not None or knee_joint_offset_range is not None:
-        policy_leg_pos = _model_leg_pos_to_policy(asset, joint_pos[:, leg_ids])
-        policy_leg_vel = torch.zeros_like(policy_leg_pos)
-        if hip_joint_offset_range is not None:
-            policy_leg_pos[:, (0, 2)] += _sample_joint_offset(
-                env,
-                hip_joint_offset_range,
-                (len(env_ids), 2),
+        if randomize_mask.any():
+            random_rows = randomize_mask.nonzero().flatten()
+            n_random = int(random_rows.numel())
+            policy_leg_pos = _model_leg_pos_to_policy(
+                asset,
+                _leg_values(joint_pos, leg_ids, random_rows),
             )
-        if knee_joint_offset_range is not None:
-            policy_leg_pos[:, (1, 3)] += _sample_joint_offset(
-                env,
-                knee_joint_offset_range,
-                (len(env_ids), 2),
+            policy_leg_vel = torch.zeros_like(policy_leg_pos)
+            if hip_joint_offset_range is not None:
+                policy_leg_pos[:, (0, 2)] += _sample_joint_offset(
+                    env,
+                    hip_joint_offset_range,
+                    (n_random, 2),
+                )
+            if knee_joint_offset_range is not None:
+                policy_leg_pos[:, (1, 3)] += _sample_joint_offset(
+                    env,
+                    knee_joint_offset_range,
+                    (n_random, 2),
+                )
+            policy_leg_vel[:] = sample_uniform(
+                torch.tensor(float(joint_vel_range[0]), device=env.device),
+                torch.tensor(float(joint_vel_range[1]), device=env.device),
+                (n_random, len(leg_ids)),
+                env.device,
             )
-        policy_leg_vel[:] = sample_uniform(
-            torch.tensor(float(joint_vel_range[0]), device=env.device),
-            torch.tensor(float(joint_vel_range[1]), device=env.device),
-            (len(env_ids), len(leg_ids)),
-            env.device,
-        )
 
-        _apply_policy_leg_reset(
+            _apply_policy_leg_reset(
+                asset,
+                joint_pos,
+                joint_vel,
+                leg_ids,
+                policy_leg_pos,
+                policy_leg_vel,
+                rows=random_rows,
+            )
+    elif joint_offset_range > 0.0 and randomize_mask.any():
+        random_rows = randomize_mask.nonzero().flatten()
+        n_random = int(random_rows.numel())
+        policy_leg_pos = _model_leg_pos_to_policy(
             asset,
-            joint_pos,
-            joint_vel,
-            leg_ids,
-            policy_leg_pos,
-            policy_leg_vel,
+            _leg_values(joint_pos, leg_ids, random_rows),
         )
-    elif joint_offset_range > 0.0:
-        policy_leg_pos = _model_leg_pos_to_policy(asset, joint_pos[:, leg_ids])
         policy_leg_vel = torch.zeros_like(policy_leg_pos)
         offset = sample_uniform(
             torch.tensor(-float(joint_offset_range), device=env.device),
             torch.tensor(float(joint_offset_range), device=env.device),
-            (len(env_ids), len(leg_ids)),
+            (n_random, len(leg_ids)),
             env.device,
         )
         policy_leg_pos += offset
         policy_leg_vel[:] = sample_uniform(
             torch.tensor(float(joint_vel_range[0]), device=env.device),
             torch.tensor(float(joint_vel_range[1]), device=env.device),
-            (len(env_ids), len(leg_ids)),
+            (n_random, len(leg_ids)),
             env.device,
         )
 
@@ -1255,11 +1209,14 @@ def reset_joints(
             leg_ids,
             policy_leg_pos,
             policy_leg_vel,
+            rows=random_rows,
         )
 
     if hasattr(env, "extras"):
         log = env.extras.setdefault("log", {})
         log["Reset/joint_curriculum_progress"] = float(curriculum_progress)
+        log["Reset/joint_randomization_prob"] = float(joint_randomization_prob)
+        log["Reset/joint_randomization_ratio"] = randomize_mask.float().mean().item()
 
     recovery_mask = getattr(env, "_recovery_reset_mask", None)
     if (
@@ -1298,47 +1255,6 @@ def reset_joints(
                 policy_leg_vel,
                 rows=local_ids,
             )
-
-    pitch_flip_mask = getattr(env, "_recovery_pitch_flip_reset_mask", None)
-    planned_pitch_flip_default_joint_mask = getattr(
-        env,
-        "_recovery_pitch_flip_default_joint_mask",
-        None,
-    )
-    pitch_flip_default_joint_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
-    if (
-        isinstance(planned_pitch_flip_default_joint_mask, torch.Tensor)
-        and planned_pitch_flip_default_joint_mask.shape[0] == env.num_envs
-    ):
-        pitch_flip_default_joint_mask = planned_pitch_flip_default_joint_mask[env_ids].to(
-            device=env.device,
-            dtype=torch.bool,
-        )
-    elif (
-        isinstance(pitch_flip_mask, torch.Tensor)
-        and pitch_flip_mask.shape[0] == env.num_envs
-        and pitch_flip_default_joint_prob > 0.0
-    ):
-        pitch_flip_default_joint_mask = pitch_flip_mask[env_ids].to(
-            device=env.device,
-            dtype=torch.bool,
-        )
-        if pitch_flip_default_joint_prob < 1.0:
-            pitch_flip_default_joint_mask &= (
-                torch.rand(len(env_ids), device=env.device) < pitch_flip_default_joint_prob
-            )
-    if pitch_flip_default_joint_mask.any():
-        default_joint_rows = pitch_flip_default_joint_mask.nonzero().flatten()
-        joint_pos[pitch_flip_default_joint_mask] = asset.data.default_joint_pos[
-            env_ids[pitch_flip_default_joint_mask]
-        ]
-        joint_pos[default_joint_rows[:, None], wheel_ids] = 0.0
-        joint_vel[pitch_flip_default_joint_mask] = 0.0
-
-    if hasattr(env, "extras"):
-        env.extras.setdefault("log", {})["Reset/pitch_flip_default_joint_ratio"] = (
-            pitch_flip_default_joint_mask.float().mean().item()
-        )
 
     cache_reset_mask = getattr(env, "_recovery_cache_reset_mask", None)
     cache_joint_pos = getattr(env, "_recovery_cached_joint_pos", None)
