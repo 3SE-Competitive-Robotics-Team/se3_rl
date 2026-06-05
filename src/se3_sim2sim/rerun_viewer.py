@@ -20,6 +20,7 @@ ACTION_LABELS = (
 )
 CTRL_LABELS = ACTION_LABELS
 XYZ_LABELS = ("x", "y", "z")
+EULER_LABELS = ("roll", "pitch", "yaw")
 ENTITY_COLORS = {
     "base": (72, 115, 180, 255),
     "left_thigh": (35, 156, 93, 255),
@@ -199,7 +200,15 @@ class RerunViewer:
         self._log_array(
             "/plots/imu/base_ang_vel_world_rad_s", telemetry["base_ang_vel_world"], XYZ_LABELS
         )
-        self._log_array("/plots/imu/projected_gravity", telemetry["projected_gravity"], XYZ_LABELS)
+        self._log_array(
+            "/plots/imu/euler_deg",
+            (
+                telemetry.get("roll_deg", 0.0),
+                telemetry.get("pitch_deg", 0.0),
+                telemetry.get("yaw_deg", 0.0),
+            ),
+            EULER_LABELS,
+        )
 
         self._log_array("/plots/dof/pos_rad", telemetry["dof_pos"], CTRL_LABELS)
         self._log_array("/plots/dof/vel_rad_s", telemetry["dof_vel"], CTRL_LABELS)
