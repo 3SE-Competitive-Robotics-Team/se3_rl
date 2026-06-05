@@ -221,11 +221,12 @@ def _run_expert_rollout(
             policy_obs = overwrite_task_mode_obs(obs, spec.mode)
             stats.record_state(env=env, obs=policy_obs, step_idx=step_idx)
             with torch.no_grad():
-                action = teacher.act(policy_obs)
-            action_for_step = _clip_action(action, clip_actions)
+                raw_action = teacher.act(policy_obs)
+            action = _apply_action_policy(raw_action, spec.action_policy)
+            action_for_step = _clip_action(raw_action, clip_actions)
             stats.record_action(
                 action=action,
-                action_for_step=action_for_step,
+                action_for_step=_clip_action(action, clip_actions),
                 clip_actions=clip_actions,
                 step_idx=step_idx,
             )
@@ -323,6 +324,17 @@ def _clip_action(action: torch.Tensor, clip_actions: float | None) -> torch.Tens
     if clip_actions is None:
         return action
     return torch.clamp(action, -float(clip_actions), float(clip_actions))
+
+
+def _apply_action_policy(action: torch.Tensor, policy: str) -> torch.Tensor:
+    """按蒸馏标签语义修正用于对比的 teacher action。"""
+    if policy == "default":
+        return action
+    if policy == "zero_wheels":
+        out = action.clone()
+        out[:, 4:6] = 0.0
+        return out
+    raise ValueError(f"未知 action_policy：{policy}")
 
 
 def _actor_obs(obs_dict: dict[str, object]) -> torch.Tensor:

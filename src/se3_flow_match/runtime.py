@@ -66,7 +66,11 @@ class FlowPolicyRuntime:
         if self.model._hidden is None:  # pyright: ignore[reportPrivateUsage]
             self.model.reset_hidden(batch_size=obs.shape[0], device=self.device)
         noise = torch.zeros(obs.shape[0], self.config.action_dim, device=self.device)
-        return sample_actions(self.model, obs, steps=self.sample_steps, noise=noise)
+        action = sample_actions(self.model, obs, steps=self.sample_steps, noise=noise)
+        if self.task_mode == TaskMode.GAIT:
+            action = action.clone()
+            action[:, 4:6] = 0.0
+        return action
 
 
 def _extract_actor_obs(obs_dict: object) -> torch.Tensor:
