@@ -1608,24 +1608,44 @@ def recovery_stand_zero_velocity_penalty(
     if hasattr(env, "extras"):
         min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
         action = env.action_manager.action
-        max_abs_action = torch.max(torch.abs(action), dim=1).values
+        action_abs = torch.abs(action)
+        leg_action_abs = action_abs[:, :4]
+        wheel_action_abs = action_abs[:, 4:6]
+        max_abs_action = torch.max(action_abs, dim=1).values
+        max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
+        max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
         saturated = max_abs_action > float(action_saturation_threshold)
-        env.extras.setdefault("log", {}).update(
-            {
-                "RecoveryStand/zero_velocity_penalty": _masked_mean(result, active),
-                "RecoveryStand/base_vxy_speed": _masked_mean(torch.sqrt(base_speed_sq), active),
-                "RecoveryStand/wheel_idle_speed": _masked_mean(torch.sqrt(wheel_speed_sq), active),
-                "RecoveryStand/base_ang_vel_norm": _masked_mean(
-                    torch.sqrt(base_ang_vel_sq), active
-                ),
-                "RecoveryStand/zero_velocity_gate": _masked_mean(near_upright_gate, active),
-                "RecoveryStand/active_rod_margin_rad": _masked_mean(min_margin, active),
-                "RecoveryStand/active_rod_lower_margin_rad": _masked_mean(lower_margin, active),
-                "RecoveryStand/active_rod_upper_margin_rad": _masked_mean(upper_margin, active),
-                "RecoveryStand/max_abs_action": _masked_mean(max_abs_action, active),
-                "RecoveryStand/raw_action_saturation_rate": _masked_mean(saturated.float(), active),
-            }
-        )
+        leg_saturated = max_abs_leg_action > float(action_saturation_threshold)
+        wheel_saturated = max_abs_wheel_action > float(action_saturation_threshold)
+        log_values = {
+            "RecoveryStand/zero_velocity_penalty": _masked_mean(result, active),
+            "RecoveryStand/base_vxy_speed": _masked_mean(torch.sqrt(base_speed_sq), active),
+            "RecoveryStand/wheel_idle_speed": _masked_mean(torch.sqrt(wheel_speed_sq), active),
+            "RecoveryStand/base_ang_vel_norm": _masked_mean(torch.sqrt(base_ang_vel_sq), active),
+            "RecoveryStand/zero_velocity_gate": _masked_mean(near_upright_gate, active),
+            "RecoveryStand/active_rod_margin_rad": _masked_mean(min_margin, active),
+            "RecoveryStand/active_rod_lower_margin_rad": _masked_mean(lower_margin, active),
+            "RecoveryStand/active_rod_upper_margin_rad": _masked_mean(upper_margin, active),
+            "RecoveryStand/max_abs_action": _masked_mean(max_abs_action, active),
+            "RecoveryStand/max_abs_leg_action": _masked_mean(max_abs_leg_action, active),
+            "RecoveryStand/max_abs_wheel_action": _masked_mean(max_abs_wheel_action, active),
+            "RecoveryStand/raw_action_saturation_rate": _masked_mean(saturated.float(), active),
+            "RecoveryStand/leg_action_saturation_rate": _masked_mean(leg_saturated.float(), active),
+            "RecoveryStand/wheel_action_saturation_rate": _masked_mean(
+                wheel_saturated.float(), active
+            ),
+        }
+        for action_idx, action_name in enumerate(
+            ("lf", "lb", "rf", "rb", "left_wheel", "right_wheel")
+        ):
+            dim_saturated = action_abs[:, action_idx] > float(action_saturation_threshold)
+            log_values[f"RecoveryStand/action_abs_{action_name}"] = _masked_mean(
+                action_abs[:, action_idx], active
+            )
+            log_values[f"RecoveryStand/action_saturation_rate_{action_name}"] = _masked_mean(
+                dim_saturated.float(), active
+            )
+        env.extras.setdefault("log", {}).update(log_values)
 
     return result
 
