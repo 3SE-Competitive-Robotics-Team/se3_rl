@@ -19,6 +19,7 @@ class FlowSequenceSample(TypedDict):
     actions: torch.Tensor
     dones: torch.Tensor
     modes: torch.Tensor
+    teacher_names: list[str]
 
 
 class TeacherFlowDataset(Dataset[FlowSequenceSample]):
@@ -31,6 +32,8 @@ class TeacherFlowDataset(Dataset[FlowSequenceSample]):
         *,
         dones: torch.Tensor | None = None,
         modes: torch.Tensor | None = None,
+        teacher_names: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
         config: FlowPolicyConfig | None = None,
     ) -> None:
         """构造 teacher 数据集，要求 obs/actions 都是 [N, T, D]。"""
@@ -75,6 +78,12 @@ class TeacherFlowDataset(Dataset[FlowSequenceSample]):
         self.actions = actions.contiguous()
         self.dones = dones.contiguous()
         self.modes = modes.contiguous()
+        self.teacher_names = teacher_names or ["unknown"] * int(obs.shape[0])
+        if len(self.teacher_names) != int(obs.shape[0]):
+            raise ValueError(
+                f"teacher_names 长度必须为 {int(obs.shape[0])}，实际为 {len(self.teacher_names)}"
+            )
+        self.metadata = metadata or {}
 
     def __len__(self) -> int:
         """返回序列条数。"""
@@ -87,6 +96,7 @@ class TeacherFlowDataset(Dataset[FlowSequenceSample]):
             "actions": self.actions[index],
             "dones": self.dones[index],
             "modes": self.modes[index],
+            "teacher_names": [self.teacher_names[index]],
         }
 
     @classmethod
@@ -125,6 +135,8 @@ def load_teacher_dataset(
         torch.as_tensor(actions),
         dones=torch.as_tensor(raw["dones"]) if "dones" in raw else None,
         modes=torch.as_tensor(raw["modes"]) if "modes" in raw else None,
+        teacher_names=_teacher_names_from_raw(raw, int(torch.as_tensor(obs).shape[0])),
+        metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None,
         config=config,
     )
 
@@ -135,3 +147,18 @@ def _as_float_tensor(value: torch.Tensor, name: str) -> torch.Tensor:
     if not torch.isfinite(tensor).all():
         raise ValueError(f"{name} 包含 NaN 或 Inf")
     return tensor
+
+
+def _teacher_names_from_raw(raw: dict, count: int) -> list[str] | None:
+    """从原始 payload 中恢复每条序列的 teacher 名称。"""
+    names = raw.get("teacher_names")
+    if names is None:
+        return None
+    if isinstance(names, np.ndarray):
+        names = names.tolist()
+    if not isinstance(names, list):
+        raise TypeError("teacher_names 必须是 list 或 numpy array")
+    result = [str(name) for name in names]
+    if len(result) != count:
+        raise ValueError(f"teacher_names 长度必须为 {count}，实际为 {len(result)}")
+    return result
