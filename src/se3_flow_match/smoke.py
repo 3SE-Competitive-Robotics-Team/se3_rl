@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import torch
 from torch.utils.data import DataLoader
 
-from se3_shared import TaskMode
+from se3_shared import ObservationConfig, TaskMode
 
 from .checkpoint import load_flow_checkpoint, save_flow_checkpoint
 from .collect import collect_teacher_rollouts
@@ -118,11 +118,13 @@ def _run_real_pipeline_smoke() -> None:
         collect_teacher_rollouts(
             tasks=["wheel", "gait"],
             output=dataset_path,
-            num_envs=1,
-            steps=64,
-            sequence_length=16,
+            num_envs=2,
+            command_hold_s=1.0,
+            command_batches=1,
+            coverage="stratified",
             device=device,
         )
+        _assert_real_dataset_shape(dataset_path)
         train_flow_student(
             dataset_path=dataset_path,
             output=checkpoint_path,
@@ -130,7 +132,9 @@ def _run_real_pipeline_smoke() -> None:
             batch_size=2,
             max_steps=5,
             learning_rate=3.0e-4,
-            transition_ratio=1.0,
+            transition_ratio=0.25,
+            burn_in_steps=4,
+            loss_steps=8,
         )
         run_flow_play(
             checkpoint=checkpoint_path,
@@ -144,6 +148,37 @@ def _run_real_pipeline_smoke() -> None:
             max_steps=2,
         )
     print("[flow-smoke] real pipeline passed")
+
+
+def _assert_real_dataset_shape(dataset_path: Path) -> None:
+    """检查 tiny 长轨迹数据集格式和固定 command 观测契约。"""
+    raw = torch.load(dataset_path, map_location="cpu", weights_only=False)
+    obs = raw["obs"]
+    actions = raw["actions"]
+    commands = raw.get("commands")
+    metadata = raw.get("metadata", {})
+    if commands is None:
+        raise RuntimeError("real smoke 失败：dataset 缺少 commands 字段")
+    if tuple(obs.shape[:2]) != tuple(actions.shape[:2]):
+        raise RuntimeError(
+            f"real smoke 失败：obs/actions [N,T] 不一致 obs={tuple(obs.shape)} "
+            f"actions={tuple(actions.shape)}"
+        )
+    if obs.shape[0] != 4 or commands.shape != (4, 5):
+        raise RuntimeError(
+            f"real smoke 失败：tiny dataset shape 错误 obs={tuple(obs.shape)} "
+            f"commands={tuple(commands.shape)}"
+        )
+    hold_steps = int(metadata["task_rollouts"][0]["command_hold_steps"])
+    if obs.shape[1] != hold_steps or hold_steps < 12:
+        raise RuntimeError(
+            f"real smoke 失败：hold_steps 错误 obs_T={obs.shape[1]} metadata={hold_steps}"
+        )
+    scale = torch.tensor(ObservationConfig().command_scale, dtype=obs.dtype)
+    expected = commands[:, None, :] * scale
+    max_diff = (obs[:, :, 6:11] - expected).abs().max().item()
+    if max_diff > 1.0e-5:
+        raise RuntimeError(f"real smoke 失败：trajectory 内 command 观测漂移 max_diff={max_diff}")
 
 
 def _make_synthetic_teacher(config: FlowPolicyConfig) -> tuple[torch.Tensor, torch.Tensor]:

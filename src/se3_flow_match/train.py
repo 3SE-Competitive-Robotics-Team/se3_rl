@@ -7,7 +7,6 @@ from pathlib import Path
 from time import time
 
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 
 from se3_shared import TaskMode
 
@@ -28,10 +27,17 @@ def train_flow_student(
     max_steps: int,
     learning_rate: float,
     transition_ratio: float,
+    burn_in_steps: int,
+    loss_steps: int,
 ) -> None:
     """训练 Flow Matching 学生模型。"""
+    if burn_in_steps < 0:
+        raise ValueError(f"burn_in_steps 不能为负数，实际为 {burn_in_steps}")
+    if loss_steps <= 0:
+        raise ValueError(f"loss_steps 必须为正数，实际为 {loss_steps}")
     config = FlowPolicyConfig()
     dataset = load_teacher_dataset(dataset_path, config=config)
+    _validate_window_length(dataset.obs, burn_in_steps=burn_in_steps, loss_steps=loss_steps)
     obs, actions, dones, modes = _augment_transitions(
         dataset.obs,
         dataset.actions,
@@ -39,41 +45,46 @@ def train_flow_student(
         dataset.modes,
         transition_ratio=transition_ratio,
     )
-    action_weights = _action_weights_for_modes(modes).to(dtype=torch.float32)
-
-    tensor_dataset = TensorDataset(obs, actions, dones, action_weights)
-    loader = DataLoader(tensor_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
     model = FlowVelocityField(config).to(device)
-    _init_obs_normalizer(model, obs)
+    _init_obs_normalizer(model, dataset.obs)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     step = 0
     start = time()
     last_loss = float("nan")
     while step < max_steps:
-        for batch_obs, batch_actions, batch_dones, batch_weights in loader:
-            batch_obs = batch_obs.to(device)
-            batch_actions = batch_actions.to(device)
-            batch_dones = batch_dones.to(device)
-            batch_weights = batch_weights.to(device)
-            loss_info = flow_matching_loss(
-                model,
-                batch_obs,
-                batch_actions,
-                dones=batch_dones,
-                action_weights=batch_weights,
-            )
-            optimizer.zero_grad(set_to_none=True)
-            loss_info.loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+        batch_obs, batch_actions, batch_dones, batch_modes = _sample_training_window(
+            obs,
+            actions,
+            dones,
+            modes,
+            batch_size=batch_size,
+            burn_in_steps=burn_in_steps,
+            loss_steps=loss_steps,
+        )
+        batch_weights = _action_weights_for_modes(batch_modes).to(dtype=torch.float32)
+        if burn_in_steps > 0:
+            batch_weights[:, :burn_in_steps, :] = 0.0
+        batch_obs = batch_obs.to(device)
+        batch_actions = batch_actions.to(device)
+        batch_dones = batch_dones.to(device)
+        batch_weights = batch_weights.to(device)
+        loss_info = flow_matching_loss(
+            model,
+            batch_obs,
+            batch_actions,
+            dones=batch_dones,
+            action_weights=batch_weights,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        loss_info.loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
 
-            step += 1
-            last_loss = float(loss_info.loss.detach().cpu())
-            if step % 50 == 0 or step == 1:
-                print(f"[flow-train] step={step} loss={last_loss:.6f}")
-            if step >= max_steps:
-                break
+        step += 1
+        last_loss = float(loss_info.loss.detach().cpu())
+        if step % 50 == 0 or step == 1:
+            print(f"[flow-train] step={step} loss={last_loss:.6f}")
 
     save_flow_checkpoint(
         output,
@@ -85,6 +96,8 @@ def train_flow_student(
             "batch_size": batch_size,
             "learning_rate": learning_rate,
             "transition_ratio": transition_ratio,
+            "burn_in_steps": burn_in_steps,
+            "loss_steps": loss_steps,
             "final_loss": last_loss,
             "train_seconds": time() - start,
             "dataset_metadata": dataset.metadata,
@@ -110,12 +123,15 @@ def _augment_transitions(
     parts_modes = [modes]
 
     max_count = round(float(obs.shape[0]) * float(transition_ratio))
+    pairs = ((TaskMode.GAIT, TaskMode.WHEEL), (TaskMode.WHEEL, TaskMode.GAIT))
+    per_pair_count = max(1, max_count // len(pairs)) if max_count > 0 else 0
     added = 0
-    for current, prev in ((TaskMode.GAIT, TaskMode.WHEEL), (TaskMode.WHEEL, TaskMode.GAIT)):
+    for current, prev in pairs:
         idx = (modes[:, 0] == int(current)).nonzero(as_tuple=False).squeeze(-1)
         if idx.numel() == 0:
             continue
-        take = min(idx.numel(), max_count - added if max_count > 0 else idx.numel())
+        remaining = max_count - added if max_count > 0 else idx.numel()
+        take = min(idx.numel(), per_pair_count, remaining)
         if take <= 0:
             break
         idx = idx[:take]
@@ -131,6 +147,50 @@ def _augment_transitions(
         torch.cat(parts_actions, dim=0),
         torch.cat(parts_dones, dim=0),
         torch.cat(parts_modes, dim=0),
+    )
+
+
+def _validate_window_length(
+    obs: torch.Tensor,
+    *,
+    burn_in_steps: int,
+    loss_steps: int,
+) -> None:
+    """确认长轨迹足够切出训练窗口。"""
+    window = int(burn_in_steps) + int(loss_steps)
+    if obs.shape[1] < window:
+        raise ValueError(
+            f"数据序列长度 {obs.shape[1]} 小于 burn_in+loss 窗口 {window}，"
+            "请增加采集 command_hold_s 或减小训练窗口。"
+        )
+
+
+def _sample_training_window(
+    obs: torch.Tensor,
+    actions: torch.Tensor,
+    dones: torch.Tensor,
+    modes: torch.Tensor,
+    *,
+    batch_size: int,
+    burn_in_steps: int,
+    loss_steps: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """从长轨迹中随机采样 [burn_in + loss] 训练窗口。"""
+    window = int(burn_in_steps) + int(loss_steps)
+    _validate_window_length(obs, burn_in_steps=burn_in_steps, loss_steps=loss_steps)
+    traj_ids = torch.randint(obs.shape[0], (batch_size,))
+    max_start = obs.shape[1] - window
+    if max_start == 0:
+        starts = torch.zeros(batch_size, dtype=torch.long)
+    else:
+        starts = torch.randint(max_start + 1, (batch_size,))
+    offsets = torch.arange(window).view(1, -1)
+    time_ids = starts.view(-1, 1) + offsets
+    return (
+        obs[traj_ids[:, None], time_ids],
+        actions[traj_ids[:, None], time_ids],
+        dones[traj_ids[:, None], time_ids],
+        modes[traj_ids[:, None], time_ids],
     )
 
 
@@ -157,9 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, default=Path("logs/flow_match/wheel_gait/flow.pt"))
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--max-steps", type=int, default=5000)
+    parser.add_argument("--max-steps", type=int, default=10000)
     parser.add_argument("--learning-rate", type=float, default=3.0e-4)
-    parser.add_argument("--transition-ratio", type=float, default=1.0)
+    parser.add_argument("--transition-ratio", type=float, default=0.25)
+    parser.add_argument("--burn-in-steps", type=int, default=64)
+    parser.add_argument("--loss-steps", type=int, default=128)
     return parser
 
 
@@ -174,6 +236,8 @@ def main() -> None:
         max_steps=int(args.max_steps),
         learning_rate=float(args.learning_rate),
         transition_ratio=float(args.transition_ratio),
+        burn_in_steps=int(args.burn_in_steps),
+        loss_steps=int(args.loss_steps),
     )
 
 
