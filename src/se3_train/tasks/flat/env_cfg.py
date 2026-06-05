@@ -187,6 +187,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "velocity_height": commands.JumpCommandCfg(
             resampling_time_range=(5.0, 5.0),
             jump_prob=0.0,  # 行走任务不触发跳跃
+            lin_vel_x_range=(-3.0, 3.0),
+            ang_vel_yaw_range=(-13.0, 13.0),
             height_range=_STANDING_HEIGHT_RANGE,
             standing_height_range=_STANDING_HEIGHT_RANGE,
         ),
@@ -201,12 +203,33 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "sigma_move": 0.08,
                 "sigma_stand": 0.1,
                 "vz_weight": 2.0,
+                "use_upright_gate": False,
             },
         ),
         "tracking_ang_vel": RewardTermCfg(
             func=rewards.tracking_ang_vel,
-            weight=1.73,
-            params={"command_name": "velocity_height", "sigma": 0.25},
+            # 高 yaw 组合命令在大误差时 exp 核梯度会消失,需要保留方向性学习信号。
+            weight=3.0,
+            params={
+                "command_name": "velocity_height",
+                "sigma": 0.25,
+                "sigma_cmd_scale": 0.4,
+                "ratio_blend": 0.2,
+                "use_upright_gate": False,
+            },
+        ),
+        "tracking_lin_yaw_joint": RewardTermCfg(
+            func=rewards.tracking_lin_yaw_joint,
+            # 组合命令必须同时保住线速度和 yaw,避免策略只完成其中一轴。
+            weight=2.0,
+            params={
+                "command_name": "velocity_height",
+                "min_lin_cmd": 0.2,
+                "min_yaw_cmd": 0.5,
+                "lin_error_scale": 0.75,
+                "yaw_error_scale": 2.0,
+                "use_upright_gate": False,
+            },
         ),
         # 姿态相关项只使用惩罚语义:偏离目标姿态扣分,明显倾斜加重扣分。
         "tracking_orientation_l2": RewardTermCfg(
@@ -289,24 +312,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "upright_wheel_contact": RewardTermCfg(
-            func=rewards.upright_wheel_contact_penalty,
+        "flat_wheel_contact": RewardTermCfg(
+            func=rewards.flat_wheel_contact_penalty,
             weight=-10.0,
             params={
                 "command_name": "velocity_height",
                 "sensor_name": "wheel_sensor",
                 "force_threshold": 1.0,
-                "min_upright_gate": 0.35,
             },
         ),
-        "upright_leg_contact": RewardTermCfg(
-            func=rewards.upright_leg_contact_penalty,
+        "flat_leg_contact": RewardTermCfg(
+            func=rewards.flat_leg_contact_penalty,
             weight=-25.0,
             params={
                 "command_name": "velocity_height",
                 "sensor_name": "leg_contact_sensor",
                 "force_threshold": 1.0,
-                "min_upright_gate": 0.35,
             },
         ),
         # 业界标准:移除显式 termination 惩罚,改用 alive reward 隐式机制
@@ -348,45 +369,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     if not play:
         cfg.curriculum = {
-            "command_vel": CurriculumTermCfg(
-                func=curriculums.commands_vel,
-                params={
-                    "command_name": "velocity_height",
-                    "use_iterations": True,
-                    "velocity_stages": [
-                        {
-                            "step": 0,
-                            "lin_vel_x_range": (0.0, 0.0),
-                            "ang_vel_yaw_range": (0.0, 0.0),
-                        },
-                        {
-                            "step": 500,
-                            "lin_vel_x_range": (-0.5, 0.5),
-                            "ang_vel_yaw_range": (-0.5, 0.5),
-                        },
-                        {
-                            "step": 1500,
-                            "lin_vel_x_range": (-1.0, 1.0),
-                            "ang_vel_yaw_range": (-1.0, 1.0),
-                        },
-                        {
-                            "step": 2500,
-                            "lin_vel_x_range": (-1.5, 1.5),
-                            "ang_vel_yaw_range": (-2.0, 2.0),
-                        },
-                        {
-                            "step": 3500,
-                            "lin_vel_x_range": (-2.0, 2.0),
-                            "ang_vel_yaw_range": (-2.5, 2.5),
-                        },
-                        {
-                            "step": 4500,
-                            "lin_vel_x_range": (-2.5, 2.5),
-                            "ang_vel_yaw_range": (-3.0, 3.0),
-                        },
-                    ],
-                },
-            ),
             "push_disturbance": CurriculumTermCfg(
                 func=curriculums.push_disturbance,
                 params={

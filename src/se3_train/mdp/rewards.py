@@ -59,6 +59,33 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
     return 0.0
 
 
+def _accumulate_command_curriculum_metric(
+    env: ManagerBasedRlEnv,
+    name: str,
+    values: torch.Tensor,
+    mask: torch.Tensor,
+) -> None:
+    """累计速度课程使用的逐 episode 原始指标。"""
+    if values.shape[0] != env.num_envs or mask.shape[0] != env.num_envs:
+        return
+
+    sum_name = f"_command_curriculum_{name}_sum"
+    count_name = f"_command_curriculum_{name}_count"
+    sums = getattr(env, sum_name, None)
+    counts = getattr(env, count_name, None)
+    if not isinstance(sums, torch.Tensor) or sums.shape[0] != env.num_envs:
+        sums = torch.zeros(env.num_envs, device=env.device)
+        setattr(env, sum_name, sums)
+    if not isinstance(counts, torch.Tensor) or counts.shape[0] != env.num_envs:
+        counts = torch.zeros(env.num_envs, device=env.device)
+        setattr(env, count_name, counts)
+
+    valid = mask & torch.isfinite(values)
+    if valid.any():
+        sums[valid] += values[valid].detach().float()
+        counts[valid] += 1.0
+
+
 def _policy_leg_pos_and_default(robot) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的腿部当前位置和默认位置。"""
     leg_ids = policy_leg_joint_ids(robot)
@@ -348,6 +375,7 @@ def tracking_lin_vel(
     sigma_move: float,
     sigma_stand: float,
     vz_weight: float = 2.0,
+    use_upright_gate: bool = True,
 ) -> torch.Tensor:
     """x 方向速度跟踪,将 v_z 折入同一 exp 核消除目标冲突。
 
@@ -364,7 +392,34 @@ def tracking_lin_vel(
 
     cmd_mag = torch.abs(cmd[:, 0])
     sigma = torch.where(cmd_mag < 0.2, sigma_stand, sigma_move)
-    reward = torch.exp(-(error_x**2 + vz_weight * vz**2) / sigma) * gate
+    reward = torch.exp(-(error_x**2 + vz_weight * vz**2) / sigma)
+    if use_upright_gate:
+        reward = reward * gate
+    jump_flag = cmd[:, 5] > 0.5 if cmd.shape[1] > 5 else torch.zeros_like(cmd_mag, dtype=torch.bool)
+    moving = (cmd_mag >= 0.2) & ~jump_flag
+    locomotion = ~jump_flag
+    idle = (torch.abs(cmd[:, 0]) < 0.08) & (torch.abs(cmd[:, 1]) < 0.08) & locomotion
+
+    _accumulate_command_curriculum_metric(env, "lin_score", reward, moving)
+    _accumulate_command_curriculum_metric(env, "upright_score", gate, locomotion)
+
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * 0.059,
+            -wheel_vel[:, 1] * 0.059,
+        ),
+        dim=1,
+    )
+    wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
+    _accumulate_command_curriculum_metric(env, "idle_wheel_speed", torch.sqrt(wheel_speed_sq), idle)
+
+    straight = moving & (torch.abs(cmd[:, 1]) < 0.20)
+    straight_slip = torch.mean(
+        (wheel_forward_speed - lin_vel[:, 0].unsqueeze(1)) ** 2,
+        dim=1,
+    ) / (0.45**2)
+    _accumulate_command_curriculum_metric(env, "slip_penalty", straight_slip, straight)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         moving = cmd_mag >= 0.2
@@ -380,15 +435,103 @@ def tracking_lin_vel(
     return reward
 
 
-def tracking_ang_vel(env: ManagerBasedRlEnv, command_name: str, sigma: float) -> torch.Tensor:
-    """偏航角速度跟踪的 exp(-error^2/sigma),直立门控。"""
+def tracking_ang_vel(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float,
+    sigma_cmd_scale: float = 0.0,
+    ratio_blend: float = 0.0,
+    use_upright_gate: bool = True,
+) -> torch.Tensor:
+    """偏航角速度跟踪,高 yaw 命令下保留大误差学习梯度。"""
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)
     ang_vel_z = robot.data.root_link_ang_vel_b[:, 2]
     error = ang_vel_z - cmd[:, 1]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
-    return torch.exp(-(error**2) / sigma) * gate
+    cmd_mag = torch.abs(cmd[:, 1])
+    effective_sigma = float(sigma) * (1.0 + float(sigma_cmd_scale) * cmd_mag)
+    reward_gate = gate if use_upright_gate else torch.ones_like(gate)
+    exp_reward = torch.exp(-(error**2) / effective_sigma) * reward_gate
+    reward = exp_reward
+    if ratio_blend > 0.0:
+        blend = min(max(float(ratio_blend), 0.0), 1.0)
+        # exp 核在大误差下梯度很快消失,比例项只负责把策略拉向正确方向。
+        ratio_denom = torch.clamp(cmd_mag, min=1.0)
+        ratio_reward = torch.clamp(1.0 - torch.abs(error) / ratio_denom, 0.0, 1.0) * reward_gate
+        reward = (1.0 - blend) * exp_reward + blend * ratio_reward
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    moving = (torch.abs(cmd[:, 1]) >= 0.2) & ~jump_flag
+    _accumulate_command_curriculum_metric(env, "yaw_score", reward, moving)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Locomotion/cmd_yaw_rate_mean": _masked_mean(cmd[:, 1], moving),
+                "Locomotion/base_yaw_rate_mean": _masked_mean(ang_vel_z, moving),
+                "Locomotion/base_yaw_error_abs": _masked_mean(torch.abs(error), moving),
+                "Locomotion/tracking_ang_vel_reward": _masked_mean(reward, moving),
+                "Locomotion/tracking_ang_vel_exp_reward": _masked_mean(exp_reward, moving),
+                "Locomotion/tracking_ang_vel_sigma": _masked_mean(effective_sigma, moving),
+            }
+        )
+
+    return reward
+
+
+def tracking_lin_yaw_joint(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    min_lin_cmd: float = 0.2,
+    min_yaw_cmd: float = 0.5,
+    lin_error_scale: float = 0.75,
+    yaw_error_scale: float = 2.0,
+    use_upright_gate: bool = True,
+) -> torch.Tensor:
+    """线速度和 yaw 同时非零时的联合跟踪奖励,防止二者互相让路。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    lin_vel_x = robot.data.root_link_lin_vel_b[:, 0]
+    yaw_vel = robot.data.root_link_ang_vel_b[:, 2]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    gate = _upright_factor(pg_z)
+
+    lin_cmd = cmd[:, 0]
+    yaw_cmd = cmd[:, 1]
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    combined = (
+        (torch.abs(lin_cmd) >= float(min_lin_cmd))
+        & (torch.abs(yaw_cmd) >= float(min_yaw_cmd))
+        & ~jump_flag
+    )
+
+    lin_denom = torch.clamp(torch.abs(lin_cmd), min=float(lin_error_scale))
+    yaw_denom = torch.clamp(torch.abs(yaw_cmd), min=float(yaw_error_scale))
+    lin_score = torch.clamp(1.0 - torch.abs(lin_vel_x - lin_cmd) / lin_denom, 0.0, 1.0)
+    yaw_score = torch.clamp(1.0 - torch.abs(yaw_vel - yaw_cmd) / yaw_denom, 0.0, 1.0)
+    reward_gate = gate if use_upright_gate else torch.ones_like(gate)
+    reward = lin_score * yaw_score * reward_gate * combined.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Locomotion/lin_yaw_joint_reward": _masked_mean(reward, combined),
+                "Locomotion/lin_yaw_joint_lin_score": _masked_mean(lin_score, combined),
+                "Locomotion/lin_yaw_joint_yaw_score": _masked_mean(yaw_score, combined),
+                "Locomotion/lin_yaw_joint_cmd_ratio": combined.float().mean().item(),
+            }
+        )
+
+    return reward
 
 
 def tracking_orientation_l2(
@@ -607,6 +750,76 @@ def stand_still(
     if ignore_recovery:
         result = result * (~_recovery_reset_mask(env)).float()
     return result
+
+
+def flat_leg_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """平地行走腿部触地惩罚，不使用直立门控。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    active = ~jump_flag
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    has_contact = (force_mag > float(force_threshold)).any(dim=1)
+    _accumulate_command_curriculum_metric(env, "leg_contact", has_contact.float(), active)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"]["Locomotion/flat_leg_contact_rate"] = _masked_mean(
+            has_contact.float(), active
+        )
+
+    return has_contact.float() * active.float()
+
+
+def flat_wheel_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """平地行走轮子离地惩罚，不使用直立门控。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    active = ~jump_flag
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(force_threshold)
+    contact_ratio = in_contact.float().mean(dim=1)
+    penalty = 1.0 - contact_ratio
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Locomotion/flat_wheel_contact_ratio": _masked_mean(contact_ratio, active),
+                "Locomotion/flat_wheel_full_contact_rate": _masked_mean(
+                    (contact_ratio >= 1.0).float(), active
+                ),
+            }
+        )
+
+    return penalty * active.float()
 
 
 def upright_leg_contact_penalty(

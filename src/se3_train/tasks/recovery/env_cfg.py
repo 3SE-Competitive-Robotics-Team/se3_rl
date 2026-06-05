@@ -117,12 +117,17 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "flat_base_lin_vel_z",
         "flat_action_smoothness",
         "flat_wheel_contact",
+        "flat_leg_contact",
         "flat_wheel_ground_slip",
         "flat_wheel_center_alignment",
         "idle_wheel_motion",
         "is_alive",
     ):
         cfg.rewards.pop(reward_name, None)
+
+    for reward_name in ("tracking_lin_vel", "tracking_ang_vel", "tracking_lin_yaw_joint"):
+        if reward_name in cfg.rewards:
+            cfg.rewards[reward_name].params["use_upright_gate"] = True
 
     # 对齐 robot_lab 的自起训练比例:upward 是主目标,动作平滑只保留很轻的正则。
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
