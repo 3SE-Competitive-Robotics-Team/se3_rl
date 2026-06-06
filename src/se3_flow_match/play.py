@@ -17,7 +17,7 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer, VerbosityLevel, ViserPlayViewer
 
 import se3_train  # noqa: F401
-from se3_shared import TASK_MODE_NAMES, JointGroup, TaskMode
+from se3_shared import TASK_MODE_NAMES, JointGroup, RobotConfig, TaskMode
 from se3_shared.grounded_pose import solve_grounded_pose
 
 from .registry import TASK_SPECS
@@ -27,13 +27,14 @@ from .task_mode import overwrite_task_mode_obs
 _SCRIPT_TASK_ID = "SE3-WheelLegged-FlowMatch-Loco-Script-GRU"
 _COMMAND_NAME = "velocity_height"
 _ACTION_NAME = "delayed_action"
+_WHEEL_HEIGHT = float(RobotConfig().default_base_height)
 _WHEEL_COMMAND = {
     "lin_vel_x_range": (-2.5, 2.5),
     "ang_vel_yaw_range": (-3.0, 3.0),
     "pitch_range": (-0.2, 0.2),
     "roll_range": (-0.1, 0.1),
-    "height_range": (0.20, 0.32),
-    "standing_height_range": (0.20, 0.32),
+    "height_range": (_WHEEL_HEIGHT, _WHEEL_HEIGHT),
+    "standing_height_range": (_WHEEL_HEIGHT, _WHEEL_HEIGHT),
     "lin_vel_deadband": 0.1,
     "yaw_deadband": 0.1,
 }
@@ -193,6 +194,7 @@ class ScriptedFlowPolicy:
         self.events = sorted(events, key=lambda event: event.time_s)
         self.blend_s = max(float(blend_s), 1.0e-6)
         self.default_mode = default_mode
+        self._script_start_step = int(self.env.unwrapped.common_step_counter)
         (
             self.current_mode,
             self.prev_mode,
@@ -207,6 +209,7 @@ class ScriptedFlowPolicy:
     def reset(self) -> None:
         """重置 policy 和脚本状态。"""
         self.runtime.reset()
+        self._reset_script_clock()
         (
             self.current_mode,
             self.prev_mode,
@@ -228,9 +231,7 @@ class ScriptedFlowPolicy:
     def post_env_step(self, dones: torch.Tensor) -> None:
         """auto-reset 后把当前脚本 mode 重新写回刚 reset 的 env。"""
         if dones.any():
-            if hasattr(self.runtime.model, "reset_done"):
-                self.runtime.model.reset_done(dones)
-            self._sync_env_contract(self.current_mode, self.prev_mode, self.runtime.blend)
+            self.reset()
 
     def _initial_script_state(self) -> tuple[TaskMode, TaskMode, float, int]:
         """计算脚本初始 mode，支持多个 0s 事件时以后出现的为准。"""
@@ -242,9 +243,18 @@ class ScriptedFlowPolicy:
         switch_time_s = -self.blend_s if next_event_idx > 0 else 0.0
         return current, current, switch_time_s, next_event_idx
 
+    def _reset_script_clock(self) -> None:
+        """把脚本时间线锚定到当前 env step。"""
+        self._script_start_step = int(self.env.unwrapped.common_step_counter)
+
+    def _script_time_s(self) -> float:
+        """返回从最近一次 play reset 开始的脚本时间。"""
+        elapsed_steps = int(self.env.unwrapped.common_step_counter) - self._script_start_step
+        return max(elapsed_steps, 0) * float(self.env.unwrapped.step_dt)
+
     def __call__(self, obs_dict: object) -> torch.Tensor:
         """按 env 时间更新 mode 条件后调用 Flow policy。"""
-        t = float(self.env.unwrapped.common_step_counter) * float(self.env.unwrapped.step_dt)
+        t = self._script_time_s()
         while (
             self.next_event_idx < len(self.events) and t >= self.events[self.next_event_idx].time_s
         ):
@@ -481,9 +491,10 @@ def _set_command_shape(
     command[:, :5] = script_command.to(device=command.device, dtype=command.dtype)
     _apply_deadband(command, shape)
     script_command = command[:, :5].clone()
+    height = _mode_height(mode)
+    command[:, 4] = height
+    script_command[:, 4] = height
     if mode == TaskMode.GAIT:
-        command[:, 4] = float(shape["height_range"][0])
-        script_command[:, 4] = float(shape["height_range"][0])
         standing_mask = getattr(term, "_standing_mask", None)
         if isinstance(standing_mask, torch.Tensor):
             standing_mask[:] = False
@@ -501,9 +512,13 @@ def _shape_command(command: torch.Tensor | None, mode: TaskMode) -> torch.Tensor
     out[:, 2] = out[:, 2].clamp(*shape["pitch_range"])
     out[:, 3] = out[:, 3].clamp(*shape["roll_range"])
     out[:, 4] = out[:, 4].clamp(*shape["height_range"])
-    if mode == TaskMode.GAIT:
-        out[:, 4] = float(shape["height_range"][0])
+    out[:, 4] = _mode_height(mode)
     return out
+
+
+def _mode_height(mode: TaskMode) -> float:
+    """返回当前 mode 对应的固定机身高度 command。"""
+    return _GAIT_HEIGHT if mode == TaskMode.GAIT else _WHEEL_HEIGHT
 
 
 def _hold_script_command(term: object) -> None:
