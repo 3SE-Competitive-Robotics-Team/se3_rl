@@ -356,11 +356,7 @@ class ScriptedFlowPolicy:
         self._pending_mode = TaskMode.GAIT
         self._pending_prev_mode = self.current_mode
         self._pending_switch_time_s = event.time_s + _WHEEL_TO_GAIT_PREP_S
-        self._pending_script_command = (
-            None
-            if self.script_command is None
-            else _wheel_to_gait_prep_command(self.script_command)
-        )
+        self._pending_script_command = _shape_command(self.script_command, event.mode)
         self.prev_mode = self.current_mode
         self.switch_time_s = event.time_s
         return True
