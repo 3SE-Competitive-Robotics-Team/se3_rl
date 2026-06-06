@@ -150,7 +150,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=2.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
-    cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.01)
+    cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.05)
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
         weight=-2.5e-5,
