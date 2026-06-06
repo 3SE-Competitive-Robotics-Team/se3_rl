@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import mujoco
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
@@ -47,6 +48,11 @@ _GAIT_COMMAND = {
 }
 _WHEEL_ACTION_SCALE = 20.0
 _GAIT_HEIGHT = 0.35
+_WHEEL_LOCK_RANGE = (-1.0e-4, 1.0e-4)
+_WHEEL_LOCK_DAMPING = 10.0
+_WHEEL_LOCK_FRICTIONLOSS = 1.0
+_WHEEL_JOINT_NAMES = ("l_wheel_Joint", "r_wheel_Joint")
+_WHEEL_LOCK_MODEL_FIELDS = ("jnt_limited", "jnt_range", "dof_damping", "dof_frictionloss")
 _SCRIPT_COMMAND_HOLD_S = 1.0e6
 
 
@@ -70,6 +76,7 @@ class ScriptModeContract:
         reset_joint_params = _read_reset_joint_params(env)
         self._wheel_joint_pos_override = reset_joint_params["joint_pos_override"]
         self._wheel_update_default_joint_pos = bool(reset_joint_params["update_default_joint_pos"])
+        self._wheel_lock_contract = WheelJointLockContract(env)
         gait_pose = solve_grounded_pose(
             _GAIT_HEIGHT,
             keep_wheel_x=False,
@@ -101,6 +108,8 @@ class ScriptModeContract:
                 joint_pos_override=self._gait_joint_pos_override,
                 update_default_joint_pos=True,
             )
+            self._wheel_lock_contract.apply(env, locked=True)
+            _zero_wheel_joint_state(env)
         else:
             robot.data.default_joint_pos[:] = self._wheel_default_joint_pos
             _set_reset_base_height(env, self._wheel_base_height)
@@ -108,6 +117,60 @@ class ScriptModeContract:
                 env,
                 joint_pos_override=self._wheel_joint_pos_override,
                 update_default_joint_pos=self._wheel_update_default_joint_pos,
+            )
+            self._wheel_lock_contract.apply(env, locked=False)
+
+
+class WheelJointLockContract:
+    """脚本 GAIT 模式使用的轮轴物理锁。"""
+
+    def __init__(self, env: ManagerBasedRlEnv) -> None:
+        """缓存 wheel 模式下的轮轴模型字段。"""
+        _ensure_model_fields(env, _WHEEL_LOCK_MODEL_FIELDS)
+        mj_model = env.sim.mj_model
+        self._joint_ids = tuple(_find_mj_joint_id(mj_model, name) for name in _WHEEL_JOINT_NAMES)
+        self._dof_ids = tuple(int(mj_model.jnt_dofadr[joint_id]) for joint_id in self._joint_ids)
+        model = env.sim.model
+        self._wheel_jnt_limited = model.jnt_limited[list(self._joint_ids)].clone()
+        self._wheel_jnt_range = model.jnt_range[:, list(self._joint_ids), :].clone()
+        self._wheel_dof_damping = model.dof_damping[:, list(self._dof_ids)].clone()
+        self._wheel_dof_frictionloss = model.dof_frictionloss[:, list(self._dof_ids)].clone()
+
+    def apply(self, env: ManagerBasedRlEnv, *, locked: bool) -> None:
+        """按当前模式写入轮轴模型字段。"""
+        model = env.sim.model
+        joint_ids = list(self._joint_ids)
+        dof_ids = list(self._dof_ids)
+        if locked:
+            model.jnt_limited[joint_ids] = 1
+            model.jnt_range[:, joint_ids, 0] = _WHEEL_LOCK_RANGE[0]
+            model.jnt_range[:, joint_ids, 1] = _WHEEL_LOCK_RANGE[1]
+            model.dof_damping[:, dof_ids] = _WHEEL_LOCK_DAMPING
+            model.dof_frictionloss[:, dof_ids] = _WHEEL_LOCK_FRICTIONLOSS
+        else:
+            model.jnt_limited[joint_ids] = self._wheel_jnt_limited
+            model.jnt_range[:, joint_ids, :] = self._wheel_jnt_range
+            model.dof_damping[:, dof_ids] = self._wheel_dof_damping
+            model.dof_frictionloss[:, dof_ids] = self._wheel_dof_frictionloss
+        self._sync_host_model(env, locked=locked)
+
+    def _sync_host_model(self, env: ManagerBasedRlEnv, *, locked: bool) -> None:
+        """同步 host MjModel，避免 viewer 侧模型字段长期滞后。"""
+        mj_model = env.sim.mj_model
+        joint_ids = list(self._joint_ids)
+        dof_ids = list(self._dof_ids)
+        if locked:
+            mj_model.jnt_limited[joint_ids] = 1
+            mj_model.jnt_range[joint_ids, 0] = _WHEEL_LOCK_RANGE[0]
+            mj_model.jnt_range[joint_ids, 1] = _WHEEL_LOCK_RANGE[1]
+            mj_model.dof_damping[dof_ids] = _WHEEL_LOCK_DAMPING
+            mj_model.dof_frictionloss[dof_ids] = _WHEEL_LOCK_FRICTIONLOSS
+        else:
+            mj_model.jnt_limited[joint_ids] = self._wheel_jnt_limited.detach().cpu().numpy()
+            mj_model.jnt_range[joint_ids, :] = self._wheel_jnt_range[0].detach().cpu().numpy()
+            mj_model.dof_damping[dof_ids] = self._wheel_dof_damping[0].detach().cpu().numpy()
+            mj_model.dof_frictionloss[dof_ids] = (
+                self._wheel_dof_frictionloss[0].detach().cpu().numpy()
             )
 
 
@@ -449,6 +512,40 @@ def _set_action_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
         action_term.cfg.wheel_scale = _WHEEL_ACTION_SCALE
         action_term.cfg.wheel_lock_damping = None
         action_term.cfg.freeze_wheels = False
+
+
+def _ensure_model_fields(env: ManagerBasedRlEnv, fields: tuple[str, ...]) -> None:
+    """确保模型字段已按 env 维度展开，可在运行期写入。"""
+    missing = tuple(field for field in fields if field not in env.sim.expanded_fields)
+    if missing:
+        env.sim.expand_model_fields(missing)
+
+
+def _find_mj_joint_id(model: mujoco.MjModel, joint_name: str) -> int:
+    """按 entity 前缀后的关节名查找 MuJoCo joint id。"""
+    for joint_id in range(model.njnt):
+        full_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+        if full_name == joint_name or (
+            full_name is not None and full_name.endswith(f"/{joint_name}")
+        ):
+            return int(joint_id)
+    raise ValueError(f"找不到 MuJoCo joint：{joint_name}")
+
+
+def _zero_wheel_joint_state(env: ManagerBasedRlEnv) -> None:
+    """GAIT 锁轮时把轮轴位置和速度直接清零。"""
+    robot = env.scene["robot"]
+    zeros = torch.zeros(
+        robot.data.joint_pos.shape[0],
+        len(JointGroup.WHEELS),
+        device=robot.data.joint_pos.device,
+        dtype=robot.data.joint_pos.dtype,
+    )
+    robot.write_joint_state_to_sim(
+        zeros,
+        zeros,
+        joint_ids=torch.tensor(JointGroup.WHEELS, device=zeros.device, dtype=torch.long),
+    )
 
 
 def _read_reset_base_height(env: ManagerBasedRlEnv) -> float | None:
