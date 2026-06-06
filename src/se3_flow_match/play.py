@@ -323,7 +323,11 @@ class ScriptedFlowPolicy:
         self._pending_mode = TaskMode.GAIT
         self._pending_prev_mode = self.current_mode
         self._pending_switch_time_s = event.time_s + _WHEEL_TO_GAIT_PREP_S
-        self._pending_script_command = _shape_command(self.script_command, TaskMode.GAIT)
+        self._pending_script_command = (
+            None
+            if self.script_command is None
+            else _wheel_to_gait_prep_command(self.script_command)
+        )
         self.prev_mode = self.current_mode
         self.switch_time_s = event.time_s
         return True
@@ -365,7 +369,7 @@ class ScriptedFlowPolicy:
             self.script_command,
             wheel_to_gait_prep=wheel_to_gait_prep,
         )
-        _set_action_mode(env, current, wheel_to_gait_prep=wheel_to_gait_prep)
+        _set_action_mode(env, current)
         _set_termination_mode(env, current)
 
 
@@ -658,19 +662,10 @@ def _overwrite_script_actor_obs(
     return out
 
 
-def _set_action_mode(
-    env: ManagerBasedRlEnv,
-    mode: TaskMode,
-    *,
-    wheel_to_gait_prep: bool = False,
-) -> None:
+def _set_action_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
     """按 mode 切换轮子动作物理语义。"""
     action_term = env.action_manager.get_term(_ACTION_NAME)
-    if wheel_to_gait_prep:
-        action_term.cfg.wheel_scale = 0.0
-        action_term.cfg.wheel_lock_damping = _WHEEL_LOCK_DAMPING
-        action_term.cfg.freeze_wheels = False
-    elif mode == TaskMode.GAIT:
+    if mode == TaskMode.GAIT:
         action_term.cfg.wheel_scale = 0.0
         action_term.cfg.wheel_lock_damping = 0.0
         action_term.cfg.freeze_wheels = True
