@@ -2461,10 +2461,10 @@ def feet_contact_without_cmd(
 def dof_pos_limits(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
-    """腿部限位违规惩罚：闭链使用同侧两主动杆夹角。"""
+    """腿部软限位余量惩罚：闭链使用同侧两主动杆夹角。"""
     robot = env.scene[asset_cfg.name]
     if is_closedchain_model(robot):
-        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        lower, upper = _SHARED_ROBOT.active_rod_soft_angle_limits
         penalties = []
         for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(robot):
             angle = (
@@ -2476,7 +2476,7 @@ def dof_pos_limits(
         return torch.stack(penalties, dim=1).sum(dim=1)
 
     if is_fourbar_surrogate_model(robot):
-        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        lower, upper = _SHARED_ROBOT.active_rod_soft_angle_limits
         pos = output_to_policy_pos_torch(robot.data.joint_pos[:, policy_leg_joint_ids(robot)])
         penalties = []
         for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):

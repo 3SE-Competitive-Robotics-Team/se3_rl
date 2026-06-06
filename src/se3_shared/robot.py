@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from math import pi
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
 from .action_delay import ActionDelayConfig
 from .motor import DM8009P, M3508_C620_14
+
+_ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (0.0, 1.469449651507)
+_ACTIVE_ROD_ACTION_SCALE: float = 0.5 * (_ACTIVE_ROD_ANGLE_LIMITS[1] - _ACTIVE_ROD_ANGLE_LIMITS[0])
 
 
 class Joint(IntEnum):
@@ -135,14 +139,22 @@ class RobotConfig(BaseModel):
     )
     default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
     default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
-    active_rod_angle_limits: tuple[float, float] = (0.0, 1.469449651507)
+    active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
+    active_rod_soft_limit_factor: float = 0.9
     active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
         (1.0, -1.0),
         (-1.0, 1.0),
     )
     default_base_height: float = 0.22
     # 腿部 action 使用 [lf0, active_angle, rf0, active_angle] 语义；active 的零点是机械夹角中点。
-    action_scale: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 45.0, 45.0)
+    action_scale: tuple[float, ...] = (
+        pi,
+        _ACTIVE_ROD_ACTION_SCALE,
+        pi,
+        _ACTIVE_ROD_ACTION_SCALE,
+        45.0,
+        45.0,
+    )
     action_clip: float | None = 1.0
     sim_dt: float = 0.005
     control_decimation: int = 4
@@ -164,6 +176,15 @@ class RobotConfig(BaseModel):
             right_front * self.default_dof_pos[Joint.RF0]
             + right_back * self.default_dof_pos[Joint.RB],
         )
+
+    @property
+    def active_rod_soft_angle_limits(self) -> tuple[float, float]:
+        """返回主动杆夹角软限位，按硬限位中心收缩。"""
+        lower, upper = self.active_rod_angle_limits
+        factor = min(max(float(self.active_rod_soft_limit_factor), 0.0), 1.0)
+        center = 0.5 * (float(lower) + float(upper))
+        half_range = 0.5 * (float(upper) - float(lower)) * factor
+        return center - half_range, center + half_range
 
     @property
     def default_model_joint_pos(self) -> dict[str, float]:

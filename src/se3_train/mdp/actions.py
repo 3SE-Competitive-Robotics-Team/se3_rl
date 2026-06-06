@@ -107,9 +107,6 @@ class SerialLegDelayedAction(ActionTerm):
             device=self.device,
         )
         self._active_rod_angle_mid = torch.mean(self._active_rod_angle_limits)
-        self._active_rod_angle_half_range = (
-            self._active_rod_angle_limits[1] - self._active_rod_angle_limits[0]
-        ) * 0.5
         self._active_rod_angle_coeffs = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_coeffs,
             device=self.device,
@@ -273,7 +270,7 @@ class SerialLegDelayedAction(ActionTerm):
             )
             active_default = self._active_rod_angle_mid
             active_raw = (
-                active_default + leg_action[:, back_idx] * self._active_rod_angle_half_range
+                active_default + leg_action[:, back_idx] * self._leg_action_scales[back_idx]
             )
             active_target = torch.clamp(active_raw, lower, upper)
             target[:, front_idx] = front_target
