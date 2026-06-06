@@ -15,6 +15,7 @@ from se3_shared import (
     JointGroup,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    policy_default_from_height_torch,
     policy_to_output_torque_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -47,6 +48,8 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     action_delay_min_s: float = _DEFAULT_DELAY.min_delay_s
     action_delay_max_s: float = _DEFAULT_DELAY.max_delay_s
     action_clip: float | None = _SHARED_ROBOT.action_clip
+    height_conditioned_action_default: bool = False
+    action_default_command_name: str = "velocity_height"
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -69,6 +72,7 @@ class SerialLegDelayedAction(ActionTerm):
 
     def __init__(self, cfg: SerialLegDelayedActionCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg=cfg, env=env)
+        self._env = env
         try:
             leg_ids, leg_names = self._entity.find_joints_by_actuator_names(cfg.leg_actuator_names)
         except ValueError:
@@ -244,8 +248,14 @@ class SerialLegDelayedAction(ActionTerm):
         return output_to_policy_pos_torch(output_default)
 
     def _current_leg_action_defaults(self) -> torch.Tensor:
-        """返回当前 action 固定零点。"""
+        """返回当前 leg action 零点姿态。"""
         if self._fourbar_surrogate:
+            if self.cfg.height_conditioned_action_default:
+                cmd = self._env.command_manager.get_command(self.cfg.action_default_command_name)
+                return policy_default_from_height_torch(cmd[:, 4], _SHARED_ROBOT).to(
+                    device=self.device,
+                    dtype=self._leg_action_scales.dtype,
+                )
             return self._current_policy_leg_defaults()
         return self._entity.data.default_joint_pos[:, self._leg_joint_ids]
 
@@ -268,7 +278,13 @@ class SerialLegDelayedAction(ActionTerm):
                 policy_default[:, front_idx]
                 + leg_action[:, front_idx] * (self._leg_action_scales[front_idx])
             )
-            active_default = self._active_rod_angle_mid
+            if self.cfg.height_conditioned_action_default:
+                active_default = (
+                    front_coef * policy_default[:, front_idx]
+                    + back_coef * policy_default[:, back_idx]
+                )
+            else:
+                active_default = self._active_rod_angle_mid
             active_raw = (
                 active_default + leg_action[:, back_idx] * self._leg_action_scales[back_idx]
             )

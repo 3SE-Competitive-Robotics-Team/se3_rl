@@ -14,6 +14,7 @@ from se3_shared import (
     Termination,
     output_to_policy_pos_np,
     output_to_policy_vel_np,
+    policy_default_from_height_np,
     policy_to_output_torque_np,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -682,8 +683,12 @@ class WheelLeggedRobot:
         return ctrl
 
     def _policy_action_default(self) -> np.ndarray:
-        """返回腿部 action 固定零点。"""
+        """返回当前 leg action 零点姿态。"""
         if self.fourbar_surrogate:
+            if self.cfg.height_conditioned_action_default:
+                return policy_default_from_height_np(float(self.command[4]), _SHARED_ROBOT).reshape(
+                    4
+                )
             return as_float64(_SHARED_ROBOT.default_dof_pos)[JointGroup.CTRL_LEGS]
         return self.default_dof_pos[JointGroup.CTRL_LEGS]
 
@@ -722,7 +727,12 @@ class WheelLeggedRobot:
         for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
             front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
             front_target = policy_default[front_idx] + leg_action[front_idx] * leg_scale[front_idx]
-            active_default = active_mid
+            if self.cfg.height_conditioned_action_default:
+                active_default = (
+                    front_coef * policy_default[front_idx] + back_coef * policy_default[back_idx]
+                )
+            else:
+                active_default = active_mid
             active_raw = active_default + leg_action[back_idx] * active_half_range
             active_target = np.clip(active_raw, lower, upper)
             target[front_idx] = front_target

@@ -171,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
         "Use --jump-interval-s to trigger periodic jumps.",
     )
     parser.add_argument(
+        "--height-conditioned-action-default",
+        action="store_true",
+        help="让腿部 action=0 对应当前 command height 下的默认腿型，用于 recovery one-policy checkpoint。",
+    )
+    parser.add_argument(
         "--yaw-pid",
         dest="yaw_pid",
         action="store_true",
@@ -333,6 +338,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             action_delay_steps=(
                 None if args.action_delay_steps is None else max(0, int(args.action_delay_steps))
             ),
+            height_conditioned_action_default=bool(args.height_conditioned_action_default),
             leg_kp=float(args.leg_kp),
             leg_kd=float(args.leg_kd),
             jump_schedule=JumpScheduleConfig(
