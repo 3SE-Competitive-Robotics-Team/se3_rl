@@ -18,8 +18,8 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = False
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
-    init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "1.5"))
-    entropy_coef = float(os.environ.get("SE3_RECOVERY_ENTROPY_COEF", "0.01"))
+    init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "0.5"))
+    entropy_coef = float(os.environ.get("SE3_RECOVERY_ENTROPY_COEF", "0.00516"))
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
