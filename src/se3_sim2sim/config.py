@@ -123,6 +123,7 @@ class RobotConfig(BaseModel):
     command_scale: tuple[float, ...] = _shared_obs.command_scale
     default_dof_pos: tuple[float, ...] = _shared_robot.default_dof_pos
     action_scale: tuple[float, ...] = _shared_robot.action_scale
+    action_clip: float | None = _shared_robot.action_clip
     torque_limits: tuple[float, ...] = _shared_robot.torque_limits
     leg_kp: float = _shared_robot.leg_kp
     leg_kd: float = _shared_robot.leg_kd

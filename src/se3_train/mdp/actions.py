@@ -46,6 +46,7 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     action_delay_randomize: bool = _DEFAULT_DELAY.randomize
     action_delay_min_s: float = _DEFAULT_DELAY.min_delay_s
     action_delay_max_s: float = _DEFAULT_DELAY.max_delay_s
+    action_clip: float | None = _SHARED_ROBOT.action_clip
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -85,6 +86,8 @@ class SerialLegDelayedAction(ActionTerm):
             raise ValueError(
                 f"SerialLegDelayedAction expects 4 leg action scales, got {cfg.leg_scales}"
             )
+        if cfg.action_clip is not None and cfg.action_clip <= 0.0:
+            raise ValueError(f"action_clip must be positive or None, got {cfg.action_clip}")
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
@@ -114,6 +117,7 @@ class SerialLegDelayedAction(ActionTerm):
         self._action_dim = 6
 
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
+        self._unclipped_actions = torch.zeros_like(self._raw_actions)
         self._delayed_actions = torch.zeros_like(self._raw_actions)
         self._policy_leg_torque = torch.zeros(self.num_envs, 4, device=self.device)
         self._policy_leg_vel = torch.zeros_like(self._policy_leg_torque)
@@ -155,6 +159,10 @@ class SerialLegDelayedAction(ActionTerm):
         return self._raw_actions
 
     @property
+    def unclipped_action(self) -> torch.Tensor:
+        return self._unclipped_actions
+
+    @property
     def delayed_action(self) -> torch.Tensor:
         return self._delayed_actions
 
@@ -183,7 +191,13 @@ class SerialLegDelayedAction(ActionTerm):
         return self._delay_steps
 
     def process_actions(self, actions: torch.Tensor) -> None:
-        self._raw_actions[:] = actions.to(self.device)
+        incoming_actions = actions.to(self.device)
+        self._unclipped_actions[:] = incoming_actions
+        if self.cfg.action_clip is None:
+            self._raw_actions[:] = incoming_actions
+        else:
+            clip = float(self.cfg.action_clip)
+            self._raw_actions[:] = torch.clamp(incoming_actions, -clip, clip)
 
     def apply_actions(self) -> None:
         if self._max_delay_steps > 0:
@@ -331,6 +345,7 @@ class SerialLegDelayedAction(ActionTerm):
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)
         self._raw_actions[resolved_env_ids] = 0.0
+        self._unclipped_actions[resolved_env_ids] = 0.0
         self._delayed_actions[resolved_env_ids] = 0.0
         self._policy_leg_torque[resolved_env_ids] = 0.0
         self._policy_leg_vel[resolved_env_ids] = 0.0

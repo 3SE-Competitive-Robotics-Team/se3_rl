@@ -970,16 +970,40 @@ def recovery_diagnostics(
 
     action = env.action_manager.action
     prev_action = env.action_manager.prev_action
+    action_manager = getattr(env, "action_manager", None)
+    action_term = None
+    if action_manager is not None:
+        for term_name in action_manager.active_terms:
+            term = action_manager.get_term(term_name)
+            if getattr(term, "_entity", None) is robot:
+                action_term = term
+                break
+    unclipped_action = getattr(action_term, "unclipped_action", None)
+    if not isinstance(unclipped_action, torch.Tensor) or unclipped_action.shape != action.shape:
+        unclipped_action = action
     action_abs = torch.abs(action)
+    unclipped_action_abs = torch.abs(unclipped_action)
     action_delta = action - prev_action
     max_abs_action = torch.max(action_abs, dim=1).values
     leg_action_abs = action_abs[:, :4]
     wheel_action_abs = action_abs[:, 4:6]
+    unclipped_leg_action_abs = unclipped_action_abs[:, :4]
+    unclipped_wheel_action_abs = unclipped_action_abs[:, 4:6]
     max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
     max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
+    max_abs_unclipped_action = torch.max(unclipped_action_abs, dim=1).values
+    max_abs_unclipped_leg_action = torch.max(unclipped_leg_action_abs, dim=1).values
+    max_abs_unclipped_wheel_action = torch.max(unclipped_wheel_action_abs, dim=1).values
     action_saturated = max_abs_action > float(action_saturation_threshold)
     leg_action_saturated = max_abs_leg_action > float(action_saturation_threshold)
     wheel_action_saturated = max_abs_wheel_action > float(action_saturation_threshold)
+    unclipped_action_saturated = max_abs_unclipped_action > float(action_saturation_threshold)
+    unclipped_leg_action_saturated = max_abs_unclipped_leg_action > float(
+        action_saturation_threshold
+    )
+    unclipped_wheel_action_saturated = max_abs_unclipped_wheel_action > float(
+        action_saturation_threshold
+    )
 
     joint_pos, fixed_default_pos = _policy_leg_pos_and_default(robot)
     _, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
@@ -1019,25 +1043,19 @@ def recovery_diagnostics(
     active_target_error_env = torch.zeros(env.num_envs, device=env.device)
     active_target_error_mean = 0.0
     front_target_abs_mean = 0.0
-    action_manager = getattr(env, "action_manager", None)
-    if action_manager is not None:
-        for term_name in action_manager.active_terms:
-            term = action_manager.get_term(term_name)
-            if getattr(term, "_entity", None) is not robot:
-                continue
-            active_target = getattr(term, "active_rod_angle_target", None)
-            active_clamped = getattr(term, "active_rod_angle_target_clamped", None)
-            policy_target = getattr(term, "policy_leg_target", None)
-            if isinstance(active_target, torch.Tensor):
-                active_target_mean = active_target.float().mean().item()
-                active_target_error_env = torch.abs(active_target - active_rod_angle).mean(dim=1)
-                active_target_error_mean = active_target_error_env.mean().item()
-            if isinstance(active_clamped, torch.Tensor):
-                active_target_clamp_rate = active_clamped.float().mean().item()
-                active_target_clamp_env = active_clamped.float().mean(dim=1).to(device=env.device)
-            if isinstance(policy_target, torch.Tensor) and policy_target.shape[-1] >= 3:
-                front_target_abs_mean = torch.abs(policy_target[:, (0, 2)]).mean().item()
-            break
+    if action_term is not None:
+        active_target = getattr(action_term, "active_rod_angle_target", None)
+        active_clamped = getattr(action_term, "active_rod_angle_target_clamped", None)
+        policy_target = getattr(action_term, "policy_leg_target", None)
+        if isinstance(active_target, torch.Tensor):
+            active_target_mean = active_target.float().mean().item()
+            active_target_error_env = torch.abs(active_target - active_rod_angle).mean(dim=1)
+            active_target_error_mean = active_target_error_env.mean().item()
+        if isinstance(active_clamped, torch.Tensor):
+            active_target_clamp_rate = active_clamped.float().mean().item()
+            active_target_clamp_env = active_clamped.float().mean(dim=1).to(device=env.device)
+        if isinstance(policy_target, torch.Tensor) and policy_target.shape[-1] >= 3:
+            front_target_abs_mean = torch.abs(policy_target[:, (0, 2)]).mean().item()
 
     log.update(
         {
@@ -1098,11 +1116,25 @@ def recovery_diagnostics(
             "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
             "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
             "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_unclipped_max_abs_action": max_abs_unclipped_action.mean().item(),
+            "Recovery/diag_unclipped_max_abs_leg_action": max_abs_unclipped_leg_action.mean().item(),
+            "Recovery/diag_unclipped_max_abs_wheel_action": max_abs_unclipped_wheel_action.mean().item(),
             "Recovery/diag_leg_action_abs_mean": leg_action_abs.mean().item(),
             "Recovery/diag_wheel_action_abs_mean": wheel_action_abs.mean().item(),
+            "Recovery/diag_unclipped_leg_action_abs_mean": unclipped_leg_action_abs.mean().item(),
+            "Recovery/diag_unclipped_wheel_action_abs_mean": unclipped_wheel_action_abs.mean().item(),
             "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
             "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float().mean().item(),
             "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_unclipped_raw_action_saturation_rate": unclipped_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_unclipped_leg_action_saturation_rate": unclipped_leg_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_unclipped_wheel_action_saturation_rate": unclipped_wheel_action_saturated.float()
             .mean()
             .item(),
             "Recovery/diag_upright_action_saturation_rate": _masked_mean(

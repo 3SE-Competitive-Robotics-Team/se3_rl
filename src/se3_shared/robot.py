@@ -143,6 +143,7 @@ class RobotConfig(BaseModel):
     default_base_height: float = 0.22
     # 腿部 action 使用 [lf0, active_angle, rf0, active_angle] 语义；active 的零点是机械夹角中点。
     action_scale: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 45.0, 45.0)
+    action_clip: float | None = 1.0
     sim_dt: float = 0.005
     control_decimation: int = 4
     action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)

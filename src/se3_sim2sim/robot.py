@@ -235,7 +235,9 @@ class WheelLeggedRobot:
             expected = (self.runtime.policy.num_actions,)
             raise ValueError(f"action shape mismatch: expected {expected}, got {action.shape}")
         self.last_policy_action[:] = action
-        action = np.clip(action, -100.0, 100.0)
+        if self.cfg.action_clip is not None:
+            clip = float(self.cfg.action_clip)
+            action = np.clip(action, -clip, clip)
         self.last_clipped_policy_action[:] = action
         self.last_action[:] = action
         for _ in range(self.decimation):
