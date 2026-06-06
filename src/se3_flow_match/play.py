@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.utils.torch import configure_torch_backends
-from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
+from mjlab.viewer import NativeMujocoViewer, VerbosityLevel, ViserPlayViewer
 
 import se3_train  # noqa: F401
 from se3_shared import TASK_MODE_NAMES, JointGroup, TaskMode
@@ -222,6 +223,14 @@ class ScriptedFlowPolicy:
         self.contract.apply(self.env.unwrapped, current)
         _set_command_mode(self.env.unwrapped, current, prev, 1.0)
         _set_action_mode(self.env.unwrapped, current)
+        _set_termination_mode(self.env.unwrapped, current)
+
+    def post_env_step(self, dones: torch.Tensor) -> None:
+        """auto-reset 后把当前脚本 mode 重新写回刚 reset 的 env。"""
+        if dones.any():
+            if hasattr(self.runtime.model, "reset_done"):
+                self.runtime.model.reset_done(dones)
+            self._sync_env_contract(self.current_mode, self.prev_mode, self.runtime.blend)
 
     def _initial_script_state(self) -> tuple[TaskMode, TaskMode, float, int]:
         """计算脚本初始 mode，支持多个 0s 事件时以后出现的为准。"""
@@ -268,6 +277,7 @@ class ScriptedFlowPolicy:
         _set_command_mode(env, current, prev, blend)
         self.script_command = _set_command_shape(env, current, self.script_command)
         _set_action_mode(env, current)
+        _set_termination_mode(env, current)
 
 
 def run_flow_play(
@@ -326,8 +336,7 @@ def _run_headless(env: RslRlVecEnvWrapper, policy: ScriptedFlowPolicy, *, max_st
         with torch.no_grad():
             action = policy(obs)
             obs, _rew, dones, _extras = env.step(action)
-            if hasattr(policy.runtime.model, "reset_done"):
-                policy.runtime.model.reset_done(dones)
+            policy.post_env_step(dones)
     print(f"[flow-play] headless steps={max_steps}")
 
 
@@ -343,6 +352,10 @@ def _reset_env_with_policy(env: RslRlVecEnvWrapper, policy: ScriptedFlowPolicy) 
 class ScriptedNativeMujocoViewer(NativeMujocoViewer):
     """支持脚本 reset 契约的 Native viewer。"""
 
+    def _execute_step(self) -> bool:
+        """执行一步 viewer 仿真，并在 auto-reset 后恢复脚本契约。"""
+        return _execute_scripted_viewer_step(self)
+
     def reset_environment(self) -> None:
         """先写入脚本初始 reset 契约，再执行 viewer reset。"""
         self.policy.pre_env_reset()
@@ -352,10 +365,35 @@ class ScriptedNativeMujocoViewer(NativeMujocoViewer):
 class ScriptedViserPlayViewer(ViserPlayViewer):
     """支持脚本 reset 契约的 Viser viewer。"""
 
+    def _execute_step(self) -> bool:
+        """执行一步 viewer 仿真，并在 auto-reset 后恢复脚本契约。"""
+        return _execute_scripted_viewer_step(self)
+
     def reset_environment(self) -> None:
         """先写入脚本初始 reset 契约，再执行 viewer reset。"""
         self.policy.pre_env_reset()
         super().reset_environment()
+
+
+def _execute_scripted_viewer_step(viewer: object) -> bool:
+    """复刻 MJLab viewer step，并补上脚本契约 post-step hook。"""
+    try:
+        with torch.no_grad():
+            obs = viewer.env.get_observations()
+            actions = viewer.policy(obs)
+            _obs, _rew, dones, _extras = viewer.env.step(actions)
+            viewer.policy.post_env_step(dones)
+            viewer._step_count += 1
+            viewer._stats_steps += 1
+            return True
+    except Exception:
+        viewer._last_error = traceback.format_exc()
+        viewer.log(
+            f"[ERROR] Exception during step:\n{viewer._last_error}",
+            VerbosityLevel.SILENT,
+        )
+        viewer.pause()
+        return False
 
 
 def _task_id_for_play(mode: TaskMode, *, has_script: bool) -> str:
@@ -514,6 +552,19 @@ def _set_action_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
         action_term.cfg.freeze_wheels = False
 
 
+def _set_termination_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
+    """按 mode 切换 reset 触发阈值，保证脚本 GAIT 使用正式 GAIT 契约。"""
+    bad_orientation = _termination_params(env, "bad_orientation")
+    if bad_orientation is not None:
+        bad_orientation["limit_angle"] = 0.5236
+        bad_orientation["max_steps"] = 8 if mode == TaskMode.GAIT else 100
+    low_base_height = _termination_params(env, "low_base_height")
+    if low_base_height is not None:
+        low_base_height["sensor_name"] = "base_height_sensor"
+        low_base_height["min_height"] = 0.26 if mode == TaskMode.GAIT else 0.12
+        low_base_height["max_steps"] = 25
+
+
 def _ensure_model_fields(env: ManagerBasedRlEnv, fields: tuple[str, ...]) -> None:
     """确保模型字段已按 env 维度展开，可在运行期写入。"""
     missing = tuple(field for field in fields if field not in env.sim.expanded_fields)
@@ -601,6 +652,14 @@ def _all_reset_event_params(env: ManagerBasedRlEnv, name: str) -> tuple[dict[str
         params.append(cfg_term.params)
     params.append(env.event_manager.get_term_cfg(name).params)
     return tuple(params)
+
+
+def _termination_params(env: ManagerBasedRlEnv, name: str) -> dict[str, object] | None:
+    """返回运行期 termination 参数，不存在时跳过。"""
+    try:
+        return env.termination_manager.get_term_cfg(name).params
+    except ValueError:
+        return None
 
 
 def _apply_deadband(command: torch.Tensor, shape: dict[str, object]) -> None:

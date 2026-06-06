@@ -538,6 +538,24 @@ def loco_script_play_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command.jump_height_range = (0.0, 0.0)
     if play:
         command.debug_vis = True
+    cfg.terminations["base_link_contact"] = TerminationTermCfg(
+        func=terminations.base_link_contact_delayed,
+        time_out=False,
+        params={
+            "sensor_name": "collision_sensor",
+            "force_threshold": 1.0,
+            "delay_steps": 20,
+        },
+    )
+    cfg.terminations["low_base_height"] = TerminationTermCfg(
+        func=terminations.gait_low_base_height_delayed,
+        time_out=False,
+        params={
+            "sensor_name": "base_height_sensor",
+            "min_height": 0.12,
+            "max_steps": 25,
+        },
+    )
     return cfg
 
 
