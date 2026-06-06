@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import traceback
 from dataclasses import dataclass
@@ -359,6 +360,7 @@ class ScriptedFlowPolicy:
         self.script_command = self._pending_script_command
         self.runtime.reset()
         self.env.unwrapped.action_manager.reset()
+        self.env.unwrapped.termination_manager.reset()
         self._clear_pending_switch()
 
     def _clear_pending_switch(self) -> None:
@@ -390,9 +392,11 @@ class ScriptedFlowPolicy:
             wheel_to_gait_prep=wheel_to_gait_prep,
         )
         action_mode = TaskMode.WHEEL if wheel_to_gait_prep else current
-        termination_mode = TaskMode.WHEEL if wheel_to_gait_prep else current
         _set_action_mode(env, action_mode)
-        _set_termination_mode(env, termination_mode)
+        if wheel_to_gait_prep:
+            _set_wheel_to_gait_prep_termination_mode(env)
+        else:
+            _set_termination_mode(env, current)
         if wheel_to_gait_prep:
             env.action_manager.reset()
 
@@ -748,6 +752,15 @@ def _set_termination_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
         low_base_height["sensor_name"] = "base_height_sensor"
         low_base_height["min_height"] = 0.26 if mode == TaskMode.GAIT else 0.12
         low_base_height["max_steps"] = 25
+
+
+def _set_wheel_to_gait_prep_termination_mode(env: ManagerBasedRlEnv) -> None:
+    """准备段给 base_link 接触留足 grace，避免到位前被 reset 打断。"""
+    _set_termination_mode(env, TaskMode.WHEEL)
+    base_link_contact = _termination_params(env, "base_link_contact")
+    if base_link_contact is not None:
+        prep_steps = math.ceil(_WHEEL_TO_GAIT_PREP_S / float(env.step_dt))
+        base_link_contact["delay_steps"] = max(prep_steps + 50, 50)
 
 
 def _ensure_model_fields(env: ManagerBasedRlEnv, fields: tuple[str, ...]) -> None:
