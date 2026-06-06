@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 
+from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -181,6 +183,14 @@ class VelocityHeightCommandTerm(CommandTerm):
                     + self.cfg.height_range[0]
                 )
                 self._command[moving_ids, 4] = height
+
+        if resample_height:
+            update_policy_default_from_height_cache(
+                self._env,
+                "velocity_height",
+                env_ids=env_ids,
+                command=self._command,
+            )
 
     def _update_command(self) -> None:
         """对速度指令施加死区。"""

@@ -18,6 +18,7 @@ import torch
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import recovery_state
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
+from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     active_leg_mirror_diffs,
     policy_leg_joint_ids,
@@ -285,6 +286,12 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
             return
         self._command[env_ids, 0:4] = 0.0
         self._command[env_ids, 4] = (self.cfg.height_range[0] + self.cfg.height_range[1]) / 2.0
+        update_policy_default_from_height_cache(
+            self._env,
+            "velocity_height",
+            env_ids=env_ids,
+            command=self._command,
+        )
 
     def _reset_jump_lifecycle(
         self, env_ids: torch.Tensor, sample_initial_jump: bool = False
@@ -714,7 +721,7 @@ class RecoveryStandCommandTerm(JumpCommandTerm):
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         """reset 时把所有指令写成固定站立目标。"""
-        self._set_fixed_command(env_ids)
+        self._set_fixed_command(env_ids, update_cache=True)
         self._reset_fixed_lifecycle(env_ids)
 
     def _update_command(self) -> None:
@@ -722,13 +729,20 @@ class RecoveryStandCommandTerm(JumpCommandTerm):
         env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
         self._set_fixed_command(env_ids)
 
-    def _set_fixed_command(self, env_ids: torch.Tensor) -> None:
+    def _set_fixed_command(self, env_ids: torch.Tensor, update_cache: bool = False) -> None:
         """写入 [0,0,0,0,target_height,0,0,0]。"""
         if len(env_ids) == 0:
             return
         self._command[env_ids, :] = 0.0
         self._command[env_ids, 4] = float(self.cfg.target_height)
         self._standing_mask[env_ids] = True
+        if update_cache:
+            update_policy_default_from_height_cache(
+                self._env,
+                "velocity_height",
+                env_ids=env_ids,
+                command=self._command,
+            )
 
     def _reset_fixed_lifecycle(self, env_ids: torch.Tensor) -> None:
         """清空跳跃生命周期缓存，保持 jump_commands 观测为 0。"""

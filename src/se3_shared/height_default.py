@@ -36,8 +36,8 @@ def policy_default_from_height_torch(
     target_z = torch.as_tensor(_WHEEL_RADIUS, device=height.device, dtype=height.dtype) - height
     target_length = torch.clamp(
         torch.sqrt(target_x * target_x + target_z * target_z),
-        min=float(length_grid[0].item()),
-        max=float(length_grid[-1].item()),
+        min=length_grid[0],
+        max=length_grid[-1],
     )
     active = _interp_monotonic_torch(target_length, length_grid, active_by_length)
     vec_x = _interp_monotonic_torch(active, active_grid, vec_x_grid)
@@ -151,7 +151,7 @@ def _interp_monotonic_torch(
     xp: torch.Tensor,
     fp: torch.Tensor,
 ) -> torch.Tensor:
-    x_clamped = torch.clamp(x, min=float(xp[0].item()), max=float(xp[-1].item()))
+    x_clamped = torch.clamp(x, min=xp[0], max=xp[-1])
     idx = torch.searchsorted(xp, x_clamped, right=True)
     idx = torch.clamp(idx, 1, xp.numel() - 1)
     x0 = xp[idx - 1]

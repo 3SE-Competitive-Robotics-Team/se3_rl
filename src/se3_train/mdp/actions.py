@@ -15,10 +15,10 @@ from se3_shared import (
     JointGroup,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
-    policy_default_from_height_torch,
     policy_to_output_torque_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     is_closedchain_model,
     is_fourbar_surrogate_model,
@@ -251,8 +251,9 @@ class SerialLegDelayedAction(ActionTerm):
         """返回当前 leg action 零点姿态。"""
         if self._fourbar_surrogate:
             if self.cfg.height_conditioned_action_default:
-                cmd = self._env.command_manager.get_command(self.cfg.action_default_command_name)
-                return policy_default_from_height_torch(cmd[:, 4], _SHARED_ROBOT).to(
+                return get_policy_default_from_height_cache(
+                    self._env,
+                    self.cfg.action_default_command_name,
                     device=self.device,
                     dtype=self._leg_action_scales.dtype,
                 )

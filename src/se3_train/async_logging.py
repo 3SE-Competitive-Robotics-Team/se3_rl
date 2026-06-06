@@ -11,8 +11,10 @@ import torch
 
 def async_host_logger_enabled() -> bool:
     """读取是否启用主机侧延迟日志累积。"""
-    raw = os.environ.get("SE3_ASYNC_HOST_LOGGER", "")
-    return raw.lower() in {"1", "true", "yes", "on"}
+    raw = os.environ.get("SE3_ASYNC_HOST_LOGGER")
+    if raw is None:
+        return True
+    return raw.lower() not in {"0", "false", "no", "off"}
 
 
 class Se3AsyncHostLogger:

@@ -27,6 +27,7 @@ from se3_shared import (
     policy_to_output_vel_torch,
 )
 from se3_train.mdp import recovery_state
+from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     is_closedchain_model,
     is_fourbar_surrogate_model,
@@ -584,6 +585,12 @@ def reset_root_state_full_angle_random(
             try:
                 cmd = env.command_manager.get_command("velocity_height")
                 cmd[env_ids, 4] = command_height
+                update_policy_default_from_height_cache(
+                    env,
+                    "velocity_height",
+                    env_ids=env_ids,
+                    command=cmd,
+                )
             except Exception:
                 pass
         init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
@@ -989,6 +996,12 @@ def reset_root_state_full(
                 if cmd.shape[1] >= 8:
                     cmd[recovery_env_ids, 5] = 0.0
                     cmd[recovery_env_ids, 7] = 0.0
+                update_policy_default_from_height_cache(
+                    env,
+                    "velocity_height",
+                    env_ids=recovery_env_ids,
+                    command=cmd,
+                )
             except Exception:
                 pass
         cache_reset_mask = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")

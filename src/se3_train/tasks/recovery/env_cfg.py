@@ -318,6 +318,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold": 35.0,
             "action_saturation_threshold": 0.95,
             "active_rod_margin_warning": 0.05,
+            "log_interval_steps": 64,
+            "core_log_interval_steps": 64,
         },
     )
 
