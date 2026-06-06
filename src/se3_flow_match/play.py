@@ -56,6 +56,17 @@ _WHEEL_LOCK_FRICTIONLOSS = 1.0
 _WHEEL_JOINT_NAMES = ("l_wheel_Joint", "r_wheel_Joint")
 _WHEEL_LOCK_MODEL_FIELDS = ("jnt_limited", "jnt_range", "dof_damping", "dof_frictionloss")
 _SCRIPT_COMMAND_HOLD_S = 1.0e6
+_WHEEL_TO_GAIT_PREP_S = 3.0
+_WHEEL_TO_GAIT_PREP_COMMAND = {
+    "lin_vel_x_range": (0.0, 0.0),
+    "ang_vel_yaw_range": (0.0, 0.0),
+    "pitch_range": (0.0, 0.0),
+    "roll_range": (0.0, 0.0),
+    "height_range": (_GAIT_HEIGHT, _GAIT_HEIGHT),
+    "standing_height_range": (_GAIT_HEIGHT, _GAIT_HEIGHT),
+    "lin_vel_deadband": 0.0,
+    "yaw_deadband": 0.0,
+}
 
 
 @dataclass(frozen=True)
@@ -195,6 +206,10 @@ class ScriptedFlowPolicy:
         self.blend_s = max(float(blend_s), 1.0e-6)
         self.default_mode = default_mode
         self._script_start_step = int(self.env.unwrapped.common_step_counter)
+        self._pending_mode: TaskMode | None = None
+        self._pending_prev_mode: TaskMode | None = None
+        self._pending_switch_time_s: float | None = None
+        self._pending_script_command: torch.Tensor | None = None
         (
             self.current_mode,
             self.prev_mode,
@@ -210,6 +225,7 @@ class ScriptedFlowPolicy:
         """重置 policy 和脚本状态。"""
         self.runtime.reset()
         self._reset_script_clock()
+        self._clear_pending_switch()
         (
             self.current_mode,
             self.prev_mode,
@@ -255,21 +271,29 @@ class ScriptedFlowPolicy:
     def __call__(self, obs_dict: object) -> torch.Tensor:
         """按 env 时间更新 mode 条件后调用 Flow policy。"""
         t = self._script_time_s()
+        self._complete_pending_switch_if_ready(t)
         while (
             self.next_event_idx < len(self.events) and t >= self.events[self.next_event_idx].time_s
         ):
             event = self.events[self.next_event_idx]
-            self.prev_mode = self.current_mode
-            self.current_mode = event.mode
-            self.switch_time_s = event.time_s
-            self.script_command = _shape_command(
-                self.script_command,
-                self.current_mode,
-            )
             self.next_event_idx += 1
+            if self._start_wheel_to_gait_prep(event):
+                break
+            self._apply_event(event)
+            self._complete_pending_switch_if_ready(t)
+            if self._pending_mode is not None:
+                break
         blend = min(max((t - self.switch_time_s) / self.blend_s, 0.0), 1.0)
+        wheel_to_gait_prep = self._pending_mode == TaskMode.GAIT
+        if wheel_to_gait_prep:
+            blend = 1.0
         self.runtime.set_task_mode(self.current_mode, prev_mode=self.prev_mode, blend=blend)
-        self._sync_env_contract(self.current_mode, self.prev_mode, blend)
+        self._sync_env_contract(
+            self.current_mode,
+            self.prev_mode,
+            blend,
+            wheel_to_gait_prep=wheel_to_gait_prep,
+        )
         return self.runtime(
             _overwrite_script_actor_obs(
                 obs_dict,
@@ -280,12 +304,67 @@ class ScriptedFlowPolicy:
             )
         )
 
-    def _sync_env_contract(self, current: TaskMode, prev: TaskMode, blend: float) -> None:
+    def _apply_event(self, event: ModeEvent) -> None:
+        """应用一个普通 mode 事件。"""
+        self.prev_mode = self.current_mode
+        self.current_mode = event.mode
+        self.switch_time_s = event.time_s
+        self.script_command = _shape_command(
+            self.script_command,
+            self.current_mode,
+        )
+
+    def _start_wheel_to_gait_prep(self, event: ModeEvent) -> bool:
+        """WHEEL 切 GAIT 前插入原地抬高准备段。"""
+        if self.current_mode != TaskMode.WHEEL or event.mode != TaskMode.GAIT:
+            return False
+        if _WHEEL_TO_GAIT_PREP_S <= 0.0:
+            return False
+        self._pending_mode = TaskMode.GAIT
+        self._pending_prev_mode = self.current_mode
+        self._pending_switch_time_s = event.time_s + _WHEEL_TO_GAIT_PREP_S
+        self._pending_script_command = _shape_command(self.script_command, TaskMode.GAIT)
+        self.prev_mode = self.current_mode
+        self.switch_time_s = event.time_s
+        return True
+
+    def _complete_pending_switch_if_ready(self, t: float) -> None:
+        """准备段结束后真正切到 pending mode。"""
+        if self._pending_mode is None or self._pending_switch_time_s is None:
+            return
+        if t < self._pending_switch_time_s:
+            return
+        self.prev_mode = self._pending_prev_mode or self.current_mode
+        self.current_mode = self._pending_mode
+        self.switch_time_s = self._pending_switch_time_s
+        self.script_command = self._pending_script_command
+        self._clear_pending_switch()
+
+    def _clear_pending_switch(self) -> None:
+        """清理未完成的延迟切换状态。"""
+        self._pending_mode = None
+        self._pending_prev_mode = None
+        self._pending_switch_time_s = None
+        self._pending_script_command = None
+
+    def _sync_env_contract(
+        self,
+        current: TaskMode,
+        prev: TaskMode,
+        blend: float,
+        *,
+        wheel_to_gait_prep: bool = False,
+    ) -> None:
         """同步脚本 mode 到 env 的 command 和动作物理语义。"""
         env = self.env.unwrapped
         self.contract.apply(env, current)
         _set_command_mode(env, current, prev, blend)
-        self.script_command = _set_command_shape(env, current, self.script_command)
+        self.script_command = _set_command_shape(
+            env,
+            current,
+            self.script_command,
+            wheel_to_gait_prep=wheel_to_gait_prep,
+        )
         _set_action_mode(env, current)
         _set_termination_mode(env, current)
 
@@ -474,12 +553,14 @@ def _set_command_shape(
     env: ManagerBasedRlEnv,
     mode: TaskMode,
     script_command: torch.Tensor | None,
+    *,
+    wheel_to_gait_prep: bool = False,
 ) -> torch.Tensor:
     """按当前 mode 限制 command 范围，并修正已经采样的 command。"""
     term = env.command_manager.get_term(_COMMAND_NAME)
     cfg = term.cfg
     _hold_script_command(term)
-    shape = _GAIT_COMMAND if mode == TaskMode.GAIT else _WHEEL_COMMAND
+    shape = _command_shape_for_mode(mode, wheel_to_gait_prep=wheel_to_gait_prep)
     for name, value in shape.items():
         setattr(cfg, name, value)
     command = term.command
@@ -488,13 +569,18 @@ def _set_command_shape(
     if script_command is None or script_command.shape != command[:, :5].shape:
         script_command = command[:, :5].clone()
     script_command = _shape_command(script_command, mode)
-    command[:, :5] = script_command.to(device=command.device, dtype=command.dtype)
+    command_source = script_command
+    if wheel_to_gait_prep:
+        command_source = _wheel_to_gait_prep_command(script_command)
+    command[:, :5] = command_source.to(device=command.device, dtype=command.dtype)
     _apply_deadband(command, shape)
-    script_command = command[:, :5].clone()
-    height = _mode_height(mode)
+    if not wheel_to_gait_prep:
+        script_command = command[:, :5].clone()
+    height = _GAIT_HEIGHT if wheel_to_gait_prep else _mode_height(mode)
     command[:, 4] = height
-    script_command[:, 4] = height
-    if mode == TaskMode.GAIT:
+    if not wheel_to_gait_prep:
+        script_command[:, 4] = height
+    if mode == TaskMode.GAIT or wheel_to_gait_prep:
         standing_mask = getattr(term, "_standing_mask", None)
         if isinstance(standing_mask, torch.Tensor):
             standing_mask[:] = False
@@ -506,13 +592,31 @@ def _shape_command(command: torch.Tensor | None, mode: TaskMode) -> torch.Tensor
     if command is None:
         return None
     out = command.clone()
-    shape = _GAIT_COMMAND if mode == TaskMode.GAIT else _WHEEL_COMMAND
+    shape = _command_shape_for_mode(mode)
     out[:, 0] = out[:, 0].clamp(*shape["lin_vel_x_range"])
     out[:, 1] = out[:, 1].clamp(*shape["ang_vel_yaw_range"])
     out[:, 2] = out[:, 2].clamp(*shape["pitch_range"])
     out[:, 3] = out[:, 3].clamp(*shape["roll_range"])
     out[:, 4] = out[:, 4].clamp(*shape["height_range"])
     out[:, 4] = _mode_height(mode)
+    return out
+
+
+def _command_shape_for_mode(
+    mode: TaskMode,
+    *,
+    wheel_to_gait_prep: bool = False,
+) -> dict[str, object]:
+    """返回当前命令约束。"""
+    if wheel_to_gait_prep:
+        return _WHEEL_TO_GAIT_PREP_COMMAND
+    return _GAIT_COMMAND if mode == TaskMode.GAIT else _WHEEL_COMMAND
+
+
+def _wheel_to_gait_prep_command(command: torch.Tensor) -> torch.Tensor:
+    """构造 WHEEL->GAIT 准备段的原地抬高命令。"""
+    out = torch.zeros_like(command)
+    out[:, 4] = _GAIT_HEIGHT
     return out
 
 
