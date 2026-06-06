@@ -19,6 +19,7 @@ _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.20, 0.38)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
+_TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -41,6 +42,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.02
     command_cfg.jump_prob = 0.0
+    command_cfg.enable_jump_lifecycle = False
+    command_cfg.enable_jump_metrics = False
 
     cfg.events["reset_root_state"] = EventTermCfg(
         func=events.reset_root_state_robotlab_full_random,
@@ -196,6 +199,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     for reward_name in ("tracking_lin_vel", "tracking_ang_vel"):
         if reward_name in cfg.rewards:
             cfg.rewards[reward_name].params["use_upright_gate"] = True
+            cfg.rewards[reward_name].params["tracking_upright_full_cos"] = (
+                _TRACKING_UPRIGHT_FULL_COS
+            )
     if "tracking_lin_vel" in cfg.rewards:
         cfg.rewards["tracking_lin_vel"].weight = 3.0
         cfg.rewards["tracking_lin_vel"].params["vz_weight"] = 0.0
@@ -318,7 +324,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold": 35.0,
             "action_saturation_threshold": 0.95,
             "active_rod_margin_warning": 0.05,
-            "log_interval_steps": 64,
+            "log_interval_steps": 256,
             "core_log_interval_steps": 64,
         },
     )

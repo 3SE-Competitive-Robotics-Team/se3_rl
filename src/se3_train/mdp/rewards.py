@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
+_DEFAULT_REWARD_LOG_INTERVAL_STEPS = 64
 _FOURBAR_WHEEL_RADIUS_M = 0.06
 
 
@@ -71,6 +72,20 @@ def _masked_min(values: torch.Tensor, mask: torch.Tensor) -> float:
     return 0.0
 
 
+def _should_log_step(
+    env: ManagerBasedRlEnv, interval: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS
+) -> bool:
+    """按 policy step 降频写 host 标量日志。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(1, int(getattr(env, "_se3_reward_log_interval_steps", interval)))
+    return interval <= 1 or (step - 1) % interval == 0
+
+
+def _command_curriculum_metrics_enabled(env: ManagerBasedRlEnv) -> bool:
+    """是否启用速度课程逐步累计指标。"""
+    return bool(getattr(env, "_se3_enable_command_curriculum_metrics", False))
+
+
 def _log_cached_reset_diagnostics(env: ManagerBasedRlEnv) -> None:
     """将 reset 事件缓存的诊断量转发到训练 logger。"""
     if not hasattr(env, "extras") or not isinstance(env.extras.get("log"), dict):
@@ -87,6 +102,8 @@ def _accumulate_command_curriculum_metric(
     mask: torch.Tensor,
 ) -> None:
     """累计速度课程使用的逐 episode 原始指标。"""
+    if not _command_curriculum_metrics_enabled(env):
+        return
     if values.shape[0] != env.num_envs or mask.shape[0] != env.num_envs:
         return
 
@@ -367,6 +384,15 @@ def _upright_factor(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     return torch.clamp(-projected_gravity_z, 0.0, 0.7) / 0.7
 
 
+def _tracking_upright_gate(
+    projected_gravity_z: torch.Tensor,
+    full_cos: float = 0.7,
+) -> torch.Tensor:
+    """计算速度跟踪专用直立门控，避免影响站姿和接触正则。"""
+    full_cos = min(max(float(full_cos), 1.0e-6), 1.0)
+    return torch.clamp(-projected_gravity_z, 0.0, full_cos) / full_cos
+
+
 def _near_upright_gate(
     projected_gravity_z: torch.Tensor,
     gate_start_deg: float,
@@ -406,9 +432,9 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
     pg_z = robot.data.projected_gravity_b[:, 2]
     reward = _upward_score(pg_z)
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-        upright_15 = tilt < torch.deg2rad(torch.tensor(15.0, device=env.device))
+        upright_15 = tilt < torch.deg2rad(torch.as_tensor(15.0, device=env.device))
         log = env.extras.setdefault("log", {})
         log.update(
             {
@@ -444,7 +470,7 @@ def upward_progress(
     reward = torch.where(first_step, torch.zeros_like(reward), reward)
     prev_score[:] = score.detach()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         log = env.extras.setdefault("log", {})
         log.update(
             {
@@ -464,6 +490,7 @@ def tracking_lin_vel(
     sigma_stand: float,
     vz_weight: float = 2.0,
     use_upright_gate: bool = True,
+    tracking_upright_full_cos: float = 0.7,
 ) -> torch.Tensor:
     """x 方向速度跟踪,将 v_z 折入同一 exp 核消除目标冲突。
 
@@ -476,7 +503,7 @@ def tracking_lin_vel(
     error_x = lin_vel[:, 0] - cmd[:, 0]
     vz = lin_vel[:, 2]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _tracking_upright_gate(pg_z, tracking_upright_full_cos)
 
     cmd_mag = torch.abs(cmd[:, 0])
     sigma = torch.where(cmd_mag < 0.2, sigma_stand, sigma_move)
@@ -509,7 +536,7 @@ def tracking_lin_vel(
     ) / (0.45**2)
     _accumulate_command_curriculum_metric(env, "slip_penalty", straight_slip, straight)
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         moving = cmd_mag >= 0.2
         env.extras["log"].update(
             {
@@ -517,6 +544,7 @@ def tracking_lin_vel(
                 "Locomotion/base_vx_mean": _masked_mean(lin_vel[:, 0], moving),
                 "Locomotion/base_vx_error_abs": _masked_mean(torch.abs(error_x), moving),
                 "Locomotion/tracking_lin_vel_reward": _masked_mean(reward, moving),
+                "Locomotion/tracking_upright_gate": _masked_mean(gate, locomotion),
             }
         )
 
@@ -530,6 +558,7 @@ def tracking_ang_vel(
     sigma_cmd_scale: float = 0.0,
     ratio_blend: float = 0.0,
     use_upright_gate: bool = True,
+    tracking_upright_full_cos: float = 0.7,
 ) -> torch.Tensor:
     """偏航角速度跟踪,高 yaw 命令下保留大误差学习梯度。"""
     robot = env.scene["robot"]
@@ -537,7 +566,7 @@ def tracking_ang_vel(
     ang_vel_z = robot.data.root_link_ang_vel_b[:, 2]
     error = ang_vel_z - cmd[:, 1]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _tracking_upright_gate(pg_z, tracking_upright_full_cos)
     cmd_mag = torch.abs(cmd[:, 1])
     effective_sigma = float(sigma) * (1.0 + float(sigma_cmd_scale) * cmd_mag)
     reward_gate = gate if use_upright_gate else torch.ones_like(gate)
@@ -557,7 +586,7 @@ def tracking_ang_vel(
     moving = (torch.abs(cmd[:, 1]) >= 0.2) & ~jump_flag
     _accumulate_command_curriculum_metric(env, "yaw_score", reward, moving)
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/cmd_yaw_rate_mean": _masked_mean(cmd[:, 1], moving),
@@ -566,6 +595,7 @@ def tracking_ang_vel(
                 "Locomotion/tracking_ang_vel_reward": _masked_mean(reward, moving),
                 "Locomotion/tracking_ang_vel_exp_reward": _masked_mean(exp_reward, moving),
                 "Locomotion/tracking_ang_vel_sigma": _masked_mean(effective_sigma, moving),
+                "Locomotion/tracking_upright_gate": _masked_mean(gate, ~jump_flag),
             }
         )
 
@@ -580,6 +610,7 @@ def tracking_lin_yaw_joint(
     lin_error_scale: float = 0.75,
     yaw_error_scale: float = 2.0,
     use_upright_gate: bool = True,
+    tracking_upright_full_cos: float = 0.7,
 ) -> torch.Tensor:
     """线速度和 yaw 同时非零时的联合跟踪奖励,防止二者互相让路。"""
     robot = env.scene["robot"]
@@ -587,7 +618,7 @@ def tracking_lin_yaw_joint(
     lin_vel_x = robot.data.root_link_lin_vel_b[:, 0]
     yaw_vel = robot.data.root_link_ang_vel_b[:, 2]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _tracking_upright_gate(pg_z, tracking_upright_full_cos)
 
     lin_cmd = cmd[:, 0]
     yaw_cmd = cmd[:, 1]
@@ -609,13 +640,14 @@ def tracking_lin_yaw_joint(
     reward_gate = gate if use_upright_gate else torch.ones_like(gate)
     reward = lin_score * yaw_score * reward_gate * combined.float()
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/lin_yaw_joint_reward": _masked_mean(reward, combined),
                 "Locomotion/lin_yaw_joint_lin_score": _masked_mean(lin_score, combined),
                 "Locomotion/lin_yaw_joint_yaw_score": _masked_mean(yaw_score, combined),
                 "Locomotion/lin_yaw_joint_cmd_ratio": combined.float().mean().item(),
+                "Locomotion/tracking_upright_gate": _masked_mean(gate, ~jump_flag),
             }
         )
 
@@ -681,7 +713,11 @@ def tracking_height(
         gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
         gate = torch.clamp(gate, min=float(min_upright_gate))
         reward = reward * gate
-        if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
             env.extras["log"]["Locomotion/height_gate"] = gate.mean().item()
     if use_pose_end_gate and robot is not None:
         pg_z = robot.data.projected_gravity_b[:, 2]
@@ -689,7 +725,11 @@ def tracking_height(
         inverted_gate = torch.clamp(pg_z, 0.0, 1.0)
         gate = torch.maximum(upright_gate, inverted_gate)
         reward = reward * gate
-        if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
             env.extras["log"].update(
                 {
                     "Locomotion/height_pose_end_gate": gate.mean().item(),
@@ -829,7 +869,7 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
     penalty = torch.sum((action - env.action_manager.prev_action) ** 2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         action_abs = torch.abs(action)
         leg_action_abs = action_abs[:, :4]
         wheel_action_abs = action_abs[:, 4:6]
@@ -916,7 +956,7 @@ def joint_pos_penalty(
     )
     penalty = joint_error * scale * gate
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         active = gate > 0.0
         env.extras["log"].update(
             {
@@ -1065,7 +1105,7 @@ def recovery_diagnostics(
         if isinstance(policy_target, torch.Tensor) and policy_target.shape[-1] >= 3:
             front_target_abs_mean = torch.abs(policy_target[:, (0, 2)]).mean().item()
 
-    if core_due:
+    if core_due and not heavy_due:
         log.update(
             {
                 "Recovery/diag_cmd_vx_mean": cmd_vx.mean().item(),
@@ -1486,7 +1526,7 @@ def upright_leg_contact_penalty(
     has_contact = (force_mag > float(force_threshold)).any(dim=1)
     penalty = has_contact.float() * gate
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/upright_leg_contact_rate": _masked_mean(has_contact.float(), active),
@@ -2491,7 +2531,7 @@ def collision(
     force_mag = finite_contact_force_norm(data.force)
     contact_count = (force_mag > 0.1).float().sum(dim=1)
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         has_contact = contact_count > 0.0
         active = gate > 0.0
         env.extras["log"].update(

@@ -66,20 +66,14 @@ class Se3AsyncHostLogger:
             self._logger.cur_reward_sum += reward_vec
         self._logger.cur_episode_length += 1
 
-        nan_rewards = torch.full_like(self._logger.cur_reward_sum, float("nan"))
-        nan_lengths = torch.full_like(self._logger.cur_episode_length, float("nan"))
-        self._reward_batches.append(
-            torch.where(done_mask, self._logger.cur_reward_sum, nan_rewards).detach().clone()
-        )
-        self._length_batches.append(
-            torch.where(done_mask, self._logger.cur_episode_length, nan_lengths).detach().clone()
-        )
+        self._reward_batches.append(self._logger.cur_reward_sum[done_mask].detach().clone())
+        self._length_batches.append(self._logger.cur_episode_length[done_mask].detach().clone())
         if intrinsic_rewards is not None:
             self._extrinsic_reward_batches.append(
-                torch.where(done_mask, self._logger.cur_ereward_sum, nan_rewards).detach().clone()
+                self._logger.cur_ereward_sum[done_mask].detach().clone()
             )
             self._intrinsic_reward_batches.append(
-                torch.where(done_mask, self._logger.cur_ireward_sum, nan_rewards).detach().clone()
+                self._logger.cur_ireward_sum[done_mask].detach().clone()
             )
 
         self._logger.cur_reward_sum[done_mask] = 0

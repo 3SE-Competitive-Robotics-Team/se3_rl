@@ -20,6 +20,17 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
     from mjlab.sensor import ContactSensor
 
+_DEFAULT_TERMINATION_LOG_INTERVAL_STEPS = 64
+
+
+def _should_log_step(
+    env: ManagerBasedRlEnv, interval: int = _DEFAULT_TERMINATION_LOG_INTERVAL_STEPS
+) -> bool:
+    """按 policy step 降频写 termination 诊断日志。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(1, int(getattr(env, "_se3_termination_log_interval_steps", interval)))
+    return interval <= 1 or (step - 1) % interval == 0
+
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
     """返回当前仍处于 recovery active 模式的 env。"""
@@ -221,7 +232,7 @@ def catastrophic_state(
     height_bad = (base_height < float(min_base_height)) | (base_height > float(max_base_height))
 
     terminated = ~finite | leg_pos_bad | leg_vel_bad | root_lin_bad | root_ang_bad | height_bad
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Episode_Termination/catastrophic_state": terminated.float().mean().item(),

@@ -68,6 +68,12 @@ def _ema_value(previous: float | None, value: float, alpha: float = 0.05) -> flo
 class JumpCommandCfg(VelocityHeightCommandCfg):
     """跳跃指令配置，继承速度/姿态/高度指令并扩展跳跃维度。"""
 
+    enable_jump_lifecycle: bool = True
+    """是否在每步维护跳跃窗口、参考轨迹相位和起跳诊断。"""
+
+    enable_jump_metrics: bool = True
+    """是否写入 Jump/* 诊断日志。"""
+
     jump_prob: float = 0.0
     """每个 policy step 启动一次跳跃窗口的概率 (由课程调度器动态修改)。"""
 
@@ -260,6 +266,10 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         # 先由父类采样 vx/ωz/pitch/roll/h（写入 self._command[:, 0:5]）
         super()._resample_command(env_ids)
 
+        if not self.cfg.enable_jump_lifecycle:
+            self._command[env_ids, 5:8] = 0.0
+            return
+
         active_jump = self._command[env_ids, 5] > 0.5
         if active_jump.any():
             self._zero_locomotion_command(env_ids[active_jump])
@@ -333,9 +343,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
     def _start_new_jumps(self) -> None:
         """按 step-level 概率启动新跳跃，对齐 mondo 的 jump command 语义。"""
+        if self.cfg.jump_prob <= 0.0:
+            return
         self._jump_cool_down = torch.clamp(self._jump_cool_down - 1, min=0)
         can_start = (self._jump_cool_down == 0) & (self._command[:, 5] <= 0.5)
-        if not can_start.any() or self.cfg.jump_prob <= 0.0:
+        if not can_start.any():
             return
 
         start_mask = can_start & (
@@ -347,6 +359,8 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         """更新速度死区，按 step-level 概率启动跳跃，并推进参考轨迹计步器。"""
         super()._update_command()
         self._apply_recovery_command()
+        if not self.cfg.enable_jump_lifecycle:
+            return
         self._start_new_jumps()
         self._advance_traj_step()
 
@@ -610,6 +624,9 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         - Jump/diag_jump_wheel_yaw_drive_sq：跳跃期同号轮速扭腰驱动，越小越少 yaw 扭转
         - Jump/diag_jump_yaw_rate_abs：跳跃期 yaw 角速度绝对值
         """
+        if not self.cfg.enable_jump_metrics:
+            return
+
         jump_flag = self._command[:, 5] > 0.5
 
         ref_grounded_ratio = (self._jump_stage == 0).float().mean().item()

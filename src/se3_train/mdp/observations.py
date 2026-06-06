@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import ObservationConfig, output_to_policy_pos_torch, output_to_policy_vel_torch
-from se3_train.mdp.contact_utils import contact_force_nonfinite_env_mask, finite_contact_force_norm
+from se3_train.mdp.contact_utils import (
+    contact_force_nonfinite_env_mask,
+    finite_contact_force_norm,
+)
 from se3_train.mdp.joint_indices import (
     is_fourbar_surrogate_model,
     policy_leg_joint_ids,
@@ -26,6 +29,7 @@ if TYPE_CHECKING:
 _OBS_CFG = ObservationConfig()
 _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR = "_wheel_contact_force_nonfinite_total"
 _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR = "_wheel_contact_force_sample_total"
+_DEFAULT_CONTACT_DEBUG_LOG_INTERVAL_STEPS = 256
 
 
 def _finite_clamp(value: torch.Tensor, limit: float | None = None) -> torch.Tensor:
@@ -123,6 +127,20 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
 
 def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.Tensor) -> None:
     """累计 wheel contact force 的非有限值触发次数，并写入训练日志。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(
+        1,
+        int(
+            getattr(
+                env,
+                "_se3_contact_debug_log_interval_steps",
+                _DEFAULT_CONTACT_DEBUG_LOG_INTERVAL_STEPS,
+            )
+        ),
+    )
+    if interval > 1 and (step - 1) % interval != 0:
+        return
+
     nonfinite_envs = int(contact_force_nonfinite_env_mask(force).sum().item())
     total = int(getattr(env, _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR, 0)) + nonfinite_envs
     samples = int(getattr(env, _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR, 0)) + env.num_envs

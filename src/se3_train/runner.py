@@ -17,6 +17,14 @@ from se3_train.training_runtime import (
 )
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """读取布尔环境变量。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
     """带 SE3 运行时画像的 MJLab on-policy runner。"""
 
@@ -27,10 +35,18 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         self._se3_runtime_info_logged = False
         self._se3_async_host_logger_enabled = async_host_logger_enabled()
         self._se3_last_async_logger_flush_s = 0.0
+        self._se3_check_nan_enabled = _env_flag(
+            "SE3_CHECK_NAN",
+            os.environ.get("SE3_SMOKE", "0") == "1",
+        )
         if not self.is_distributed or self.gpu_global_rank == 0:
             print(format_runtime_summary(self._se3_runtime_info), flush=True)
             if self._se3_async_host_logger_enabled:
                 print("[SE3 Runtime] async_host_logger=enabled", flush=True)
+            print(
+                f"[SE3 Runtime] check_nan={'enabled' if self._se3_check_nan_enabled else 'disabled'}",
+                flush=True,
+            )
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """运行 PPO 训练循环，并记录采样、return、update 的分段耗时。"""
@@ -60,7 +76,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 for _ in range(num_steps_per_env):
                     actions = self.alg.act(obs)
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                    if self.cfg.get("check_for_nan", True):
+                    if self._se3_check_nan_enabled and self.cfg.get("check_for_nan", True):
                         check_nan(obs, rewards, dones)
                     obs, rewards, dones = (
                         obs.to(self.device),
@@ -129,6 +145,11 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             writer.add_scalar(
                 "Runtime/async_host_logger_enabled",
                 float(self._se3_async_host_logger_enabled),
+                iteration,
+            )
+            writer.add_scalar(
+                "Runtime/check_nan_enabled",
+                float(self._se3_check_nan_enabled),
                 iteration,
             )
             self._se3_runtime_info_logged = True
