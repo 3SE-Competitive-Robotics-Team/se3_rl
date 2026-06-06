@@ -651,24 +651,69 @@ def tracking_height(
     sigma: float,
     height_sensor_name: str,
     ignore_recovery: bool = False,
+    kernel: str = "exp",
     use_upright_gate: bool = False,
     min_upright_gate: float = 0.0,
+    use_pose_end_gate: bool = False,
+    upright_gate_angle_deg: float = 30.0,
+    inverted_gate_angle_deg: float = 150.0,
 ) -> torch.Tensor:
-    """高度跟踪奖励，可保留倒地阶段的最小高度梯度。"""
+    """高度跟踪项，支持 exp 奖励或 L2 误差惩罚。"""
     cmd = env.command_manager.get_command(command_name)
 
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
     height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
     target_height = cmd[:, 4]
-    error = torch.square(height - target_height)
-    reward = torch.exp(-error / sigma)
-    if use_upright_gate:
+    error_sq = torch.square(height - target_height)
+    if kernel == "exp":
+        reward = torch.exp(-error_sq / sigma)
+    elif kernel == "l2":
+        reward = error_sq
+    else:
+        raise ValueError(f"未知高度跟踪核函数: {kernel}")
+
+    robot = None
+    if use_upright_gate or use_pose_end_gate:
         robot = env.scene["robot"]
+
+    if use_upright_gate and robot is not None:
         gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
         gate = torch.clamp(gate, min=float(min_upright_gate))
         reward = reward * gate
         if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
             env.extras["log"]["Locomotion/height_gate"] = gate.mean().item()
+    if use_pose_end_gate and robot is not None:
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        upright_angle = torch.deg2rad(
+            torch.tensor(float(upright_gate_angle_deg), device=env.device)
+        )
+        inverted_angle = torch.deg2rad(
+            torch.tensor(float(inverted_gate_angle_deg), device=env.device)
+        )
+        upright_cutoff = torch.cos(upright_angle)
+        inverted_cutoff = -torch.cos(inverted_angle)
+        upright_raw = torch.clamp(
+            ((-pg_z) - upright_cutoff) / torch.clamp(1.0 - upright_cutoff, min=1.0e-6),
+            0.0,
+            1.0,
+        )
+        inverted_raw = torch.clamp(
+            (pg_z - inverted_cutoff) / torch.clamp(1.0 - inverted_cutoff, min=1.0e-6),
+            0.0,
+            1.0,
+        )
+        upright_gate = upright_raw * upright_raw * (3.0 - 2.0 * upright_raw)
+        inverted_gate = inverted_raw * inverted_raw * (3.0 - 2.0 * inverted_raw)
+        gate = torch.maximum(upright_gate, inverted_gate)
+        reward = reward * gate
+        if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+            env.extras["log"].update(
+                {
+                    "Locomotion/height_pose_end_gate": gate.mean().item(),
+                    "Locomotion/height_upright_end_gate": upright_gate.mean().item(),
+                    "Locomotion/height_inverted_end_gate": inverted_gate.mean().item(),
+                }
+            )
     if ignore_recovery:
         reward = reward * (~_recovery_reset_mask(env)).float()
     return reward
