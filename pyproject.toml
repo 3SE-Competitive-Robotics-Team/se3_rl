@@ -26,6 +26,7 @@ se3-play = "se3_train.play:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
+se3-grounded-pose = "se3_tools.grounded_pose:main"
 se3-jump-to = "se3_jump_to.cli:main"
 se3-jump-to-replay = "se3_jump_to.replay:main"
 

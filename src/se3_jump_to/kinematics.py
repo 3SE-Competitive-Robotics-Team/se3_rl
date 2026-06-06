@@ -30,6 +30,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from se3_shared.grounded_pose import find_wheel_collision_radius
+
 _MJCF_PATH = (
     Path(__file__).resolve().parents[2]
     / "assets"
@@ -84,14 +86,14 @@ class SerialLegFK:
         self.default_qpos = np.array(_shared.default_dof_pos)
         self.default_base_height: float = _shared.default_base_height
 
-        # 轮子半径：用 default_qpos + freejoint 设在默认站立高度，FK 正算 lw_z
+        # 轮子半径必须来自 collision geom。默认姿态的轮心高度可能穿地，不能当半径。
+        self.wheel_radius: float = find_wheel_collision_radius(self._model, "l_wheel_Link")
+
+        # 两轮相对 base_link 的 y 偏移（左正右负）
         self._set_ctrl_qpos(self.default_qpos)
         self._data.qpos[0:3] = [0, 0, self.default_base_height]
         self._data.qpos[3:7] = [1, 0, 0, 0]
         mujoco.mj_forward(self._model, self._data)
-        self.wheel_radius: float = float(self._data.xpos[self._lw_id, 2])
-
-        # 两轮相对 base_link 的 y 偏移（左正右负）
         lw_y = float(self._data.xpos[self._lw_id, 1])
         base_y = float(self._data.xpos[self._base_id, 1])
         self.wheel_y_offset: float = abs(lw_y - base_y)  # ≈ 0.131 m
