@@ -62,10 +62,14 @@ class ScriptModeContract:
     """脚本 play 里随 mode 切换的环境物理契约。"""
 
     def __init__(self, env: ManagerBasedRlEnv) -> None:
-        """缓存 wheel/gait 两套默认关节姿态。"""
+        """缓存 wheel/gait 两套 reset 和默认关节姿态。"""
         robot = env.scene["robot"]
         self._wheel_default_joint_pos = robot.data.default_joint_pos.clone()
         self._gait_default_joint_pos = self._wheel_default_joint_pos.clone()
+        self._wheel_base_height = _read_reset_base_height(env)
+        reset_joint_params = _read_reset_joint_params(env)
+        self._wheel_joint_pos_override = reset_joint_params["joint_pos_override"]
+        self._wheel_update_default_joint_pos = bool(reset_joint_params["update_default_joint_pos"])
         gait_pose = solve_grounded_pose(
             _GAIT_HEIGHT,
             keep_wheel_x=False,
@@ -73,25 +77,38 @@ class ScriptModeContract:
         )
         if not gait_pose.success:
             raise ValueError(f"无法求解 GAIT play 默认姿态：{gait_pose.message}")
+        self._gait_joint_pos_override = tuple(float(value) for value in gait_pose.q6)
         joint_ids = torch.tensor(
             JointGroup.ALL,
             device=robot.data.default_joint_pos.device,
             dtype=torch.long,
         )
         q6 = torch.tensor(
-            gait_pose.q6,
+            self._gait_joint_pos_override,
             device=robot.data.default_joint_pos.device,
             dtype=robot.data.default_joint_pos.dtype,
         )
         self._gait_default_joint_pos[:, joint_ids] = q6
 
     def apply(self, env: ManagerBasedRlEnv, mode: TaskMode) -> None:
-        """应用当前 mode 的 default_joint_pos。"""
+        """应用当前 mode 的 reset 高度、reset 关节姿态和 default_joint_pos。"""
         robot = env.scene["robot"]
         if mode == TaskMode.GAIT:
             robot.data.default_joint_pos[:] = self._gait_default_joint_pos
+            _set_reset_base_height(env, _GAIT_HEIGHT)
+            _set_reset_joint_params(
+                env,
+                joint_pos_override=self._gait_joint_pos_override,
+                update_default_joint_pos=True,
+            )
         else:
             robot.data.default_joint_pos[:] = self._wheel_default_joint_pos
+            _set_reset_base_height(env, self._wheel_base_height)
+            _set_reset_joint_params(
+                env,
+                joint_pos_override=self._wheel_joint_pos_override,
+                update_default_joint_pos=self._wheel_update_default_joint_pos,
+            )
 
 
 class ScriptedFlowPolicy:
@@ -112,28 +129,46 @@ class ScriptedFlowPolicy:
         self.events = sorted(events, key=lambda event: event.time_s)
         self.blend_s = max(float(blend_s), 1.0e-6)
         self.default_mode = default_mode
-        self.current_mode = default_mode
-        self.prev_mode = default_mode
-        self.switch_time_s = 0.0
-        self.next_event_idx = 0
+        (
+            self.current_mode,
+            self.prev_mode,
+            self.switch_time_s,
+            self.next_event_idx,
+        ) = self._initial_script_state()
         self.contract = ScriptModeContract(env.unwrapped)
         self.script_command: torch.Tensor | None = None
-        self.runtime.set_task_mode(default_mode)
-        self._sync_env_contract(default_mode, default_mode, 1.0)
+        self.runtime.set_task_mode(self.current_mode)
+        self._sync_env_contract(self.current_mode, self.prev_mode, 1.0)
 
     def reset(self) -> None:
         """重置 policy 和脚本状态。"""
         self.runtime.reset()
-        self.current_mode = self.default_mode
-        has_initial_event = bool(self.events and self.events[0].time_s <= 0.0)
-        if self.events and self.events[0].time_s <= 0.0:
-            self.current_mode = self.events[0].mode
-        self.prev_mode = self.current_mode
-        self.switch_time_s = -self.blend_s if has_initial_event else 0.0
-        self.next_event_idx = 1 if has_initial_event else 0
+        (
+            self.current_mode,
+            self.prev_mode,
+            self.switch_time_s,
+            self.next_event_idx,
+        ) = self._initial_script_state()
         self.script_command = None
         self.runtime.set_task_mode(self.current_mode)
         self._sync_env_contract(self.current_mode, self.prev_mode, 1.0)
+
+    def pre_env_reset(self) -> None:
+        """在 viewer 触发 env.reset 前恢复脚本初始 reset 契约。"""
+        current, prev, _switch_time_s, _next_event_idx = self._initial_script_state()
+        self.contract.apply(self.env.unwrapped, current)
+        _set_command_mode(self.env.unwrapped, current, prev, 1.0)
+        _set_action_mode(self.env.unwrapped, current)
+
+    def _initial_script_state(self) -> tuple[TaskMode, TaskMode, float, int]:
+        """计算脚本初始 mode，支持多个 0s 事件时以后出现的为准。"""
+        current = self.default_mode
+        next_event_idx = 0
+        while next_event_idx < len(self.events) and self.events[next_event_idx].time_s <= 0.0:
+            current = self.events[next_event_idx].mode
+            next_event_idx += 1
+        switch_time_s = -self.blend_s if next_event_idx > 0 else 0.0
+        return current, current, switch_time_s, next_event_idx
 
     def __call__(self, obs_dict: object) -> torch.Tensor:
         """按 env 时间更新 mode 条件后调用 Flow policy。"""
@@ -209,11 +244,12 @@ def run_flow_play(
         if viewer == "none":
             _run_headless(wrapped, policy, max_steps=max_steps or 200)
         else:
+            _reset_env_with_policy(wrapped, policy)
             resolved = _resolve_viewer(viewer)
             if resolved == "native":
-                NativeMujocoViewer(wrapped, policy).run(num_steps=max_steps)
+                ScriptedNativeMujocoViewer(wrapped, policy).run(num_steps=max_steps)
             elif resolved == "viser":
-                ViserPlayViewer(wrapped, policy).run(num_steps=max_steps)
+                ScriptedViserPlayViewer(wrapped, policy).run(num_steps=max_steps)
             else:
                 raise ValueError(f"不支持的 viewer：{viewer}")
     finally:
@@ -222,8 +258,7 @@ def run_flow_play(
 
 def _run_headless(env: RslRlVecEnvWrapper, policy: ScriptedFlowPolicy, *, max_steps: int) -> None:
     """无 viewer 跑固定步数，用于 smoke。"""
-    policy.reset()
-    obs, _ = env.reset()
+    obs = _reset_env_with_policy(env, policy)
     for _ in range(max_steps):
         with torch.no_grad():
             action = policy(obs)
@@ -231,6 +266,33 @@ def _run_headless(env: RslRlVecEnvWrapper, policy: ScriptedFlowPolicy, *, max_st
             if hasattr(policy.runtime.model, "reset_done"):
                 policy.runtime.model.reset_done(dones)
     print(f"[flow-play] headless steps={max_steps}")
+
+
+def _reset_env_with_policy(env: RslRlVecEnvWrapper, policy: ScriptedFlowPolicy) -> object:
+    """先同步脚本 reset 契约，再重置 env。"""
+    policy.reset()
+    obs, _ = env.reset()
+    policy.reset()
+    obs = env.get_observations()
+    return obs
+
+
+class ScriptedNativeMujocoViewer(NativeMujocoViewer):
+    """支持脚本 reset 契约的 Native viewer。"""
+
+    def reset_environment(self) -> None:
+        """先写入脚本初始 reset 契约，再执行 viewer reset。"""
+        self.policy.pre_env_reset()
+        super().reset_environment()
+
+
+class ScriptedViserPlayViewer(ViserPlayViewer):
+    """支持脚本 reset 契约的 Viser viewer。"""
+
+    def reset_environment(self) -> None:
+        """先写入脚本初始 reset 契约，再执行 viewer reset。"""
+        self.policy.pre_env_reset()
+        super().reset_environment()
 
 
 def _task_id_for_play(mode: TaskMode, *, has_script: bool) -> str:
@@ -387,6 +449,61 @@ def _set_action_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:
         action_term.cfg.wheel_scale = _WHEEL_ACTION_SCALE
         action_term.cfg.wheel_lock_damping = None
         action_term.cfg.freeze_wheels = False
+
+
+def _read_reset_base_height(env: ManagerBasedRlEnv) -> float | None:
+    """读取当前 reset_root_state 的 base_height。"""
+    params = _reset_event_params(env, "reset_root_state")
+    value = params.get("base_height")
+    return None if value is None else float(value)
+
+
+def _set_reset_base_height(env: ManagerBasedRlEnv, base_height: float | None) -> None:
+    """同步 reset_root_state 的 base_height 到 cfg 和运行期 EventManager。"""
+    for params in _all_reset_event_params(env, "reset_root_state"):
+        if base_height is None:
+            params.pop("base_height", None)
+        else:
+            params["base_height"] = float(base_height)
+
+
+def _read_reset_joint_params(env: ManagerBasedRlEnv) -> dict[str, object]:
+    """读取当前 reset_joints 的姿态覆盖参数。"""
+    params = _reset_event_params(env, "reset_joints")
+    return {
+        "joint_pos_override": params.get("joint_pos_override"),
+        "update_default_joint_pos": bool(params.get("update_default_joint_pos", False)),
+    }
+
+
+def _set_reset_joint_params(
+    env: ManagerBasedRlEnv,
+    *,
+    joint_pos_override: object,
+    update_default_joint_pos: bool,
+) -> None:
+    """同步 reset_joints 的姿态覆盖参数到 cfg 和运行期 EventManager。"""
+    for params in _all_reset_event_params(env, "reset_joints"):
+        if joint_pos_override is None:
+            params.pop("joint_pos_override", None)
+        else:
+            params["joint_pos_override"] = tuple(float(value) for value in joint_pos_override)
+        params["update_default_joint_pos"] = bool(update_default_joint_pos)
+
+
+def _reset_event_params(env: ManagerBasedRlEnv, name: str) -> dict[str, object]:
+    """返回运行期 reset event params。"""
+    return env.event_manager.get_term_cfg(name).params
+
+
+def _all_reset_event_params(env: ManagerBasedRlEnv, name: str) -> tuple[dict[str, object], ...]:
+    """返回源 cfg 和运行期 EventManager 的同名 reset event params。"""
+    params: list[dict[str, object]] = []
+    cfg_term = env.cfg.events.get(name)
+    if cfg_term is not None:
+        params.append(cfg_term.params)
+    params.append(env.event_manager.get_term_cfg(name).params)
+    return tuple(params)
 
 
 def _apply_deadband(command: torch.Tensor, shape: dict[str, object]) -> None:
