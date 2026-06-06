@@ -17,7 +17,7 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer, VerbosityLevel, ViserPlayViewer
 
 import se3_train  # noqa: F401
-from se3_shared import TASK_MODE_NAMES, JointGroup, RobotConfig, TaskMode
+from se3_shared import TASK_MODE_NAMES, JointGroup, ObservationConfig, RobotConfig, TaskMode
 from se3_shared.grounded_pose import solve_grounded_pose
 
 from .registry import TASK_SPECS
@@ -57,6 +57,7 @@ _WHEEL_JOINT_NAMES = ("l_wheel_Joint", "r_wheel_Joint")
 _WHEEL_LOCK_MODEL_FIELDS = ("jnt_limited", "jnt_range", "dof_damping", "dof_frictionloss")
 _SCRIPT_COMMAND_HOLD_S = 1.0e6
 _WHEEL_TO_GAIT_PREP_S = 3.0
+_OBS_CFG = ObservationConfig()
 _WHEEL_TO_GAIT_PREP_COMMAND = {
     "lin_vel_x_range": (0.0, 0.0),
     "ang_vel_yaw_range": (0.0, 0.0),
@@ -338,10 +339,12 @@ class ScriptedFlowPolicy:
             return
         if t < self._pending_switch_time_s:
             return
-        self.prev_mode = self._pending_prev_mode or self.current_mode
         self.current_mode = self._pending_mode
-        self.switch_time_s = self._pending_switch_time_s
+        self.prev_mode = self.current_mode
+        self.switch_time_s = t - self.blend_s
         self.script_command = self._pending_script_command
+        self.runtime.reset()
+        self.env.unwrapped.action_manager.reset()
         self._clear_pending_switch()
 
     def _clear_pending_switch(self) -> None:
@@ -646,20 +649,49 @@ def _overwrite_script_actor_obs(
     prev: TaskMode,
     blend: float,
 ) -> object:
-    """覆盖本步 policy 输入里的 command 和 task_mode，避免 viewer 取 obs 慢一拍。"""
+    """覆盖本步 policy 输入，避免 viewer 取 obs 慢一拍或沿用旧契约。"""
     if not isinstance(obs_dict, dict) or "actor" not in obs_dict:
         return obs_dict
     actor = obs_dict["actor"]
     if not isinstance(actor, torch.Tensor) or actor.ndim != 2 or actor.shape[1] != 42:
         return obs_dict
     out_actor = actor.clone()
+    robot = env.scene["robot"]
+    out_actor[:, 0:3] = _to_actor_device(
+        robot.data.root_link_ang_vel_b * float(_OBS_CFG.ang_vel_scale),
+        out_actor,
+    )
+    out_actor[:, 3:6] = _to_actor_device(robot.data.projected_gravity_b, out_actor)
     command = env.command_manager.get_command(_COMMAND_NAME)
-    scale = torch.tensor((2.0, 0.25, 5.0, 5.0, 5.0), device=out_actor.device, dtype=out_actor.dtype)
-    out_actor[:, 6:11] = command[:, :5].to(device=out_actor.device, dtype=out_actor.dtype) * scale
+    scale = torch.tensor(
+        _OBS_CFG.command_scale,
+        device=out_actor.device,
+        dtype=out_actor.dtype,
+    )
+    out_actor[:, 6:11] = _to_actor_device(command[:, :5], out_actor) * scale
+    out_actor[:, 11:15] = _to_actor_device(
+        robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS],
+        out_actor,
+    )
+    out_actor[:, 15:19] = _to_actor_device(
+        robot.data.joint_vel[:, JointGroup.LEGS] * float(_OBS_CFG.leg_vel_scale),
+        out_actor,
+    )
+    out_actor[:, 19:21] = _to_actor_device(robot.data.joint_pos[:, JointGroup.WHEELS], out_actor)
+    out_actor[:, 21:23] = _to_actor_device(
+        robot.data.joint_vel[:, JointGroup.WHEELS] * float(_OBS_CFG.wheel_vel_scale),
+        out_actor,
+    )
+    out_actor[:, 23:29] = _to_actor_device(env.action_manager.action, out_actor)
     out_actor = overwrite_task_mode_obs(out_actor, current, prev=prev, blend=blend)
     out = dict(obs_dict)
     out["actor"] = out_actor
     return out
+
+
+def _to_actor_device(value: torch.Tensor, actor: torch.Tensor) -> torch.Tensor:
+    """把运行期状态张量搬到 actor obs 的 device 和 dtype。"""
+    return value.to(device=actor.device, dtype=actor.dtype)
 
 
 def _set_action_mode(env: ManagerBasedRlEnv, mode: TaskMode) -> None:

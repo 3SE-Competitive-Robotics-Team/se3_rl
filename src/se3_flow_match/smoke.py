@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import torch
 from torch.utils.data import DataLoader
 
-from se3_shared import ObservationConfig, TaskMode
+from se3_shared import JointGroup, ObservationConfig, TaskMode
 
 from .checkpoint import load_flow_checkpoint, save_flow_checkpoint
 from .collect import collect_teacher_rollouts
@@ -16,7 +16,7 @@ from .config import FlowPolicyConfig
 from .dataset import TeacherFlowDataset
 from .losses import flow_matching_loss
 from .model import FlowVelocityField
-from .play import run_flow_play
+from .play import _COMMAND_NAME, _overwrite_script_actor_obs, run_flow_play
 from .sampler import sample_actions, sample_actions_from_context
 from .train import _sample_training_window, _training_loss_weights, train_flow_student
 
@@ -43,6 +43,7 @@ def main() -> None:
     torch.manual_seed(42)
     _run_synthetic_smoke()
     _assert_reset_window_is_supervised()
+    _assert_script_obs_recomputed_after_contract_switch()
     _run_real_pipeline_smoke()
 
 
@@ -220,6 +221,79 @@ def _assert_reset_window_is_supervised() -> None:
     )
     if not (sampled_starts == 0).any():
         raise RuntimeError("synthetic smoke 失败：训练 batch 未混入 reset 起点窗口")
+
+
+def _assert_script_obs_recomputed_after_contract_switch() -> None:
+    """确认 script play 用当前物理契约重算 actor obs。"""
+    batch = 2
+    obs = {"actor": torch.zeros(batch, 42)}
+    env = _FakeScriptEnv(batch)
+    out = _overwrite_script_actor_obs(obs, env, TaskMode.GAIT, TaskMode.GAIT, 1.0)["actor"]
+    robot = env.scene["robot"]
+    expected_leg_pos = (
+        robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
+    )
+    expected_leg_vel = robot.data.joint_vel[:, JointGroup.LEGS] * ObservationConfig().leg_vel_scale
+    if not torch.allclose(out[:, 11:15], expected_leg_pos):
+        raise RuntimeError(
+            "synthetic smoke 失败：script play 未按当前 default_joint_pos 重算腿部位置观测"
+        )
+    if not torch.allclose(out[:, 15:19], expected_leg_vel):
+        raise RuntimeError("synthetic smoke 失败：script play 未重算腿部速度观测")
+    if not torch.allclose(out[:, 23:29], env.action_manager.action):
+        raise RuntimeError("synthetic smoke 失败：script play 未重写 last_actions 观测")
+
+
+class _FakeScriptEnv:
+    """用于验证 script obs 重写逻辑的最小 env。"""
+
+    def __init__(self, batch: int) -> None:
+        self.scene = {"robot": _FakeRobot(batch)}
+        self.command_manager = _FakeCommandManager(batch)
+        self.action_manager = _FakeActionManager(batch)
+
+
+class _FakeRobot:
+    """最小 robot 容器。"""
+
+    def __init__(self, batch: int) -> None:
+        self.data = _FakeRobotData(batch)
+
+
+class _FakeRobotData:
+    """最小 robot.data 容器。"""
+
+    def __init__(self, batch: int) -> None:
+        self.root_link_ang_vel_b = torch.arange(batch * 3, dtype=torch.float32).view(batch, 3)
+        self.projected_gravity_b = torch.tensor([[0.0, 0.0, -1.0]]).repeat(batch, 1)
+        self.joint_pos = torch.zeros(batch, 10)
+        self.joint_vel = torch.zeros(batch, 10)
+        self.default_joint_pos = torch.zeros(batch, 10)
+        self.joint_pos[:, JointGroup.LEGS] = torch.tensor([0.90, -0.10, 0.80, -0.20])
+        self.default_joint_pos[:, JointGroup.LEGS] = torch.tensor([0.75, -0.16, 0.75, -0.16])
+        self.joint_pos[:, JointGroup.WHEELS] = torch.tensor([1.25, -1.25])
+        self.joint_vel[:, JointGroup.LEGS] = torch.tensor([0.4, -0.6, 0.8, -1.0])
+        self.joint_vel[:, JointGroup.WHEELS] = torch.tensor([2.0, -2.0])
+
+
+class _FakeCommandManager:
+    """最小 command manager。"""
+
+    def __init__(self, batch: int) -> None:
+        self._command = torch.tensor([[0.2, 0.0, 0.0, 0.0, 0.35]]).repeat(batch, 1)
+
+    def get_command(self, name: str) -> torch.Tensor:
+        """返回固定 command。"""
+        if name != _COMMAND_NAME:
+            raise KeyError(name)
+        return self._command
+
+
+class _FakeActionManager:
+    """最小 action manager。"""
+
+    def __init__(self, batch: int) -> None:
+        self.action = torch.linspace(-0.3, 0.3, 6).repeat(batch, 1)
 
 
 def _assert_sampler_direction(config: FlowPolicyConfig) -> None:
