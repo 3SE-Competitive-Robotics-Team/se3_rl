@@ -134,6 +134,18 @@ class ScriptModeContract:
             )
             self._wheel_lock_contract.apply(env, locked=False)
 
+    def apply_wheel_to_gait_prep(self, env: ManagerBasedRlEnv) -> None:
+        """应用 WHEEL->GAIT 准备段契约：腿按 gait 默认位姿，轮子仍可主动刹停。"""
+        robot = env.scene["robot"]
+        robot.data.default_joint_pos[:] = self._gait_default_joint_pos
+        _set_reset_base_height(env, _GAIT_HEIGHT)
+        _set_reset_joint_params(
+            env,
+            joint_pos_override=self._gait_joint_pos_override,
+            update_default_joint_pos=True,
+        )
+        self._wheel_lock_contract.apply(env, locked=False)
+
 
 class WheelJointLockContract:
     """脚本 GAIT 模式使用的轮轴物理锁。"""
@@ -295,6 +307,8 @@ class ScriptedFlowPolicy:
             blend,
             wheel_to_gait_prep=wheel_to_gait_prep,
         )
+        if wheel_to_gait_prep:
+            return _zero_policy_action(obs_dict, self.env.unwrapped)
         return self.runtime(
             _overwrite_script_actor_obs(
                 obs_dict,
@@ -364,7 +378,10 @@ class ScriptedFlowPolicy:
     ) -> None:
         """同步脚本 mode 到 env 的 command 和动作物理语义。"""
         env = self.env.unwrapped
-        self.contract.apply(env, current)
+        if wheel_to_gait_prep:
+            self.contract.apply_wheel_to_gait_prep(env)
+        else:
+            self.contract.apply(env, current)
         _set_command_mode(env, current, prev, blend)
         self.script_command = _set_command_shape(
             env,
@@ -372,8 +389,12 @@ class ScriptedFlowPolicy:
             self.script_command,
             wheel_to_gait_prep=wheel_to_gait_prep,
         )
-        _set_action_mode(env, current)
-        _set_termination_mode(env, current)
+        action_mode = TaskMode.WHEEL if wheel_to_gait_prep else current
+        termination_mode = TaskMode.WHEEL if wheel_to_gait_prep else current
+        _set_action_mode(env, action_mode)
+        _set_termination_mode(env, termination_mode)
+        if wheel_to_gait_prep:
+            env.action_manager.reset()
 
 
 def run_flow_play(
@@ -687,6 +708,15 @@ def _overwrite_script_actor_obs(
     out = dict(obs_dict)
     out["actor"] = out_actor
     return out
+
+
+def _zero_policy_action(obs_dict: object, env: ManagerBasedRlEnv) -> torch.Tensor:
+    """构造准备段零动作：腿跟随当前 default_joint_pos，轮子速度目标为 0。"""
+    if isinstance(obs_dict, dict):
+        actor = obs_dict.get("actor")
+        if isinstance(actor, torch.Tensor) and actor.ndim == 2:
+            return torch.zeros(actor.shape[0], 6, device=actor.device, dtype=actor.dtype)
+    return torch.zeros(env.num_envs, 6, device=env.device, dtype=torch.float32)
 
 
 def _to_actor_device(value: torch.Tensor, actor: torch.Tensor) -> torch.Tensor:
