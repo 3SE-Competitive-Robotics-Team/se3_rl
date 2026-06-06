@@ -14,6 +14,7 @@ import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
+from mjlab.utils.lab_api.math import euler_xyz_from_quat, quat_from_euler_xyz
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer, VerbosityLevel, ViserPlayViewer
 
@@ -138,11 +139,12 @@ class ScriptModeContract:
     def apply_wheel_to_gait_prep(self, env: ManagerBasedRlEnv, alpha: float) -> None:
         """应用 WHEEL->GAIT 准备段契约：默认位姿随 alpha 渐进到 gait。"""
         alpha = _clamp01(alpha)
+        smooth_alpha = _smoothstep(alpha)
         robot = env.scene["robot"]
         robot.data.default_joint_pos[:] = torch.lerp(
             self._wheel_default_joint_pos,
             self._gait_default_joint_pos,
-            alpha,
+            smooth_alpha,
         )
         height = _wheel_to_gait_prep_height(alpha)
         joint_pos_override = _blend_q6(
@@ -157,6 +159,7 @@ class ScriptModeContract:
             update_default_joint_pos=True,
         )
         self._wheel_lock_contract.apply(env, locked=False)
+        _write_wheel_to_gait_prep_state(env, robot.data.default_joint_pos, height)
 
 
 class WheelJointLockContract:
@@ -779,6 +782,58 @@ def _zero_policy_action(obs_dict: object, env: ManagerBasedRlEnv) -> torch.Tenso
         if isinstance(actor, torch.Tensor) and actor.ndim == 2:
             return torch.zeros(actor.shape[0], 6, device=actor.device, dtype=actor.dtype)
     return torch.zeros(env.num_envs, 6, device=env.device, dtype=torch.float32)
+
+
+def _write_wheel_to_gait_prep_state(
+    env: ManagerBasedRlEnv,
+    default_joint_pos: torch.Tensor,
+    height: float,
+) -> None:
+    """准备段直接写入 reset 等价站高状态，保证 gait 接管前物理状态可控。"""
+    robot = env.scene["robot"]
+    root_pos = robot.data.root_link_pos_w.clone()
+    root_pos[:, 2] = _base_height_to_world_z(env, height, root_pos)
+    root_quat = _upright_quat_preserving_yaw(robot.data.root_link_quat_w)
+    pose = torch.cat(
+        (
+            root_pos,
+            root_quat,
+        ),
+        dim=-1,
+    )
+    root_vel = torch.zeros(env.num_envs, 6, device=env.device, dtype=pose.dtype)
+    joint_ids = torch.tensor(JointGroup.ALL, device=env.device, dtype=torch.long)
+    joint_pos = default_joint_pos[:, JointGroup.ALL]
+    joint_vel = torch.zeros_like(joint_pos)
+    robot.write_root_link_pose_to_sim(pose)
+    robot.write_root_link_velocity_to_sim(root_vel)
+    robot.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=joint_ids)
+
+
+def _base_height_to_world_z(
+    env: ManagerBasedRlEnv,
+    base_height: float,
+    fallback_pos: torch.Tensor,
+) -> torch.Tensor:
+    """把相对 env origin 的 base height 转成世界系 z。"""
+    origins = getattr(env.scene, "env_origins", None)
+    if isinstance(origins, torch.Tensor) and origins.ndim == 2 and origins.shape[0] == env.num_envs:
+        return origins[:, 2].to(device=fallback_pos.device, dtype=fallback_pos.dtype) + float(
+            base_height
+        )
+    return torch.full(
+        (env.num_envs,),
+        float(base_height),
+        device=fallback_pos.device,
+        dtype=fallback_pos.dtype,
+    )
+
+
+def _upright_quat_preserving_yaw(quat: torch.Tensor) -> torch.Tensor:
+    """保留当前 yaw，把 roll/pitch 扶正到 reset 同类直立姿态。"""
+    _, _, yaw = euler_xyz_from_quat(quat)
+    zeros = torch.zeros_like(yaw)
+    return quat_from_euler_xyz(zeros, zeros, yaw)
 
 
 def _to_actor_device(value: torch.Tensor, actor: torch.Tensor) -> torch.Tensor:
