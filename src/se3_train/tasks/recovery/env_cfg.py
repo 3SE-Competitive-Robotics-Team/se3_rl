@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -12,11 +13,12 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import events, rewards
+from . import curriculums, events, rewards
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.20, 0.38)
+_RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -31,8 +33,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.ang_vel_yaw_range = (-1.0, 1.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
-    command_cfg.height_range = _RECOVERY_STANDING_HEIGHT_RANGE
-    command_cfg.standing_height_range = _RECOVERY_STANDING_HEIGHT_RANGE
+    initial_height_range = (
+        _RECOVERY_STANDING_HEIGHT_RANGE if play else _RECOVERY_INITIAL_HEIGHT_RANGE
+    )
+    command_cfg.height_range = initial_height_range
+    command_cfg.standing_height_range = initial_height_range
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.02
     command_cfg.jump_prob = 0.0
@@ -53,26 +58,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "curriculum_stages": [
                 {
                     "iteration": 0,
-                    "roll_range": (-math.radians(20.0), math.radians(20.0)),
-                    "pitch_range": (-math.radians(20.0), math.radians(20.0)),
+                    "roll_range": (-math.radians(15.0), math.radians(15.0)),
+                    "pitch_range": (-math.radians(15.0), math.radians(15.0)),
                 },
                 {
-                    "iteration": 120,
-                    "roll_range": (-math.radians(45.0), math.radians(45.0)),
-                    "pitch_range": (-math.radians(45.0), math.radians(45.0)),
+                    "iteration": 300,
+                    "roll_range": (-math.radians(30.0), math.radians(30.0)),
+                    "pitch_range": (-math.radians(30.0), math.radians(30.0)),
                 },
                 {
-                    "iteration": 260,
-                    "roll_range": (-math.radians(75.0), math.radians(75.0)),
-                    "pitch_range": (-math.radians(75.0), math.radians(75.0)),
+                    "iteration": 650,
+                    "roll_range": (-math.radians(60.0), math.radians(60.0)),
+                    "pitch_range": (-math.radians(60.0), math.radians(60.0)),
                 },
                 {
-                    "iteration": 450,
+                    "iteration": 1000,
                     "roll_range": (-math.radians(120.0), math.radians(120.0)),
                     "pitch_range": (-math.radians(120.0), math.radians(120.0)),
                 },
                 {
-                    "iteration": 700,
+                    "iteration": 1400,
                     "roll_range": (-math.pi, math.pi),
                     "pitch_range": (-math.pi, math.pi),
                 },
@@ -96,22 +101,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "curriculum_stages": [
                 {
                     "iteration": 0,
+                    "joint_randomization_prob": 0.15,
+                },
+                {
+                    "iteration": 300,
                     "joint_randomization_prob": 0.25,
                 },
                 {
-                    "iteration": 90,
-                    "joint_randomization_prob": 0.40,
+                    "iteration": 650,
+                    "joint_randomization_prob": 0.45,
                 },
                 {
-                    "iteration": 140,
-                    "joint_randomization_prob": 0.60,
+                    "iteration": 1000,
+                    "joint_randomization_prob": 0.70,
                 },
                 {
-                    "iteration": 220,
-                    "joint_randomization_prob": 0.80,
-                },
-                {
-                    "iteration": 400,
+                    "iteration": 1400,
                     "joint_randomization_prob": 1.0,
                 },
             ],
@@ -125,6 +130,39 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("leg_contact", None)
     cfg.terminations.pop("recovery_stagnation", None)
     cfg.curriculum = {}
+    if not play:
+        cfg.curriculum = {
+            "commands_height": CurriculumTermCfg(
+                func=curriculums.commands_height,
+                params={
+                    "command_name": "velocity_height",
+                    "use_iterations": True,
+                    "steps_per_policy_iter": 64,
+                    "height_stages": [
+                        {
+                            "iteration": 0,
+                            "height_range": _RECOVERY_INITIAL_HEIGHT_RANGE,
+                        },
+                        {
+                            "iteration": 300,
+                            "height_range": (0.23, 0.31),
+                        },
+                        {
+                            "iteration": 650,
+                            "height_range": (0.22, 0.34),
+                        },
+                        {
+                            "iteration": 1000,
+                            "height_range": (0.21, 0.36),
+                        },
+                        {
+                            "iteration": 1400,
+                            "height_range": _RECOVERY_STANDING_HEIGHT_RANGE,
+                        },
+                    ],
+                },
+            ),
+        }
     if not play:
         cfg.events["push_robots"] = EventTermCfg(
             func=events.push_robots,

@@ -66,6 +66,45 @@ def commands_vel(
     }
 
 
+def commands_height(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    height_stages: list[dict],
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
+    offset_iter: int = 0,
+) -> dict[str, torch.Tensor]:
+    """按课程进度逐步放开高度指令范围。"""
+    del env_ids
+    term = env.command_manager.get_term(command_name)
+    cfg: VelocityHeightCommandCfg = term.cfg  # type: ignore[assignment]
+    progress = _curriculum_progress(
+        env,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    threshold_key = "iteration" if use_iterations else "step"
+    for stage in height_stages:
+        threshold = int(stage.get(threshold_key, stage.get("step", 0)))
+        if progress >= threshold:
+            if "height_range" in stage:
+                cfg.height_range = stage["height_range"]
+            if "standing_height_range" in stage:
+                cfg.standing_height_range = stage["standing_height_range"]
+            elif "height_range" in stage:
+                cfg.standing_height_range = stage["height_range"]
+    return {
+        "step_counter": torch.tensor(float(getattr(env, "common_step_counter", 0))),
+        "progress": torch.tensor(float(progress)),
+        "height_min": torch.tensor(cfg.height_range[0]),
+        "height_max": torch.tensor(cfg.height_range[1]),
+        "standing_height_min": torch.tensor(cfg.standing_height_range[0]),
+        "standing_height_max": torch.tensor(cfg.standing_height_range[1]),
+    }
+
+
 def push_disturbance(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
