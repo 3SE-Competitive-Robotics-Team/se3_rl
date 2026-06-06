@@ -684,17 +684,8 @@ def tracking_height(
             env.extras["log"]["Locomotion/height_gate"] = gate.mean().item()
     if use_pose_end_gate and robot is not None:
         pg_z = robot.data.projected_gravity_b[:, 2]
-        inverted_angle = torch.deg2rad(
-            torch.tensor(float(inverted_gate_angle_deg), device=env.device)
-        )
-        inverted_cutoff = -torch.cos(inverted_angle)
         upright_gate = torch.clamp(-pg_z, 0.0, 1.0)
-        inverted_raw = torch.clamp(
-            (pg_z - inverted_cutoff) / torch.clamp(1.0 - inverted_cutoff, min=1.0e-6),
-            0.0,
-            1.0,
-        )
-        inverted_gate = inverted_raw * inverted_raw * (3.0 - 2.0 * inverted_raw)
+        inverted_gate = torch.clamp(pg_z, 0.0, 1.0)
         gate = torch.maximum(upright_gate, inverted_gate)
         reward = reward * gate
         if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
