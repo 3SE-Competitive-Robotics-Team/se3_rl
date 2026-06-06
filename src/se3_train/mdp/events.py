@@ -251,6 +251,10 @@ def reset_root_state_robotlab_full_random(
     lin_vel_range: tuple[float, float] = (-0.5, 0.5),
     ang_vel_range: tuple[float, float] = (-0.5, 0.5),
     clearance_range: tuple[float, float] = (0.0, 0.05),
+    curriculum_stages: list[dict] | None = None,
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = 64,
+    offset_iter: int = 0,
     mark_recovery_episode: bool = False,
     recovery_command_height: float = _SHARED_ROBOT.default_base_height,
 ) -> None:
@@ -259,6 +263,21 @@ def reset_root_state_robotlab_full_random(
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
     _pre_resample_jump_command_for_reset(env, env_ids)
+    stage, curriculum_progress = _active_curriculum_stage(
+        env,
+        curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    roll_range = _stage_value(stage, "roll_range", roll_range)
+    pitch_range = _stage_value(stage, "pitch_range", pitch_range)
+    yaw_range = _stage_value(stage, "yaw_range", yaw_range)
+    pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
+    height_offset_range = _stage_value(stage, "height_offset_range", height_offset_range)
+    lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
+    ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
+    clearance_range = _stage_value(stage, "clearance_range", clearance_range)
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -369,8 +388,24 @@ def reset_root_state_robotlab_full_random(
         "Reset/robotlab_full_random_ratio": 1.0,
         "Reset/full_angle_random_ratio": 1.0,
         "Reset/pitch_flip_ratio": 0.0,
-        "Reset/curriculum_progress": 0.0,
-        "Reset/curriculum_tilt_max_deg": 180.0,
+        "Reset/curriculum_progress": float(curriculum_progress),
+        "Reset/curriculum_tilt_max_deg": max(
+            abs(float(roll_range[0])),
+            abs(float(roll_range[1])),
+            abs(float(pitch_range[0])),
+            abs(float(pitch_range[1])),
+        )
+        * 180.0
+        / 3.141592653589793,
+        "Reset/curriculum_roll_max_deg": max(abs(float(roll_range[0])), abs(float(roll_range[1])))
+        * 180.0
+        / 3.141592653589793,
+        "Reset/curriculum_pitch_max_deg": max(
+            abs(float(pitch_range[0])),
+            abs(float(pitch_range[1])),
+        )
+        * 180.0
+        / 3.141592653589793,
         "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
         "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
         "Reset/mean_abs_sampled_roll_deg": sampled_roll_deg.abs().mean().item(),

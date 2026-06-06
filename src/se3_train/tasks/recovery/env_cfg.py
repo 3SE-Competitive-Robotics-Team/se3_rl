@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -46,6 +48,35 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "lin_vel_range": (-0.5, 0.5),
             "ang_vel_range": (-0.5, 0.5),
             "clearance_range": (0.0, 0.05),
+            "curriculum_stages": [
+                {
+                    "iteration": 0,
+                    "roll_range": (-math.radians(20.0), math.radians(20.0)),
+                    "pitch_range": (-math.radians(20.0), math.radians(20.0)),
+                },
+                {
+                    "iteration": 120,
+                    "roll_range": (-math.radians(45.0), math.radians(45.0)),
+                    "pitch_range": (-math.radians(45.0), math.radians(45.0)),
+                },
+                {
+                    "iteration": 260,
+                    "roll_range": (-math.radians(75.0), math.radians(75.0)),
+                    "pitch_range": (-math.radians(75.0), math.radians(75.0)),
+                },
+                {
+                    "iteration": 450,
+                    "roll_range": (-math.radians(120.0), math.radians(120.0)),
+                    "pitch_range": (-math.radians(120.0), math.radians(120.0)),
+                },
+                {
+                    "iteration": 700,
+                    "roll_range": (-math.pi, math.pi),
+                    "pitch_range": (-math.pi, math.pi),
+                },
+            ],
+            "use_iterations": True,
+            "steps_per_policy_iter": 64,
         },
     )
     cfg.events["reset_joints"] = EventTermCfg(
