@@ -137,6 +137,12 @@ def step_stair_climb_state(
     riser_sensor_name: str | None = None,
     riser_normal_z_max: float = 0.5,
     num_steps_per_env: int = 64,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    predictive_trigger: bool = False,
+    predictive_terrain_type_ids: tuple[int, ...] = (),
+    riser_x_from_env_origin: float = 0.08,
+    predictive_margin_m: float = 0.04,
+    wheel_radius_m: float = _FOURBAR_WHEEL_RADIUS_M,
 ) -> None:
     """interval 事件：按轮子水平接触力推进 CTBC 状态机。"""
     del env_ids
@@ -165,11 +171,84 @@ def step_stair_climb_state(
                 valid = valid & found
             wheel_xy = torch.where(valid, force_xy, torch.zeros_like(force_xy)).sum(dim=-1)
 
-    state.step(wheel_xy)
+    predictive_mask = None
+    if predictive_trigger:
+        predictive_mask = _stair_predictive_trigger_mask(
+            env,
+            asset_cfg,
+            terrain_type_ids=predictive_terrain_type_ids,
+            riser_x_from_env_origin=riser_x_from_env_origin,
+            margin_m=predictive_margin_m,
+            wheel_radius_m=wheel_radius_m,
+        )
+
+    state.step(wheel_xy, predictive_mask=predictive_mask)
     iteration = int(getattr(env, "common_step_counter", 0)) // max(1, int(num_steps_per_env))
     state.update_iter(iteration)
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         env.extras["log"].update(state.diag())
+
+
+def _stair_wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
+    """缓存左右轮 body 在 entity 内的局部索引。"""
+    attr_name = f"_stair_wheel_body_ids_{asset_cfg.name}"
+    cached = getattr(env, attr_name, None)
+    if isinstance(cached, list) and len(cached) == 2:
+        return cached
+    robot = env.scene[asset_cfg.name]
+    body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
+    if len(body_ids) != 2:
+        raise RuntimeError(f"必须找到左右轮 body，实际找到: {body_names}")
+    setattr(env, attr_name, body_ids)
+    return body_ids
+
+
+def _stair_terrain_type_mask(
+    env: ManagerBasedRlEnv,
+    terrain_type_ids: tuple[int, ...],
+) -> torch.Tensor:
+    """返回允许预测触发的 terrain type 掩码。"""
+    if not terrain_type_ids:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    terrain = env.scene["terrain"]
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if not isinstance(terrain_types, torch.Tensor) or terrain_types.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    for terrain_type_id in terrain_type_ids:
+        mask |= terrain_types == int(terrain_type_id)
+    return mask
+
+
+def _stair_predictive_trigger_mask(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    *,
+    terrain_type_ids: tuple[int, ...],
+    riser_x_from_env_origin: float,
+    margin_m: float,
+    wheel_radius_m: float,
+) -> torch.Tensor:
+    """按轮子前沿到第一阶立面的距离生成预测触发掩码。"""
+    terrain_mask = _stair_terrain_type_mask(env, terrain_type_ids)
+    if not terrain_mask.any():
+        return torch.zeros(env.num_envs, 2, device=env.device, dtype=torch.bool)
+
+    robot = env.scene[asset_cfg.name]
+    body_ids = _stair_wheel_body_ids(env, asset_cfg)
+    wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
+    wheel_front_x = wheel_pos_w[:, :, 0] + float(wheel_radius_m)
+    riser_x_w = env.scene.env_origins[:, 0].unsqueeze(1) + float(riser_x_from_env_origin)
+    distance = wheel_front_x - riser_x_w
+    predictive = distance >= -float(margin_m)
+    predictive &= terrain_mask.unsqueeze(1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active_distance = distance[terrain_mask]
+        if active_distance.numel() > 0:
+            env.extras["log"]["Stair/ctbc_predictive_dist_mean_m"] = active_distance.mean().item()
+            env.extras["log"]["Stair/ctbc_predictive_dist_min_m"] = active_distance.min().item()
+    return predictive
 
 
 def _active_curriculum_stage(
