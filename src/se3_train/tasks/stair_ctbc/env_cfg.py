@@ -19,7 +19,6 @@ from mjlab.sensor import (
 )
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
-    BoxInvertedPyramidStairsTerrainCfg,
     BoxRandomStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
@@ -27,6 +26,7 @@ from mjlab.terrains import (
 
 from se3_train.mdp import events, stair_rewards, terminations
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
+from se3_train.tasks.stair_ctbc.terrains import BoxStageStairsTerrainCfg
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -35,34 +35,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     stair_sub_terrains = (
         {
-            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+            "stage_stairs": BoxStageStairsTerrainCfg(
                 proportion=1.0,
                 size=(8.0, 8.0),
-                step_height_range=(0.05, 0.05),
-                step_width=0.5,
-                platform_width=2.0,
-                border_width=1.0,
             ),
         }
         if play
         else {
-            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
-                proportion=0.5,
+            "stage_stairs": BoxStageStairsTerrainCfg(
+                proportion=0.7,
                 size=(8.0, 8.0),
-                step_height_range=(0.05, 0.20),
-                step_width=0.5,
-                platform_width=2.0,
-                border_width=1.0,
             ),
             "random_stairs": BoxRandomStairsTerrainCfg(
-                proportion=0.3,
+                proportion=0.15,
                 size=(8.0, 8.0),
                 step_height_range=(0.05, 0.20),
                 step_width=0.6,
                 platform_width=2.0,
                 border_width=0.5,
             ),
-            "flat": BoxFlatTerrainCfg(proportion=0.2, size=(8.0, 8.0)),
+            "flat": BoxFlatTerrainCfg(proportion=0.15, size=(8.0, 8.0)),
         }
     )
     cfg.scene.terrain = TerrainEntityCfg(
@@ -163,7 +155,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "pos_xy_range": (0.0, 0.0) if play else (-0.1, 0.1),
-            "pos_xy_offset": (1.10, 0.0) if play else (0.0, 0.0),
+            "pos_xy_offset": (0.0, 0.0),
             "height_offset_range": (0.0, 0.0) if play else (0.0, 0.2),
             "roll_range": (0.0, 0.0),
             "pitch_range": (0.0, 0.0),
