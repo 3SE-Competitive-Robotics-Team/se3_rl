@@ -155,6 +155,24 @@ class PolicyRuntime:
         if self.spec.is_recurrent:
             self.reset()
 
+    @staticmethod
+    def probe_num_obs(checkpoint: Path, device: str = "cpu") -> int:
+        """Probe a checkpoint to determine its num_obs without full initialization."""
+        checkpoint = Path(checkpoint)
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
+        payload = torch.load(checkpoint, map_location=device)
+        actor_state, _ = PolicyRuntime._extract_state_dicts(payload)
+        rnn_type, _, _ = PolicyRuntime._detect_rnn(actor_state)
+        if rnn_type is not None:
+            normalizer_mean = actor_state.get("obs_normalizer._mean")
+            if normalizer_mean is not None:
+                return int(normalizer_mean.shape[1])
+        actor_shapes = PolicyRuntime._linear_shapes(actor_state, "mlp")
+        if actor_shapes:
+            return int(actor_shapes[0][1])
+        raise ValueError("cannot determine num_obs from checkpoint")
+
     @property
     def policy_type(self) -> str:
         if self.spec.is_recurrent:
@@ -353,7 +371,9 @@ class PolicyRuntime:
             self._linear_shapes(critic_state_dict, "mlp") if critic_state_dict is not None else []
         )
         resolved = replace(
-            spec, num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs
+            spec,
+            contract=self.runtime.policy.contract,
+            num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs,
         )
 
         # MLP shape 验证：GRU 时第一层输入是 rnn_hidden_dim，MLP 时是 num_obs

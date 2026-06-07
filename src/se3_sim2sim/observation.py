@@ -1,4 +1,4 @@
-"""Observation assembly for the 31D joint-space policy input."""
+"""Observation assembly for the joint-space policy input (32D or 42D)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ class ObservationBuilder:
         self.runtime = runtime
         self.commands_scale = np.asarray(robot_cfg.command_scale, dtype=np.float64)
         self.default_dof_pos = np.asarray(robot_cfg.default_dof_pos, dtype=np.float64)
+        self._is_task_mode = runtime.policy.is_task_mode
 
     def build(
         self,
@@ -29,19 +30,27 @@ class ObservationBuilder:
         dof_vel: np.ndarray,
         command: np.ndarray,
         action_obs: np.ndarray,
+        task_mode_obs: np.ndarray | None = None,
     ) -> np.ndarray:
-        if len(command) not in (7, 8):
-            raise ValueError(
-                f"command 必须为 7 或 8 维 [vx, oz, pitch, roll, height, jump_flag, jump_target_height, (jump_phase)],"
-                f" 实际得到 {len(command)} 维。"
-            )
+        if self._is_task_mode:
+            if task_mode_obs is None or len(task_mode_obs) != 13:
+                raise ValueError(
+                    f"task_mode policy 需要 13 维 task_mode_obs，实际得到 "
+                    f"{None if task_mode_obs is None else len(task_mode_obs)} 维。"
+                )
+        else:
+            if len(command) not in (7, 8):
+                raise ValueError(
+                    f"command 必须为 7 或 8 维 [vx, oz, pitch, roll, height, jump_flag, jump_target_height, (jump_phase)],"
+                    f" 实际得到 {len(command)} 维。"
+                )
+
         obs: list[float] = []
         base_ang_vel_body = rotate_inverse(base_quat_wxyz, base_ang_vel_world)
         projected_gravity = rotate_inverse(base_quat_wxyz, np.asarray([0.0, 0.0, -1.0]))
 
         obs.extend((base_ang_vel_body * _OBS_CFG.ang_vel_scale).tolist())
         obs.extend(projected_gravity.tolist())
-        # 前 5 维乘以 commands_scale，后 2 维（jump_flag, jump_target_height）直接追加
         obs.extend((np.asarray(command[:5], dtype=np.float64) * self.commands_scale).tolist())
 
         leg_pos_rel = dof_pos[JointGroup.CTRL_LEGS] - self.default_dof_pos[JointGroup.CTRL_LEGS]
@@ -55,13 +64,15 @@ class ObservationBuilder:
 
         obs.extend(np.asarray(action_obs, dtype=np.float64).tolist())
 
-        # jump_commands: [jump_flag, jump_target_height, jump_phase]，不缩放
-        # jump_phase 由 workflow 计算并写入 command[7]
-        if len(command) >= 8:
-            obs.extend(command[5:8].tolist())
+        if self._is_task_mode:
+            obs.extend(np.asarray(task_mode_obs, dtype=np.float64).tolist())
         else:
-            obs.extend(command[5:7].tolist())
-            obs.append(0.0)  # jump_phase 占位（向后兼容旧 7 维指令）
+            # jump_commands: [jump_flag, jump_target_height, jump_phase]
+            if len(command) >= 8:
+                obs.extend(command[5:8].tolist())
+            else:
+                obs.extend(command[5:7].tolist())
+                obs.append(0.0)
 
         arr = np.asarray(obs, dtype=np.float32)
         expected = int(self.runtime.policy.num_obs)

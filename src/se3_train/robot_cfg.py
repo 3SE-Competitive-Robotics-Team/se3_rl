@@ -15,11 +15,29 @@ _ROBOT_CFG = SharedRobotConfig()
 _ALL_JOINT_NAMES = JointGroup.joint_names()
 _WHEEL_JOINT_NAMES = ("l_wheel_Joint", "r_wheel_Joint")
 _LEG_JOINT_NAMES = tuple(n for n in _ALL_JOINT_NAMES if n not in set(_WHEEL_JOINT_NAMES))
+_WHEEL_LOCK_RANGE = (-1.0e-4, 1.0e-4)
 
 
-def get_serialleg_cfg() -> EntityCfg:
+def _load_serialleg_spec(*, lock_wheels: bool = False) -> mujoco.MjSpec:
+    """加载 SerialLeg MJCF，并按任务需要锁定轮轴。"""
+    spec = mujoco.MjSpec.from_file(str(_MJCF_PATH))
+    for geom in list(spec.worldbody.geoms):
+        if geom.name == "floor":
+            spec.delete(geom)
+            break
+    if lock_wheels:
+        for joint in spec.joints:
+            if joint.name in _WHEEL_JOINT_NAMES:
+                joint.limited = True
+                joint.range[:] = _WHEEL_LOCK_RANGE
+                joint.damping[0] = 10.0
+                joint.frictionloss = 1.0
+    return spec
+
+
+def get_serialleg_cfg(*, lock_wheels: bool = False) -> EntityCfg:
     return EntityCfg(
-        spec_fn=lambda: mujoco.MjSpec.from_file(str(_MJCF_PATH)),
+        spec_fn=lambda: _load_serialleg_spec(lock_wheels=lock_wheels),
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 DcMotorActuatorCfg(

@@ -18,7 +18,6 @@ from mjlab.utils.lab_api.math import (
 )
 
 from se3_shared import JointGroup
-from se3_train.mdp.jump_commands import JumpCommandTerm
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
     DEFAULT_JUMP_TRAJ_PATHS,
@@ -29,6 +28,19 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+def _has_jump_command_api(term: object) -> bool:
+    """判断指令项是否提供跳跃参考轨迹接口。"""
+    return all(
+        hasattr(term, name)
+        for name in (
+            "pre_resample_for_reset",
+            "set_reference_frame",
+            "jump_stage",
+            "traj_step",
+        )
+    )
 
 
 def _pre_resample_jump_command_for_reset(
@@ -43,7 +55,7 @@ def _pre_resample_jump_command_for_reset(
         term = env.command_manager.get_term(command_name)
     except Exception:
         return
-    if isinstance(term, JumpCommandTerm):
+    if _has_jump_command_api(term):
         term.pre_resample_for_reset(env_ids)
 
 
@@ -51,6 +63,7 @@ def reset_root_state_full(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    base_height: float | None = None,
 ) -> None:
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
@@ -65,6 +78,8 @@ def reset_root_state_full(
 
     n = len(env_ids)
     pos = root_states[:, 0:3].clone()
+    if base_height is not None:
+        pos[:, 2] = float(base_height)
     pos[:, 0] += sample_uniform(
         torch.tensor(-0.1, device=env.device),
         torch.tensor(0.1, device=env.device),
@@ -104,9 +119,8 @@ def reset_root_state_full(
     if hasattr(env, "command_manager"):
         try:
             term = env.command_manager.get_term("velocity_height")
-            rsi_takeoff_prob = (
-                term.cfg.rsi_takeoff_prob if isinstance(term, JumpCommandTerm) else 1.0
-            )
+            has_jump_api = _has_jump_command_api(term)
+            rsi_takeoff_prob = term.cfg.rsi_takeoff_prob if has_jump_api else 1.0
             cmd = env.command_manager.get_command("velocity_height")
             jump_mask = cmd[env_ids, 5] > 0.5
             if jump_mask.any():
@@ -125,21 +139,15 @@ def reset_root_state_full(
 
                 if rsi_mask.any():
                     # 按 jump_target_height 最近邻匹配轨迹，可从随机帧初始化。
-                    traj_paths = (
-                        term.cfg.traj_paths
-                        if isinstance(term, JumpCommandTerm)
-                        else DEFAULT_JUMP_TRAJ_PATHS
-                    )
+                    traj_paths = term.cfg.traj_paths if has_jump_api else DEFAULT_JUMP_TRAJ_PATHS
                     traj_heights = (
-                        term.cfg.traj_target_heights
-                        if isinstance(term, JumpCommandTerm)
-                        else DEFAULT_JUMP_TRAJ_HEIGHTS
+                        term.cfg.traj_target_heights if has_jump_api else DEFAULT_JUMP_TRAJ_HEIGHTS
                     )
                     library = JumpTrajLibrary.get(traj_paths, traj_heights, str(env.device))
                     h_targets = cmd[env_ids[rsi_mask], 6]
                     n_rsi = rsi_mask.sum().item()
                     frame_rsi = torch.zeros(n_rsi, dtype=torch.long, device=env.device)
-                    if isinstance(term, JumpCommandTerm) and term.cfg.rsi_random_frame:
+                    if has_jump_api and term.cfg.rsi_random_frame:
                         max_step = library.n_steps_for(h_targets) - 1
                         phase_lo, phase_hi = term.cfg.rsi_frame_phase_range
                         lo_step = torch.clamp((max_step.float() * phase_lo).round().long(), min=0)
@@ -161,7 +169,7 @@ def reset_root_state_full(
 
                     # 缓存帧号供 reset_joints 使用，并同步 command 里的参考相位。
                     env._rsi_traj_frame[env_ids[rsi_mask]] = frame_rsi
-                    if isinstance(term, JumpCommandTerm):
+                    if has_jump_api:
                         term.set_reference_frame(env_ids[rsi_mask], frame_rsi)
         except Exception:
             pass
@@ -184,6 +192,8 @@ def reset_joints(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    joint_pos_override: tuple[float, ...] | None = None,
+    update_default_joint_pos: bool = False,
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
@@ -191,8 +201,16 @@ def reset_joints(
 
     asset: Entity = env.scene[asset_cfg.name]
 
+    if joint_pos_override is not None and update_default_joint_pos:
+        default_joint_pos = asset.data.default_joint_pos.clone()
+        _write_controlled_joint_pos(default_joint_pos, env_ids, joint_pos_override, env.device)
+        asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
+
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
+
+    if joint_pos_override is not None and not update_default_joint_pos:
+        _write_controlled_joint_pos(joint_pos, None, joint_pos_override, env.device)
 
     joint_pos[:, JointGroup.WHEELS] = 0.0
 
@@ -216,14 +234,13 @@ def reset_joints(
                     rsi_done_mask = jump_mask & (frames >= 0)
                     if rsi_done_mask.any():
                         term = env.command_manager.get_term("velocity_height")
+                        has_jump_api = _has_jump_command_api(term)
                         traj_paths = (
-                            term.cfg.traj_paths
-                            if isinstance(term, JumpCommandTerm)
-                            else DEFAULT_JUMP_TRAJ_PATHS
+                            term.cfg.traj_paths if has_jump_api else DEFAULT_JUMP_TRAJ_PATHS
                         )
                         traj_heights = (
                             term.cfg.traj_target_heights
-                            if isinstance(term, JumpCommandTerm)
+                            if has_jump_api
                             else DEFAULT_JUMP_TRAJ_HEIGHTS
                         )
                         library = JumpTrajLibrary.get(traj_paths, traj_heights, str(env.device))
@@ -242,9 +259,8 @@ def reset_joints(
                 # 未做 RSI 的 jump env 默认保持站立姿态。
                 # 只有显式启用部分 RSI 时，未注入的样本才回退到预蹲姿态做消融。
                 term = env.command_manager.get_term("velocity_height")
-                use_fallback_squat = not (
-                    isinstance(term, JumpCommandTerm) and term.cfg.rsi_takeoff_prob <= 0.0
-                )
+                has_jump_api = _has_jump_command_api(term)
+                use_fallback_squat = not (has_jump_api and term.cfg.rsi_takeoff_prob <= 0.0)
                 fallback_mask = jump_mask & ~rsi_done_mask & use_fallback_squat
                 if fallback_mask.any():
                     joint_pos[fallback_mask, JointGroup.LEGS[0]] = _jump_hip_fallback
@@ -255,6 +271,27 @@ def reset_joints(
             pass
 
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+
+def _write_controlled_joint_pos(
+    joint_pos: torch.Tensor,
+    env_ids: torch.Tensor | None,
+    joint_pos_override: tuple[float, ...],
+    device: str,
+) -> None:
+    """把 4 维腿部或 6 维受控关节姿态写入 MJLab 关节布局。"""
+    override = torch.tensor(joint_pos_override, device=device, dtype=joint_pos.dtype)
+    if override.numel() == 4:
+        target_ids = torch.tensor(JointGroup.LEGS, device=device, dtype=torch.long)
+    elif override.numel() == 6:
+        target_ids = torch.tensor(JointGroup.ALL, device=device, dtype=torch.long)
+    else:
+        raise ValueError("joint_pos_override 必须是 4 维腿部关节或 6 维受控关节")
+
+    if env_ids is None:
+        joint_pos[:, target_ids] = override
+    else:
+        joint_pos[env_ids[:, None], target_ids] = override
 
 
 def push_robots(

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import JointGroup, ObservationConfig
+from se3_shared import TASK_MODE_COUNT, TASK_MODE_SEMANTICS, JointGroup, ObservationConfig
 from se3_train.mdp.contact_utils import contact_force_nonfinite_env_mask, finite_contact_force_norm
 
 if TYPE_CHECKING:
@@ -135,9 +135,54 @@ def jump_commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     要求指令必须为 8 维（JumpCommandTerm），否则直接报错。
     """
     cmd = env.command_manager.get_command("velocity_height")
-    if cmd.shape[1] != 8:
+    if cmd.shape[1] < 8:
         raise ValueError(
-            f"jump_commands_obs 要求 8 维指令 (JumpCommandTerm),"
+            f"jump_commands_obs 要求至少 8 维指令 (JumpCommandTerm),"
             f" 实际得到 {cmd.shape[1]} 维。请将 velocity_height 指令替换为 JumpCommandCfg。"
         )
     return cmd[:, 5:8]
+
+
+def task_mode_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Task Mode 观测，13D。
+
+    布局：
+    - current_semantic(4):[wheel_drive, leg_gait, obstacle_lift, jump]
+    - prev_semantic(4):切换前模式语义
+    - mode_blend(1)
+    - jump_flag(1)
+    - jump_target_height(1)
+    - jump_phase(1)
+    - jump_stage_norm(1)
+    """
+    cmd = env.command_manager.get_command("velocity_height")
+    if cmd.shape[1] < 11:
+        raise ValueError(
+            f"task_mode_obs 要求 11 维指令 (TaskModeCommandTerm), 实际得到 {cmd.shape[1]} 维。"
+        )
+
+    mode_id = cmd[:, 8].round().long().clamp(0, TASK_MODE_COUNT - 1)
+    prev_mode_id = cmd[:, 10].round().long().clamp(0, TASK_MODE_COUNT - 1)
+    semantics = torch.tensor(TASK_MODE_SEMANTICS, device=cmd.device, dtype=cmd.dtype)
+    current_semantic = semantics[mode_id]
+    prev_semantic = semantics[prev_mode_id]
+    mode_blend = cmd[:, 9:10]
+    jump_obs = cmd[:, 5:8]
+
+    term = env.command_manager.get_term("velocity_height")
+    jump_stage = getattr(term, "jump_stage", None)
+    if isinstance(jump_stage, torch.Tensor):
+        jump_stage_norm = jump_stage.to(device=cmd.device, dtype=cmd.dtype).unsqueeze(1) / 2.0
+    else:
+        jump_stage_norm = torch.zeros(env.num_envs, 1, device=cmd.device)
+
+    return torch.cat(
+        [
+            current_semantic,
+            prev_semantic,
+            mode_blend,
+            jump_obs,
+            jump_stage_norm,
+        ],
+        dim=1,
+    )

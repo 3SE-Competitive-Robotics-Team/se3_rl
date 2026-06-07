@@ -117,8 +117,8 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 ### 启动训练（标准流程）
 
 ```bash
-ssh wuyinyun "bash -s" << 'ENDSSH'
-WANDB_KEY=$(grep WANDB_API_KEY ~/project/se3_wheel_leg/.env | cut -d= -f2-)
+ssh wuyinyun 'bash -s' <<'ENDSSH'
+set -euo pipefail
 
 # 清理同名旧 session
 tmux kill-session -t train 2>/dev/null
@@ -126,18 +126,27 @@ tmux kill-session -t train 2>/dev/null
 # 创建新 session（detached，不需要 PTY）
 tmux new-session -d -s train -x 220 -y 50
 
-# 注入环境变量和训练命令
-tmux send-keys -t train "export HTTP_PROXY=http://127.0.0.1:17890" Enter
-tmux send-keys -t train "export HTTPS_PROXY=http://127.0.0.1:17890" Enter
-tmux send-keys -t train "export WANDB_API_KEY=${WANDB_KEY}" Enter
-tmux send-keys -t train "export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:\$LD_LIBRARY_PATH" Enter
-tmux send-keys -t train "source ~/.local/bin/env" Enter
-tmux send-keys -t train "cd ~/project/se3_wheel_leg" Enter
-tmux send-keys -t train "uv run --env-file .env se3-train <TASK_NAME> --env.scene.num-envs <NUM_ENVS>" Enter
+# 注入环境变量和训练命令。使用 -l 逐字发送,避免本地 shell 或远端 wrapper 提前展开 $()/${}。
+tmux send-keys -t train -l 'export HTTP_PROXY=http://127.0.0.1:17890'
+tmux send-keys -t train Enter
+tmux send-keys -t train -l 'export HTTPS_PROXY=http://127.0.0.1:17890'
+tmux send-keys -t train Enter
+tmux send-keys -t train -l 'export WANDB_API_KEY=$(grep WANDB_API_KEY ~/project/se3_wheel_leg/.env | cut -d= -f2-)'
+tmux send-keys -t train Enter
+tmux send-keys -t train -l 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}'
+tmux send-keys -t train Enter
+tmux send-keys -t train -l 'source ~/.local/bin/env'
+tmux send-keys -t train Enter
+tmux send-keys -t train -l 'cd ~/project/se3_wheel_leg'
+tmux send-keys -t train Enter
+tmux send-keys -t train -l 'uv run --env-file .env se3-train <TASK_NAME> --env.scene.num-envs <NUM_ENVS>'
+tmux send-keys -t train Enter
 
 tmux list-sessions
 ENDSSH
 ```
+
+> 向远端 tmux 注入包含 `$()`、`${}`、管道、重定向或复杂引号的命令时，必须使用 `ssh <host> 'bash -s' <<'ENDSSH'` 的单引号 heredoc，并用 `tmux send-keys -l 'literal command'` 加单独的 `Enter` 发送。禁止把整段 tmux 命令塞进本地双引号字符串；本地 zsh/bash 会提前解析 `$()`，导致命令没有真正进入远端 session，密钥也可能被展开到 pane 历史。
 
 ### 查看训练状态
 
@@ -167,14 +176,15 @@ ssh wuyinyun "tmux send-keys -t train C-c"
 sleep 3
 
 # 确保 Python 子进程也终止（uv run 会 fork）
-ssh wuyinyun "pkill -f 'se3-train'"
+ssh wuyinyun "pkill -f '[s]e3-train'"
 
 # 关闭 session
 ssh wuyinyun "tmux kill-session -t train"
 ```
 
 > `kill $PID` 只杀 `uv run` 的 shell wrapper，实际 Python 训练子进程不会终止。
-> 多次"重启"后会有多个训练进程争抢 GPU，务必用 `pkill -f 'se3-train'`。
+> 多次"重启"后会有多个训练进程争抢 GPU，务必用 `pkill -f '[s]e3-train'`。
+> 不要在同一个远端命令字符串里写 `pkill -f 'se3-train'`：`pkill -f` 会匹配完整命令行，可能把当前 SSH shell 自己杀掉，表现为本地 SSH 返回 `255` 且没有输出。`[s]e3-train` 能匹配目标进程，又不会匹配命令字符串本身。
 
 ---
 
@@ -248,7 +258,7 @@ pkill -f "ssh.*17890.*7890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:7890 wuyin
 
 ```bash
 ssh wuyinyun "ps aux | grep se3-train | grep -v grep"
-ssh wuyinyun "pkill -f 'se3-train'"
+ssh wuyinyun "pkill -f '[s]e3-train'"
 ```
 
 ### uv sync 卡住

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -23,6 +24,9 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from se3_shared import JointGroup
+from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared.grounded_pose import solve_grounded_pose
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.robot_cfg import get_serialleg_cfg
 
@@ -30,6 +34,29 @@ from . import commands, curriculums, events, observations, rewards, terminations
 
 _DEFAULT_STANDING_HEIGHT = 0.22
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
+_SHARED_ROBOT = SharedRobotConfig()
+_ALL_JOINT_NAMES = JointGroup.joint_names()
+
+
+@lru_cache(maxsize=8)
+def _grounded_pose_for_height(base_height: float):
+    """缓存同一高度下的触地 IK，避免注册多个任务时重复求解。"""
+    return solve_grounded_pose(base_height)
+
+
+def _apply_grounded_reset_pose(cfg: ManagerBasedRlEnvCfg, base_height: float) -> None:
+    """让 reset 初始姿态与指定机身高度下的轮子触地 IK 一致。"""
+    grounded_pose = _grounded_pose_for_height(base_height)
+    if not grounded_pose.success:
+        raise ValueError(
+            f"无法求解默认触地姿态: base_height={base_height}, message={grounded_pose.message}"
+        )
+    robot = cfg.scene.entities["robot"]
+    x, y, _ = robot.init_state.pos
+    robot.init_state.pos = (x, y, base_height)
+    for joint_name, joint_pos in zip(_ALL_JOINT_NAMES, grounded_pose.q6, strict=True):
+        robot.init_state.joint_pos[joint_name] = joint_pos
+    cfg.events["reset_root_state"].params["base_height"] = base_height
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -43,7 +70,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     cfg = ManagerBasedRlEnvCfg(
-        decimation=5,
+        decimation=_SHARED_ROBOT.control_decimation,
         scene=scene,
     )
 
@@ -455,6 +482,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ),
         }
         cfg.episode_length_s = 9999.0
+        _apply_grounded_reset_pose(cfg, _DEFAULT_STANDING_HEIGHT)
     else:
         cfg.events = {
             "reset_scene_to_default": EventTermCfg(
@@ -524,12 +552,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ),
         }
         cfg.episode_length_s = 20.0
+        _apply_grounded_reset_pose(cfg, _DEFAULT_STANDING_HEIGHT)
 
     cfg.scale_rewards_by_dt = True
     cfg.sim = SimulationCfg(
         nconmax=256,
         njmax=1040,
-        mujoco=MujocoCfg(timestep=0.002),
+        mujoco=MujocoCfg(timestep=_SHARED_ROBOT.sim_dt),
     )
     cfg.viewer = ViewerConfig()
 

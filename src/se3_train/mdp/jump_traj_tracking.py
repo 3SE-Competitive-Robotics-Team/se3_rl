@@ -18,7 +18,6 @@ import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_shared import JointGroup
-from se3_train.mdp.jump_commands import JumpCommandTerm
 from se3_train.mdp.jump_trajectories import JumpTrajLibrary
 
 if TYPE_CHECKING:
@@ -27,9 +26,16 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
-def _get_jump_term(env: ManagerBasedRlEnv, command_name: str) -> JumpCommandTerm:
+def _is_jump_command_term(term: object) -> bool:
+    """判断指令项是否提供轨迹跟踪需要的跳跃接口。"""
+    return all(hasattr(term, name) for name in ("jump_stage", "traj_step"))
+
+
+def _get_jump_term(env: ManagerBasedRlEnv, command_name: str):
     term = env.command_manager.get_term(command_name)
-    assert isinstance(term, JumpCommandTerm)
+    assert _is_jump_command_term(term), (
+        f"指令 '{command_name}' 必须提供跳跃接口, 实际为 {type(term)}"
+    )
     return term
 
 

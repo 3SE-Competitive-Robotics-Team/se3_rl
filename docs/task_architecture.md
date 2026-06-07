@@ -10,10 +10,18 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
+| `flow_match/wheel/` | `SE3-WheelLegged-FlowMatch-Wheel-GRU` | FlowMatch `WHEEL=0` 单标签平地轮式能力任务 |
+| `flow_match/gait_pretrain/` | `SE3-WheelLegged-FlowMatch-Gait-PreTrain-GRU` | FlowMatch `GAIT=1` 单标签预训练任务 |
+| `flow_match/gait_finetune/` | `SE3-WheelLegged-FlowMatch-Gait-FineTune-GRU` | FlowMatch `GAIT=1` 单标签地形与速度 FineTune 任务 |
+| `flow_match/wheel_leg/` | `SE3-WheelLegged-FlowMatch-WheelLeg-GRU` | FlowMatch `WHEEL_LEG=2` 单标签能力任务 |
+| `flow_match/gait_wheel/` | `SE3-WheelLegged-FlowMatch-GaitWheel-GRU` | FlowMatch `GAIT_WHEEL=3` 单标签能力任务 |
+| `flow_match/jump/` | `SE3-WheelLegged-FlowMatch-Jump-GRU` | FlowMatch `JUMP=4` 单标签能力任务 |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
+
+FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 保留已经训练过的 `PreTrain` 和 `FineTune` 两个入口，`WHEEL` 使用 `SE3-WheelLegged-FlowMatch-Wheel-GRU` 纯平地入口。
 
 ## 单个 task 的目录结构
 
@@ -109,8 +117,27 @@ git diff --check
 ```bash
 uv run python - <<'PY'
 from se3_train.tasks import flat, jump_finetune, jump_pretrain, rough
+from se3_train.tasks.flow_match import (
+    gait_finetune,
+    gait_pretrain,
+    gait_wheel,
+    jump,
+    wheel,
+    wheel_leg,
+)
 
-for module in (rough, flat, jump_pretrain, jump_finetune):
+for module in (
+    rough,
+    flat,
+    wheel,
+    gait_pretrain,
+    gait_finetune,
+    wheel_leg,
+    gait_wheel,
+    jump,
+    jump_pretrain,
+    jump_finetune,
+):
     cfg = module.env_cfg(play=True)
     rl = module.rl_cfg(smoke=True)
     print(module.TASK_ID, len(cfg.observations["actor"].terms), rl.max_iterations)

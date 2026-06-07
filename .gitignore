@@ -29,4 +29,6 @@ replays/
 .sisyphus/
 .opencode/
 opencode.json
+# PyTorch model checkpoints (only assets/base_model/ uses curated .pt files)
+*.pt
 .DS_Store

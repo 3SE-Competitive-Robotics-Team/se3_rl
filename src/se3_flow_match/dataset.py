@@ -19,6 +19,8 @@ class FlowSequenceSample(TypedDict):
     actions: torch.Tensor
     dones: torch.Tensor
     modes: torch.Tensor
+    commands: torch.Tensor
+    teacher_names: list[str]
 
 
 class TeacherFlowDataset(Dataset[FlowSequenceSample]):
@@ -31,6 +33,9 @@ class TeacherFlowDataset(Dataset[FlowSequenceSample]):
         *,
         dones: torch.Tensor | None = None,
         modes: torch.Tensor | None = None,
+        commands: torch.Tensor | None = None,
+        teacher_names: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
         config: FlowPolicyConfig | None = None,
     ) -> None:
         """构造 teacher 数据集，要求 obs/actions 都是 [N, T, D]。"""
@@ -70,11 +75,24 @@ class TeacherFlowDataset(Dataset[FlowSequenceSample]):
             raise ValueError(f"dones 必须是 {tuple(batch_shape)}，实际为 {tuple(dones.shape)}")
         if modes.shape != batch_shape:
             raise ValueError(f"modes 必须是 {tuple(batch_shape)}，实际为 {tuple(modes.shape)}")
+        if commands is None:
+            commands = torch.zeros(obs.shape[0], 5, dtype=torch.float32)
+        else:
+            commands = _as_float_tensor(commands, "commands")
+        if commands.shape != (obs.shape[0], 5):
+            raise ValueError(f"commands 必须是 {(obs.shape[0], 5)}，实际为 {tuple(commands.shape)}")
 
         self.obs = obs.contiguous()
         self.actions = actions.contiguous()
         self.dones = dones.contiguous()
         self.modes = modes.contiguous()
+        self.commands = commands.contiguous()
+        self.teacher_names = teacher_names or ["unknown"] * int(obs.shape[0])
+        if len(self.teacher_names) != int(obs.shape[0]):
+            raise ValueError(
+                f"teacher_names 长度必须为 {int(obs.shape[0])}，实际为 {len(self.teacher_names)}"
+            )
+        self.metadata = metadata or {}
 
     def __len__(self) -> int:
         """返回序列条数。"""
@@ -87,6 +105,8 @@ class TeacherFlowDataset(Dataset[FlowSequenceSample]):
             "actions": self.actions[index],
             "dones": self.dones[index],
             "modes": self.modes[index],
+            "commands": self.commands[index],
+            "teacher_names": [self.teacher_names[index]],
         }
 
     @classmethod
@@ -125,6 +145,9 @@ def load_teacher_dataset(
         torch.as_tensor(actions),
         dones=torch.as_tensor(raw["dones"]) if "dones" in raw else None,
         modes=torch.as_tensor(raw["modes"]) if "modes" in raw else None,
+        commands=torch.as_tensor(raw["commands"]) if "commands" in raw else None,
+        teacher_names=_teacher_names_from_raw(raw, int(torch.as_tensor(obs).shape[0])),
+        metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None,
         config=config,
     )
 
@@ -135,3 +158,18 @@ def _as_float_tensor(value: torch.Tensor, name: str) -> torch.Tensor:
     if not torch.isfinite(tensor).all():
         raise ValueError(f"{name} 包含 NaN 或 Inf")
     return tensor
+
+
+def _teacher_names_from_raw(raw: dict, count: int) -> list[str] | None:
+    """从原始 payload 中恢复每条序列的 teacher 名称。"""
+    names = raw.get("teacher_names")
+    if names is None:
+        return None
+    if isinstance(names, np.ndarray):
+        names = names.tolist()
+    if not isinstance(names, list):
+        raise TypeError("teacher_names 必须是 list 或 numpy array")
+    result = [str(name) for name in names]
+    if len(result) != count:
+        raise ValueError(f"teacher_names 长度必须为 {count}，实际为 {len(result)}")
+    return result

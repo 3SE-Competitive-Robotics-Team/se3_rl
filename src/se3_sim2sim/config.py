@@ -9,15 +9,28 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import se3_shared
-from se3_shared import ActionDelayConfig, Termination
+from se3_shared import ActionDelayConfig, TaskMode, Termination
+from se3_shared.grounded_pose import solve_grounded_pose
 
 from .course import CourseConfig
 
 ViewerMode = Literal["rerun", "none"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
+GAIT_BASE_HEIGHT = 0.35
 
 _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
+
+
+def _gait_default_dof_pos() -> tuple[float, ...]:
+    """返回 GAIT 训练用的 0.35m 轮子触地默认姿态。"""
+    result = solve_grounded_pose(GAIT_BASE_HEIGHT, keep_wheel_x=False, align_com_x=True)
+    if not result.success:
+        raise ValueError(
+            "无法求解 GAIT sim2sim 默认触地姿态: "
+            f"base_height={GAIT_BASE_HEIGHT}, message={result.message}"
+        )
+    return tuple(float(v) for v in result.q6)
 
 
 class YawPidConfig(BaseModel):
@@ -91,6 +104,13 @@ class JumpScheduleConfig(BaseModel):
         return self
 
 
+class TaskModeSimConfig(BaseModel):
+    """sim2sim 端的 Task Mode 配置。"""
+
+    mode: TaskMode = TaskMode.WHEEL
+    """当前固定 Task Mode。"""
+
+
 class RobotConfig(BaseModel):
     """sim2sim 机器人运行配置。"""
 
@@ -122,6 +142,8 @@ class RobotConfig(BaseModel):
     leg_kp: float = _shared_robot.leg_kp
     leg_kd: float = _shared_robot.leg_kd
     wheel_kd: float = _shared_robot.wheel_kd
+    wheel_lock_damping: float | None = None
+    freeze_wheels: bool = False
     yaw_pid: YawPidConfig = Field(default_factory=YawPidConfig)
     action_delay: ActionDelayConfig = Field(
         default_factory=lambda: _shared_robot.action_delay.model_copy()
@@ -132,6 +154,8 @@ class RobotConfig(BaseModel):
     """跳跃参考相位参数，与训练端 JumpCommandTerm 对齐。"""
     jump_schedule: JumpScheduleConfig = Field(default_factory=JumpScheduleConfig)
     """定时跳跃调度配置。"""
+    task_mode: TaskModeSimConfig = Field(default_factory=TaskModeSimConfig)
+    """Task Mode 配置，仅 TaskMode policy 时使用。"""
 
 
 class PolicyConfig(BaseModel):
@@ -186,6 +210,7 @@ class RunConfig(BaseModel):
         """原地解析所有路径，返回 self（供链式调用）。"""
         base = Path.cwd() if root is None else Path(root)
         self.robot.model_path = _resolve_path(base, self.robot.model_path)
+        self._resolve_task_mode_defaults()
         self._resolve_legacy_action_delay_steps()
         self.policy.checkpoint = (
             _latest_checkpoint(base)
@@ -202,6 +227,25 @@ class RunConfig(BaseModel):
             fail_height_m=self.fail_height_m,
         )
         return self
+
+    def _resolve_task_mode_defaults(self) -> None:
+        """对齐训练端各 TaskMode 的 reset 姿态、指令和动作语义。"""
+        if self.robot.task_mode.mode != TaskMode.GAIT:
+            return
+        command = list(self.robot.command)
+        command[4] = GAIT_BASE_HEIGHT
+        command[5] = 0.0
+        command[6] = 0.0
+        command[7] = 0.0
+        action_scale = list(self.robot.action_scale)
+        action_scale[4] = 0.0
+        action_scale[5] = 0.0
+        self.robot.base_height = GAIT_BASE_HEIGHT
+        self.robot.command = tuple(command)
+        self.robot.default_dof_pos = _gait_default_dof_pos()
+        self.robot.action_scale = tuple(action_scale)
+        self.robot.wheel_lock_damping = 0.0
+        self.robot.freeze_wheels = True
 
     def to_dict(self) -> dict[str, object]:
         """序列化为纯 JSON 兼容字典（Path → str，嵌套 BaseModel 递归展开）。"""

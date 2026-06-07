@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from se3_train.runner import Se3WarmStartRunner
+from se3_train.runner import Se3OnPolicyRunner, Se3WarmStartRunner
 
-__all__ = ["Se3WarmStartRunner"]
+__all__ = ["Se3OnPolicyRunner", "Se3WarmStartRunner"]

@@ -16,13 +16,17 @@ import torch
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
-from se3_train.mdp.jump_commands import JumpCommandTerm
-
-# GRU rollout 步数，对应 jump_finetune/jump_pretrain task rl_cfg.py 的 num_steps_per_env=64
+# GRU rollout 步数，对应 rl_cfg.py 中 se3_jump_*_gru_ppo_runner_cfg 的 num_steps_per_env=64
 # 如果修改了 rl_cfg 里的 num_steps_per_env，需要同步更新此常量
 _GRU_STEPS_PER_ENV = 64
 
 _JUMP_CURRICULUM_STEP_BASE_ATTR = "_jump_curriculum_step_base"
+
+
+def _has_jump_cfg(term: object) -> bool:
+    """判断指令项配置是否包含跳跃课程需要的参数。"""
+    cfg = getattr(term, "cfg", None)
+    return cfg is not None and hasattr(cfg, "jump_prob") and hasattr(cfg, "jump_height_range")
 
 
 def _current_iter(env: ManagerBasedRlEnv) -> int:
@@ -63,7 +67,7 @@ def jump_prob_curriculum(
     current_iter = _current_iter(env)
 
     term = env.command_manager.get_term(command_name)
-    if not isinstance(term, JumpCommandTerm):
+    if not _has_jump_cfg(term):
         return {}
 
     if current_iter < warmup_iters:
@@ -97,7 +101,7 @@ def jump_height_curriculum(
     current_iter = _current_iter(env)
 
     term = env.command_manager.get_term(command_name)
-    if not isinstance(term, JumpCommandTerm):
+    if not _has_jump_cfg(term):
         return {}
 
     if current_iter < expand_iter:

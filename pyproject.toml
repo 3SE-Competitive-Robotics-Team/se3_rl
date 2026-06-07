@@ -26,8 +26,14 @@ se3-play = "se3_train.play:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
+se3-grounded-pose = "se3_tools.grounded_pose:main"
 se3-jump-to = "se3_jump_to.cli:main"
 se3-jump-to-replay = "se3_jump_to.replay:main"
+se3-flow-collect = "se3_flow_match.collect:main"
+se3-flow-train = "se3_flow_match.train:main"
+se3-flow-play = "se3_flow_match.play:main"
+se3-flow-smoke = "se3_flow_match.smoke:main"
+se3-flow-monitor = "se3_flow_match.monitor:main"
 
 [build-system]
 requires = ["uv_build==0.11.8"]

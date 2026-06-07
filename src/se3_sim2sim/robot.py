@@ -20,6 +20,7 @@ from .runtime_spec import RuntimeSpec, as_float64
 from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
+_WHEEL_LOCK_RANGE = (-1.0e-4, 1.0e-4)
 
 
 def _tn_clip(
@@ -53,7 +54,10 @@ class WheelLeggedRobot:
         self.model_path = Path(cfg.model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
-        self.model = self._build_model(str(self.model_path))
+        self.model = self._build_model(
+            str(self.model_path),
+            lock_wheels=bool(cfg.wheel_lock_damping is not None and cfg.wheel_lock_damping <= 0.0),
+        )
         # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -125,6 +129,8 @@ class WheelLeggedRobot:
         if self.cfg.yaw_pid.enabled:
             self.command[1] = yaw_rate_cmd
         self.step_count = 0
+        if self.runtime.policy.is_task_mode:
+            return np.zeros(self.runtime.policy.num_obs, dtype=np.float32)
         return self.observation()
 
     def update_yaw_command(self) -> float:
@@ -136,7 +142,9 @@ class WheelLeggedRobot:
         self.command[1] = self.yaw_pid.update(self.base_yaw, self.control_dt)
         return float(self.command[1])
 
-    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict[str, object]]:
+    def step(
+        self, action: np.ndarray, *, task_mode_obs: np.ndarray | None = None
+    ) -> tuple[np.ndarray, float, bool, dict[str, object]]:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != (self.runtime.policy.num_actions,):
             expected = (self.runtime.policy.num_actions,)
@@ -154,9 +162,12 @@ class WheelLeggedRobot:
             ctrl = self._compute_pd_torques(applied_action)
             self.data.ctrl[:] = ctrl
             mujoco.mj_step(self.model, self.data)
+            if self.cfg.freeze_wheels:
+                self.data.qpos[self.joint_qpos[JointGroup.CTRL_WHEELS]] = 0.0
+                self.data.qvel[self.joint_qvel[JointGroup.CTRL_WHEELS]] = 0.0
         self._refresh_state()
         self.step_count += 1
-        obs = self.observation()
+        obs = self.observation(task_mode_obs=task_mode_obs)
         reward = -abs(float(self.projected_gravity[2]) + 1.0)
         done, done_reason, fall_detected = self._termination_status()
         info = self.telemetry(reward=reward)
@@ -164,7 +175,7 @@ class WheelLeggedRobot:
         info["fall_detected"] = fall_detected
         return obs, reward, done, info
 
-    def observation(self) -> np.ndarray:
+    def observation(self, *, task_mode_obs: np.ndarray | None = None) -> np.ndarray:
         self._refresh_state()
         return self.obs.build(
             base_quat_wxyz=self.base_quat,
@@ -173,6 +184,7 @@ class WheelLeggedRobot:
             dof_vel=self.dof_vel,
             command=self.command,
             action_obs=self.last_action,
+            task_mode_obs=task_mode_obs,
         )
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
@@ -260,7 +272,7 @@ class WheelLeggedRobot:
         return int(idx)
 
     @staticmethod
-    def _build_model(xml_path: str) -> mujoco.MjModel:
+    def _build_model(xml_path: str, *, lock_wheels: bool = False) -> mujoco.MjModel:
         """加载 MJCF 并程序化添加 motor actuator（与训练端 DcMotorActuatorCfg 一致）。
 
         PD 控制在 Python 层计算，T-N 包络 clamp 也在 Python 层执行。
@@ -271,6 +283,13 @@ class WheelLeggedRobot:
 
         leg_joint_names = ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint")
         wheel_joint_names = ("l_wheel_Joint", "r_wheel_Joint")
+        if lock_wheels:
+            for joint in spec.joints:
+                if joint.name in wheel_joint_names:
+                    joint.limited = True
+                    joint.range[:] = _WHEEL_LOCK_RANGE
+                    joint.damping[0] = 10.0
+                    joint.frictionloss = 1.0
 
         for jname in leg_joint_names:
             act = spec.add_actuator()
@@ -397,7 +416,12 @@ class WheelLeggedRobot:
         wheel_scale = self.action_scale[JointGroup.WHEEL_ACTUATORS]
         wheel_vel_target = action[4:6] * wheel_scale
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
-        wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
+        wheel_kd = (
+            float(self.cfg.wheel_lock_damping)
+            if np.all(wheel_scale == 0.0) and self.cfg.wheel_lock_damping is not None
+            else _SHARED_ROBOT.wheel_kd
+        )
+        wheel_torque = wheel_kd * (wheel_vel_target - wheel_vel)
         wheel_torque = _tn_clip(
             wheel_torque,
             wheel_vel,

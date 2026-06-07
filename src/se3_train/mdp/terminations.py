@@ -48,6 +48,45 @@ class BadOrientationDelayed:
 bad_orientation_delayed = BadOrientationDelayed()
 
 
+class LowBaseHeightDelayed:
+    """base height 连续低于阈值后终止。"""
+
+    def __init__(self) -> None:
+        self._fail_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        min_height: float,
+        max_steps: int = 30,
+    ) -> torch.Tensor:
+        if self._fail_count is None:
+            self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        sensor = env.scene[sensor_name]
+        height = sensor.data.heights[:, 0]
+        low = height < float(min_height)
+
+        self._fail_count[low] += 1
+        self._fail_count[~low] = 0
+        self._fail_count[env.episode_length_buf <= 1] = 0
+
+        return self._fail_count > int(max_steps)
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._fail_count is not None and env_ids is not None:
+            self._fail_count[env_ids] = 0
+
+
+gait_low_base_height_delayed = LowBaseHeightDelayed()
+
+
+def _has_jump_stage(term: object) -> bool:
+    """判断指令项是否暴露跳跃阶段。"""
+    return hasattr(term, "jump_stage")
+
+
 def leg_contact(
     env: ManagerBasedRlEnv,
     sensor_name: str,
@@ -89,9 +128,6 @@ def leg_contact(
             leg_contact_jump = has_contact[jump_flag].float().mean().item() if n_jump > 0 else 0.0
             leg_contact_walk = has_contact[~jump_flag].float().mean().item() if n_walk > 0 else 0.0
 
-            # RSI 期门控
-            from se3_train.mdp.jump_commands import JumpCommandTerm
-
             term = env.command_manager.get_term(diag_command_name)
             rsi_window = 5
             in_rsi = env.episode_length_buf <= rsi_window
@@ -100,7 +136,7 @@ def leg_contact(
             leg_contact_rsi = has_contact[rsi_jump].float().mean().item() if n_rsi > 0 else 0.0
 
             # landing stage 门控
-            if isinstance(term, JumpCommandTerm):
+            if _has_jump_stage(term):
                 in_landing = term.jump_stage == 2
                 landing_jump = jump_flag & in_landing
                 n_landing = landing_jump.sum().item()
@@ -153,3 +189,132 @@ def leg_contact(
     if terminate:
         return terminate_contact
     return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+
+def body_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """指定 body 接触地面即时终止。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    force_mag = finite_contact_force_norm(data.force)
+    max_force = force_mag.max(dim=1).values
+    return max_force > force_threshold
+
+
+class BodyContactDelayed:
+    """body 接触后连续惩罚一段时间，再终止 episode。"""
+
+    def __init__(self) -> None:
+        self._contact_count: torch.Tensor | None = None
+        self._active: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        force_threshold: float = 1.0,
+        delay_steps: int = 50,
+    ) -> torch.Tensor:
+        if self._contact_count is None:
+            self._contact_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        if self._active is None:
+            self._active = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+        sensor: ContactSensor = env.scene[sensor_name]
+        data = sensor.data
+        if data.force is None:
+            contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        else:
+            force_mag = finite_contact_force_norm(data.force)
+            max_force = force_mag.max(dim=1).values
+            contact = max_force > force_threshold
+
+        self._contact_count[contact] += 1
+        self._contact_count[~contact] = 0
+        self._contact_count[env.episode_length_buf <= 1] = 0
+        self._active[:] = self._contact_count > 0
+        return self._contact_count > int(delay_steps)
+
+    def penalty(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+        """返回当前 delayed contact 窗口，供 reward 持续扣分。"""
+        if self._active is None:
+            return torch.zeros(env.num_envs, device=env.device)
+        return self._active.float()
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            return
+        if self._contact_count is not None:
+            self._contact_count[env_ids] = 0
+        if self._active is not None:
+            self._active[env_ids] = False
+
+
+class BodyContactGracePenalty:
+    """body 接触后的 grace 窗口持续惩罚。
+
+    这个 reward term 独立维护接触窗口状态，不依赖 termination term 的实例。
+    MJLab manager 会 deepcopy cfg，跨 manager 共享 callable 实例会导致状态脱钩。
+    """
+
+    def __init__(self) -> None:
+        self._contact_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        force_threshold: float = 1.0,
+        delay_steps: int = 50,
+    ) -> torch.Tensor:
+        if self._contact_count is None:
+            self._contact_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        sensor: ContactSensor = env.scene[sensor_name]
+        data = sensor.data
+        if data.force is None:
+            contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        else:
+            force_mag = finite_contact_force_norm(data.force)
+            max_force = force_mag.max(dim=1).values
+            contact = max_force > force_threshold
+
+        self._contact_count[contact] += 1
+        self._contact_count[~contact] = 0
+        self._contact_count[env.episode_length_buf <= 1] = 0
+        in_grace = (self._contact_count > 0) & (self._contact_count <= int(delay_steps))
+        return in_grace.float()
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            return
+        if self._contact_count is not None:
+            self._contact_count[env_ids] = 0
+
+
+class BodyContactPenalty:
+    """body 接触地面时每一步持续扣分。"""
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        force_threshold: float = 1.0,
+    ) -> torch.Tensor:
+        sensor: ContactSensor = env.scene[sensor_name]
+        data = sensor.data
+        if data.force is None:
+            return torch.zeros(env.num_envs, device=env.device)
+
+        force_mag = finite_contact_force_norm(data.force)
+        max_force = force_mag.max(dim=1).values
+        return (max_force > force_threshold).float()
+
+
+base_link_contact_delayed = BodyContactDelayed()
+leg_contact_delayed = BodyContactDelayed()

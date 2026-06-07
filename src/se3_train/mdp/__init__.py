@@ -14,6 +14,9 @@ from . import jump_rewards as jump_rewards
 from . import jump_terminations as jump_terminations
 from . import observations as observations
 from . import rewards as rewards
+from . import task_mode_commands as task_mode_commands
+from . import task_mode_rewards as task_mode_rewards
+from . import task_modes as task_modes
 from . import terminations as terminations
 
 __all__ = [
@@ -27,5 +30,8 @@ __all__ = [
     "jump_terminations",
     "observations",
     "rewards",
+    "task_mode_commands",
+    "task_mode_rewards",
+    "task_modes",
     "terminations",
 ]
