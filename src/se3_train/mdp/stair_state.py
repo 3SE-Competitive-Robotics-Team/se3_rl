@@ -48,6 +48,7 @@ class StairClimbState:
         self._complete_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._trigger_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._last_bias = torch.zeros(self.num_envs, 6, device=self.device)
+        self._last_contact_xy = torch.zeros(self.num_envs, 2, device=self.device)
         self._iter = 0
         self._iter_origin: int | None = None
         self._kff = 1.0
@@ -73,6 +74,7 @@ class StairClimbState:
     def step(self, wheel_contact_xy: torch.Tensor) -> None:
         """按左右轮水平接触力推进触发状态。"""
         force = wheel_contact_xy.to(device=self.device).reshape(self.num_envs, 2)
+        self._last_contact_xy = force
         self._contact_buf[1:] = self._contact_buf[:-1].clone()
         self._contact_buf[0] = force
 
@@ -141,6 +143,10 @@ class StairClimbState:
             "Stair/ctbc_env_active_rate": active.float().mean().item(),
             "Stair/ctbc_complete_rate": (self._complete_count > 0).float().mean().item(),
             "Stair/ctbc_stable_contact_rate": self._stable.float().mean().item(),
+            "Stair/ctbc_contact_xy_mean": self._last_contact_xy.mean().item(),
+            "Stair/ctbc_contact_xy_max": self._last_contact_xy.max().item(),
+            "Stair/ctbc_contact_xy_left_mean": self._last_contact_xy[:, 0].mean().item(),
+            "Stair/ctbc_contact_xy_right_mean": self._last_contact_xy[:, 1].mean().item(),
             "Stair/ctbc_kff": float(self._kff),
             "Stair/ctbc_bias_abs_mean": torch.abs(self._last_bias[:, :4]).mean().item(),
             "Stair/ctbc_trigger_count_mean": self._trigger_count.float().mean().item(),
@@ -157,6 +163,7 @@ class StairClimbState:
         self._complete_count[ids] = 0
         self._trigger_count[ids] = 0
         self._last_bias[ids] = 0.0
+        self._last_contact_xy[ids] = 0.0
 
     def _amps_from_height(self, height: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """按高度表线性插值得到 front/active 峰值 raw action。"""

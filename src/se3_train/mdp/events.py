@@ -151,6 +151,9 @@ def step_stair_climb_state(
     if sensor.data.force is not None:
         force_xy = sensor.data.force[..., :2]
         wheel_xy = torch.linalg.norm(force_xy, dim=-1).reshape(env.num_envs, -1)[:, :2]
+    wheel_xy_raw = wheel_xy.clone()
+    riser_xy = torch.zeros_like(wheel_xy)
+    riser_valid_rate = torch.tensor(0.0, device=env.device)
 
     if riser_sensor_name:
         riser_sensor: ContactSensor = env.scene[riser_sensor_name]
@@ -163,13 +166,24 @@ def step_stair_climb_state(
             if data.found is not None:
                 found = data.found.reshape(env.num_envs, 2, -1) > 0
                 valid = valid & found
-            wheel_xy = torch.where(valid, force_xy, torch.zeros_like(force_xy)).sum(dim=-1)
+            riser_valid_rate = valid.float().mean()
+            riser_xy = torch.where(valid, force_xy, torch.zeros_like(force_xy)).sum(dim=-1)
+            wheel_xy = riser_xy
 
     state.step(wheel_xy)
     iteration = int(getattr(env, "common_step_counter", 0)) // max(1, int(num_steps_per_env))
     state.update_iter(iteration)
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update(state.diag())
+        env.extras["log"].update(
+            {
+                **state.diag(),
+                "Stair/ctbc_wheel_xy_raw_mean": wheel_xy_raw.mean().item(),
+                "Stair/ctbc_wheel_xy_raw_max": wheel_xy_raw.max().item(),
+                "Stair/ctbc_riser_xy_mean": riser_xy.mean().item(),
+                "Stair/ctbc_riser_xy_max": riser_xy.max().item(),
+                "Stair/ctbc_riser_valid_rate": riser_valid_rate.item(),
+            }
+        )
 
 
 def _active_curriculum_stage(
