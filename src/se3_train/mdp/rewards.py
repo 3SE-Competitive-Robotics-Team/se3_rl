@@ -998,7 +998,6 @@ def recovery_diagnostics(
 
     log = env.extras.setdefault("log", {})
     robot = env.scene[asset_cfg.name]
-    command_term = env.command_manager.get_term(command_name)
     cmd = env.command_manager.get_command(command_name)
 
     pg = robot.data.projected_gravity_b
@@ -1334,35 +1333,6 @@ def recovery_diagnostics(
             .item(),
         }
     )
-
-    final_height_cmd = getattr(command_term, "_final_height_command", None)
-    height_phase = getattr(command_term, "_height_phase", None)
-    height_stable_steps = getattr(command_term, "_height_stable_steps", None)
-    if (
-        isinstance(final_height_cmd, torch.Tensor)
-        and isinstance(height_phase, torch.Tensor)
-        and isinstance(height_stable_steps, torch.Tensor)
-        and final_height_cmd.shape == target_height.shape
-        and height_phase.shape == target_height.shape
-        and height_stable_steps.shape == target_height.shape
-    ):
-        height_gap = torch.clamp(final_height_cmd - target_height, min=0.0)
-        log.update(
-            {
-                "Recovery/diag_height_phase_balance_rate": (height_phase == 0)
-                .float()
-                .mean()
-                .item(),
-                "Recovery/diag_height_phase_rise_rate": (height_phase == 1).float().mean().item(),
-                "Recovery/diag_height_phase_done_rate": (height_phase == 2).float().mean().item(),
-                "Recovery/diag_effective_command_height_mean_m": target_height.mean().item(),
-                "Recovery/diag_final_command_height_mean_m": final_height_cmd.mean().item(),
-                "Recovery/diag_height_command_gap_m": height_gap.mean().item(),
-                "Recovery/diag_height_balance_stable_steps": height_stable_steps.float()
-                .mean()
-                .item(),
-            }
-        )
 
     for action_idx, action_name in enumerate(
         ("lf0", "left_active", "rf0", "right_active", "left_wheel", "right_wheel")
