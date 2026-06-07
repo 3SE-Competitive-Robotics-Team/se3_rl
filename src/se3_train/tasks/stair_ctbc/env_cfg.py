@@ -19,6 +19,7 @@ from mjlab.sensor import (
 )
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
+    BoxInvertedPyramidStairsTerrainCfg,
     BoxRandomStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
@@ -26,7 +27,7 @@ from mjlab.terrains import (
 
 from se3_train.mdp import events, stair_rewards, terminations
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
-from se3_train.tasks.stair_ctbc.terrains import BoxStageStairsTerrainCfg
+from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -36,15 +37,55 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     stair_sub_terrains = (
         {
             "stage_stairs": BoxStageStairsTerrainCfg(
-                proportion=1.0,
+                proportion=0.25,
                 size=(8.0, 8.0),
+            ),
+            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+                proportion=0.25,
+                size=(8.0, 8.0),
+                step_height_range=(0.05, 0.20),
+                step_width=0.5,
+                platform_width=2.0,
+                border_width=1.0,
+            ),
+            "ramp_43deg_400mm": BoxRampTerrainCfg(
+                proportion=0.25,
+                size=(8.0, 8.0),
+                slope_deg=43.0,
+                height=0.40,
+            ),
+            "ramp_17deg_350mm": BoxRampTerrainCfg(
+                proportion=0.25,
+                size=(8.0, 8.0),
+                slope_deg=17.0,
+                height=0.35,
             ),
         }
         if play
         else {
             "stage_stairs": BoxStageStairsTerrainCfg(
-                proportion=0.7,
+                proportion=0.175,
                 size=(8.0, 8.0),
+            ),
+            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+                proportion=0.175,
+                size=(8.0, 8.0),
+                step_height_range=(0.05, 0.20),
+                step_width=0.5,
+                platform_width=2.0,
+                border_width=1.0,
+            ),
+            "ramp_43deg_400mm": BoxRampTerrainCfg(
+                proportion=0.175,
+                size=(8.0, 8.0),
+                slope_deg=43.0,
+                height=0.40,
+            ),
+            "ramp_17deg_350mm": BoxRampTerrainCfg(
+                proportion=0.175,
+                size=(8.0, 8.0),
+                slope_deg=17.0,
+                height=0.35,
             ),
             "random_stairs": BoxRandomStairsTerrainCfg(
                 proportion=0.15,
