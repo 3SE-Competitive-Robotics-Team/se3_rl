@@ -27,8 +27,8 @@ class BoxRampTerrainCfg(SubTerrainCfg):
     """斜坡楔形体向下延伸深度，避免薄片接触不稳定。"""
     base_thickness: float = 1.0
     """平地和平台向下延伸厚度。"""
-    spawn_base_offset: float = 0.1
-    """出生 base 相对坡底的 x 偏移，使轮子靠近坡面入口。"""
+    spawn_base_offset: float = -0.08
+    """出生 base 相对坡底的 x 偏移，使轮子在坡面入口前。"""
 
     @property
     def run_length(self) -> float:
@@ -235,8 +235,8 @@ class BoxStageStairsTerrainCfg(SubTerrainCfg):
     """台阶走廊宽度。"""
     base_thickness: float = 1.0
     """地形盒体向下延伸厚度，避免薄片接触不稳定。"""
-    spawn_base_offset: float = 0.1
-    """出生 base 相对第一级竖面的 x 偏移，使轮子前缘贴近台阶。"""
+    spawn_base_offset: float = -0.08
+    """出生 base 相对第一级竖面的 x 偏移，使轮子在台阶前。"""
 
     def function(
         self,
