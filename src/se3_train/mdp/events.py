@@ -329,6 +329,7 @@ def reset_root_state_robotlab_full_random(
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     pos_xy_range: tuple[float, float] = (-0.5, 0.5),
+    pos_xy_offset: tuple[float, float] = (0.0, 0.0),
     height_offset_range: tuple[float, float] = (0.0, 0.2),
     roll_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
     pitch_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
@@ -359,6 +360,7 @@ def reset_root_state_robotlab_full_random(
     pitch_range = _stage_value(stage, "pitch_range", pitch_range)
     yaw_range = _stage_value(stage, "yaw_range", yaw_range)
     pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
+    pos_xy_offset = _stage_value(stage, "pos_xy_offset", pos_xy_offset)
     height_offset_range = _stage_value(stage, "height_offset_range", height_offset_range)
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
@@ -381,6 +383,8 @@ def reset_root_state_robotlab_full_random(
     pos = root_states[:, 0:3].clone()
     pos[:, 0] += _sample_range(pos_xy_range, (n,))
     pos[:, 1] += _sample_range(pos_xy_range, (n,))
+    pos[:, 0] += float(pos_xy_offset[0])
+    pos[:, 1] += float(pos_xy_offset[1])
 
     roll = _sample_range(roll_range, (n,))
     pitch = _sample_range(pitch_range, (n,))
