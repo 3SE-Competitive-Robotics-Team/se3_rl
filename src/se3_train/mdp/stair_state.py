@@ -48,7 +48,6 @@ class StairClimbState:
         self._complete_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._trigger_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._last_bias = torch.zeros(self.num_envs, 6, device=self.device)
-        self._last_predictive = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
         self._iter = 0
         self._iter_origin: int | None = None
         self._kff = 1.0
@@ -71,28 +70,19 @@ class StairClimbState:
             span = max(1, self.ann_end_iter - self.ann_start_iter)
             self._kff = max(0.0, 1.0 - (local_iter - self.ann_start_iter) / span)
 
-    def step(
-        self, wheel_contact_xy: torch.Tensor, predictive_mask: torch.Tensor | None = None
-    ) -> None:
-        """按左右轮水平接触力和预测触发掩码推进触发状态。"""
+    def step(self, wheel_contact_xy: torch.Tensor) -> None:
+        """按左右轮水平接触力推进触发状态。"""
         force = wheel_contact_xy.to(device=self.device).reshape(self.num_envs, 2)
         self._contact_buf[1:] = self._contact_buf[:-1].clone()
         self._contact_buf[0] = force
 
         self._stable = (self._contact_buf > self.force_threshold).all(dim=0)
-        if predictive_mask is None:
-            predictive = torch.zeros_like(self._stable)
-        else:
-            predictive = predictive_mask.to(device=self.device, dtype=torch.bool).reshape(
-                self.num_envs, 2
-            )
         self._cooldown[self._cooldown > 0] -= 1
 
         can_trigger = (self._ff_phase == -1) & (self._cooldown == 0)
-        newly_triggered = (self._stable | predictive) & can_trigger
+        newly_triggered = self._stable & can_trigger
         self._ff_phase[newly_triggered] = 0
         self._trigger_count[newly_triggered.any(dim=1)] += 1
-        self._last_predictive = predictive
 
         if self._iter < self.phantom_trigger_iter:
             phantom = torch.rand(self.num_envs, 2, device=self.device) < 0.01
@@ -151,14 +141,6 @@ class StairClimbState:
             "Stair/ctbc_env_active_rate": active.float().mean().item(),
             "Stair/ctbc_complete_rate": (self._complete_count > 0).float().mean().item(),
             "Stair/ctbc_stable_contact_rate": self._stable.float().mean().item(),
-            "Stair/ctbc_predictive_rate": getattr(
-                self,
-                "_last_predictive",
-                torch.zeros_like(self._stable),
-            )
-            .float()
-            .mean()
-            .item(),
             "Stair/ctbc_kff": float(self._kff),
             "Stair/ctbc_bias_abs_mean": torch.abs(self._last_bias[:, :4]).mean().item(),
             "Stair/ctbc_trigger_count_mean": self._trigger_count.float().mean().item(),

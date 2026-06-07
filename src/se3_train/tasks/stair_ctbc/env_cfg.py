@@ -252,11 +252,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "riser_sensor_name": "wheel_riser_sensor",
             "riser_normal_z_max": 0.5,
             "num_steps_per_env": 64,
-            "asset_cfg": SceneEntityCfg("robot"),
-            "predictive_trigger": True,
-            "predictive_terrain_type_ids": (0, 2, 3),
-            "riser_x_from_env_origin": 0.08,
-            "predictive_margin_m": 0.04,
         },
     )
     new_events["reset_stair_climb_state"] = EventTermCfg(
