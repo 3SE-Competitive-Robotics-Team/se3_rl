@@ -44,7 +44,7 @@ NX 每帧输出网络的 6 维归一化 raw action，动作顺序固定为：
 [LF, LB, RF, RB, l_wheel, r_wheel]
 ```
 
-STM32 按共享常量把 raw action 转换为物理目标并限幅：腿部为 `action[:4] * (0.35, 0.25, 0.35, 0.25) + default_dof_pos[:4]`，轮子为 `action[4:6] * 45.0 rad/s`。
+STM32 按共享常量把 raw action 转换为物理目标并限幅：腿部为 `action[:4] * (0.35, 0.25, 0.35, 0.25) + default_dof_pos[:4]`，轮子为 `action[4:6] * 60.0 rad/s`。
 
 ## NX Recovery Runtime
 
