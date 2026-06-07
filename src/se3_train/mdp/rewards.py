@@ -680,6 +680,72 @@ def tracking_orientation_l2(
     return penalty
 
 
+def recovery_upright_orientation_l2(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 20.0,
+    roll_scale_rad: float = 0.14,
+    pitch_scale_rad: float = 0.20,
+    roll_weight: float = 1.5,
+    pitch_weight: float = 1.0,
+    max_penalty: float = 6.0,
+) -> torch.Tensor:
+    """接近直立后惩罚 pitch/roll 分轴误差，抑制转弯时的横滚侧倾。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pg = robot.data.projected_gravity_b
+
+    gate = _near_upright_gate(
+        pg[:, 2],
+        gate_start_deg=float(gate_start_deg),
+        gate_full_deg=float(gate_full_deg),
+    )
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    active = (gate > 0.0) & ~jump_flag
+
+    current_pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
+    current_roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
+    pitch_error = current_pitch - cmd[:, 2]
+    roll_error = current_roll - cmd[:, 3]
+
+    pitch_term = (pitch_error / max(float(pitch_scale_rad), 1.0e-6)) ** 2
+    roll_term = (roll_error / max(float(roll_scale_rad), 1.0e-6)) ** 2
+    penalty = torch.clamp(
+        float(roll_weight) * roll_term + float(pitch_weight) * pitch_term,
+        max=float(max_penalty),
+    )
+    result = penalty * gate * active.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        yaw_abs = torch.abs(cmd[:, 1])
+        turning = active & (yaw_abs >= 0.2)
+        straight = active & (yaw_abs < 0.2)
+        yaw_low = active & (yaw_abs < 1.0)
+        yaw_mid = active & (yaw_abs >= 1.0) & (yaw_abs < 3.0)
+        yaw_high = active & (yaw_abs >= 3.0)
+        roll_abs_deg = torch.rad2deg(torch.abs(roll_error))
+        pitch_abs_deg = torch.rad2deg(torch.abs(pitch_error))
+        env.extras["log"].update(
+            {
+                "Recovery/diag_upright_orientation_penalty": _masked_mean(result, active),
+                "Recovery/diag_upright_orientation_gate": _masked_mean(gate, active),
+                "Recovery/diag_abs_roll_deg_turning": _masked_mean(roll_abs_deg, turning),
+                "Recovery/diag_abs_roll_deg_straight": _masked_mean(roll_abs_deg, straight),
+                "Recovery/diag_abs_roll_deg_by_yaw_cmd/low": _masked_mean(roll_abs_deg, yaw_low),
+                "Recovery/diag_abs_roll_deg_by_yaw_cmd/mid": _masked_mean(roll_abs_deg, yaw_mid),
+                "Recovery/diag_abs_roll_deg_by_yaw_cmd/high": _masked_mean(roll_abs_deg, yaw_high),
+                "Recovery/diag_abs_pitch_deg_turning": _masked_mean(pitch_abs_deg, turning),
+            }
+        )
+
+    return result
+
+
 def tracking_height(
     env: ManagerBasedRlEnv,
     command_name: str,

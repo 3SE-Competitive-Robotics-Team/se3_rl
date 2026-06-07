@@ -269,6 +269,20 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=2.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
+    cfg.rewards["upright_orientation_l2"] = RewardTermCfg(
+        func=rewards.recovery_upright_orientation_l2,
+        weight=-0.5,
+        params={
+            "command_name": "velocity_height",
+            "gate_start_deg": 60.0,
+            "gate_full_deg": 20.0,
+            "roll_scale_rad": 0.14,
+            "pitch_scale_rad": 0.20,
+            "roll_weight": 1.5,
+            "pitch_weight": 1.0,
+            "max_penalty": 6.0,
+        },
+    )
     cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.05)
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
