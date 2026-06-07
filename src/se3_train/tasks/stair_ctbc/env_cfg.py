@@ -27,36 +27,50 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """生成台阶 CTBC 环境，保持 recovery/flat 的 action 与 observation 语义。"""
     cfg = flat_env_cfg(play=play)
 
+    stair_sub_terrains = (
+        {
+            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+                proportion=1.0,
+                size=(8.0, 8.0),
+                step_height_range=(0.12, 0.12),
+                step_width=0.5,
+                platform_width=2.0,
+                border_width=1.0,
+            ),
+        }
+        if play
+        else {
+            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+                proportion=0.5,
+                size=(8.0, 8.0),
+                step_height_range=(0.05, 0.20),
+                step_width=0.5,
+                platform_width=2.0,
+                border_width=1.0,
+            ),
+            "random_stairs": BoxRandomStairsTerrainCfg(
+                proportion=0.3,
+                size=(8.0, 8.0),
+                step_height_range=(0.05, 0.20),
+                step_width=0.6,
+                platform_width=2.0,
+                border_width=0.5,
+            ),
+            "flat": BoxFlatTerrainCfg(proportion=0.2, size=(8.0, 8.0)),
+        }
+    )
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
-            curriculum=not play,
+            curriculum=True,
             size=(8.0, 8.0),
             border_width=20.0,
             border_height=1.0,
-            num_rows=10,
-            num_cols=20,
-            difficulty_range=(0.0, 1.0),
+            num_rows=1 if play else 10,
+            num_cols=1 if play else 20,
+            difficulty_range=(1.0, 1.0) if play else (0.0, 1.0),
             add_lights=True,
-            sub_terrains={
-                "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
-                    proportion=0.5,
-                    size=(8.0, 8.0),
-                    step_height_range=(0.05, 0.20),
-                    step_width=0.5,
-                    platform_width=2.0,
-                    border_width=1.0,
-                ),
-                "random_stairs": BoxRandomStairsTerrainCfg(
-                    proportion=0.3,
-                    size=(8.0, 8.0),
-                    step_height_range=(0.05, 0.20),
-                    step_width=0.6,
-                    platform_width=2.0,
-                    border_width=0.5,
-                ),
-                "flat": BoxFlatTerrainCfg(proportion=0.2, size=(8.0, 8.0)),
-            },
+            sub_terrains=stair_sub_terrains,
         ),
         max_init_terrain_level=0,
     )
@@ -92,6 +106,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
     command_cfg.enable_jump_metrics = False
+    if play:
+        command_cfg.lin_vel_x_range = (0.5, 0.5)
+        command_cfg.height_range = (0.28, 0.28)
+        command_cfg.standing_height_range = (0.28, 0.28)
 
     if "bad_orientation" in cfg.terminations:
         cfg.terminations["bad_orientation"] = replace(
@@ -115,14 +133,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "pos_xy_range": (-0.1, 0.1),
-            "height_offset_range": (0.0, 0.2),
+            "pos_xy_range": (0.0, 0.0) if play else (-0.1, 0.1),
+            "height_offset_range": (0.0, 0.0) if play else (0.0, 0.2),
             "roll_range": (0.0, 0.0),
             "pitch_range": (0.0, 0.0),
-            "yaw_range": (-math.pi, math.pi),
+            "yaw_range": (0.0, 0.0) if play else (-math.pi, math.pi),
             "lin_vel_range": (0.0, 0.0),
             "ang_vel_range": (0.0, 0.0),
-            "clearance_range": (0.0, 0.05),
+            "clearance_range": (0.0, 0.02) if play else (0.0, 0.05),
         },
     )
     new_events["reset_joints"] = EventTermCfg(
