@@ -10,7 +10,13 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.sensor import (
+    ContactMatch,
+    ContactSensorCfg,
+    ObjRef,
+    RingPatternCfg,
+    TerrainHeightSensorCfg,
+)
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
     BoxInvertedPyramidStairsTerrainCfg,
@@ -89,7 +95,30 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         num_slots=4,
         global_frame=True,
     )
-    cfg.scene.sensors = (*tuple(cfg.scene.sensors or ()), wheel_riser_sensor)
+    left_wheel_center_height_sensor = TerrainHeightSensorCfg(
+        name="left_wheel_center_height_sensor",
+        frame=ObjRef(type="body", name="l_wheel_Link", entity="robot"),
+        ray_alignment="yaw",
+        pattern=RingPatternCfg(rings=(), include_center=True),
+        max_distance=2.0,
+        include_geom_groups=(0,),
+        reduction="min",
+    )
+    right_wheel_center_height_sensor = TerrainHeightSensorCfg(
+        name="right_wheel_center_height_sensor",
+        frame=ObjRef(type="body", name="r_wheel_Link", entity="robot"),
+        ray_alignment="yaw",
+        pattern=RingPatternCfg(rings=(), include_center=True),
+        max_distance=2.0,
+        include_geom_groups=(0,),
+        reduction="min",
+    )
+    cfg.scene.sensors = (
+        *tuple(cfg.scene.sensors or ()),
+        left_wheel_center_height_sensor,
+        right_wheel_center_height_sensor,
+        wheel_riser_sensor,
+    )
 
     cfg.actions["delayed_action"].height_conditioned_action_default = True
     cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
@@ -158,6 +187,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "align_root_height_to_wheels": True,
             "height_conditioned_default": True,
             "command_name": "velocity_height",
+            "terrain_height_sensor_names": (
+                "left_wheel_center_height_sensor",
+                "right_wheel_center_height_sensor",
+            ),
+            "allow_wheel_clearance_lowering": True,
+            "max_wheel_clearance_adjustment": 0.25,
         },
     )
     new_events["init_stair_climb_state"] = EventTermCfg(

@@ -1376,8 +1376,11 @@ def _lift_root_to_wheel_clearance(
     asset_cfg: SceneEntityCfg,
     min_clearance: float,
     command_name: str,
+    terrain_height_sensor_names: tuple[str, ...] | None = None,
+    allow_lowering: bool = False,
+    max_adjustment: float = 0.3,
 ) -> None:
-    """在 flat reset 后把轮底最小高度抬到指定离地间隙。"""
+    """在 reset 后把轮底最小高度校正到指定离地间隙。"""
     if min_clearance < 0.0 or len(env_ids) == 0:
         return
 
@@ -1387,27 +1390,85 @@ def _lift_root_to_wheel_clearance(
     active_env_ids = env_ids[active_local]
 
     env.sim.forward()
-    body_ids = _reset_wheel_body_ids(env, asset_cfg)
-    wheel_pos_w = asset.data.body_link_pos_w[active_env_ids][:, body_ids, :]
-    ground_z = env.scene.env_origins[active_env_ids, 2].unsqueeze(1)
-    wheel_bottom = wheel_pos_w[:, :, 2] - ground_z - _FOURBAR_WHEEL_RADIUS_M
-    min_wheel_bottom = wheel_bottom.min(dim=1).values
-    lift = torch.clamp(float(min_clearance) - min_wheel_bottom, min=0.0)
+    target_wheel_center_height = _FOURBAR_WHEEL_RADIUS_M + float(min_clearance)
+    terrain_center_clearance = _wheel_center_clearance_from_terrain_sensors(
+        env,
+        active_env_ids,
+        terrain_height_sensor_names,
+    )
+    if terrain_center_clearance is None:
+        body_ids = _reset_wheel_body_ids(env, asset_cfg)
+        wheel_pos_w = asset.data.body_link_pos_w[active_env_ids][:, body_ids, :]
+        ground_z = env.scene.env_origins[active_env_ids, 2].unsqueeze(1)
+        wheel_bottom = wheel_pos_w[:, :, 2] - ground_z - _FOURBAR_WHEEL_RADIUS_M
+        min_wheel_bottom = wheel_bottom.min(dim=1).values
+        adjustment = torch.clamp(float(min_clearance) - min_wheel_bottom, min=0.0)
+        before_wheel_bottom = min_wheel_bottom
+        mode = "origin"
+    else:
+        before_wheel_bottom = terrain_center_clearance - _FOURBAR_WHEEL_RADIUS_M
+        adjustment = target_wheel_center_height - terrain_center_clearance
+        if not allow_lowering:
+            adjustment = torch.clamp(adjustment, min=0.0)
+        adjustment = torch.clamp(
+            adjustment,
+            min=-float(max_adjustment),
+            max=float(max_adjustment),
+        )
+        mode = "terrain"
 
-    if lift.any():
+    if adjustment.any():
         pos = asset.data.root_link_pos_w[active_env_ids].clone()
         quat = asset.data.root_link_quat_w[active_env_ids].clone()
-        pos[:, 2] += lift
+        pos[:, 2] += adjustment
         asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
         env.sim.forward()
 
     if hasattr(env, "extras"):
         log = env.extras.setdefault("log", {})
-        log["Reset/wheel_clearance_before_min_m"] = float(min_wheel_bottom.min().item())
-        log["Reset/wheel_clearance_after_min_m"] = float((min_wheel_bottom + lift).min().item())
-        log["Reset/wheel_clearance_lift_max_m"] = float(lift.max().item())
-        log["Reset/wheel_clearance_lift_mean_m"] = float(lift.mean().item())
-        log["Reset/wheel_clearance_lift_ratio"] = float((lift > 0.0).float().mean().item())
+        after_wheel_bottom = before_wheel_bottom + adjustment
+        log["Reset/wheel_clearance_before_min_m"] = float(before_wheel_bottom.min().item())
+        log["Reset/wheel_clearance_after_min_m"] = float(after_wheel_bottom.min().item())
+        log["Reset/wheel_clearance_adjustment_max_m"] = float(adjustment.max().item())
+        log["Reset/wheel_clearance_adjustment_min_m"] = float(adjustment.min().item())
+        log["Reset/wheel_clearance_adjustment_mean_m"] = float(adjustment.mean().item())
+        log["Reset/wheel_clearance_adjustment_ratio"] = float(
+            (torch.abs(adjustment) > 1.0e-6).float().mean().item()
+        )
+        log["Reset/wheel_clearance_mode_terrain"] = float(mode == "terrain")
+
+
+def _wheel_center_clearance_from_terrain_sensors(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    sensor_names: tuple[str, ...] | None,
+) -> torch.Tensor | None:
+    """读取左右轮 raycast 高度，返回轮心到真实地形的最小距离。"""
+    if not sensor_names:
+        return None
+
+    try:
+        env.sim.sense()
+    except Exception:
+        return None
+
+    clearances: list[torch.Tensor] = []
+    for sensor_name in sensor_names:
+        try:
+            sensor = env.scene[sensor_name]
+            invalidate = getattr(sensor, "_invalidate_cache", None)
+            if callable(invalidate):
+                invalidate()
+            heights = sensor.data.heights
+        except Exception:
+            continue
+        if not isinstance(heights, torch.Tensor) or heights.shape[0] != env.num_envs:
+            continue
+        clearances.append(heights.reshape(env.num_envs, -1)[env_ids].min(dim=1).values)
+
+    if not clearances:
+        return None
+    return torch.stack(clearances, dim=1).min(dim=1).values
 
 
 def _clamp_policy_leg_pose(
@@ -1465,6 +1526,9 @@ def reset_joints(
     wheel_clearance: float = _DEFAULT_RESET_WHEEL_CLEARANCE_M,
     command_name: str = "velocity_height",
     height_conditioned_default: bool = False,
+    terrain_height_sensor_names: tuple[str, ...] | None = None,
+    allow_wheel_clearance_lowering: bool = False,
+    max_wheel_clearance_adjustment: float = 0.3,
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
@@ -1762,6 +1826,9 @@ def reset_joints(
             asset_cfg,
             float(wheel_clearance),
             command_name,
+            terrain_height_sensor_names,
+            bool(allow_wheel_clearance_lowering),
+            float(max_wheel_clearance_adjustment),
         )
 
 
