@@ -132,6 +132,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("bad_orientation", None)
     cfg.terminations.pop("leg_contact", None)
     cfg.terminations.pop("recovery_stagnation", None)
+    if "catastrophic_state" in cfg.terminations:
+        cfg.terminations["catastrophic_state"].params["max_leg_pos_error"] = None
     cfg.curriculum = {}
     if not play:
         cfg.curriculum = {

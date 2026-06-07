@@ -197,7 +197,7 @@ recovery_stagnation = RecoveryStagnation()
 
 def catastrophic_state(
     env: ManagerBasedRlEnv,
-    max_leg_pos_error: float = 3.0,
+    max_leg_pos_error: float | None = 3.0,
     max_leg_vel: float = 120.0,
     max_root_lin_vel: float = 80.0,
     max_root_ang_vel: float = 500.0,
@@ -225,7 +225,10 @@ def catastrophic_state(
     leg_pos, leg_default, leg_vel = _policy_leg_state_and_default(robot)
     base_height = root_pos[:, 2] - env.scene.env_origins[:, 2]
 
-    leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)
+    if max_leg_pos_error is None:
+        leg_pos_bad = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    else:
+        leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)
     leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
     root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
     root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)
