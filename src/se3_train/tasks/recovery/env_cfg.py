@@ -20,8 +20,6 @@ _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.20, 0.38)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
-_RECOVERY_DIAGNOSTIC_CORE_LOG_INTERVAL_STEPS = 256
-_RECOVERY_DIAGNOSTIC_HEAVY_LOG_INTERVAL_STEPS = 1024
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -338,8 +336,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold": 35.0,
             "action_saturation_threshold": 0.95,
             "active_rod_margin_warning": 0.05,
-            "log_interval_steps": _RECOVERY_DIAGNOSTIC_HEAVY_LOG_INTERVAL_STEPS,
-            "core_log_interval_steps": _RECOVERY_DIAGNOSTIC_CORE_LOG_INTERVAL_STEPS,
+            "log_interval_steps": 256,
+            "core_log_interval_steps": 64,
         },
     )
 
