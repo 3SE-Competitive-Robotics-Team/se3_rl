@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import torch
 from torch.utils.data import DataLoader
 
-from se3_shared import JointGroup, ObservationConfig, TaskMode
+from se3_shared import TASK_MODE_LOCOMOTION_CONTRACT, JointGroup, ObservationConfig, TaskMode
 
 from .checkpoint import load_flow_checkpoint, save_flow_checkpoint
 from .collect import collect_teacher_rollouts
@@ -179,7 +179,8 @@ def _assert_real_dataset_shape(dataset_path: Path) -> None:
         )
     scale = torch.tensor(ObservationConfig().command_scale, dtype=obs.dtype)
     expected = commands[:, None, :] * scale
-    max_diff = (obs[:, :, 6:11] - expected).abs().max().item()
+    command_slice = TASK_MODE_LOCOMOTION_CONTRACT.observation.require_slice("commands")
+    max_diff = (obs[:, :, command_slice] - expected).abs().max().item()
     if max_diff > 1.0e-5:
         raise RuntimeError(f"real smoke 失败：trajectory 内 command 观测漂移 max_diff={max_diff}")
 
@@ -205,7 +206,7 @@ def _assert_reset_window_is_supervised() -> None:
     if not torch.all(weights[starts != 0, :4] == 0.0):
         raise RuntimeError("synthetic smoke 失败：非 reset 窗口 burn-in mask 未生效")
 
-    obs = torch.randn(8, 24, 42)
+    obs = torch.randn(8, 24, TASK_MODE_LOCOMOTION_CONTRACT.num_obs)
     actions = torch.randn(8, 24, 6)
     dones = torch.zeros(8, 24, dtype=torch.bool)
     sampled_modes = torch.zeros(8, 24, dtype=torch.long)
@@ -226,21 +227,22 @@ def _assert_reset_window_is_supervised() -> None:
 def _assert_script_obs_recomputed_after_contract_switch() -> None:
     """确认 script play 用当前物理契约重算 actor obs。"""
     batch = 2
-    obs = {"actor": torch.zeros(batch, 42)}
+    obs = {"actor": torch.zeros(batch, TASK_MODE_LOCOMOTION_CONTRACT.num_obs)}
     env = _FakeScriptEnv(batch)
     out = _overwrite_script_actor_obs(obs, env, TaskMode.GAIT, TaskMode.GAIT, 1.0)["actor"]
     robot = env.scene["robot"]
+    slices = TASK_MODE_LOCOMOTION_CONTRACT.observation.slices
     expected_leg_pos = (
         robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS]
     )
     expected_leg_vel = robot.data.joint_vel[:, JointGroup.LEGS] * ObservationConfig().leg_vel_scale
-    if not torch.allclose(out[:, 11:15], expected_leg_pos):
+    if not torch.allclose(out[:, slices["leg_joint_pos"]], expected_leg_pos):
         raise RuntimeError(
             "synthetic smoke 失败：script play 未按当前 default_joint_pos 重算腿部位置观测"
         )
-    if not torch.allclose(out[:, 15:19], expected_leg_vel):
+    if not torch.allclose(out[:, slices["leg_joint_vel"]], expected_leg_vel):
         raise RuntimeError("synthetic smoke 失败：script play 未重算腿部速度观测")
-    if not torch.allclose(out[:, 23:29], env.action_manager.action):
+    if not torch.allclose(out[:, slices["last_actions"]], env.action_manager.action):
         raise RuntimeError("synthetic smoke 失败：script play 未重写 last_actions 观测")
 
 

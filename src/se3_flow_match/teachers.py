@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from se3_shared import TASK_MODE_LOCOMOTION_CONTRACT
 from se3_sim2sim.policy import PolicyRuntime
 from se3_sim2sim.runtime_spec import RuntimeSpec
 
@@ -14,7 +15,7 @@ class TeacherPolicy:
     """冻结的 RSL GRU teacher。"""
 
     def __init__(self, checkpoint: str | Path, *, device: str = "cpu") -> None:
-        """加载 teacher checkpoint 并校验 42D->6D。"""
+        """加载 teacher checkpoint 并校验 TaskMode actor obs -> 6D。"""
         self.checkpoint_path = Path(checkpoint)
         num_obs = PolicyRuntime.probe_num_obs(self.checkpoint_path, device=device)
         runtime = RuntimeSpec().with_num_obs(num_obs)
@@ -23,9 +24,10 @@ class TeacherPolicy:
             device=device,
             runtime=runtime,
         )
-        if int(self._runtime.spec.num_obs) != 42:
+        if int(self._runtime.spec.num_obs) != TASK_MODE_LOCOMOTION_CONTRACT.num_obs:
             raise ValueError(
-                f"teacher 必须是 42D actor obs，实际为 {self._runtime.spec.num_obs}: "
+                f"teacher 必须是 {TASK_MODE_LOCOMOTION_CONTRACT.num_obs}D actor obs，"
+                f"实际为 {self._runtime.spec.num_obs}: "
                 f"{self.checkpoint_path}"
             )
         if int(self._runtime.spec.num_actions) != 6:

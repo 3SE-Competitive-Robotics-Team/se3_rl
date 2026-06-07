@@ -39,4 +39,5 @@ __all__ = [
     "TASK_MODE_SEMANTICS",
     "TASK_MODE_SEMANTIC_DIM",
     "TaskMode",
+    "TaskModeSemantic",
 ]

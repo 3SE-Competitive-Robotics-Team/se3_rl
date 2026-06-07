@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import torch
 
-from se3_shared import TASK_MODE_SEMANTICS, TaskMode
-
-_TASK_MODE_SLICE = slice(29, 42)
+from se3_shared import (
+    TASK_MODE_LOCOMOTION_CONTRACT,
+    TASK_MODE_LOCOMOTION_TASK_MODE_SLICE,
+    TASK_MODE_SEMANTICS,
+    TaskMode,
+)
 
 
 def task_mode_tail(
@@ -39,8 +42,9 @@ def overwrite_task_mode_obs(
     blend: float | torch.Tensor = 1.0,
 ) -> torch.Tensor:
     """覆盖 42D obs 里的 task_mode 尾部。"""
-    if obs.shape[-1] != 42:
-        raise ValueError(f"obs 末维必须为 42，实际为 {obs.shape[-1]}")
+    expected = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
+    if obs.shape[-1] != expected:
+        raise ValueError(f"obs 末维必须为 {expected}，实际为 {obs.shape[-1]}")
     out = obs.clone()
     flat = out.reshape(-1, out.shape[-1])
     if isinstance(blend, torch.Tensor):
@@ -67,7 +71,7 @@ def overwrite_task_mode_obs(
             device=flat.device,
             dtype=flat.dtype,
         )
-    flat[:, _TASK_MODE_SLICE] = tail
+    flat[:, TASK_MODE_LOCOMOTION_TASK_MODE_SLICE] = tail
     return out
 
 
@@ -78,7 +82,9 @@ def mode_transition_obs(
 ) -> torch.Tensor:
     """为序列样本生成 blend 0→1 的过渡观测。"""
     if obs.ndim != 3:
-        raise ValueError(f"obs 必须是 [N, T, 42]，实际为 {tuple(obs.shape)}")
+        raise ValueError(
+            f"obs 必须是 [N, T, {TASK_MODE_LOCOMOTION_CONTRACT.num_obs}]，实际为 {tuple(obs.shape)}"
+        )
     blend = torch.linspace(0.0, 1.0, obs.shape[1], device=obs.device, dtype=obs.dtype)
     blend = blend.view(1, obs.shape[1]).expand(obs.shape[0], -1)
     return overwrite_task_mode_obs(obs, current, prev=prev, blend=blend)

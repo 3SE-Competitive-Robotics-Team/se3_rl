@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from se3_shared import TaskMode
+from se3_shared import TASK_MODE_LOCOMOTION_CONTRACT, TaskMode
 
 from .checkpoint import load_flow_checkpoint
 from .sampler import sample_actions
@@ -78,8 +78,9 @@ def _extract_actor_obs(obs_dict: object) -> torch.Tensor:
     obs = obs_dict["actor"]  # type: ignore[index]
     if not isinstance(obs, torch.Tensor):
         raise TypeError("actor obs 必须是 torch.Tensor")
-    if obs.ndim != 2 or obs.shape[1] != 42:
-        raise ValueError(f"actor obs 必须是 [B, 42]，实际为 {tuple(obs.shape)}")
+    expected = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
+    if obs.ndim != 2 or obs.shape[1] != expected:
+        raise ValueError(f"actor obs 必须是 [B, {expected}]，实际为 {tuple(obs.shape)}")
     return obs
 
 

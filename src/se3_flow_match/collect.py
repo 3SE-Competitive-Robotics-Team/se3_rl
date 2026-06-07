@@ -12,7 +12,7 @@ from mjlab.tasks.registry import load_env_cfg
 from mjlab.utils.torch import configure_torch_backends
 
 import se3_train  # noqa: F401
-from se3_shared import ObservationConfig
+from se3_shared import TASK_MODE_LOCOMOTION_CONTRACT, ObservationConfig
 
 from .registry import DistillTaskSpec, parse_task_names, task_spec
 from .task_mode import overwrite_task_mode_obs
@@ -387,8 +387,9 @@ def _prepare_actor_obs(
 
 def _overwrite_command_obs(obs: torch.Tensor, commands: torch.Tensor) -> torch.Tensor:
     """覆盖 42D obs 中的 5D scaled command 切片。"""
-    if obs.shape[-1] != 42:
-        raise ValueError(f"obs 末维必须为 42，实际为 {obs.shape[-1]}")
+    expected = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
+    if obs.shape[-1] != expected:
+        raise ValueError(f"obs 末维必须为 {expected}，实际为 {obs.shape[-1]}")
     out = obs.clone()
     flat = out.reshape(-1, out.shape[-1])
     commands = commands.to(device=flat.device, dtype=flat.dtype)
@@ -397,7 +398,7 @@ def _overwrite_command_obs(obs: torch.Tensor, commands: torch.Tensor) -> torch.T
     if commands.shape[0] != flat.shape[0]:
         raise ValueError(f"commands batch 必须是 {flat.shape[0]}，实际为 {commands.shape[0]}")
     scale = torch.tensor(_OBS_CFG.command_scale, device=flat.device, dtype=flat.dtype)
-    flat[:, 6:11] = commands * scale
+    flat[:, TASK_MODE_LOCOMOTION_CONTRACT.observation.require_slice("commands")] = commands * scale
     return out
 
 
@@ -406,8 +407,9 @@ def _actor_obs(obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
     obs = obs_dict["actor"]
     if not isinstance(obs, torch.Tensor):
         raise TypeError("actor obs 必须是 torch.Tensor")
-    if obs.ndim != 2 or obs.shape[1] != 42:
-        raise ValueError(f"actor obs 必须是 [B, 42]，实际为 {tuple(obs.shape)}")
+    expected = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
+    if obs.ndim != 2 or obs.shape[1] != expected:
+        raise ValueError(f"actor obs 必须是 [B, {expected}]，实际为 {tuple(obs.shape)}")
     return obs.to(dtype=torch.float32)
 
 

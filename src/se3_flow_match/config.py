@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from se3_shared import ObservationConfig
+from se3_shared import TASK_MODE_LOCOMOTION_CONTRACT, ObservationConfig
 
 _OBS_CFG = ObservationConfig()
 _DEFAULT_TASK_MODES = ("wheel", "gait", "wheel_leg", "gait_wheel", "jump")
@@ -15,7 +15,7 @@ _DEFAULT_TASK_MODES = ("wheel", "gait", "wheel_leg", "gait_wheel", "jump")
 class FlowPolicyConfig:
     """GRU Flow Matching 策略配置。"""
 
-    obs_dim: int = _OBS_CFG.task_mode_num_obs
+    obs_dim: int = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
     action_dim: int = _OBS_CFG.num_actions
     rnn_hidden_dim: int = 512
     rnn_num_layers: int = 1
@@ -46,7 +46,7 @@ class FlowPolicyConfig:
     def from_dict(cls, raw: dict[str, Any]) -> FlowPolicyConfig:
         """从 checkpoint 字典恢复配置。"""
         return cls(
-            obs_dim=int(raw.get("obs_dim", _OBS_CFG.task_mode_num_obs)),
+            obs_dim=int(raw.get("obs_dim", TASK_MODE_LOCOMOTION_CONTRACT.num_obs)),
             action_dim=int(raw.get("action_dim", _OBS_CFG.num_actions)),
             rnn_hidden_dim=int(raw.get("rnn_hidden_dim", 512)),
             rnn_num_layers=int(raw.get("rnn_num_layers", 1)),

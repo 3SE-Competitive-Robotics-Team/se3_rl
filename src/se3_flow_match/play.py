@@ -17,7 +17,14 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer, VerbosityLevel, ViserPlayViewer
 
 import se3_train  # noqa: F401
-from se3_shared import TASK_MODE_NAMES, JointGroup, ObservationConfig, RobotConfig, TaskMode
+from se3_shared import (
+    TASK_MODE_LOCOMOTION_CONTRACT,
+    TASK_MODE_NAMES,
+    JointGroup,
+    ObservationConfig,
+    RobotConfig,
+    TaskMode,
+)
 from se3_shared.grounded_pose import solve_grounded_pose
 
 from .registry import TASK_SPECS
@@ -557,36 +564,42 @@ def _overwrite_script_actor_obs(
     if not isinstance(obs_dict, dict) or "actor" not in obs_dict:
         return obs_dict
     actor = obs_dict["actor"]
-    if not isinstance(actor, torch.Tensor) or actor.ndim != 2 or actor.shape[1] != 42:
+    expected = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
+    if not isinstance(actor, torch.Tensor) or actor.ndim != 2 or actor.shape[1] != expected:
         return obs_dict
     out_actor = actor.clone()
     robot = env.scene["robot"]
-    out_actor[:, 0:3] = _to_actor_device(
+    slices = TASK_MODE_LOCOMOTION_CONTRACT.observation.slices
+    out_actor[:, slices["base_ang_vel"]] = _to_actor_device(
         robot.data.root_link_ang_vel_b * float(_OBS_CFG.ang_vel_scale),
         out_actor,
     )
-    out_actor[:, 3:6] = _to_actor_device(robot.data.projected_gravity_b, out_actor)
+    out_actor[:, slices["projected_gravity"]] = _to_actor_device(
+        robot.data.projected_gravity_b, out_actor
+    )
     command = env.command_manager.get_command(_COMMAND_NAME)
     scale = torch.tensor(
         _OBS_CFG.command_scale,
         device=out_actor.device,
         dtype=out_actor.dtype,
     )
-    out_actor[:, 6:11] = _to_actor_device(command[:, :5], out_actor) * scale
-    out_actor[:, 11:15] = _to_actor_device(
+    out_actor[:, slices["commands"]] = _to_actor_device(command[:, :5], out_actor) * scale
+    out_actor[:, slices["leg_joint_pos"]] = _to_actor_device(
         robot.data.joint_pos[:, JointGroup.LEGS] - robot.data.default_joint_pos[:, JointGroup.LEGS],
         out_actor,
     )
-    out_actor[:, 15:19] = _to_actor_device(
+    out_actor[:, slices["leg_joint_vel"]] = _to_actor_device(
         robot.data.joint_vel[:, JointGroup.LEGS] * float(_OBS_CFG.leg_vel_scale),
         out_actor,
     )
-    out_actor[:, 19:21] = _to_actor_device(robot.data.joint_pos[:, JointGroup.WHEELS], out_actor)
-    out_actor[:, 21:23] = _to_actor_device(
+    out_actor[:, slices["wheel_pos"]] = _to_actor_device(
+        robot.data.joint_pos[:, JointGroup.WHEELS], out_actor
+    )
+    out_actor[:, slices["wheel_vel"]] = _to_actor_device(
         robot.data.joint_vel[:, JointGroup.WHEELS] * float(_OBS_CFG.wheel_vel_scale),
         out_actor,
     )
-    out_actor[:, 23:29] = _to_actor_device(env.action_manager.action, out_actor)
+    out_actor[:, slices["last_actions"]] = _to_actor_device(env.action_manager.action, out_actor)
     out_actor = overwrite_task_mode_obs(out_actor, current, prev=prev, blend=blend)
     out = dict(obs_dict)
     out["actor"] = out_actor
