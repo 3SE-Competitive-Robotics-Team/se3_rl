@@ -134,7 +134,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "pos_xy_range": (0.0, 0.0) if play else (-0.1, 0.1),
-            "pos_xy_offset": (0.95, 0.0) if play else (0.0, 0.0),
+            "pos_xy_offset": (1.10, 0.0) if play else (0.0, 0.0),
             "height_offset_range": (0.0, 0.0) if play else (0.0, 0.2),
             "roll_range": (0.0, 0.0),
             "pitch_range": (0.0, 0.0),
