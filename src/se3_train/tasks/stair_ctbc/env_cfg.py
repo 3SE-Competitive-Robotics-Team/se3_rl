@@ -135,6 +135,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         func=events.reset_stair_climb_state,
         mode="reset",
     )
+    if "reset_joints" in new_events:
+        new_events["reset_joints"].params["height_conditioned_default"] = True
+        new_events["reset_joints"].params["command_name"] = "velocity_height"
     new_events.pop("push_robots", None)
     cfg.events = new_events
 

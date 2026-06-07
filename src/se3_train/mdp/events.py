@@ -1460,6 +1460,7 @@ def reset_joints(
     align_root_height_to_wheels: bool = False,
     wheel_clearance: float = _DEFAULT_RESET_WHEEL_CLEARANCE_M,
     command_name: str = "velocity_height",
+    height_conditioned_default: bool = False,
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
@@ -1501,6 +1502,27 @@ def reset_joints(
     joint_pos[:, wheel_ids] = 0.0
 
     leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
+    if height_conditioned_default and hasattr(env, "command_manager"):
+        try:
+            default_policy_pos = update_policy_default_from_height_cache(
+                env,
+                command_name,
+                env_ids=env_ids,
+            )
+            local_env_ids = env_ids.to(device=env.device, dtype=torch.long)
+            policy_leg_pos = default_policy_pos[local_env_ids]
+            policy_leg_vel = torch.zeros_like(policy_leg_pos)
+            _apply_policy_leg_reset(
+                asset,
+                joint_pos,
+                joint_vel,
+                leg_ids,
+                policy_leg_pos,
+                policy_leg_vel,
+            )
+        except Exception:
+            if hasattr(env, "extras"):
+                env.extras.setdefault("log", {})["Reset/height_conditioned_default_failed"] = 1.0
     randomization_enabled = (
         full_joint_randomization
         or hip_joint_offset_range is not None
