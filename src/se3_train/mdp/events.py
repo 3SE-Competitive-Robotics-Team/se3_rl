@@ -252,6 +252,15 @@ def reset_root_state_robotlab_full_random(
     lin_vel_range: tuple[float, float] = (-0.5, 0.5),
     ang_vel_range: tuple[float, float] = (-0.5, 0.5),
     clearance_range: tuple[float, float] = (0.0, 0.05),
+    pitch_inverted_prob: float = 0.0,
+    roll_side_prob: float = 0.0,
+    pitch_inverted_jitter_range: tuple[float, float] = (-0.2617993877991494, 0.2617993877991494),
+    pitch_inverted_roll_jitter_range: tuple[float, float] = (
+        -0.17453292519943295,
+        0.17453292519943295,
+    ),
+    roll_side_jitter_range: tuple[float, float] = (-0.2617993877991494, 0.2617993877991494),
+    roll_side_pitch_jitter_range: tuple[float, float] = (-0.17453292519943295, 0.17453292519943295),
     curriculum_stages: list[dict] | None = None,
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
@@ -279,6 +288,20 @@ def reset_root_state_robotlab_full_random(
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
     clearance_range = _stage_value(stage, "clearance_range", clearance_range)
+    pitch_inverted_prob = float(_stage_value(stage, "pitch_inverted_prob", pitch_inverted_prob))
+    roll_side_prob = float(_stage_value(stage, "roll_side_prob", roll_side_prob))
+    pitch_inverted_jitter_range = _stage_value(
+        stage, "pitch_inverted_jitter_range", pitch_inverted_jitter_range
+    )
+    pitch_inverted_roll_jitter_range = _stage_value(
+        stage,
+        "pitch_inverted_roll_jitter_range",
+        pitch_inverted_roll_jitter_range,
+    )
+    roll_side_jitter_range = _stage_value(stage, "roll_side_jitter_range", roll_side_jitter_range)
+    roll_side_pitch_jitter_range = _stage_value(
+        stage, "roll_side_pitch_jitter_range", roll_side_pitch_jitter_range
+    )
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -301,6 +324,42 @@ def reset_root_state_robotlab_full_random(
     roll = _sample_range(roll_range, (n,))
     pitch = _sample_range(pitch_range, (n,))
     yaw = _sample_range(yaw_range, (n,))
+    pitch_inverted_prob = max(0.0, pitch_inverted_prob)
+    roll_side_prob = max(0.0, roll_side_prob)
+    pose_prob_sum = pitch_inverted_prob + roll_side_prob
+    if pose_prob_sum > 1.0:
+        pitch_inverted_prob /= pose_prob_sum
+        roll_side_prob /= pose_prob_sum
+    pose_rand = torch.rand(n, device=env.device)
+    pitch_inverted_mask = pose_rand < pitch_inverted_prob
+    roll_side_mask = (pose_rand >= pitch_inverted_prob) & (
+        pose_rand < pitch_inverted_prob + roll_side_prob
+    )
+    reset_pose_bins = torch.zeros(n, device=env.device, dtype=torch.long)
+    reset_pose_bins[pitch_inverted_mask] = 1
+    reset_pose_bins[roll_side_mask] = 2
+    if torch.any(pitch_inverted_mask):
+        count = int(pitch_inverted_mask.sum().item())
+        pitch_sign = torch.where(
+            torch.rand(count, device=env.device) < 0.5,
+            torch.full((count,), -1.0, device=env.device),
+            torch.ones(count, device=env.device),
+        )
+        roll[pitch_inverted_mask] = _sample_range(pitch_inverted_roll_jitter_range, (count,))
+        pitch[pitch_inverted_mask] = pitch_sign * torch.pi + _sample_range(
+            pitch_inverted_jitter_range, (count,)
+        )
+    if torch.any(roll_side_mask):
+        count = int(roll_side_mask.sum().item())
+        roll_sign = torch.where(
+            torch.rand(count, device=env.device) < 0.5,
+            torch.full((count,), -1.0, device=env.device),
+            torch.ones(count, device=env.device),
+        )
+        roll[roll_side_mask] = roll_sign * (0.5 * torch.pi) + _sample_range(
+            roll_side_jitter_range, (count,)
+        )
+        pitch[roll_side_mask] = _sample_range(roll_side_pitch_jitter_range, (count,))
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
     new_quat = quat_mul(root_states[:, 3:7], quat_delta)
     z_row = _quat_z_row(new_quat)
@@ -320,7 +379,7 @@ def reset_root_state_robotlab_full_random(
     vel[:, 3:6] += _sample_range(ang_vel_range, (n, 3))
 
     pitch_flip_reset = recovery_state.ensure_bool_buffer(env, "_recovery_pitch_flip_reset_mask")
-    pitch_flip_reset[env_ids] = False
+    pitch_flip_reset[env_ids] = pitch_inverted_mask
 
     init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
     init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
@@ -375,6 +434,12 @@ def reset_root_state_robotlab_full_random(
         env._reset_init_tilt_bin = tilt_bins
     tilt_bins[env_ids] = bins
 
+    pose_bins = getattr(env, "_reset_pose_bin", None)
+    if not isinstance(pose_bins, torch.Tensor) or pose_bins.shape[0] != env.num_envs:
+        pose_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._reset_pose_bin = pose_bins
+    pose_bins[env_ids] = reset_pose_bins
+
     stand_bins = torch.bucketize(
         init_tilt_deg,
         torch.tensor((30.0, 60.0, 90.0, 135.0), device=env.device),
@@ -388,7 +453,12 @@ def reset_root_state_robotlab_full_random(
     log_values = {
         "Reset/robotlab_full_random_ratio": 1.0,
         "Reset/full_angle_random_ratio": 1.0,
-        "Reset/pitch_flip_ratio": 0.0,
+        "Reset/pitch_flip_ratio": pitch_inverted_mask.float().mean().item(),
+        "Reset/pose_bin_mixed_full_ratio": (reset_pose_bins == 0).float().mean().item(),
+        "Reset/pose_bin_pitch_inverted_ratio": (reset_pose_bins == 1).float().mean().item(),
+        "Reset/pose_bin_roll_side_ratio": (reset_pose_bins == 2).float().mean().item(),
+        "Reset/pitch_inverted_prob": float(pitch_inverted_prob),
+        "Reset/roll_side_prob": float(roll_side_prob),
         "Reset/curriculum_progress": float(curriculum_progress),
         "Reset/curriculum_tilt_max_deg": max(
             abs(float(roll_range[0])),

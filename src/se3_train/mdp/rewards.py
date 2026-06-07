@@ -1372,6 +1372,38 @@ def recovery_diagnostics(
                 min_margin, bin_mask
             )
 
+    reset_pose_bins = getattr(env, "_reset_pose_bin", None)
+    if isinstance(reset_pose_bins, torch.Tensor) and reset_pose_bins.shape[0] == env.num_envs:
+        for bin_idx, bin_name in enumerate(("mixed_full", "pitch_inverted", "roll_side")):
+            bin_mask = reset_pose_bins == bin_idx
+            log[f"Recovery/diag_sample_rate_by_reset_pose/{bin_name}"] = (
+                bin_mask.float().mean().item()
+            )
+            log[f"Recovery/diag_tilt_deg_by_reset_pose/{bin_name}"] = _masked_mean(
+                tilt_deg, bin_mask
+            )
+            log[f"Recovery/diag_upright_15deg_rate_by_reset_pose/{bin_name}"] = _masked_mean(
+                upright_15.float(), bin_mask
+            )
+            log[f"Recovery/diag_upright_30deg_rate_by_reset_pose/{bin_name}"] = _masked_mean(
+                upright_30.float(), bin_mask
+            )
+            log[f"Recovery/diag_height_error_abs_m_by_reset_pose/{bin_name}"] = _masked_mean(
+                height_abs_error, bin_mask
+            )
+            log[f"Recovery/diag_action_saturation_rate_by_reset_pose/{bin_name}"] = _masked_mean(
+                action_saturated.float(), bin_mask
+            )
+            log[f"Recovery/diag_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(leg_action_saturated.float(), bin_mask)
+            )
+            log[f"Recovery/diag_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(wheel_action_saturated.float(), bin_mask)
+            )
+            log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_pose/{bin_name}"] = _masked_min(
+                min_margin, bin_mask
+            )
+
     for height_name, height_lo, height_hi in (
         ("cmd_20_22cm", 0.20, 0.22),
         ("cmd_22_24cm", 0.22, 0.24),
