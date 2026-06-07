@@ -1,17 +1,11 @@
 """CTBC 台阶前馈状态机。
 
-状态机只负责根据轮子水平接触触发单侧动作 bias，不改变 observation 维度。
+状态机只负责根据轮子水平接触触发 retract+sweep 前馈，不改变 observation 维度。
 """
 
 from __future__ import annotations
 
-import math
-
 import torch
-
-_BIAS_HEIGHTS = (0.22, 0.24, 0.26, 0.28, 0.30, 0.32, 0.34, 0.36)
-_FRONT_AMPS = (0.22, 0.18, 0.18, 0.16, 0.16, 0.15, 0.14, 0.14)
-_ACTIVE_AMPS = (0.04, 0.10, 0.08, 0.10, 0.08, 0.08, 0.07, 0.07)
 
 
 class StairClimbState:
@@ -24,9 +18,17 @@ class StairClimbState:
         *,
         contact_window: int = 3,
         force_threshold_n: float = 30.0,
-        ff_period_s: float = 0.6,
+        ff_period_s: float = 2.0,
         control_dt: float = 0.02,
-        cooldown_s: float = 0.3,
+        cooldown_s: float = 0.4,
+        retract_front_amp: float = 0.4,
+        retract_active_amp: float = 0.0,
+        sweep_front_amp: float = 0.2,
+        sweep_active_amp: float = 0.0,
+        wheel_amp: float = 1.5,
+        retract_s: float = 0.3,
+        sweep_s: float = 1.2,
+        release_s: float = 0.5,
         ann_start_iter: int = 0,
         ann_end_iter: int = 1500,
         phantom_trigger_iter: int = 0,
@@ -35,8 +37,18 @@ class StairClimbState:
         self.device = torch.device(device)
         self.contact_window = int(contact_window)
         self.force_threshold = float(force_threshold_n)
-        self.ff_period_steps = max(1, round(float(ff_period_s) / float(control_dt)))
-        self.cooldown_steps = max(1, round(float(cooldown_s) / float(control_dt)))
+        self.control_dt = float(control_dt)
+        self.retract_front_amp = float(retract_front_amp)
+        self.retract_active_amp = float(retract_active_amp)
+        self.sweep_front_amp = float(sweep_front_amp)
+        self.sweep_active_amp = float(sweep_active_amp)
+        self.wheel_amp = float(wheel_amp)
+        self.retract_steps = max(1, round(float(retract_s) / self.control_dt))
+        self.sweep_steps = max(1, round(float(sweep_s) / self.control_dt))
+        self.release_steps = max(1, round(float(release_s) / self.control_dt))
+        segment_steps = self.retract_steps + self.sweep_steps + self.release_steps
+        self.ff_period_steps = max(1, round(float(ff_period_s) / self.control_dt), segment_steps)
+        self.cooldown_steps = max(1, round(float(cooldown_s) / self.control_dt))
         self.ann_start_iter = int(ann_start_iter)
         self.ann_end_iter = int(ann_end_iter)
         self.phantom_trigger_iter = int(phantom_trigger_iter)
@@ -53,12 +65,8 @@ class StairClimbState:
         self._iter_origin: int | None = None
         self._kff = 1.0
 
-        self._height_grid = torch.tensor(_BIAS_HEIGHTS, device=self.device)
-        self._front_grid = torch.tensor(_FRONT_AMPS, device=self.device)
-        self._active_grid = torch.tensor(_ACTIVE_AMPS, device=self.device)
-
     def update_iter(self, iteration: int) -> None:
-        """更新相对 stair 阶段的退火进度。"""
+        """更新相对 stair 阶段的前馈退火进度。"""
         if self._iter_origin is None:
             self._iter_origin = int(iteration)
         local_iter = max(0, int(iteration) - self._iter_origin)
@@ -72,25 +80,25 @@ class StairClimbState:
             self._kff = max(0.0, 1.0 - (local_iter - self.ann_start_iter) / span)
 
     def step(self, wheel_contact_xy: torch.Tensor) -> None:
-        """按左右轮水平接触力推进触发状态。"""
+        """按轮子水平接触力推进触发状态。"""
         force = wheel_contact_xy.to(device=self.device).reshape(self.num_envs, 2)
         self._last_contact_xy = force
         self._contact_buf[1:] = self._contact_buf[:-1].clone()
         self._contact_buf[0] = force
 
-        self._stable = (self._contact_buf > self.force_threshold).all(dim=0)
+        self._stable = self._contact_buf.mean(dim=0) > self.force_threshold
         self._cooldown[self._cooldown > 0] -= 1
 
-        can_trigger = (self._ff_phase == -1) & (self._cooldown == 0)
-        newly_triggered = self._stable & can_trigger
-        self._ff_phase[newly_triggered] = 0
-        self._trigger_count[newly_triggered.any(dim=1)] += 1
+        can_trigger = (self._ff_phase < 0).all(dim=1) & (self._cooldown == 0).all(dim=1)
+        newly_triggered_env = self._stable.any(dim=1) & can_trigger
+        self._ff_phase[newly_triggered_env] = 0
+        self._trigger_count[newly_triggered_env] += 1
 
         if self._iter < self.phantom_trigger_iter:
-            phantom = torch.rand(self.num_envs, 2, device=self.device) < 0.01
-            phantom_trigger = phantom & can_trigger & (~newly_triggered)
+            phantom = torch.rand(self.num_envs, device=self.device) < 0.01
+            phantom_trigger = phantom & can_trigger & (~newly_triggered_env)
             self._ff_phase[phantom_trigger] = 0
-            self._trigger_count[phantom_trigger.any(dim=1)] += 1
+            self._trigger_count[phantom_trigger] += 1
 
         active = self._ff_phase >= 0
         self._ff_phase[active] += 1
@@ -101,31 +109,38 @@ class StairClimbState:
         self._complete_count[finished.any(dim=1)] += 1
 
     def ff_bias(self, command_height: torch.Tensor | None = None) -> torch.Tensor:
-        """返回 6D action bias，幅值按 command height 插值。"""
+        """返回 6D action bias；当前版本使用离线验证的固定 retract+sweep 前馈。"""
+        del command_height
         bias = torch.zeros(self.num_envs, 6, device=self.device)
         if self._kff <= 0.0:
             self._last_bias = bias
             return bias
 
-        if command_height is None:
-            height = torch.full((self.num_envs,), 0.26, device=self.device)
-        else:
-            height = command_height.to(device=self.device).reshape(self.num_envs)
-        front_amp, active_amp = self._amps_from_height(height)
+        active_mask = (self._ff_phase >= 0).any(dim=1)
+        if not active_mask.any():
+            self._last_bias = bias
+            return bias
 
-        for side in range(2):
-            active_mask = self._ff_phase[:, side] >= 0
-            if not active_mask.any():
-                continue
-            phase = self._ff_phase[:, side].float() / float(self.ff_period_steps)
-            profile = 0.5 * (1.0 - torch.cos(2.0 * math.pi * phase))
-            profile = profile * active_mask.float() * float(self._kff)
-            if side == 0:
-                bias[:, 0] = -front_amp * profile
-                bias[:, 1] = active_amp * profile
-            else:
-                bias[:, 2] = front_amp * profile
-                bias[:, 3] = active_amp * profile
+        phase = torch.clamp(self._ff_phase[:, 0], min=0).float()
+        retract = self._smooth01(phase / float(self.retract_steps))
+        sweep_phase = (phase - float(self.retract_steps)) / float(self.sweep_steps)
+        sweep = torch.sin(torch.pi * torch.clamp(sweep_phase, 0.0, 1.0))
+        release_phase = (phase - float(self.retract_steps + self.sweep_steps)) / float(
+            self.release_steps
+        )
+        retract = retract * (1.0 - self._smooth01(release_phase))
+        profile_mask = active_mask.float() * float(self._kff)
+
+        front = (self.retract_front_amp * retract + self.sweep_front_amp * sweep) * profile_mask
+        active = (self.retract_active_amp * retract + self.sweep_active_amp * sweep) * profile_mask
+        wheel = self.wheel_amp * sweep * profile_mask
+
+        bias[:, 0] = front
+        bias[:, 1] = active
+        bias[:, 2] = -front
+        bias[:, 3] = active
+        bias[:, 4] = wheel
+        bias[:, 5] = -wheel
 
         self._last_bias = bias
         return bias
@@ -149,6 +164,7 @@ class StairClimbState:
             "Stair/ctbc_contact_xy_right_mean": self._last_contact_xy[:, 1].mean().item(),
             "Stair/ctbc_kff": float(self._kff),
             "Stair/ctbc_bias_abs_mean": torch.abs(self._last_bias[:, :4]).mean().item(),
+            "Stair/ctbc_wheel_bias_abs_mean": torch.abs(self._last_bias[:, 4:6]).mean().item(),
             "Stair/ctbc_trigger_count_mean": self._trigger_count.float().mean().item(),
             "Stair/ctbc_complete_count_mean": self._complete_count.float().mean().item(),
         }
@@ -165,16 +181,8 @@ class StairClimbState:
         self._last_bias[ids] = 0.0
         self._last_contact_xy[ids] = 0.0
 
-    def _amps_from_height(self, height: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """按高度表线性插值得到 front/active 峰值 raw action。"""
-        h = torch.clamp(height, self._height_grid[0], self._height_grid[-1])
-        idx = torch.searchsorted(self._height_grid, h, right=True)
-        idx = torch.clamp(idx, 1, self._height_grid.numel() - 1)
-        h0 = self._height_grid[idx - 1]
-        h1 = self._height_grid[idx]
-        t = (h - h0) / torch.clamp(h1 - h0, min=1.0e-6)
-        front = self._front_grid[idx - 1] + t * (self._front_grid[idx] - self._front_grid[idx - 1])
-        active = self._active_grid[idx - 1] + t * (
-            self._active_grid[idx] - self._active_grid[idx - 1]
-        )
-        return front, active
+    @staticmethod
+    def _smooth01(x: torch.Tensor) -> torch.Tensor:
+        """三次平滑阶跃，避免前馈相位边界突然跳变。"""
+        y = torch.clamp(x, 0.0, 1.0)
+        return y * y * (3.0 - 2.0 * y)

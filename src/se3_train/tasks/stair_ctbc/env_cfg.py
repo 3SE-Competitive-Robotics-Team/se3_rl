@@ -163,8 +163,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
-    command_cfg.height_range = (0.31, 0.34)
-    command_cfg.standing_height_range = (0.31, 0.34)
+    command_cfg.height_range = (0.38, 0.39)
+    command_cfg.standing_height_range = (0.38, 0.39)
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.0
     command_cfg.jump_prob = 0.0
@@ -172,8 +172,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.enable_jump_metrics = False
     if play:
         command_cfg.lin_vel_x_range = (0.25, 0.25)
-        command_cfg.height_range = (0.34, 0.34)
-        command_cfg.standing_height_range = (0.34, 0.34)
+        command_cfg.height_range = (0.39, 0.39)
+        command_cfg.standing_height_range = (0.39, 0.39)
 
     if "bad_orientation" in cfg.terminations:
         cfg.terminations["bad_orientation"] = replace(
@@ -236,8 +236,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "contact_window": 3,
             "force_threshold_n": 30.0,
-            "ff_period_s": 0.6,
-            "cooldown_s": 0.3,
+            "ff_period_s": 2.0,
+            "cooldown_s": 0.4,
+            "retract_front_amp": 0.4,
+            "retract_active_amp": 0.0,
+            "sweep_front_amp": 0.2,
+            "sweep_active_amp": 0.0,
+            "wheel_amp": 1.5,
+            "retract_s": 0.3,
+            "sweep_s": 1.2,
+            "release_s": 0.5,
             "ann_start_iter": 0,
             "ann_end_iter": 1500,
             "phantom_trigger_iter": 0,

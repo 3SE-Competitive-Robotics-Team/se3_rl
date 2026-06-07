@@ -211,7 +211,7 @@ class SerialLegDelayedAction(ActionTerm):
                         command_height = command[:, 4]
                 except Exception:
                     command_height = None
-            self._raw_actions[:, :4] += state.ff_bias(command_height)[:, :4]
+            self._raw_actions += state.ff_bias(command_height)
 
     def apply_actions(self) -> None:
         if self._max_delay_steps > 0:
