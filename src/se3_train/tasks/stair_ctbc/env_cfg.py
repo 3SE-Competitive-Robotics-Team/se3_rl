@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.terrains import (
@@ -85,6 +87,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.roll_range = (0.0, 0.0)
     command_cfg.height_range = (0.26, 0.30)
     command_cfg.standing_height_range = (0.26, 0.30)
+    command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.0
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
@@ -107,6 +110,37 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     new_events = dict(cfg.events)
+    new_events["reset_root_state"] = EventTermCfg(
+        func=events.reset_root_state_robotlab_full_random,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "pos_xy_range": (-0.1, 0.1),
+            "height_offset_range": (0.0, 0.2),
+            "roll_range": (0.0, 0.0),
+            "pitch_range": (0.0, 0.0),
+            "yaw_range": (-math.pi, math.pi),
+            "lin_vel_range": (0.0, 0.0),
+            "ang_vel_range": (0.0, 0.0),
+            "clearance_range": (0.0, 0.05),
+        },
+    )
+    new_events["reset_joints"] = EventTermCfg(
+        func=events.reset_joints,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "joint_offset_range": 0.0,
+            "joint_vel_range": (0.0, 0.0),
+            "joint_randomization_prob": 0.0,
+            "full_joint_randomization": False,
+            "full_front_joint_offset_range": math.pi,
+            "full_active_rod_angle_range": (0.0, 0.0),
+            "align_root_height_to_wheels": True,
+            "height_conditioned_default": True,
+            "command_name": "velocity_height",
+        },
+    )
     new_events["init_stair_climb_state"] = EventTermCfg(
         func=events.init_stair_climb_state,
         mode="startup",
@@ -135,9 +169,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         func=events.reset_stair_climb_state,
         mode="reset",
     )
-    if "reset_joints" in new_events:
-        new_events["reset_joints"].params["height_conditioned_default"] = True
-        new_events["reset_joints"].params["command_name"] = "velocity_height"
     new_events.pop("push_robots", None)
     cfg.events = new_events
 
