@@ -32,7 +32,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
                 proportion=1.0,
                 size=(8.0, 8.0),
-                step_height_range=(0.12, 0.12),
+                step_height_range=(0.05, 0.05),
                 step_width=0.5,
                 platform_width=2.0,
                 border_width=1.0,
@@ -107,7 +107,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.enable_jump_lifecycle = False
     command_cfg.enable_jump_metrics = False
     if play:
-        command_cfg.lin_vel_x_range = (0.5, 0.5)
+        command_cfg.lin_vel_x_range = (0.25, 0.25)
         command_cfg.height_range = (0.28, 0.28)
         command_cfg.standing_height_range = (0.28, 0.28)
 
