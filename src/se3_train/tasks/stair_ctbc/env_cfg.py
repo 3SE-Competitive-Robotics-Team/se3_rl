@@ -163,8 +163,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
-    command_cfg.height_range = (0.26, 0.30)
-    command_cfg.standing_height_range = (0.26, 0.30)
+    command_cfg.height_range = (0.31, 0.34)
+    command_cfg.standing_height_range = (0.31, 0.34)
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.0
     command_cfg.jump_prob = 0.0
@@ -172,8 +172,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.enable_jump_metrics = False
     if play:
         command_cfg.lin_vel_x_range = (0.25, 0.25)
-        command_cfg.height_range = (0.28, 0.28)
-        command_cfg.standing_height_range = (0.28, 0.28)
+        command_cfg.height_range = (0.34, 0.34)
+        command_cfg.standing_height_range = (0.34, 0.34)
 
     if "bad_orientation" in cfg.terminations:
         cfg.terminations["bad_orientation"] = replace(
