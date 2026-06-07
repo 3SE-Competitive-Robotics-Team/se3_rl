@@ -59,6 +59,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 size=(8.0, 8.0),
                 slope_deg=17.0,
                 height=0.35,
+                top_platform_length=0.0,
             ),
         }
         if play
@@ -86,6 +87,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 size=(8.0, 8.0),
                 slope_deg=17.0,
                 height=0.35,
+                top_platform_length=0.0,
             ),
             "random_stairs": BoxRandomStairsTerrainCfg(
                 proportion=0.15,

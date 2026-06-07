@@ -23,8 +23,8 @@ class BoxRampTerrainCfg(SubTerrainCfg):
     """坡顶平台长度。"""
     walkway_width: float = 2.0
     """斜坡走廊宽度。"""
-    slab_thickness: float = 0.12
-    """斜坡板厚度，增大可减少高速接触穿透。"""
+    wedge_depth: float = 0.5
+    """斜坡楔形体向下延伸深度，避免薄片接触不稳定。"""
     base_thickness: float = 1.0
     """平地和平台向下延伸厚度。"""
     spawn_base_offset: float = 0.1
@@ -51,14 +51,12 @@ class BoxRampTerrainCfg(SubTerrainCfg):
 
         body = spec.body("terrain")
         run_length = self.run_length
-        slope_length = self.slope_length
         total_length = self.approach_length + run_length + self.top_platform_length
         start_x = max(0.0, 0.5 * (self.size[0] - total_length))
         center_y = 0.5 * self.size[1]
         walkway_width = min(float(self.walkway_width), float(self.size[1]))
         ramp_start_x = start_x + self.approach_length
         ramp_end_x = ramp_start_x + run_length
-        slope_rad = np.deg2rad(float(self.slope_deg))
 
         geometries = [
             self._add_box(
@@ -67,35 +65,133 @@ class BoxRampTerrainCfg(SubTerrainCfg):
                 size=(0.5 * self.size[0], 0.5 * self.size[1], 0.5 * self.base_thickness),
                 color=(0.42, 0.42, 0.42, 1.0),
             ),
-            self._add_box(
+            self._add_wedge(
+                spec,
                 body,
-                center=(
-                    ramp_start_x + 0.5 * run_length,
-                    center_y,
-                    0.5 * self.height - 0.5 * self.slab_thickness * np.cos(slope_rad),
-                ),
-                size=(0.5 * slope_length, 0.5 * walkway_width, 0.5 * self.slab_thickness),
+                x0=ramp_start_x,
+                x1=ramp_end_x,
+                center_y=center_y,
+                width=walkway_width,
+                height=float(self.height),
+                depth=float(self.wedge_depth),
                 color=(0.58, 0.42, 0.25, 1.0),
-                euler=(0.0, -float(slope_rad), 0.0),
-            ),
-            self._add_box(
-                body,
-                center=(
-                    ramp_end_x + 0.5 * self.top_platform_length,
-                    center_y,
-                    0.5 * (self.height - self.base_thickness),
-                ),
-                size=(
-                    0.5 * self.top_platform_length,
-                    0.5 * walkway_width,
-                    0.5 * (self.height + self.base_thickness),
-                ),
-                color=(0.40, 0.50, 0.34, 1.0),
             ),
         ]
+        if self.top_platform_length > 0.0:
+            geometries.append(
+                self._add_box(
+                    body,
+                    center=(
+                        ramp_end_x + 0.5 * self.top_platform_length,
+                        center_y,
+                        0.5 * (self.height - self.base_thickness),
+                    ),
+                    size=(
+                        0.5 * self.top_platform_length,
+                        0.5 * walkway_width,
+                        0.5 * (self.height + self.base_thickness),
+                    ),
+                    color=(0.40, 0.50, 0.34, 1.0),
+                )
+            )
 
         origin = np.array([ramp_start_x + self.spawn_base_offset, center_y, 0.0])
         return TerrainOutput(origin=origin, geometries=geometries)
+
+    @staticmethod
+    def _add_wedge(
+        spec: mujoco.MjSpec,
+        body: mujoco.MjsBody,
+        *,
+        x0: float,
+        x1: float,
+        center_y: float,
+        width: float,
+        height: float,
+        depth: float,
+        color: tuple[float, float, float, float],
+    ) -> TerrainGeometry:
+        """添加坡面楔形 mesh，入口和出口端面保持世界系竖直。"""
+        half_width = 0.5 * float(width)
+        y0 = float(center_y) - half_width
+        y1 = float(center_y) + half_width
+        z_bottom = -float(depth)
+        vertices = [
+            x0,
+            y0,
+            z_bottom,
+            x1,
+            y0,
+            z_bottom,
+            x1,
+            y1,
+            z_bottom,
+            x0,
+            y1,
+            z_bottom,
+            x0,
+            y0,
+            0.0,
+            x1,
+            y0,
+            height,
+            x1,
+            y1,
+            height,
+            x0,
+            y1,
+            0.0,
+        ]
+        faces = [
+            0,
+            2,
+            1,
+            0,
+            3,
+            2,
+            0,
+            4,
+            7,
+            0,
+            7,
+            3,
+            1,
+            2,
+            6,
+            1,
+            6,
+            5,
+            0,
+            1,
+            5,
+            0,
+            5,
+            4,
+            3,
+            7,
+            6,
+            3,
+            6,
+            2,
+            4,
+            5,
+            6,
+            4,
+            6,
+            7,
+        ]
+        mesh_name = f"ramp_wedge_{len(spec.meshes)}"
+        spec.add_mesh(
+            name=mesh_name,
+            uservert=vertices,
+            userface=faces,
+            maxhullvert=8,
+        )
+        geom = body.add_geom(
+            type=mujoco.mjtGeom.mjGEOM_MESH,
+            meshname=mesh_name,
+        )
+        return TerrainGeometry(geom=geom, color=color)
 
     @staticmethod
     def _add_box(
@@ -104,7 +200,6 @@ class BoxRampTerrainCfg(SubTerrainCfg):
         center: tuple[float, float, float],
         size: tuple[float, float, float],
         color: tuple[float, float, float, float],
-        euler: tuple[float, float, float] | None = None,
     ) -> TerrainGeometry:
         geom = body.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -115,10 +210,6 @@ class BoxRampTerrainCfg(SubTerrainCfg):
                 max(float(size[2]), 1.0e-6),
             ),
         )
-        if euler is not None:
-            quat = np.zeros(4)
-            mujoco.mju_euler2Quat(quat, np.array(euler, dtype=np.float64), "xyz")
-            geom.quat = quat
         return TerrainGeometry(geom=geom, color=color)
 
 
