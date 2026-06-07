@@ -38,6 +38,8 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
 _DEFAULT_REWARD_LOG_INTERVAL_STEPS = 64
 _FOURBAR_WHEEL_RADIUS_M = 0.06
+_ACTION_SMOOTH_PREV_ATTR = "_se3_action_smooth_prev_action"
+_ACTION_SMOOTH_PREV_PREV_ATTR = "_se3_action_smooth_prev_prev_action"
 
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -899,6 +901,68 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
             }
         )
     return penalty
+
+
+def action_smoothness(
+    env: ManagerBasedRlEnv,
+    command_name: str | None = None,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 30.0,
+    max_penalty: float = 80.0,
+    leg_scale: float = 1.0,
+    wheel_scale: float = 1.0,
+) -> torch.Tensor:
+    """惩罚动作二阶差分，压制接近直立后的高频来回抖动。"""
+    action = env.action_manager.action
+    prev = getattr(env, _ACTION_SMOOTH_PREV_ATTR, None)
+    prev_prev = getattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, None)
+
+    if not isinstance(prev, torch.Tensor) or prev.shape != action.shape:
+        setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
+        setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, action.detach().clone())
+        return torch.zeros(env.num_envs, device=env.device)
+    if not isinstance(prev_prev, torch.Tensor) or prev_prev.shape != action.shape:
+        setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
+        setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
+        return torch.zeros(env.num_envs, device=env.device)
+
+    action_acc = action - 2.0 * prev + prev_prev
+    setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
+    setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
+
+    leg_penalty = torch.sum(action_acc[:, :4] ** 2, dim=1)
+    wheel_penalty = torch.sum(action_acc[:, 4:6] ** 2, dim=1)
+    penalty = float(leg_scale) * leg_penalty + float(wheel_scale) * wheel_penalty
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+
+    robot = env.scene["robot"]
+    gate = _near_upright_gate(
+        robot.data.projected_gravity_b[:, 2],
+        gate_start_deg=float(gate_start_deg),
+        gate_full_deg=float(gate_full_deg),
+    )
+    active = gate > 0.0
+    if command_name is not None:
+        cmd = env.command_manager.get_command(command_name)
+        if cmd.shape[1] > 5:
+            active = active & ~(cmd[:, 5] > 0.5)
+
+    startup = env.episode_length_buf < 3
+    gated_penalty = torch.where(startup | ~active, torch.zeros_like(penalty), penalty * gate)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        log = env.extras["log"]
+        log.update(
+            {
+                "Recovery/diag_action_smoothness_raw": _masked_mean(penalty, active),
+                "Recovery/diag_action_smoothness": _masked_mean(gated_penalty, active),
+                "Recovery/diag_leg_action_smoothness": _masked_mean(leg_penalty, active),
+                "Recovery/diag_wheel_action_smoothness": _masked_mean(wheel_penalty, active),
+                "Recovery/diag_action_smoothness_gate": _masked_mean(gate, active),
+            }
+        )
+
+    return gated_penalty
 
 
 def stand_still(

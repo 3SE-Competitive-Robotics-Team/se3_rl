@@ -31,7 +31,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.resampling_time_range = (10.0, 10.0)
     command_cfg.lin_vel_x_range = (-1.0, 1.0)
-    command_cfg.ang_vel_yaw_range = (-1.0, 1.0)
+    command_cfg.ang_vel_yaw_range = (-3.0, 3.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
     initial_height_range = (
@@ -108,7 +108,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "joint_vel_range": (-0.8, 0.8),
             "joint_randomization_prob": 0.25,
             "full_joint_randomization": True,
-            "full_front_joint_offset_range": 1.0,
+            "full_front_joint_offset_range": math.pi,
             "full_active_rod_angle_range": _ROBOT_DEFAULTS.active_rod_angle_limits,
             "align_root_height_to_wheels": True,
             "curriculum_stages": [
@@ -147,6 +147,36 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.curriculum = {}
     if not play:
         cfg.curriculum = {
+            "commands_vel": CurriculumTermCfg(
+                func=curriculums.commands_vel,
+                params={
+                    "command_name": "velocity_height",
+                    "use_iterations": True,
+                    "steps_per_policy_iter": 64,
+                    "velocity_stages": [
+                        {
+                            "iteration": 0,
+                            "lin_vel_x_range": (-1.0, 1.0),
+                            "ang_vel_yaw_range": (-3.0, 3.0),
+                        },
+                        {
+                            "iteration": 1500,
+                            "lin_vel_x_range": (-2.0, 2.0),
+                            "ang_vel_yaw_range": (-6.0, 6.0),
+                        },
+                        {
+                            "iteration": 3000,
+                            "lin_vel_x_range": (-3.0, 3.0),
+                            "ang_vel_yaw_range": (-9.0, 9.0),
+                        },
+                        {
+                            "iteration": 4500,
+                            "lin_vel_x_range": (-3.0, 3.0),
+                            "ang_vel_yaw_range": (-9.0, 9.0),
+                        },
+                    ],
+                },
+            ),
             "commands_height": CurriculumTermCfg(
                 func=curriculums.commands_height,
                 params={
@@ -240,6 +270,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
     cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.05)
+    cfg.rewards["action_smoothness"] = RewardTermCfg(
+        func=rewards.action_smoothness,
+        weight=-0.01,
+        params={
+            "command_name": "velocity_height",
+            "gate_start_deg": 60.0,
+            "gate_full_deg": 30.0,
+            "max_penalty": 80.0,
+            "leg_scale": 1.0,
+            "wheel_scale": 1.0,
+        },
+    )
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
         weight=-2.5e-5,

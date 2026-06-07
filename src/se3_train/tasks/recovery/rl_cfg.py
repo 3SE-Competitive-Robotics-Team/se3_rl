@@ -14,7 +14,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
         resume = False
     else:
-        max_iterations = 3000
+        max_iterations = 5000
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = False
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
