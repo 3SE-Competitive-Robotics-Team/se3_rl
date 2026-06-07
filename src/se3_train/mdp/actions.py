@@ -199,6 +199,19 @@ class SerialLegDelayedAction(ActionTerm):
         else:
             clip = float(self.cfg.action_clip)
             self._raw_actions[:] = torch.clamp(incoming_actions, -clip, clip)
+        state = getattr(self._env, "stair_climb_state", None)
+        if state is not None:
+            command_height = None
+            if hasattr(self._env, "command_manager"):
+                try:
+                    command = self._env.command_manager.get_command(
+                        self.cfg.action_default_command_name
+                    )
+                    if command.shape[1] > 4:
+                        command_height = command[:, 4]
+                except Exception:
+                    command_height = None
+            self._raw_actions[:, :4] += state.ff_bias(command_height)[:, :4]
 
     def apply_actions(self) -> None:
         if self._max_delay_steps > 0:

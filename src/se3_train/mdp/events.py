@@ -88,6 +88,90 @@ def _curriculum_progress(
     return max(0, step // steps_per_iter - int(offset_iter))
 
 
+def init_stair_climb_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    contact_window: int = 3,
+    force_threshold_n: float = 30.0,
+    ff_period_s: float = 0.6,
+    cooldown_s: float = 0.3,
+    ann_start_iter: int = 0,
+    ann_end_iter: int = 1500,
+    phantom_trigger_iter: int = 0,
+) -> None:
+    """startup 事件：创建 CTBC 台阶状态机。"""
+    del env_ids
+    from se3_train.mdp.stair_state import StairClimbState
+
+    if hasattr(env, "stair_climb_state"):
+        return
+    control_dt = float(env.physics_dt) * int(env.cfg.decimation)
+    env.stair_climb_state = StairClimbState(
+        num_envs=env.num_envs,
+        device=env.device,
+        contact_window=contact_window,
+        force_threshold_n=force_threshold_n,
+        ff_period_s=ff_period_s,
+        control_dt=control_dt,
+        cooldown_s=cooldown_s,
+        ann_start_iter=ann_start_iter,
+        ann_end_iter=ann_end_iter,
+        phantom_trigger_iter=phantom_trigger_iter,
+    )
+
+
+def reset_stair_climb_state(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
+    """reset 事件：清空指定 env 的 CTBC 状态。"""
+    state = getattr(env, "stair_climb_state", None)
+    if state is None:
+        return
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    state.reset(env_ids)
+
+
+def step_stair_climb_state(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    sensor_name: str = "wheel_sensor",
+    riser_sensor_name: str | None = None,
+    riser_normal_z_max: float = 0.5,
+    num_steps_per_env: int = 64,
+) -> None:
+    """interval 事件：按轮子水平接触力推进 CTBC 状态机。"""
+    del env_ids
+    from mjlab.sensor import ContactSensor
+
+    state = getattr(env, "stair_climb_state", None)
+    if state is None:
+        return
+
+    wheel_xy = torch.zeros(env.num_envs, 2, device=env.device)
+    sensor: ContactSensor = env.scene[sensor_name]
+    if sensor.data.force is not None:
+        force_xy = sensor.data.force[..., :2]
+        wheel_xy = torch.linalg.norm(force_xy, dim=-1).reshape(env.num_envs, -1)[:, :2]
+
+    if riser_sensor_name:
+        riser_sensor: ContactSensor = env.scene[riser_sensor_name]
+        data = riser_sensor.data
+        if data.force is not None and data.normal is not None:
+            force = data.force.reshape(env.num_envs, 2, -1, 3)
+            normal = data.normal.reshape(env.num_envs, 2, -1, 3)
+            force_xy = torch.linalg.norm(force[..., :2], dim=-1)
+            valid = torch.abs(normal[..., 2]) <= float(riser_normal_z_max)
+            if data.found is not None:
+                found = data.found.reshape(env.num_envs, 2, -1) > 0
+                valid = valid & found
+            wheel_xy = torch.where(valid, force_xy, torch.zeros_like(force_xy)).sum(dim=-1)
+
+    state.step(wheel_xy)
+    iteration = int(getattr(env, "common_step_counter", 0)) // max(1, int(num_steps_per_env))
+    state.update_iter(iteration)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(state.diag())
+
+
 def _active_curriculum_stage(
     env: ManagerBasedRlEnv,
     stages: list[dict] | None,
