@@ -62,7 +62,7 @@
         <site name="l_spring_p1" pos="0.00705 0.00497702 -0.04678497" group="4" />
         <geom name="lf0_Link_collision_obb_trim" type="box" pos="-0.0687901 0.0116388 0.00794337" size="0.0210477 0.0475702 0.106286" quat="0.543139 0.444821 -0.45277 -0.549667" group="0" contype="1" conaffinity="2" />
         <body name="lf1_Link" pos="-0.12990117 0.0215 0.04639203">
-          <joint name="lf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 1 0" damping="1" armature="0.02" limited="true" range="-1.389388135292 0" />
+          <joint name="lf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 1 0" damping="1" armature="0.02" limited="true" range="-1.360263693761 0" />
           <inertial pos="-0.04177153 -0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 0.00000296 -0.00076497 0.00001136" />
           <geom name="lf1_Link_visual" type="mesh" mesh="visual_l_calf" contype="0" conaffinity="0" group="1" />
           <site name="lf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
@@ -85,7 +85,7 @@
         <site name="r_spring_p1" pos="0.00705 -0.00497702 -0.04678497" group="4" />
         <geom name="rf0_Link_collision_obb_trim" type="box" pos="-0.0687901 -0.0116388 0.00794337" size="0.0210477 0.0475702 0.106286" quat="0.549667 0.45277 -0.444821 -0.543139" group="0" contype="1" conaffinity="2" />
         <body name="rf1_Link" pos="-0.12990153 -0.0200 0.04639227">
-          <joint name="rf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 -1 0" damping="1" armature="0.02" limited="true" range="0 1.389388135292" />
+          <joint name="rf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 -1 0" damping="1" armature="0.02" limited="true" range="0 1.360263693761" />
           <inertial pos="-0.04177153 0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 -0.00000296 -0.00076497 -0.00001136" />
           <geom name="rf1_Link_visual" type="mesh" mesh="visual_r_calf" contype="0" conaffinity="0" group="1" />
           <site name="rf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />

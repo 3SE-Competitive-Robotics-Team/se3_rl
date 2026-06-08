@@ -133,11 +133,11 @@
     <connect name="r_coupler_to_rf_calf" site1="r_coupler_end" site2="rf_coupler_closure" />
   </equality>
   <tendon>
-    <fixed name="l_active_rod_angle" limited="true" range="0 1.509535270050" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+    <fixed name="l_active_rod_angle" limited="true" range="0 1.469449651507" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
       <joint joint="lf0_Joint" coef="1" />
       <joint joint="l_drive_bar_Joint" coef="-1" />
     </fixed>
-    <fixed name="r_active_rod_angle" limited="true" range="0 1.509535270050" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+    <fixed name="r_active_rod_angle" limited="true" range="0 1.469449651507" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
       <joint joint="r_drive_bar_Joint" coef="1" />
       <joint joint="rf0_Joint" coef="-1" />
     </fixed>
