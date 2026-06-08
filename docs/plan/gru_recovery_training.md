@@ -169,6 +169,22 @@ upward_score = square(1 - projected_gravity_z)
 | 默认姿态/静止约束 | `stand_still`、`joint_pos_penalty` | 乘 `upright_gate`；倒地时不能把关节压回默认站姿 |
 | 终止惩罚 | `is_terminated` | 权重为 0 或接近 0，不能靠终止惩罚教起身 |
 
+### 2026-06-08 实验结论：`orientation_l2` 惩罚有效
+
+在 `SE3-WheelLegged-Recovery-GRU` 的 5k 训练对比中，加入 near-upright 阶段的 `orientation_l2` 姿态惩罚是有效的。对照组为用户桌面 checkpoint `C:/Users/13567/Desktop/model_4999.pt`，该 checkpoint 未使用该 `orientation_l2` 惩罚训练；实验组为 W&B run `acttgnoq` 的 `model_4999.pt`，对应训练包含该姿态 L2 约束。
+
+同一远程 recovery 代码和同一组 sim2sim case 下，带 `orientation_l2` 的 checkpoint 在恢复后的姿态稳定性更好：
+
+| case | 带 `orientation_l2` 的 `acttgnoq/model_4999` | 无 `orientation_l2` 的桌面 checkpoint | 结论 |
+|---|---:|---:|---|
+| `roll90_h022` | final height 0.218 m, final tilt 1.77 deg | final height 0.225 m, final tilt 1.86 deg | 接近，实验组姿态略好 |
+| `pitch180_h022` | final height 0.217 m, final tilt 2.05 deg | final height 0.223 m, final tilt 3.45 deg | 实验组明显更好 |
+| `roll90_h034` | final height 0.339 m, final tilt 1.82 deg | final height 0.349 m, final tilt 1.61 deg | 对照组姿态略好，但高度偏高 |
+| `vx2_yaw6_h030` | final height 0.295 m, final tilt 0.07 deg | final height 0.300 m, final tilt 2.26 deg | 实验组明显更稳 |
+| `vx3_yaw9_h030` | final height 0.298 m, final tilt 1.97 deg | final height 0.315 m, final tilt 3.48 deg | 实验组更稳 |
+
+结论：`orientation_l2` 不应被视为“乱加奖励”，它补的是恢复后近直立阶段的姿态收敛和高速命令下的横滚/俯仰稳定性；它不替代 `upward` 的全姿态起身梯度，也不应在倒置阶段强压探索。后续如果调整该项，必须保留“倒置自救主要靠 `upward`，近直立稳定靠 `orientation_l2`”这个分工，并继续用 pitch-flip、roll90 和高速 yaw case 做 A/B。
+
 成功条件只用于统计和验收，不是额外 reward：
 
 ```text
