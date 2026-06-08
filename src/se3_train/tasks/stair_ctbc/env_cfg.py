@@ -24,6 +24,15 @@ from mjlab.terrains import (
     TerrainGeneratorCfg,
 )
 
+from se3_shared import (
+    REFERENCE_CTBC_CONTACT_WINDOW,
+    REFERENCE_CTBC_FF_AMPLITUDE,
+    REFERENCE_CTBC_FF_PERIOD_S,
+    REFERENCE_CTBC_FORCE_THRESHOLD_N,
+    REFERENCE_CTBC_HIP_RATIO,
+    REFERENCE_CTBC_KNEE_RATIO,
+    REFERENCE_CTBC_LEG_SCALE,
+)
 from se3_train.mdp import events, stair_rewards, terminations
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
@@ -237,18 +246,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         func=events.init_stair_climb_state,
         mode="startup",
         params={
-            "contact_window": 3,
-            "force_threshold_n": 30.0,
-            "ff_period_s": 2.0,
+            "contact_window": REFERENCE_CTBC_CONTACT_WINDOW,
+            "force_threshold_n": REFERENCE_CTBC_FORCE_THRESHOLD_N,
+            "ff_amplitude_rad": REFERENCE_CTBC_FF_AMPLITUDE,
+            "ff_period_s": REFERENCE_CTBC_FF_PERIOD_S,
             "cooldown_s": 0.4,
-            "retract_front_amp": 0.4,
-            "retract_active_amp": 0.0,
-            "sweep_front_amp": 0.2,
-            "sweep_active_amp": 0.0,
-            "wheel_amp": _ctbc_wheel_amp(cfg.actions["delayed_action"]),
-            "retract_s": 0.3,
-            "sweep_s": 1.2,
-            "release_s": 0.5,
+            "reference_leg_scale": REFERENCE_CTBC_LEG_SCALE,
+            "hip_ratio": REFERENCE_CTBC_HIP_RATIO,
+            "knee_ratio": REFERENCE_CTBC_KNEE_RATIO,
             "ann_start_iter": 0,
             "ann_end_iter": 1500,
             "phantom_trigger_iter": 0,
@@ -263,6 +268,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "riser_sensor_name": "wheel_riser_sensor",
             "riser_normal_z_max": 0.5,
             "num_steps_per_env": 64,
+            "stair_terrain_type_names": ("stage_stairs", "inv_pyramid_stairs"),
+            "disable_during_recovery": True,
         },
     )
     new_events["reset_stair_climb_state"] = EventTermCfg(
@@ -286,7 +293,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.rewards["contact_forces"].weight = -2.0e-4
     if "tracking_height" in cfg.rewards:
         cfg.rewards["tracking_height"].weight = 3.0
-        cfg.rewards["tracking_height"].params["sigma"] = 0.04
+        cfg.rewards["tracking_height"].params.update(
+            {
+                "sigma": 0.04,
+                "kernel": "exp",
+                "use_upright_gate": False,
+                "use_pose_end_gate": False,
+            }
+        )
 
     cfg.rewards["stair_climb_height"] = RewardTermCfg(
         func=stair_rewards.stair_climb_height,

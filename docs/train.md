@@ -14,7 +14,7 @@ assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml
 
 MJCF 目录保留解析四连杆等效开树模型、OBB 裁剪闭链模型和旧开链模型。训练端默认 `SE3_ROBOT_MJCF_VARIANT=fourbar-surrogate`；需要显式验证真实闭链求解时用 `SE3_ROBOT_MJCF_VARIANT=closedchain`；需要回退定位时用 `SE3_ROBOT_MJCF_VARIANT=openchain`。临时测试其它导出文件时，用 `SE3_ROBOT_MJCF` 显式指定路径。
 
-policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.46945 rad`，对应腿长下限约 `0.14 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
+policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.50954 rad`（`129.95° - 43.46° = 86.49°`），对应腿长下限约 `0.135 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
 
 当前无气弹簧默认站姿按“腿长 0.16 m、base_link 距地约 0.22 m、轮心落在整机质心投影下、base/腿部几何离地”的几何平衡点重标定：
 

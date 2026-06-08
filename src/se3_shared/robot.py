@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
-from math import pi
+from math import pi, radians
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -11,7 +11,11 @@ from pydantic import BaseModel, Field
 from .action_delay import ActionDelayConfig
 from .motor import DM8009P, M3508_C620_14
 
-_ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (0.0, 1.469449651507)
+_ACTIVE_ROD_ANGLE_RANGE_DEG: float = 129.95 - 43.46
+_ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (
+    0.0,
+    radians(_ACTIVE_ROD_ANGLE_RANGE_DEG),
+)
 _ACTIVE_ROD_ACTION_SCALE: float = 0.5 * (_ACTIVE_ROD_ANGLE_LIMITS[1] - _ACTIVE_ROD_ANGLE_LIMITS[0])
 
 
@@ -118,8 +122,8 @@ class Termination(BaseModel):
 class RobotConfig(BaseModel):
     """机器人物理参数 — 训练和验证共享的单一来源。"""
 
-    leg_kp: float = 40.0
-    leg_kd: float = 2.0
+    leg_kp: float = 60.0
+    leg_kd: float = 3.0
     wheel_kd: float = 0.5
     torque_limits: tuple[float, ...] = (
         DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
@@ -140,7 +144,7 @@ class RobotConfig(BaseModel):
     default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
     default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
     active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
-    active_rod_soft_limit_factor: float = 0.9
+    active_rod_soft_limit_factor: float = 1.0
     active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
         (1.0, -1.0),
         (-1.0, 1.0),
@@ -152,8 +156,8 @@ class RobotConfig(BaseModel):
         _ACTIVE_ROD_ACTION_SCALE,
         pi,
         _ACTIVE_ROD_ACTION_SCALE,
-        45.0,
-        45.0,
+        60.0,
+        60.0,
     )
     action_clip: float | None = 1.0
     sim_dt: float = 0.005

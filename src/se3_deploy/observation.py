@@ -85,13 +85,18 @@ def synthetic_recovery_state(seq: int = 0) -> PolicyStateFrame:
     dof_pos = tuple(float(v) for v in _ROBOT_CFG.default_dof_pos)
     return PolicyStateFrame(
         seq=int(seq),
-        timestamp_us=0,
-        status_bits=0,
+        tick_ms=int(seq) * int(_ROBOT_CFG.control_dt * 1000.0),
+        target_seq=0,
+        target_age_ms=0,
+        target_valid=0,
+        rc_switch_r=0,
+        output_enabled=0,
         base_ang_vel_body=(0.0, 0.0, 0.0),
         projected_gravity=(0.0, 0.0, -1.0),
-        dof_pos=dof_pos,
-        dof_vel=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-        motor_status=(0, 0, 0, 0, 0, 0),
+        joint_pos=dof_pos[:4],
+        joint_vel=(0.0, 0.0, 0.0, 0.0),
+        wheel_pos=dof_pos[4:6],
+        wheel_vel=(0.0, 0.0),
     )
 
 

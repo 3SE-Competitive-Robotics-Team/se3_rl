@@ -19,12 +19,18 @@ from mjlab.utils.lab_api.math import (
 )
 
 from se3_shared import (
-    RobotConfig as SharedRobotConfig,
-)
-from se3_shared import (
+    REFERENCE_CTBC_FF_AMPLITUDE,
+    REFERENCE_CTBC_FF_PERIOD_S,
+    REFERENCE_CTBC_FORCE_THRESHOLD_N,
+    REFERENCE_CTBC_HIP_RATIO,
+    REFERENCE_CTBC_KNEE_RATIO,
+    REFERENCE_CTBC_LEG_SCALE,
     output_to_policy_pos_torch,
     policy_to_output_pos_torch,
     policy_to_output_vel_torch,
+)
+from se3_shared import (
+    RobotConfig as SharedRobotConfig,
 )
 from se3_train.mdp import recovery_state
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
@@ -92,17 +98,13 @@ def init_stair_climb_state(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     contact_window: int = 3,
-    force_threshold_n: float = 30.0,
-    ff_period_s: float = 2.0,
+    force_threshold_n: float = REFERENCE_CTBC_FORCE_THRESHOLD_N,
+    ff_amplitude_rad: float = REFERENCE_CTBC_FF_AMPLITUDE,
+    ff_period_s: float = REFERENCE_CTBC_FF_PERIOD_S,
     cooldown_s: float = 0.4,
-    retract_front_amp: float = 0.4,
-    retract_active_amp: float = 0.0,
-    sweep_front_amp: float = 0.2,
-    sweep_active_amp: float = 0.0,
-    wheel_amp: float = 1.5,
-    retract_s: float = 0.3,
-    sweep_s: float = 1.2,
-    release_s: float = 0.5,
+    reference_leg_scale: float = REFERENCE_CTBC_LEG_SCALE,
+    hip_ratio: float = REFERENCE_CTBC_HIP_RATIO,
+    knee_ratio: float = REFERENCE_CTBC_KNEE_RATIO,
     ann_start_iter: int = 0,
     ann_end_iter: int = 1500,
     phantom_trigger_iter: int = 0,
@@ -119,17 +121,13 @@ def init_stair_climb_state(
         device=env.device,
         contact_window=contact_window,
         force_threshold_n=force_threshold_n,
+        ff_amplitude_rad=ff_amplitude_rad,
         ff_period_s=ff_period_s,
         control_dt=control_dt,
         cooldown_s=cooldown_s,
-        retract_front_amp=retract_front_amp,
-        retract_active_amp=retract_active_amp,
-        sweep_front_amp=sweep_front_amp,
-        sweep_active_amp=sweep_active_amp,
-        wheel_amp=wheel_amp,
-        retract_s=retract_s,
-        sweep_s=sweep_s,
-        release_s=release_s,
+        reference_leg_scale=reference_leg_scale,
+        hip_ratio=hip_ratio,
+        knee_ratio=knee_ratio,
         ann_start_iter=ann_start_iter,
         ann_end_iter=ann_end_iter,
         phantom_trigger_iter=phantom_trigger_iter,
@@ -146,6 +144,38 @@ def reset_stair_climb_state(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None
     state.reset(env_ids)
 
 
+def _terrain_type_mask(
+    env: ManagerBasedRlEnv,
+    terrain_type_names: tuple[str, ...] | list[str] | None,
+) -> torch.Tensor | None:
+    """按 terrain generator 的子地形名称生成逐 env mask。"""
+    if not terrain_type_names:
+        return None
+    scene = getattr(env, "scene", None)
+    terrain = getattr(scene, "terrain", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if not isinstance(terrain_types, torch.Tensor):
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+    cfg = getattr(terrain, "cfg", None)
+    generator_cfg = getattr(cfg, "terrain_generator", None)
+    sub_terrains = getattr(generator_cfg, "sub_terrains", {}) or {}
+    selected = {str(name) for name in terrain_type_names}
+    terrain_types = terrain_types.to(device=env.device)
+    if terrain_types.shape != (env.num_envs,):
+        terrain_types = terrain_types.reshape(-1)
+        if terrain_types.numel() == 1:
+            terrain_types = terrain_types.expand(env.num_envs)
+        elif terrain_types.numel() != env.num_envs:
+            return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+    mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    for terrain_index, terrain_name in enumerate(sub_terrains):
+        if str(terrain_name) in selected:
+            mask = mask | (terrain_types == terrain_index)
+    return mask
+
+
 def step_stair_climb_state(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -153,6 +183,8 @@ def step_stair_climb_state(
     riser_sensor_name: str | None = None,
     riser_normal_z_max: float = 0.5,
     num_steps_per_env: int = 64,
+    stair_terrain_type_names: tuple[str, ...] | list[str] | None = None,
+    disable_during_recovery: bool = False,
 ) -> None:
     """interval 事件：按轮子水平接触力推进 CTBC 状态机。"""
     del env_ids
@@ -186,10 +218,18 @@ def step_stair_climb_state(
             riser_xy = torch.where(valid, force_xy, torch.zeros_like(force_xy)).sum(dim=-1)
             wheel_xy = riser_xy
 
-    state.step(wheel_xy)
+    trigger_mask = _terrain_type_mask(env, stair_terrain_type_names)
+    if disable_during_recovery:
+        recovery_block = recovery_state.recovery_active_mask(env)
+        trigger_mask = ~recovery_block if trigger_mask is None else trigger_mask & ~recovery_block
+
+    state.step(wheel_xy, trigger_mask=trigger_mask)
     iteration = int(getattr(env, "common_step_counter", 0)) // max(1, int(num_steps_per_env))
     state.update_iter(iteration)
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        trigger_allowed_rate = 1.0
+        if trigger_mask is not None:
+            trigger_allowed_rate = trigger_mask.float().mean().item()
         env.extras["log"].update(
             {
                 **state.diag(),
@@ -198,6 +238,7 @@ def step_stair_climb_state(
                 "Stair/ctbc_riser_xy_mean": riser_xy.mean().item(),
                 "Stair/ctbc_riser_xy_max": riser_xy.max().item(),
                 "Stair/ctbc_riser_valid_rate": riser_valid_rate.item(),
+                "Stair/ctbc_trigger_allowed_rate": trigger_allowed_rate,
             }
         )
 

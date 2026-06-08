@@ -17,7 +17,7 @@ from . import curriculums, events, rewards
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
-_RECOVERY_STANDING_HEIGHT_RANGE = (0.20, 0.38)
+_RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
@@ -192,15 +192,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "iteration": 300,
-                            "height_range": (0.23, 0.31),
+                            "height_range": (0.23, 0.32),
                         },
                         {
                             "iteration": 650,
-                            "height_range": (0.22, 0.34),
+                            "height_range": (0.22, 0.35),
                         },
                         {
                             "iteration": 1000,
-                            "height_range": (0.21, 0.36),
+                            "height_range": (0.205, 0.37),
                         },
                         {
                             "iteration": 1400,
