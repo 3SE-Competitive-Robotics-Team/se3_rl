@@ -115,12 +115,22 @@ def _read_training_progress(run_dir: Path) -> dict[str, int | str | None]:
     """读取训练日志和 checkpoint，返回 Viser 面板需要的进度字段。"""
     iteration, total = _latest_logged_iteration(run_dir)
     checkpoint_iter = _latest_checkpoint_iteration(run_dir)
+    selected_checkpoint = _selected_checkpoint_from_env()
     return {
         "iteration": iteration,
         "total": total,
         "checkpoint_iter": checkpoint_iter,
+        "selected_checkpoint": selected_checkpoint,
         "updated_at": time.strftime("%H:%M:%S"),
     }
+
+
+def _selected_checkpoint_from_env() -> str | None:
+    """读取当前 se3-play 实际加载的 checkpoint 文件名。"""
+    raw = os.environ.get("SE3_VISER_SELECTED_CHECKPOINT")
+    if not raw:
+        return None
+    return Path(raw).name
 
 
 def _latest_logged_iteration(run_dir: Path) -> tuple[int | None, int | None]:
@@ -177,6 +187,7 @@ def _format_training_progress_html(run_dir: Path, progress: dict[str, int | str 
     iteration = progress["iteration"]
     total = progress["total"]
     checkpoint_iter = progress["checkpoint_iter"]
+    selected_checkpoint = progress["selected_checkpoint"]
     updated_at = progress["updated_at"]
 
     if isinstance(iteration, int) and isinstance(total, int):
@@ -184,14 +195,19 @@ def _format_training_progress_html(run_dir: Path, progress: dict[str, int | str 
     else:
         iter_text = "waiting for log"
     ckpt_text = str(checkpoint_iter) if isinstance(checkpoint_iter, int) else "none"
+    selected_text = (
+        str(selected_checkpoint) if isinstance(selected_checkpoint, str) else "unspecified"
+    )
     run_name = html.escape(run_dir.name)
     iter_text = html.escape(iter_text)
     ckpt_text = html.escape(ckpt_text)
+    selected_text = html.escape(selected_text)
     updated_text = html.escape(str(updated_at))
 
     return f"""
       <div style="font-size:0.85em; line-height:1.35; padding:0 1em 0.5em 1em;">
         <strong>Training iter:</strong> {iter_text}<br/>
+        <strong>Selected checkpoint:</strong> {selected_text}<br/>
         <strong>Latest checkpoint:</strong> model_{ckpt_text}.pt<br/>
         <strong>Run:</strong> {run_name}<br/>
         <strong>Updated:</strong> {updated_text}
