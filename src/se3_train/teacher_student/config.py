@@ -28,7 +28,7 @@ class TeacherCheckpointConfig:
     path: Path | str = DEFAULT_STAIR_TEACHER_CHECKPOINT
     strict: bool = True
     enabled: bool = True
-    actor_obs_dim: int | None = 31
+    actor_obs_dim: int | None = None
 
     def resolved_path(self) -> Path:
         """解析相对仓库根目录的 checkpoint 路径。"""

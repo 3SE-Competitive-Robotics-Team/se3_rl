@@ -19,6 +19,14 @@ from se3_train.teacher_student.config import stair_teacher_checkpoint_from_env
 _STAIR_TERRAIN_TYPE_NAMES = ("stage_stairs", "inv_pyramid_stairs")
 
 
+def _teacher_obs_dim_from_env() -> int | None:
+    """读取 teacher obs 维度；默认沿用当前 student/base actor 维度。"""
+    raw = os.environ.get("SE3_STAIR_TEACHER_OBS_DIM")
+    if raw is None or raw == "":
+        return None
+    return int(raw)
+
+
 def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """复用 stair_ctbc 的 GRU/warm-start 配置，并挂载 stair-only teacher loss。"""
     cfg = stair_ctbc_rl_cfg(smoke=smoke)
@@ -47,7 +55,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
             strict=os.environ.get("SE3_STAIR_TEACHER_STRICT", "1").lower()
             in {"1", "true", "yes", "on"},
             enabled=True,
-            actor_obs_dim=int(os.environ.get("SE3_STAIR_TEACHER_OBS_DIM", "31")),
+            actor_obs_dim=_teacher_obs_dim_from_env(),
         ),
     )
     cfg.algorithm = StairTeacherPpoAlgorithmCfg.from_base(cfg.algorithm, teacher_config)
