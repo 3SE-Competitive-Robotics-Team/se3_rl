@@ -36,6 +36,47 @@ def _recovery_penalty_gate(
     return torch.where(in_grace, torch.ones_like(upright), upright)
 
 
+def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
+    """计算掩码内均值;无样本时返回 0。"""
+    if mask.any():
+        return float(value[mask].mean().item())
+    return 0.0
+
+
+def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
+    """缓存左右轮 body 在 entity 内的局部索引。"""
+    attr_name = f"_reward_wheel_body_ids_{asset_cfg.name}"
+    cached = getattr(env, attr_name, None)
+    if isinstance(cached, list) and len(cached) == 2:
+        return cached
+    robot = env.scene[asset_cfg.name]
+    body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
+    if len(body_ids) != 2:
+        raise RuntimeError(f"必须找到左右轮 body,实际找到: {body_names}")
+    setattr(env, attr_name, body_ids)
+    return body_ids
+
+
+def _wheel_alignment_error(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg,
+    center_lead_gain: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """计算左右轮前后对齐误差的共享几何核。"""
+    robot = env.scene[asset_cfg.name]
+    body_ids = _wheel_body_ids(env, asset_cfg)
+    wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
+
+    com_x = robot.data.root_link_pos_w[:, 0]
+    vx = robot.data.root_link_lin_vel_w[:, 0]
+    ideal_x = com_x + float(center_lead_gain) * vx
+
+    dist_l = torch.abs(wheel_xy[:, 0, 0] - ideal_x)
+    dist_r = torch.abs(wheel_xy[:, 1, 0] - ideal_x)
+    mean_dist = (dist_l + dist_r) / 2.0
+    return ideal_x, dist_l, dist_r, mean_dist
+
+
 def tracking_lin_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -113,6 +154,35 @@ def tracking_height(
     return torch.exp(-error / sigma)
 
 
+def flat_base_height_penalty_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    sigma: float = 0.05,
+) -> torch.Tensor:
+    """平地段 base 高度惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = ~jump_flag
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = sensor.data.heights[:, 0]
+    target_height = cmd[:, 4]
+    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_base_height_error_m": _mean_on_mask(
+                    torch.abs(height - target_height), flat
+                ),
+                "Jump/diag_flat_base_height_penalty": _mean_on_mask(penalty, flat),
+            }
+        )
+
+    return penalty * flat.float()
+
+
 def bad_tilt(
     env: ManagerBasedRlEnv,
     soft_limit_deg: float = 12.0,
@@ -140,6 +210,35 @@ def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
     return robot.data.root_link_lin_vel_b[:, 2] ** 2 * gate
+
+
+def flat_base_lin_vel_z_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    low_speed_threshold: float = 0.10,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段基座竖直速度惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
+        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
+    )
+
+    robot = env.scene[asset_cfg.name]
+    vz = robot.data.root_link_lin_vel_b[:, 2]
+    penalty = lin_vel_z(env)
+
+    active = (~jump_flag) & low_speed
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_base_vz_raw": _mean_on_mask(torch.abs(vz), active),
+                "Jump/diag_flat_base_vz_penalty": _mean_on_mask(penalty, active),
+            }
+        )
+
+    return penalty * active.float()
 
 
 def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -328,6 +427,117 @@ def feet_contact_without_cmd(
     force_mag = finite_contact_force_norm(data.force)
     has_contact = (force_mag > force_threshold).float()
     return torch.sum(has_contact, dim=1) * gate * stationary.float()
+
+
+def flat_wheel_ground_slip_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    wheel_radius: float = 0.059,
+    contact_force_threshold: float = 1.0,
+    longitudinal_scale: float = 0.28,
+    lateral_scale: float = 0.20,
+    max_penalty: float = 9.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段轮地滑移惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = ~jump_flag
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+
+    robot = env.scene[asset_cfg.name]
+    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+
+    base_vel_b = robot.data.root_link_lin_vel_b
+    forward_slip = wheel_forward_speed - base_vel_b[:, 0].unsqueeze(1)
+    lateral_slip = base_vel_b[:, 1].unsqueeze(1).expand_as(forward_slip)
+
+    penalty_per_wheel = (forward_slip / float(longitudinal_scale)) ** 2 + (
+        lateral_slip / float(lateral_scale)
+    ) ** 2
+    penalty = torch.sum(penalty_per_wheel * in_contact.float(), dim=1)
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+    active = flat & in_contact.any(dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_ground_slip_raw": _mean_on_mask(penalty, active),
+                "Jump/diag_flat_wheel_ground_slip_contact_ratio": float(
+                    in_contact.any(dim=1).float().mean().item()
+                ),
+            }
+        )
+
+    return penalty * active.float()
+
+
+def flat_wheel_center_alignment_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    contact_sensor_name: str,
+    contact_force_threshold: float = 1.0,
+    low_speed_threshold: float = 0.10,
+    center_lead_gain: float = 0.03,
+    center_tolerance: float = 0.05,
+    max_penalty: float = 4.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段轮前后对齐惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
+        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
+    )
+
+    sensor: ContactSensor = env.scene[contact_sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+    has_contact = in_contact.any(dim=1)
+
+    _ideal_x, dist_l, dist_r, mean_dist = _wheel_alignment_error(
+        env,
+        asset_cfg,
+        center_lead_gain,
+    )
+    penalty = torch.clamp(
+        (mean_dist / float(center_tolerance)) ** 2,
+        max=float(max_penalty),
+    )
+    active = (~jump_flag) & low_speed & has_contact
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_center_error_m": _mean_on_mask(mean_dist, active),
+                "Jump/diag_flat_wheel_center_penalty": _mean_on_mask(penalty, active),
+                "Jump/diag_flat_wheel_center_contact_ratio": float(
+                    has_contact.float().mean().item()
+                ),
+                "Jump/diag_flat_wheel_center_left_error_m": _mean_on_mask(dist_l, active),
+                "Jump/diag_flat_wheel_center_right_error_m": _mean_on_mask(dist_r, active),
+            }
+        )
+
+    return penalty * active.float()
 
 
 def dof_pos_limits(
