@@ -18,7 +18,7 @@ src/
 ├── se3_sim2sim/    # MuJoCo CPU 验证，Rerun 可视化
 ├── se3_tools/      # 关节方向和默认姿态诊断工具
 ├── se3_jump_to/    # 跳跃参考轨迹生成与回放
-└── se3_flow_match/ # Flow Matching 基础组件与 smoke 实验
+└── se3_flow_match/ # Flow Matching 蒸馏、数据采集、监控与 play 工具
 ```
 
 机器人模型位于 `assets/robots/serialleg/`，训练产物默认写入 `logs/rsl_rl/se3_wheel_leg/`。
@@ -39,7 +39,7 @@ uv run prek install
 ```bash
 just setup     # 装依赖 + 配置 pre-commit hook
 just smoke     # CPU smoke 验证环境
-just train     # 开始平地训练（需要 GPU + .env）
+just train     # 开始 FlowMatch WHEEL 单标签训练（需要 GPU + .env）
 just sim       # 加载 checkpoint，Rerun 可视化回放
 ```
 
@@ -70,7 +70,7 @@ just smoke-gpu   # GPU smoke
 需要 `.env` 以上传指标到 W&B。`just train` 会自动检查 `.env` 是否存在。
 
 ```bash
-just train       # Flat 地形，1024 envs
+just train       # FlowMatch WHEEL 单标签训练，1024 envs
 just train-rough # Rough 地形，1024 envs
 just train-cpu   # CPU 调试训练（极慢）
 ```
@@ -102,8 +102,8 @@ just clean       # 清理 logs/ wandb/ replays/
 如需自定义参数，仍可直接使用 `uv run`：
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
-uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --max-steps 3000
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --viewer none --max-steps 200
@@ -123,6 +123,7 @@ uv run se3-sim2sim --no-action-delay
 - [新手入门](docs/how_to_start.md)
 - [训练指南](docs/train.md)
 - [训练性能记录](docs/perf.md)
+- [训练任务架构](docs/task_architecture.md)
 - [wuyinyun 训练机器运维笔记](docs/wuyinyun.md)
 - [GRU 反倒起身训练方案](docs/plan/gru_recovery_training.md)
 - [MoE 多速度域方案](docs/plan/moe_multi_speed.md)
@@ -134,4 +135,4 @@ uv run se3-sim2sim --no-action-delay
 - 所有 Python 命令通过 `just` 或 `uv` 执行，不直接用 `python` 或 `pip`。
 - `.env`、`logs/`、`wandb/`、Rerun 回放文件不应提交。
 - 训练 checkpoint 较大，分享仓库时单独传 `model_*.pt`，不要提交到 Git。
-- 无外网环境训练用 `WANDB_MODE=offline`，否则 W&B 初始化失败会导致 checkpoint 无法保存。
+- W&B 初始化或运行期写入失败时，runner 会自动降级到本地 TensorBoard，训练和 checkpoint 保存继续进行；远程长训仍建议先确保代理可用，避免丢在线日志。

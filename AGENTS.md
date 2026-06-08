@@ -64,7 +64,7 @@ just lint        # ruff lint + 自动修复
 just check-code  # 格式化 + lint（提交前执行）
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-just train       # 平地训练，1024 envs
+just train       # FlowMatch WHEEL 单标签训练，1024 envs
 just train-rough # 崎岖地形训练，1024 envs
 just train-cpu   # CPU 调试训练（极慢）
 
@@ -177,9 +177,9 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 ## 架构关键点
 
 ### 共享配置（核心设计决策）
-`se3_shared` 是训练端和 sim2sim 的单一参数来源，覆盖关节语义、默认姿态、PD 增益、动作缩放、观测维度、控制频率和动作延迟。这样设计的原因：
+`se3_shared` 是训练端和 sim2sim 的单一参数来源，覆盖关节语义、默认姿态、PD 增益、动作缩放、任务级观测契约、控制频率和动作延迟。这样设计的原因：
 1. 训练端和验证端使用同一套机器人常量
-2. 避免动作缩放、默认姿态、控制频率或延迟参数漂移导致 sim2sim gap
+2. 避免动作缩放、默认姿态、观测布局、控制频率或延迟参数漂移导致 sim2sim gap
 3. 后续添加 GRU、恢复任务或部署导出时，有明确的 runtime contract
 
 ### MJLab 环境结构
@@ -302,11 +302,11 @@ pkill -f "se3-train"
 
 ### wandb 保存依赖
 
-**问题**：RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
+**历史问题**：旧版 RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，会导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
 
 **解决方案**：
-- 有代理时设置代理环境变量，或用 `boring` 确保隧道存活
-- **绝对不要**依赖 wandb 在线模式在网络不稳定的环境跑长时间训练
+- 当前 `Se3OnPolicyRunner` 已给 W&B 初始化和写入加超时保护，失败后自动降级到本地 TensorBoard，并继续保存 checkpoint
+- 远程长时间训练仍应先确认代理可用，避免丢失在线日志与模型上传
 
 ### checkpoint 文件名排序
 
