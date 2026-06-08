@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -26,13 +25,16 @@ from mjlab.terrains import (
 )
 
 from se3_train.mdp import events, stair_rewards, terminations
-from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
+from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
+
+_REFERENCE_CTBC_WHEEL_SCALE = 45.0
+_REFERENCE_CTBC_WHEEL_AMP = 1.5
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """生成台阶 CTBC 环境，保持 recovery/flat 的 action 与 observation 语义。"""
-    cfg = flat_env_cfg(play=play)
+    """生成台阶 CTBC 环境，继承 recovery 能力并覆盖回台阶训练分布。"""
+    cfg = recovery_env_cfg(play=play)
 
     stair_sub_terrains = (
         {
@@ -170,16 +172,17 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
     command_cfg.enable_jump_metrics = False
+    _disable_recovery_command_schedules(command_cfg)
     if play:
         command_cfg.lin_vel_x_range = (0.25, 0.25)
         command_cfg.height_range = (0.39, 0.39)
         command_cfg.standing_height_range = (0.39, 0.39)
 
-    if "bad_orientation" in cfg.terminations:
-        cfg.terminations["bad_orientation"] = replace(
-            cfg.terminations["bad_orientation"],
-            params={"limit_angle": 0.698, "max_steps": 100},
-        )
+    cfg.terminations["bad_orientation"] = TerminationTermCfg(
+        func=terminations.bad_orientation_delayed,
+        time_out=False,
+        params={"limit_angle": 0.698, "max_steps": 100},
+    )
     cfg.terminations["leg_contact"] = TerminationTermCfg(
         func=terminations.leg_contact,
         time_out=False,
@@ -242,7 +245,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "retract_active_amp": 0.0,
             "sweep_front_amp": 0.2,
             "sweep_active_amp": 0.0,
-            "wheel_amp": 1.5,
+            "wheel_amp": _ctbc_wheel_amp(cfg.actions["delayed_action"]),
             "retract_s": 0.3,
             "sweep_s": 1.2,
             "release_s": 0.5,
@@ -303,3 +306,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.episode_length_s = 8.0 if not play else 9999.0
     return cfg
+
+
+def _disable_recovery_command_schedules(command_cfg: object) -> None:
+    """关闭 recovery 专属指令调度，避免台阶任务先蹲低或随机转向。"""
+    overrides = {
+        "height_balance_schedule_enabled": False,
+        "exclusive_linear_yaw_commands": False,
+        "linear_command_ratio": 1.0,
+    }
+    for name, value in overrides.items():
+        if hasattr(command_cfg, name):
+            setattr(command_cfg, name, value)
+
+
+def _ctbc_wheel_amp(action_cfg: object) -> float:
+    """按当前 wheel action scale 折算 CTBC 轮速前馈幅值。"""
+    wheel_scale = float(getattr(action_cfg, "wheel_scale", _REFERENCE_CTBC_WHEEL_SCALE))
+    if wheel_scale <= 1.0e-6:
+        return _REFERENCE_CTBC_WHEEL_AMP
+    return _REFERENCE_CTBC_WHEEL_AMP * _REFERENCE_CTBC_WHEEL_SCALE / wheel_scale
