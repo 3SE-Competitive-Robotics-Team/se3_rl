@@ -30,6 +30,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.sim.njmax = 256
     cfg.actions["delayed_action"].height_conditioned_action_default = True
     cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
+    cfg.actions["delayed_action"].active_rod_target_lower_preload_margin = 0.30
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.resampling_time_range = (10.0, 10.0)
     command_cfg.lin_vel_x_range = (-1.0, 1.0)

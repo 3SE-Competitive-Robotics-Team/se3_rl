@@ -48,6 +48,8 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     action_delay_min_s: float = _DEFAULT_DELAY.min_delay_s
     action_delay_max_s: float = _DEFAULT_DELAY.max_delay_s
     action_clip: float | None = _SHARED_ROBOT.action_clip
+    active_rod_target_lower_preload_margin: float = 0.0
+    active_rod_target_upper_preload_margin: float = 0.0
     height_conditioned_action_default: bool = False
     action_default_command_name: str = "velocity_height"
 
@@ -92,6 +94,16 @@ class SerialLegDelayedAction(ActionTerm):
             )
         if cfg.action_clip is not None and cfg.action_clip <= 0.0:
             raise ValueError(f"action_clip must be positive or None, got {cfg.action_clip}")
+        if cfg.active_rod_target_lower_preload_margin < 0.0:
+            raise ValueError(
+                "active_rod_target_lower_preload_margin must be non-negative, "
+                f"got {cfg.active_rod_target_lower_preload_margin}"
+            )
+        if cfg.active_rod_target_upper_preload_margin < 0.0:
+            raise ValueError(
+                "active_rod_target_upper_preload_margin must be non-negative, "
+                f"got {cfg.active_rod_target_upper_preload_margin}"
+            )
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
@@ -109,6 +121,12 @@ class SerialLegDelayedAction(ActionTerm):
         self._active_rod_angle_limits = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_limits,
             device=self.device,
+        )
+        self._active_rod_target_lower = self._active_rod_angle_limits[0] - float(
+            cfg.active_rod_target_lower_preload_margin
+        )
+        self._active_rod_target_upper = self._active_rod_angle_limits[1] + float(
+            cfg.active_rod_target_upper_preload_margin
         )
         self._active_rod_angle_mid = torch.mean(self._active_rod_angle_limits)
         self._active_rod_angle_coeffs = torch.tensor(
@@ -282,7 +300,8 @@ class SerialLegDelayedAction(ActionTerm):
         if not (self._closedchain or self._fourbar_surrogate):
             return leg_action * self._leg_action_scales + policy_default
 
-        lower, upper = self._active_rod_angle_limits
+        lower = self._active_rod_target_lower
+        upper = self._active_rod_target_upper
         target = torch.empty_like(policy_default)
         active_targets: list[torch.Tensor] = []
         active_clamped: list[torch.Tensor] = []
