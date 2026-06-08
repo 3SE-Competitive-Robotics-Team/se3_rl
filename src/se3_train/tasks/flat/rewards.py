@@ -4,12 +4,6 @@ from __future__ import annotations
 
 from mjlab.envs.mdp.rewards import is_alive
 
-from se3_train.mdp.jump_rewards import (
-    flat_base_height_penalty_no_jump,
-    flat_base_lin_vel_z_no_jump,
-    flat_wheel_center_alignment_no_jump,
-    flat_wheel_ground_slip_no_jump,
-)
 from se3_train.mdp.rewards import (
     action_rate,
     ang_vel_xy,
@@ -19,6 +13,10 @@ from se3_train.mdp.rewards import (
     contact_forces,
     dof_pos_limits,
     feet_contact_without_cmd,
+    flat_base_height_penalty_no_jump,
+    flat_base_lin_vel_z_no_jump,
+    flat_wheel_center_alignment_no_jump,
+    flat_wheel_ground_slip_no_jump,
     joint_mirror,
     leg_dof_acc,
     leg_power,

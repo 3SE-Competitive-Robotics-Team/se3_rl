@@ -6,12 +6,8 @@ from se3_train.mdp.jump_rewards import (
     action_rate_jump,
     action_rate_no_jump,
     action_smoothness_no_jump,
-    flat_base_height_penalty_no_jump,
-    flat_base_lin_vel_z_no_jump,
     flat_orientation_l2_no_jump,
-    flat_wheel_center_alignment_no_jump,
     flat_wheel_contact_penalty_no_jump,
-    flat_wheel_ground_slip_no_jump,
     idle_wheel_motion_penalty_no_jump,
     jump_action_mirror,
     jump_ang_vel_xy,
@@ -53,6 +49,12 @@ from se3_train.mdp.jump_traj_tracking import (
     traj_base_pose_6d_tracking,
     traj_joint_pos_tracking,
     traj_vz_tracking,
+)
+from se3_train.mdp.rewards import (
+    flat_base_height_penalty_no_jump,
+    flat_base_lin_vel_z_no_jump,
+    flat_wheel_center_alignment_no_jump,
+    flat_wheel_ground_slip_no_jump,
 )
 
 __all__ = [

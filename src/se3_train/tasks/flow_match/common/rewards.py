@@ -5,7 +5,6 @@ from __future__ import annotations
 from mjlab.envs.mdp.rewards import is_terminated
 
 from se3_train.mdp.jump_rewards import (
-    flat_base_height_penalty_no_jump,
     jump_ang_vel_xy,
     jump_landing_recovery,
     jump_orientation,
@@ -18,6 +17,7 @@ from se3_train.mdp.rewards import (
     ang_vel_xy,
     bad_tilt,
     dof_pos_limits,
+    flat_base_height_penalty_no_jump,
     leg_dof_acc,
     leg_power,
     leg_torques,
