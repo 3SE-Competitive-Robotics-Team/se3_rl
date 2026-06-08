@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from .action_delay import ActionDelayConfig
 from .motor import DM8009P, M3508_C620_14
 
-_ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (0.0, 1.469449651507)
+_ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (0.0, 1.509535270050)
 _ACTIVE_ROD_ACTION_SCALE: float = 0.5 * (_ACTIVE_ROD_ANGLE_LIMITS[1] - _ACTIVE_ROD_ANGLE_LIMITS[0])
 
 
@@ -140,7 +140,7 @@ class RobotConfig(BaseModel):
     default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
     default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
     active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
-    active_rod_soft_limit_factor: float = 0.9
+    active_rod_soft_limit_factor: float = 1.0
     active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
         (1.0, -1.0),
         (-1.0, 1.0),

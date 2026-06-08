@@ -1571,6 +1571,7 @@ def recovery_diagnostics(
         ("cmd_28_32cm", 0.28, 0.32),
         ("cmd_32_36cm", 0.32, 0.36),
         ("cmd_36_38cm", 0.36, 0.38),
+        ("cmd_38_39cm", 0.38, 0.39),
     ):
         height_mask = (target_height >= float(height_lo)) & (target_height < float(height_hi))
         log[f"Recovery/diag_sample_rate_by_cmd_height/{height_name}"] = (
