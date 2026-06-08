@@ -105,6 +105,8 @@ class RobotConfig(BaseModel):
     initial_roll_rad: float = 0.0
     initial_pitch_rad: float = 0.0
     initial_yaw_rad: float = 0.0
+    initial_ang_vel_rad_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """reset 初始 base 角速度，按 MuJoCo freejoint qvel 的 body-frame xyz 顺序。"""
     initial_base_height: float | None = None
     """sim2sim reset 初始 base 姿态。默认全 0，保持原站立回放行为。"""
     command: tuple[float, float, float, float, float, float, float, float] = (
@@ -125,6 +127,8 @@ class RobotConfig(BaseModel):
     action_scale: tuple[float, ...] = _shared_robot.action_scale
     action_clip: float | None = _shared_robot.action_clip
     height_conditioned_action_default: bool = False
+    active_rod_target_lower_preload_margin: Annotated[float, Field(ge=0.0)] = 0.0
+    active_rod_target_upper_preload_margin: Annotated[float, Field(ge=0.0)] = 0.0
     torque_limits: tuple[float, ...] = _shared_robot.torque_limits
     leg_kp: float = _shared_robot.leg_kp
     leg_kd: float = _shared_robot.leg_kd

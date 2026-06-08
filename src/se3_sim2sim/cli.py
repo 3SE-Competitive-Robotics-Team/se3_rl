@@ -85,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
     yaw_defaults = robot_defaults.yaw_pid
     parser.add_argument("--model", type=Path, default=robot_defaults.model_path)
     parser.add_argument(
+        "--task",
+        default=robot_defaults.task,
+        help="sim2sim runtime task id.",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
@@ -145,6 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reset 初始 yaw 角度（度）。训练端 yaw 随机化范围为 ±180°。",
     )
     parser.add_argument(
+        "--initial-ang-vel-deg-s",
+        type=float,
+        nargs=3,
+        metavar=("ROLL_RATE", "PITCH_RATE", "YAW_RATE"),
+        default=(0.0, 0.0, 0.0),
+        help="Reset 初始 base 角速度（deg/s），按 roll/pitch/yaw 轴顺序写入 MuJoCo qvel[3:6]。",
+    )
+    parser.add_argument(
         "--initial-base-height",
         type=float,
         default=None,
@@ -174,6 +187,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--height-conditioned-action-default",
         action="store_true",
         help="让腿部 action=0 对应当前 command height 下的默认腿型，用于 recovery one-policy checkpoint。",
+    )
+    parser.add_argument(
+        "--active-rod-target-lower-preload-margin",
+        type=float,
+        default=robot_defaults.active_rod_target_lower_preload_margin,
+        help="Active rod lower target preload margin for recovery checkpoints.",
+    )
+    parser.add_argument(
+        "--active-rod-target-upper-preload-margin",
+        type=float,
+        default=robot_defaults.active_rod_target_upper_preload_margin,
+        help="Active rod upper target preload margin for recovery checkpoints.",
     )
     parser.add_argument(
         "--yaw-pid",
@@ -316,12 +341,14 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     return RunConfig(
         robot=RobotConfig(
             model_path=args.model,
+            task=str(args.task),
             seed=int(args.seed),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
             initial_roll_rad=math.radians(float(args.initial_roll_deg)),
             initial_pitch_rad=math.radians(float(args.initial_pitch_deg)),
             initial_yaw_rad=math.radians(float(args.initial_yaw_deg)),
+            initial_ang_vel_rad_s=tuple(math.radians(float(v)) for v in args.initial_ang_vel_deg_s),
             initial_base_height=(
                 None if args.initial_base_height is None else float(args.initial_base_height)
             ),
@@ -339,6 +366,12 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 None if args.action_delay_steps is None else max(0, int(args.action_delay_steps))
             ),
             height_conditioned_action_default=bool(args.height_conditioned_action_default),
+            active_rod_target_lower_preload_margin=float(
+                args.active_rod_target_lower_preload_margin
+            ),
+            active_rod_target_upper_preload_margin=float(
+                args.active_rod_target_upper_preload_margin
+            ),
             leg_kp=float(args.leg_kp),
             leg_kd=float(args.leg_kd),
             jump_schedule=JumpScheduleConfig(

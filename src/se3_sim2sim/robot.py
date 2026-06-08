@@ -145,6 +145,13 @@ class WheelLeggedRobot:
             fourbar_surrogate=self.fourbar_surrogate,
         )
         self.action_scale = as_float64(cfg.action_scale)
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        self.active_rod_target_lower = float(lower) - float(
+            cfg.active_rod_target_lower_preload_margin
+        )
+        self.active_rod_target_upper = float(upper) + float(
+            cfg.active_rod_target_upper_preload_margin
+        )
         self.torque_limits = as_float64(cfg.torque_limits)
         self.motor_actuator_names = tuple(f"{name}_motor" for name in self.policy_joint_names)
         self.motor_ctrl_ids = np.asarray(
@@ -197,6 +204,7 @@ class WheelLeggedRobot:
         pitch = float(self.cfg.initial_pitch_rad)
         yaw = float(self.cfg.initial_yaw_rad)
         self.data.qvel[0:6] = 0.0
+        self.data.qvel[3:6] = np.asarray(self.cfg.initial_ang_vel_rad_s, dtype=np.float64)
         self._apply_default_joint_positions()
         self.data.qvel[self.joint_qvel] = 0.0
         if (not fixed) or randomize_root:
@@ -723,7 +731,6 @@ class WheelLeggedRobot:
         target = np.empty_like(policy_default)
         lower, upper = _SHARED_ROBOT.active_rod_angle_limits
         active_mid = 0.5 * (float(lower) + float(upper))
-        active_half_range = 0.5 * (float(upper) - float(lower))
         for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
             front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
             front_target = policy_default[front_idx] + leg_action[front_idx] * leg_scale[front_idx]
@@ -733,8 +740,12 @@ class WheelLeggedRobot:
                 )
             else:
                 active_default = active_mid
-            active_raw = active_default + leg_action[back_idx] * active_half_range
-            active_target = np.clip(active_raw, lower, upper)
+            active_raw = active_default + leg_action[back_idx] * leg_scale[back_idx]
+            active_target = np.clip(
+                active_raw,
+                self.active_rod_target_lower,
+                self.active_rod_target_upper,
+            )
             target[front_idx] = front_target
             target[back_idx] = (active_target - front_coef * front_target) / back_coef
         return target
