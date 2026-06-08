@@ -152,8 +152,8 @@ class RobotConfig(BaseModel):
         _ACTIVE_ROD_ACTION_SCALE,
         pi,
         _ACTIVE_ROD_ACTION_SCALE,
-        45.0,
-        45.0,
+        60.0,
+        60.0,
     )
     action_clip: float | None = 1.0
     sim_dt: float = 0.005
