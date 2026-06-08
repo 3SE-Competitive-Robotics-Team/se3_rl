@@ -26,6 +26,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """统一全姿态随机的反倒自起训练环境。"""
 
     cfg = flat_env_cfg(play=play)
+    cfg.sim.nconmax = 64
+    cfg.sim.njmax = 256
     cfg.actions["delayed_action"].height_conditioned_action_default = True
     cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
     command_cfg = cfg.commands["velocity_height"]
