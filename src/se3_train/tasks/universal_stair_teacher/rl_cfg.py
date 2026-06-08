@@ -19,6 +19,14 @@ from se3_train.teacher_student.config import stair_teacher_checkpoint_from_env
 _STAIR_TERRAIN_TYPE_NAMES = ("stage_stairs", "inv_pyramid_stairs")
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """读取布尔环境变量。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _teacher_obs_dim_from_env() -> int | None:
     """读取 teacher obs 维度；默认沿用当前 student/base actor 维度。"""
     raw = os.environ.get("SE3_STAIR_TEACHER_OBS_DIM")
@@ -41,8 +49,9 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         cfg.max_iterations = int(os.environ.get("SE3_UNIVERSAL_STAIR_MAX_ITERATIONS", "2000"))
         cfg.resume = True
 
+    teacher_enabled = (not smoke_enabled) and _env_flag("SE3_STAIR_TEACHER_ENABLED", True)
     teacher_config = StairTeacherStudentConfig(
-        enabled=not smoke_enabled,
+        enabled=teacher_enabled,
         mask=MaskConfig(stair_type_names=_STAIR_TERRAIN_TYPE_NAMES),
         teacher_loss=TeacherLossConfig(
             initial_coef=float(os.environ.get("SE3_STAIR_TEACHER_COEF", "0.2")),
