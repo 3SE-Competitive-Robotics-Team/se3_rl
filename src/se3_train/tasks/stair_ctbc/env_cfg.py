@@ -39,6 +39,7 @@ from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStair
 
 _REFERENCE_CTBC_WHEEL_SCALE = 45.0
 _REFERENCE_CTBC_WHEEL_AMP = 1.5
+_STAIR_REWARD_TERRAIN_TYPES = ("stage_stairs", "inv_pyramid_stairs")
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -314,7 +315,41 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["stair_climb_height"] = RewardTermCfg(
         func=stair_rewards.stair_climb_height,
         weight=3.0,
-        params={"command_name": "velocity_height", "max_gain": 0.35},
+        params={
+            "command_name": "velocity_height",
+            "max_gain": 0.35,
+            "forward_gate_start": 0.10,
+            "forward_gate_width": 0.25,
+            "terrain_type_names": _STAIR_REWARD_TERRAIN_TYPES,
+        },
+    )
+    cfg.rewards["stair_forward_distance"] = RewardTermCfg(
+        func=stair_rewards.stair_forward_distance,
+        weight=1.0,
+        params={
+            "max_progress": 1.0,
+            "terrain_type_names": _STAIR_REWARD_TERRAIN_TYPES,
+        },
+    )
+    cfg.rewards["stair_feet_clearance"] = RewardTermCfg(
+        func=stair_rewards.stair_feet_clearance,
+        weight=1.0,
+        params={"sensor_name": "wheel_sensor", "h_min": 0.08, "h_max": 0.35},
+    )
+    cfg.rewards["stair_feet_air_time"] = RewardTermCfg(
+        func=stair_rewards.stair_feet_air_time,
+        weight=1.0,
+        params={"sensor_name": "wheel_sensor"},
+    )
+    cfg.rewards["stair_contact_number"] = RewardTermCfg(
+        func=stair_rewards.stair_contact_number,
+        weight=1.0,
+        params={"sensor_name": "wheel_sensor"},
+    )
+    cfg.rewards["stair_wheel_swing_zero_vel"] = RewardTermCfg(
+        func=stair_rewards.stair_wheel_swing_zero_vel,
+        weight=0.25,
+        params={"sensor_name": "wheel_sensor"},
     )
     cfg.rewards["stair_contact_diagnostics"] = RewardTermCfg(
         func=stair_rewards.stair_contact_diagnostics,

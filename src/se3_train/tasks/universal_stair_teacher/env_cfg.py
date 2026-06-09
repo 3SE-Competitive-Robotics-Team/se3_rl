@@ -86,7 +86,7 @@ def _four_terrain_cfg(play: bool) -> TerrainEntityCfg:
 
 
 def _configure_commands_and_curriculum(cfg: ManagerBasedRlEnvCfg, play: bool) -> None:
-    """配置正向速度下限课程；训练中从 0.3m/s 拉到 0.8m/s 下限。"""
+    """配置正冲台阶速度课程；始终保持 0.8m/s 以上且不随机 yaw。"""
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.height_range = (0.38, 0.39)
     command_cfg.standing_height_range = (0.38, 0.39)
@@ -100,7 +100,7 @@ def _configure_commands_and_curriculum(cfg: ManagerBasedRlEnvCfg, play: bool) ->
         command_cfg.ang_vel_yaw_range = (0.0, 0.0)
         return
 
-    command_cfg.lin_vel_x_range = (0.30, 0.80)
+    command_cfg.lin_vel_x_range = (0.80, 1.20)
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     cfg.curriculum = {
         "commands_vel": CurriculumTermCfg(
@@ -112,23 +112,18 @@ def _configure_commands_and_curriculum(cfg: ManagerBasedRlEnvCfg, play: bool) ->
                 "velocity_stages": [
                     {
                         "iteration": 0,
-                        "lin_vel_x_range": (0.30, 0.80),
+                        "lin_vel_x_range": (0.80, 1.20),
                         "ang_vel_yaw_range": (0.0, 0.0),
                     },
                     {
-                        "iteration": 200,
-                        "lin_vel_x_range": (0.50, 1.20),
-                        "ang_vel_yaw_range": (-0.25, 0.25),
+                        "iteration": 300,
+                        "lin_vel_x_range": (0.80, 1.80),
+                        "ang_vel_yaw_range": (0.0, 0.0),
                     },
                     {
-                        "iteration": 500,
-                        "lin_vel_x_range": (0.70, 1.80),
-                        "ang_vel_yaw_range": (-0.50, 0.50),
-                    },
-                    {
-                        "iteration": 800,
+                        "iteration": 600,
                         "lin_vel_x_range": (0.80, 2.50),
-                        "ang_vel_yaw_range": (-0.80, 0.80),
+                        "ang_vel_yaw_range": (0.0, 0.0),
                     },
                 ],
             },
@@ -210,3 +205,23 @@ def _configure_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         )
     if "stair_climb_height" in cfg.rewards:
         cfg.rewards["stair_climb_height"].weight = 8.0
+        cfg.rewards["stair_climb_height"].params.update(
+            {
+                "forward_gate_start": 0.10,
+                "forward_gate_width": 0.25,
+                "terrain_type_names": _STAIR_TERRAIN_TYPE_NAMES,
+            }
+        )
+    if "stair_forward_distance" in cfg.rewards:
+        cfg.rewards["stair_forward_distance"].weight = 2.0
+        cfg.rewards["stair_forward_distance"].params.update(
+            {"terrain_type_names": _STAIR_TERRAIN_TYPE_NAMES}
+        )
+    if "stair_feet_clearance" in cfg.rewards:
+        cfg.rewards["stair_feet_clearance"].weight = 1.0
+    if "stair_feet_air_time" in cfg.rewards:
+        cfg.rewards["stair_feet_air_time"].weight = 1.0
+    if "stair_contact_number" in cfg.rewards:
+        cfg.rewards["stair_contact_number"].weight = 1.0
+    if "stair_wheel_swing_zero_vel" in cfg.rewards:
+        cfg.rewards["stair_wheel_swing_zero_vel"].weight = 0.25
