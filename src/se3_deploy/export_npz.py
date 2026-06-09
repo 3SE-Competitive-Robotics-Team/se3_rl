@@ -10,8 +10,8 @@ import numpy as np
 from se3_sim2sim.policy import PolicyRuntime
 from se3_sim2sim.runtime_spec import RuntimeSpec
 
-DEFAULT_RECOVERY_CHECKPOINT = Path("assets/base_model/model_4999_gru.pt")
-DEFAULT_OUTPUT = Path("logs/deploy/model_4999_recovery_gru.npz")
+DEFAULT_RECOVERY_CHECKPOINT = Path("assets/base_model/model_5999_gru.pt")
+DEFAULT_OUTPUT = Path("logs/deploy/model_5999_recovery_gru.npz")
 
 
 def export_npz(checkpoint: Path, output: Path) -> None:

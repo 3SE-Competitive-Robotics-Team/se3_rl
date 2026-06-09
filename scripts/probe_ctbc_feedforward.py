@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_XML = (
     ROOT / "assets" / "robots" / "serialleg" / "mjcf" / "serialleg_fourbar_surrogate_train.xml"
 )
-DEFAULT_CHECKPOINT = ROOT / "assets" / "base_model" / "model_4999_gru.pt"
+DEFAULT_CHECKPOINT = ROOT / "assets" / "base_model" / "model_5999_gru.pt"
 DEFAULT_OUT_DIR = ROOT / "tmp" / "ctbc_feedforward_probe"
 WHEEL_RADIUS_M = 0.06
 

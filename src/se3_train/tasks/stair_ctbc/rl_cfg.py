@@ -7,7 +7,7 @@ import os
 from se3_train.tasks.recovery.rl_cfg import rl_cfg as recovery_rl_cfg
 
 _BASE_MODEL_DIR = "base_model"
-_RECOVERY_BASE_CHECKPOINT = "model_4999_gru.pt"
+_RECOVERY_BASE_CHECKPOINT = "model_5999_gru.pt"
 
 
 def rl_cfg(smoke: bool = False):
