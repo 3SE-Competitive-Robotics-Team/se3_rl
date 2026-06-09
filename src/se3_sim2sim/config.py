@@ -127,7 +127,9 @@ class RobotConfig(BaseModel):
     action_scale: tuple[float, ...] = _shared_robot.action_scale
     action_clip: float | None = _shared_robot.action_clip
     height_conditioned_action_default: bool = False
-    active_rod_target_lower_preload_margin: Annotated[float, Field(ge=0.0)] = 0.0
+    active_rod_target_lower_preload_margin: Annotated[float, Field(ge=0.0)] = (
+        _shared_robot.active_rod_lower_target_overdrive
+    )
     active_rod_target_upper_preload_margin: Annotated[float, Field(ge=0.0)] = 0.0
     torque_limits: tuple[float, ...] = _shared_robot.torque_limits
     leg_kp: float = _shared_robot.leg_kp

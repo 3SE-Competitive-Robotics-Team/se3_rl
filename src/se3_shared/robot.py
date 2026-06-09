@@ -144,6 +144,7 @@ class RobotConfig(BaseModel):
     default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
     default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
     active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
+    active_rod_lower_target_overdrive: float = 0.20
     active_rod_soft_limit_factor: float = 1.0
     active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
         (1.0, -1.0),

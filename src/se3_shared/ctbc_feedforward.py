@@ -155,8 +155,9 @@ def _current_action_to_policy_target_torch(
     scales = leg_scales.to(device=leg_action.device, dtype=leg_action.dtype).reshape(4)
     target = torch.empty_like(policy_default)
     lower, upper = robot_cfg.active_rod_angle_limits
+    target_lower = float(lower) - float(robot_cfg.active_rod_lower_target_overdrive)
     active_mid = 0.5 * (float(lower) + float(upper))
-    lower_t = torch.as_tensor(lower, device=leg_action.device, dtype=leg_action.dtype)
+    lower_t = torch.as_tensor(target_lower, device=leg_action.device, dtype=leg_action.dtype)
     upper_t = torch.as_tensor(upper, device=leg_action.device, dtype=leg_action.dtype)
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
         front_coef, back_coef = robot_cfg.active_rod_angle_coeffs[side_idx]
@@ -222,6 +223,7 @@ def _current_action_to_policy_target_np(
     scales = np.asarray(leg_scales, dtype=np.float64).reshape(4)
     target = np.empty_like(policy_default)
     lower, upper = robot_cfg.active_rod_angle_limits
+    target_lower = float(lower) - float(robot_cfg.active_rod_lower_target_overdrive)
     active_mid = 0.5 * (float(lower) + float(upper))
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
         front_coef, back_coef = robot_cfg.active_rod_angle_coeffs[side_idx]
@@ -234,7 +236,7 @@ def _current_action_to_policy_target_np(
             active_default = np.full_like(front_target, active_mid)
         active_target = np.clip(
             active_default + leg_action[:, back_idx] * scales[back_idx],
-            lower,
+            target_lower,
             upper,
         )
         target[:, front_idx] = front_target

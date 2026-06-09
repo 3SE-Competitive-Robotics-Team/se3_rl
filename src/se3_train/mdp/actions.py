@@ -50,6 +50,7 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     action_clip: float | None = _SHARED_ROBOT.action_clip
     height_conditioned_action_default: bool = False
     action_default_command_name: str = "velocity_height"
+    active_rod_lower_target_overdrive: float = _SHARED_ROBOT.active_rod_lower_target_overdrive
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -289,6 +290,7 @@ class SerialLegDelayedAction(ActionTerm):
             return leg_action * self._leg_action_scales + policy_default
 
         lower, upper = self._active_rod_angle_limits
+        target_lower = float(lower) - float(self.cfg.active_rod_lower_target_overdrive)
         target = torch.empty_like(policy_default)
         active_targets: list[torch.Tensor] = []
         active_clamped: list[torch.Tensor] = []
@@ -308,7 +310,7 @@ class SerialLegDelayedAction(ActionTerm):
             active_raw = (
                 active_default + leg_action[:, back_idx] * self._leg_action_scales[back_idx]
             )
-            active_target = torch.clamp(active_raw, lower, upper)
+            active_target = torch.clamp(active_raw, target_lower, upper)
             target[:, front_idx] = front_target
             target[:, back_idx] = (active_target - front_coef * front_target) / back_coef
             active_targets.append(active_target)

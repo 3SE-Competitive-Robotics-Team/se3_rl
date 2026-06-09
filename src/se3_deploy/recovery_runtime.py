@@ -32,8 +32,6 @@ DEFAULT_RECOVERY_CHECKPOINT = Path("logs/deploy/model_4999_recovery_gru.npz")
 ACTION_FLAG_DRY_RUN = 1 << 0
 ACTION_FLAG_TIMEOUT = 1 << 1
 ACTION_FLAG_NONFINITE = 1 << 2
-_RECOVERY_ACTIVE_ROD_TARGET_LOWER_PRELOAD_MARGIN = 0.30
-_RECOVERY_ACTIVE_ROD_TARGET_UPPER_PRELOAD_MARGIN = 0.0
 _HEIGHT_LUT_SIZE = 1024
 _WHEEL_RADIUS = 0.06
 _BASE_COM_X = -0.01780372
@@ -100,8 +98,8 @@ class RecoveryActionTargetDecoder:
             dtype=np.float32,
         )
         lower, upper = self.robot_cfg.active_rod_angle_limits
-        self.active_lower = float(lower) - _RECOVERY_ACTIVE_ROD_TARGET_LOWER_PRELOAD_MARGIN
-        self.active_upper = float(upper) + _RECOVERY_ACTIVE_ROD_TARGET_UPPER_PRELOAD_MARGIN
+        self.active_lower = float(lower) - float(self.robot_cfg.active_rod_lower_target_overdrive)
+        self.active_upper = float(upper)
         self.policy_default = (
             _policy_default_from_height_np(
                 self.command_height,
