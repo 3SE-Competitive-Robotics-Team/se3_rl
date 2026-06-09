@@ -12,8 +12,10 @@ from se3_shared import (
     REFERENCE_CTBC_FORCE_THRESHOLD_N,
     REFERENCE_CTBC_HIP_RATIO,
     REFERENCE_CTBC_KNEE_RATIO,
+    REFERENCE_CTBC_LEG_LENGTH_AMPLITUDE_M,
     REFERENCE_CTBC_LEG_SCALE,
     RobotConfig,
+    leg_length_ctbc_bias_to_current_action_torch,
     policy_default_from_height_torch,
     reference_ctbc_bias_to_current_action_torch,
 )
@@ -42,6 +44,9 @@ class StairClimbState:
         reference_leg_scale: float = REFERENCE_CTBC_LEG_SCALE,
         hip_ratio: float = REFERENCE_CTBC_HIP_RATIO,
         knee_ratio: float = REFERENCE_CTBC_KNEE_RATIO,
+        ff_style: str = "reference",
+        leg_length_amplitude_m: float = REFERENCE_CTBC_LEG_LENGTH_AMPLITUDE_M,
+        swing_angle_amplitude_rad: float = 0.0,
         ann_start_iter: int = 0,
         ann_end_iter: int = 1500,
         phantom_trigger_iter: int = 0,
@@ -57,6 +62,11 @@ class StairClimbState:
         self.reference_leg_scale = float(reference_leg_scale)
         self.hip_ratio = float(hip_ratio)
         self.knee_ratio = float(knee_ratio)
+        self.ff_style = str(ff_style)
+        if self.ff_style not in {"reference", "leg_length"}:
+            raise ValueError(f"未知 CTBC 前馈样式: {self.ff_style}")
+        self.leg_length_amplitude_m = float(leg_length_amplitude_m)
+        self.swing_angle_amplitude_rad = float(swing_angle_amplitude_rad)
         self.ann_start_iter = int(ann_start_iter)
         self.ann_end_iter = int(ann_end_iter)
         self.phantom_trigger_iter = int(phantom_trigger_iter)
@@ -69,6 +79,7 @@ class StairClimbState:
         self._trigger_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._last_bias = torch.zeros(self.num_envs, 6, device=self.device)
         self._last_pulse = torch.zeros(self.num_envs, 2, device=self.device)
+        self._last_profile = torch.zeros(self.num_envs, 2, device=self.device)
         self._last_contact_xy = torch.zeros(self.num_envs, 2, device=self.device)
         self._iter = 0
         self._iter_origin: int | None = None
@@ -139,9 +150,14 @@ class StairClimbState:
     ) -> torch.Tensor:
         """返回当前 action 语义下的 6D raw action bias。"""
         bias = torch.zeros(self.num_envs, 6, device=self.device)
-        side_pulse = self._reference_side_pulse()
-        self._last_pulse = side_pulse
-        if self._kff <= 0.0 or not bool((side_pulse > 0.0).any()):
+        side_profile = self._normalized_side_profile()
+        self._last_profile = side_profile
+        if self.ff_style == "reference":
+            side_input = 2.0 * self.ff_amplitude * side_profile
+        else:
+            side_input = self.leg_length_amplitude_m * side_profile
+        self._last_pulse = side_input
+        if self._kff <= 0.0 or not bool((side_profile > 0.0).any()):
             self._last_bias = bias
             return bias
 
@@ -160,16 +176,27 @@ class StairClimbState:
         else:
             leg_action_scales = leg_action_scales.to(device=self.device)
 
-        bias[:, :4] = reference_ctbc_bias_to_current_action_torch(
-            current_leg_action,
-            policy_default,
-            side_pulse,
-            leg_scales=leg_action_scales,
-            height_conditioned_action_default=height_conditioned_action_default,
-            reference_leg_scale=self.reference_leg_scale,
-            hip_ratio=self.hip_ratio,
-            knee_ratio=self.knee_ratio,
-        )
+        if self.ff_style == "leg_length":
+            bias[:, :4] = leg_length_ctbc_bias_to_current_action_torch(
+                current_leg_action,
+                policy_default,
+                side_profile,
+                leg_scales=leg_action_scales,
+                height_conditioned_action_default=height_conditioned_action_default,
+                amplitude_m=self.leg_length_amplitude_m,
+                swing_angle_rad=self.swing_angle_amplitude_rad,
+            )
+        else:
+            bias[:, :4] = reference_ctbc_bias_to_current_action_torch(
+                current_leg_action,
+                policy_default,
+                side_input,
+                leg_scales=leg_action_scales,
+                height_conditioned_action_default=height_conditioned_action_default,
+                reference_leg_scale=self.reference_leg_scale,
+                hip_ratio=self.hip_ratio,
+                knee_ratio=self.knee_ratio,
+            )
         self._last_bias = bias
         return bias
 
@@ -193,6 +220,30 @@ class StairClimbState:
             "Stair/ctbc_kff": float(self._kff),
             "Stair/ctbc_reference_pulse_mean": self._last_pulse.mean().item(),
             "Stair/ctbc_reference_pulse_max": self._last_pulse.max().item(),
+            "Stair/ctbc_profile_mean": self._last_profile.mean().item(),
+            "Stair/ctbc_profile_max": self._last_profile.max().item(),
+            "Stair/ctbc_leg_length_amplitude_m": self.leg_length_amplitude_m,
+            "Stair/ctbc_swing_angle_amplitude_deg": math.degrees(self.swing_angle_amplitude_rad),
+            "Stair/ctbc_leg_length_shortening_mean": (
+                self.leg_length_amplitude_m * self._last_profile
+            )
+            .mean()
+            .item(),
+            "Stair/ctbc_leg_length_shortening_max": (
+                self.leg_length_amplitude_m * self._last_profile
+            )
+            .max()
+            .item(),
+            "Stair/ctbc_swing_angle_mean_deg": (
+                math.degrees(self.swing_angle_amplitude_rad) * self._last_profile
+            )
+            .mean()
+            .item(),
+            "Stair/ctbc_swing_angle_max_deg": (
+                math.degrees(self.swing_angle_amplitude_rad) * self._last_profile
+            )
+            .max()
+            .item(),
             "Stair/ctbc_bias_abs_mean": torch.abs(self._last_bias[:, :4]).mean().item(),
             "Stair/ctbc_wheel_bias_abs_mean": torch.abs(self._last_bias[:, 4:6]).mean().item(),
             "Stair/ctbc_trigger_count_mean": self._trigger_count.float().mean().item(),
@@ -210,19 +261,20 @@ class StairClimbState:
         self._trigger_count[ids] = 0
         self._last_bias[ids] = 0.0
         self._last_pulse[ids] = 0.0
+        self._last_profile[ids] = 0.0
         self._last_contact_xy[ids] = 0.0
 
-    def _reference_side_pulse(self) -> torch.Tensor:
-        """返回参考代码的 amplitude * (1 - cos) 侧向脉冲。"""
-        pulse = torch.zeros(self.num_envs, 2, device=self.device)
+    def _normalized_side_profile(self) -> torch.Tensor:
+        """返回 0-1 半余弦包络，并叠加当前 kff 退火。"""
+        profile = torch.zeros(self.num_envs, 2, device=self.device)
         active = self._ff_phase >= 0
         if not bool(active.any()):
-            return pulse
+            return profile
         phase = torch.clamp(self._ff_phase, min=0).to(dtype=torch.float32)
         t = phase / float(self.ff_period_steps)
-        pulse = self.ff_amplitude * (1.0 - torch.cos(2.0 * math.pi * t))
-        pulse = pulse * active.float() * float(self._kff)
-        return pulse
+        profile = 0.5 * (1.0 - torch.cos(2.0 * math.pi * t))
+        profile = profile * active.float() * float(self._kff)
+        return profile
 
     def _fallback_policy_default(self, command_height: torch.Tensor | None) -> torch.Tensor:
         """缺少 action term 上下文时，用 height command 或共享默认姿态兜底。"""

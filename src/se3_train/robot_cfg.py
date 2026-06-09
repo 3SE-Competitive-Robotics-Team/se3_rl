@@ -13,6 +13,9 @@ _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
 _CLOSEDCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 _FOURBAR_SURROGATE_MJCF_PATH = _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml"
+_FOURBAR_SURROGATE_STAIR_MJCF_PATH = (
+    _MJCF_DIR / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
+)
 _MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
 _MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
 
@@ -20,9 +23,11 @@ _ROBOT_CFG = SharedRobotConfig()
 
 _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
+STAIR_FOURBAR_SURROGATE_MJCF_PATH = _FOURBAR_SURROGATE_STAIR_MJCF_PATH
+
 
 def _resolve_mjcf_path() -> Path:
-    """解析训练使用的 MJCF 路径，默认使用闭链四连杆无气弹簧常力模型。"""
+    """解析训练使用的 MJCF 路径，默认使用四连杆 surrogate 模型。"""
     override = os.environ.get(_MJCF_ENV_VAR)
     if override:
         path = Path(override).expanduser()
@@ -55,15 +60,28 @@ def _resolve_mjcf_path() -> Path:
 
 def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
     """根据模型变体选择腿部电机目标。"""
-    if mjcf_path.name in {_OPENCHAIN_MJCF_PATH.name, _FOURBAR_SURROGATE_MJCF_PATH.name}:
+    if mjcf_path.name in {
+        _OPENCHAIN_MJCF_PATH.name,
+        _FOURBAR_SURROGATE_MJCF_PATH.name,
+        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
+    }:
         return JointGroup.OPENCHAIN_LEG_NAMES
     return JointGroup.POLICY_LEG_NAMES
 
 
-def get_serialleg_cfg() -> EntityCfg:
-    mjcf_path = _resolve_mjcf_path()
+def _is_fourbar_surrogate_path(mjcf_path: Path) -> bool:
+    """判断当前 MJCF 是否属于解析四连杆等效开树模型。"""
+    return mjcf_path.name in {
+        _FOURBAR_SURROGATE_MJCF_PATH.name,
+        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
+    }
+
+
+def get_serialleg_cfg(*, mjcf_path: Path | None = None) -> EntityCfg:
+    """构造训练实体；默认沿用全局 MJCF，也允许按任务显式覆盖。"""
+    mjcf_path = _resolve_mjcf_path() if mjcf_path is None else Path(mjcf_path)
     leg_joint_names = _leg_joint_names_for(mjcf_path)
-    is_fourbar_surrogate = mjcf_path.name == _FOURBAR_SURROGATE_MJCF_PATH.name
+    is_fourbar_surrogate = _is_fourbar_surrogate_path(mjcf_path)
     if is_fourbar_surrogate:
         leg_actuator_cfg = IdealPdActuatorCfg(
             target_names_expr=leg_joint_names,

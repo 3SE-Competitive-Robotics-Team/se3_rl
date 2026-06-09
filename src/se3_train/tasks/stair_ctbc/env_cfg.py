@@ -31,9 +31,12 @@ from se3_shared import (
     REFERENCE_CTBC_FORCE_THRESHOLD_N,
     REFERENCE_CTBC_HIP_RATIO,
     REFERENCE_CTBC_KNEE_RATIO,
+    REFERENCE_CTBC_LEG_LENGTH_AMPLITUDE_M,
     REFERENCE_CTBC_LEG_SCALE,
+    REFERENCE_CTBC_SWING_ANGLE_AMPLITUDE_RAD,
 )
 from se3_train.mdp import events, stair_rewards, terminations
+from se3_train.robot_cfg import STAIR_FOURBAR_SURROGATE_MJCF_PATH, get_serialleg_cfg
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
 
@@ -45,6 +48,7 @@ _STAIR_REWARD_TERRAIN_TYPES = ("stage_stairs", "inv_pyramid_stairs")
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """生成台阶 CTBC 环境，继承 recovery 能力并覆盖回台阶训练分布。"""
     cfg = recovery_env_cfg(play=play)
+    cfg.scene.entities["robot"] = get_serialleg_cfg(mjcf_path=STAIR_FOURBAR_SURROGATE_MJCF_PATH)
 
     stair_sub_terrains = (
         {
@@ -255,8 +259,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "reference_leg_scale": REFERENCE_CTBC_LEG_SCALE,
             "hip_ratio": REFERENCE_CTBC_HIP_RATIO,
             "knee_ratio": REFERENCE_CTBC_KNEE_RATIO,
-            "ann_start_iter": 0,
-            "ann_end_iter": 1500,
+            "ff_style": "leg_length",
+            "leg_length_amplitude_m": REFERENCE_CTBC_LEG_LENGTH_AMPLITUDE_M,
+            "swing_angle_amplitude_rad": REFERENCE_CTBC_SWING_ANGLE_AMPLITUDE_RAD,
+            "ann_start_iter": 800,
+            "ann_end_iter": 1800,
             "phantom_trigger_iter": 0,
         },
     )

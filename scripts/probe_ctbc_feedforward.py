@@ -18,6 +18,7 @@ from se3_shared import ActionDelayConfig
 from se3_shared.ctbc_feedforward import (
     REFERENCE_CTBC_FF_AMPLITUDE,
     current_leg_action_scales_np,
+    leg_length_ctbc_bias_to_current_action_np,
     reference_ctbc_bias_to_current_action_np,
 )
 from se3_shared.fourbar import policy_to_output_pos_np
@@ -88,6 +89,7 @@ class FeedforwardCase:
     distance_margin_m: float = 0.08
     ff_style: str = "manual"
     reference_amplitude: float = REFERENCE_CTBC_FF_AMPLITUDE
+    swing_angle_rad: float = 0.0
 
 
 @dataclass
@@ -169,16 +171,49 @@ def _default_cases() -> tuple[FeedforwardCase, ...]:
     )
 
 
+def _simple_case_from_args(args: argparse.Namespace) -> FeedforwardCase | None:
+    """把常用 CLI 参数转换成单个腿部几何前馈 case。"""
+
+    requested = any(
+        item is not None
+        for item in (
+            args.leg_length_amp,
+            args.swing_angle_deg,
+            args.probe_trigger,
+            args.probe_case_name,
+        )
+    )
+    if not requested:
+        return None
+    leg_length_amp = 0.0 if args.leg_length_amp is None else float(args.leg_length_amp)
+    swing_angle_deg = 0.0 if args.swing_angle_deg is None else float(args.swing_angle_deg)
+    trigger_mode = "contact" if args.probe_trigger is None else str(args.probe_trigger)
+    name = (
+        str(args.probe_case_name)
+        if args.probe_case_name is not None
+        else f"leg_{leg_length_amp:.3f}m_swing_{swing_angle_deg:.0f}deg_{trigger_mode}"
+    )
+    return FeedforwardCase(
+        name=name.replace(".", "p").replace("-", "m"),
+        trigger_mode=trigger_mode,
+        front_amp=leg_length_amp,
+        active_amp=0.0,
+        distance_margin_m=float(args.distance_margin),
+        ff_style="leg_length",
+        swing_angle_rad=math.radians(swing_angle_deg),
+    )
+
+
 def _parse_case(value: str) -> FeedforwardCase:
     parts = [item.strip() for item in value.split(":")]
-    if len(parts) not in (3, 4, 5):
+    if len(parts) not in (3, 4, 5, 6):
         raise argparse.ArgumentTypeError(
             "case 格式必须是 name:trigger:front_amp:active_amp[:distance_margin_m]"
         )
     name, trigger_mode = parts[:2]
     trigger_mode = trigger_mode.lower()
-    if trigger_mode not in {"none", "distance", "contact"}:
-        raise argparse.ArgumentTypeError("trigger 必须是 none、distance 或 contact")
+    if trigger_mode not in {"none", "distance", "contact", "paired_contact"}:
+        raise argparse.ArgumentTypeError("trigger 必须是 none、distance、contact 或 paired_contact")
     if len(parts) in (3, 4) and parts[2].lower() == "reference":
         margin = float(parts[3]) if len(parts) == 4 else 0.08
         return FeedforwardCase(
@@ -201,6 +236,27 @@ def _parse_case(value: str) -> FeedforwardCase:
             active_amp=0.0,
             distance_margin_m=margin,
             ff_style=parts[2].lower(),
+        )
+    if len(parts) in (4, 5) and parts[2].lower() == "leg_length":
+        margin = float(parts[4]) if len(parts) == 5 else 0.08
+        return FeedforwardCase(
+            name=name,
+            trigger_mode=trigger_mode,
+            front_amp=float(parts[3]),
+            active_amp=0.0,
+            distance_margin_m=margin,
+            ff_style="leg_length",
+        )
+    if len(parts) in (5, 6) and parts[2].lower() in {"leg_length_swing", "leg_geometry"}:
+        margin = float(parts[5]) if len(parts) == 6 else 0.08
+        return FeedforwardCase(
+            name=name,
+            trigger_mode=trigger_mode,
+            front_amp=float(parts[3]),
+            active_amp=0.0,
+            distance_margin_m=margin,
+            ff_style="leg_length",
+            swing_angle_rad=math.radians(float(parts[4])),
         )
     if len(parts) not in (4, 5):
         raise argparse.ArgumentTypeError(
@@ -340,6 +396,18 @@ def action_for_case(
             height_conditioned_action_default=robot.cfg.height_conditioned_action_default,
         ).reshape(4)
         return action
+    if case.ff_style == "leg_length":
+        policy_default = robot._policy_action_default()
+        action[:4] = leg_length_ctbc_bias_to_current_action_np(
+            np.asarray(policy_action[:4], dtype=np.float64),
+            policy_default,
+            profiles,
+            leg_scales=current_leg_action_scales_np(),
+            amplitude_m=float(case.front_amp),
+            swing_angle_rad=float(case.swing_angle_rad),
+            height_conditioned_action_default=robot.cfg.height_conditioned_action_default,
+        ).reshape(4)
+        return action
 
     action[0] = -case.front_amp * profiles[0]
     action[1] = case.active_amp * profiles[0]
@@ -398,14 +466,16 @@ def update_trigger_state(
     distance_hit = wheel_front_x >= cfg.riser_x_m - case.distance_margin_m
     contact_over_threshold = riser_force > cfg.force_threshold_n
     contact_trigger = np.all(contact_buf > cfg.force_threshold_n, axis=0)
+    can_trigger = (phases < 0) & (cooldown == 0)
 
     newly_triggered = np.zeros(2, dtype=bool)
     if case.trigger_mode == "distance":
         newly_triggered[:] = distance_hit
     elif case.trigger_mode == "contact":
         newly_triggered = contact_trigger.copy()
+    elif case.trigger_mode == "paired_contact":
+        newly_triggered[:] = bool(np.any(contact_trigger & can_trigger))
 
-    can_trigger = (phases < 0) & (cooldown == 0)
     newly_triggered &= can_trigger
     phases[newly_triggered] = 0
     if bool(np.any(newly_triggered)):
@@ -863,10 +933,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contact-window", type=int, default=3)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
+        "--leg-length-amp",
+        "--leg-length-amplitude",
+        type=float,
+        default=None,
+        help="腿长方向前馈幅值，单位 m；传入后自动生成单个 leg_length case。",
+    )
+    parser.add_argument(
+        "--swing-angle-deg",
+        "--swing-amp-deg",
+        type=float,
+        default=None,
+        help="向前摆角前馈幅值，单位 deg；传入后自动生成单个 leg_length case。",
+    )
+    parser.add_argument(
+        "--probe-trigger",
+        choices=("none", "distance", "contact", "paired_contact"),
+        default=None,
+        help="自动生成 case 的触发方式；未指定且传入前馈幅值时默认为 contact。",
+    )
+    parser.add_argument(
+        "--distance-margin",
+        type=float,
+        default=0.08,
+        help="distance trigger 提前量，单位 m；contact trigger 时仅写入 case 元数据。",
+    )
+    parser.add_argument(
+        "--probe-case-name",
+        default=None,
+        help="自动生成 case 的名称；未指定时按幅值自动命名。",
+    )
+    parser.add_argument(
         "--case",
         action="append",
         type=_parse_case,
-        help="格式：name:trigger:front_amp:active_amp[:distance_margin_m]，可重复指定。",
+        help=(
+            "高级格式：name:trigger:front_amp:active_amp[:distance_margin_m]，"
+            "或 name:trigger:leg_length_swing:length_m:swing_deg[:distance_margin_m]。"
+        ),
     )
     parser.add_argument("--no-render", action="store_true", help="只跑指标和曲线，不保存 mp4。")
     parser.add_argument("--record-rerun", action="store_true", help="为每个 case 保存 .rrd。")
@@ -910,7 +1014,13 @@ def main() -> None:
         raise FileNotFoundError(f"MJCF 不存在：{cfg.base_xml}")
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
-    cases = list(args.case) if args.case else list(_default_cases())
+    simple_case = _simple_case_from_args(args)
+    if args.case:
+        cases = list(args.case)
+    elif simple_case is not None:
+        cases = [simple_case]
+    else:
+        cases = list(_default_cases())
     scene_xml = build_stair_xml(cfg)
     summaries = [rollout(case, scene_xml, cfg) for case in cases]
     html_path = cfg.out_dir / "index.html"
