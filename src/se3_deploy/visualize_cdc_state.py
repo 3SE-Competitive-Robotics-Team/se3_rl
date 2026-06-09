@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.request import urlopen
 
 import numpy as np
@@ -28,11 +28,44 @@ from se3_shared import RobotConfig
 
 from .cdc import CdcSerial
 from .observation import RecoveryObservationBuilder
-from .protocol import MSG_POLICY_STATE, PolicyStateFrame, StreamParser, decode_policy_state
+from .protocol import (
+    MSG_LATENCY,
+    MSG_POLICY_STATE,
+    PolicyLatencyFrame,
+    PolicyStateFrame,
+    StreamParser,
+    decode_policy_latency,
+    decode_policy_state,
+)
 
 _ROBOT_CFG = RobotConfig()
 _ZERO_ACTION = np.zeros(6, dtype=np.float32)
 _DEFAULT_MJCF = Path("assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml")
+_DEFAULT_RENDER_WIDTH = 1280
+_DEFAULT_RENDER_HEIGHT = 720
+_DEFAULT_RENDER_FPS = 50.0
+_DEFAULT_RENDER_JPEG_QUALITY = 95
+_COLLISION_GEOM_GROUP = 0
+_VISUAL_GEOM_GROUP = 1
+_FLOOR_GEOM_GROUP = 2
+_DEBUG_JOINTS = (
+    ("lf0", "lf0_Joint", "LF0"),
+    ("lf1", "lf1_Joint", "LF1"),
+    ("lw", "l_wheel_Joint", "LW"),
+    ("rf0", "rf0_Joint", "RF0"),
+    ("rf1", "rf1_Joint", "RF1"),
+    ("rw", "r_wheel_Joint", "RW"),
+)
+_DEFAULT_CAMERA_AZIMUTH = 135.0
+_DEFAULT_CAMERA_ELEVATION = -20.0
+_DEFAULT_CAMERA_DISTANCE = 1.25
+_JOINT_FRAME_AXIS_LENGTH = 0.13
+_JOINT_FRAME_AXIS_WIDTH = 0.008
+_JOINT_FRAME_COLORS = (
+    np.array([1.0, 0.16, 0.14, 0.92], dtype=np.float32),
+    np.array([0.1, 0.85, 0.24, 0.92], dtype=np.float32),
+    np.array([0.22, 0.52, 1.0, 0.92], dtype=np.float32),
+)
 _KNEE_X = -0.17993464
 _KNEE_Z = 0.00489576
 _CALF_X = 0.05003347
@@ -49,13 +82,37 @@ class SharedSnapshot:
     """跨 CDC 读线程和 HTTP 线程共享的最新状态。"""
 
     latest: dict[str, Any] = field(default_factory=dict)
+    latest_latency: dict[str, Any] | None = None
     latest_state: PolicyStateFrame | None = None
+    event_seq: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def update(self, snapshot: dict[str, Any], state: PolicyStateFrame | None = None) -> None:
         with self.lock:
+            self.event_seq += 1
+            if self.latest_latency is not None:
+                _attach_latency_snapshot(snapshot, self.latest_latency)
+            snapshot["_event_seq"] = self.event_seq
             self.latest = snapshot
             self.latest_state = state
+
+    def update_latency(self, latency: PolicyLatencyFrame) -> None:
+        with self.lock:
+            self.event_seq += 1
+            self.latest_latency = latency_to_snapshot(latency)
+            if self.latest:
+                snapshot = dict(self.latest)
+                _attach_latency_snapshot(snapshot, self.latest_latency)
+            else:
+                snapshot = {
+                    "source": "cdc",
+                    "connected": True,
+                    "host_time_s": time.time(),
+                    "seq": -1,
+                }
+                _attach_latency_snapshot(snapshot, self.latest_latency)
+            snapshot["_event_seq"] = self.event_seq
+            self.latest = snapshot
 
     def get(self) -> dict[str, Any]:
         with self.lock:
@@ -84,6 +141,32 @@ class VisualizerServer(ThreadingHTTPServer):
             return {"enabled": False}
         return self.renderer.info()
 
+    def renderer_settings(self) -> dict[str, Any]:
+        if self.renderer is None:
+            return {"enabled": False}
+        return self.renderer.settings()
+
+    def update_renderer_settings(
+        self,
+        *,
+        show_visual_model: bool | None = None,
+        show_collision_model: bool | None = None,
+        joint_frames: dict[str, bool] | None = None,
+        camera_azimuth: float | None = None,
+        camera_elevation: float | None = None,
+        camera_distance: float | None = None,
+    ) -> dict[str, Any]:
+        if self.renderer is None:
+            return {"enabled": False}
+        return self.renderer.update_settings(
+            show_visual_model=show_visual_model,
+            show_collision_model=show_collision_model,
+            joint_frames=joint_frames,
+            camera_azimuth=camera_azimuth,
+            camera_elevation=camera_elevation,
+            camera_distance=camera_distance,
+        )
+
 
 class VisualizerHandler(BaseHTTPRequestHandler):
     """提供网页、单帧 JSON 和 SSE 状态流。"""
@@ -94,7 +177,8 @@ class VisualizerHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path in ("/", "/index.html"):
             self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
             return
@@ -114,6 +198,9 @@ class VisualizerHandler(BaseHTTPRequestHandler):
         if path == "/render_info":
             payload = json.dumps(self.server.renderer_info(), separators=(",", ":")).encode()
             self._send_bytes(payload, "application/json")
+            return
+        if path == "/render_settings":
+            self._send_render_settings(parsed.query)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -140,6 +227,37 @@ class VisualizerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _send_render_settings(self, query: str) -> None:
+        params = parse_qs(query)
+        show_visual_model = _query_bool(params["visual"][-1]) if "visual" in params else None
+        show_collision_model = (
+            _query_bool(params["collision"][-1]) if "collision" in params else None
+        )
+        joint_frames = _joint_settings_from_query(params)
+        camera_azimuth = _query_float(params, "camera_azimuth")
+        camera_elevation = _query_float(params, "camera_elevation")
+        camera_distance = _query_float(params, "camera_distance")
+        if (
+            show_visual_model is None
+            and show_collision_model is None
+            and joint_frames is None
+            and camera_azimuth is None
+            and camera_elevation is None
+            and camera_distance is None
+        ):
+            settings = self.server.renderer_settings()
+        else:
+            settings = self.server.update_renderer_settings(
+                show_visual_model=show_visual_model,
+                show_collision_model=show_collision_model,
+                joint_frames=joint_frames,
+                camera_azimuth=camera_azimuth,
+                camera_elevation=camera_elevation,
+                camera_distance=camera_distance,
+            )
+        payload = json.dumps(settings, separators=(",", ":")).encode()
+        self._send_bytes(payload, "application/json")
 
     def _stream_render(self) -> None:
         renderer = self.server.renderer
@@ -184,19 +302,44 @@ class VisualizerHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
-        last_seq: int | None = None
+        last_event_seq: int | None = None
         while True:
             snapshot = self.server.snapshot.get()
-            seq = snapshot.get("seq")
-            if seq != last_seq:
+            event_seq = snapshot.get("_event_seq", snapshot.get("seq"))
+            if event_seq != last_event_seq:
                 payload = json.dumps(snapshot, separators=(",", ":"))
                 try:
                     self.wfile.write(f"data: {payload}\n\n".encode())
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     return
-                last_seq = int(seq) if isinstance(seq, int) else None
+                last_event_seq = int(event_seq) if isinstance(event_seq, int) else None
             time.sleep(0.02)
+
+
+def _query_bool(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _query_float(params: dict[str, list[str]], key: str) -> float | None:
+    if key not in params:
+        return None
+    with suppress(Exception):
+        return float(params[key][-1])
+    return None
+
+
+def _joint_settings_from_query(params: dict[str, list[str]]) -> dict[str, bool] | None:
+    if "joints" in params:
+        value = _query_bool(params["joints"][-1])
+        return {key: value for key, _, _ in _DEBUG_JOINTS}
+
+    settings: dict[str, bool] = {}
+    for key, _, _ in _DEBUG_JOINTS:
+        query_key = f"joint_{key}"
+        if query_key in params:
+            settings[key] = _query_bool(params[query_key][-1])
+    return settings or None
 
 
 def run_cdc_reader(
@@ -222,23 +365,24 @@ def run_cdc_reader(
                     if not data:
                         continue
                     for message in parser.feed(data):
-                        if message.msg_type != MSG_POLICY_STATE:
-                            continue
-                        now = time.monotonic()
-                        frame_hz = _frame_hz(last_wall_time, now)
-                        last_wall_time = now
-                        state = decode_policy_state(message)
-                        snapshot = state_to_snapshot(
-                            state,
-                            builder=builder,
-                            source="cdc",
-                            frame_hz=frame_hz,
-                        )
-                        snapshot["port"] = port
-                        shared.update(
-                            snapshot,
-                            state,
-                        )
+                        if message.msg_type == MSG_POLICY_STATE:
+                            now = time.monotonic()
+                            frame_hz = _frame_hz(last_wall_time, now)
+                            last_wall_time = now
+                            state = decode_policy_state(message)
+                            snapshot = state_to_snapshot(
+                                state,
+                                builder=builder,
+                                source="cdc",
+                                frame_hz=frame_hz,
+                            )
+                            snapshot["port"] = port
+                            shared.update(
+                                snapshot,
+                                state,
+                            )
+                        elif message.msg_type == MSG_LATENCY:
+                            shared.update_latency(decode_policy_latency(message))
         except Exception as exc:
             shared.update(
                 {
@@ -449,6 +593,25 @@ def state_to_snapshot(
     }
 
 
+def latency_to_snapshot(latency: PolicyLatencyFrame) -> dict[str, Any]:
+    rx_to_output_us = int(latency.rx_to_output_us)
+    return {
+        "policy_seq": int(latency.policy_seq),
+        "rx_to_output_us": rx_to_output_us,
+        "rx_to_output_ms": round(float(rx_to_output_us) / 1000.0, 3),
+        "output_enabled": int(latency.output_enabled),
+        "host_time_s": time.time(),
+    }
+
+
+def _attach_latency_snapshot(snapshot: dict[str, Any], latency: dict[str, Any]) -> None:
+    snapshot["latency"] = dict(latency)
+    snapshot["latency_policy_seq"] = int(latency.get("policy_seq", 0))
+    snapshot["rx_to_output_us"] = int(latency.get("rx_to_output_us", 0))
+    snapshot["rx_to_output_ms"] = float(latency.get("rx_to_output_ms", 0.0))
+    snapshot["latency_output_enabled"] = int(latency.get("output_enabled", 0))
+
+
 class MujocoRenderWorker:
     def __init__(
         self,
@@ -459,6 +622,9 @@ class MujocoRenderWorker:
         height: int,
         fps: float,
         jpeg_quality: int,
+        show_visual_model: bool,
+        show_collision_model: bool,
+        show_joint_frames: bool,
     ) -> None:
         self.shared = shared
         self.mjcf = mjcf
@@ -466,6 +632,12 @@ class MujocoRenderWorker:
         self.height = int(height)
         self.period_s = 1.0 / max(float(fps), 1.0)
         self.jpeg_quality = int(np.clip(jpeg_quality, 30, 95))
+        self.show_visual_model = bool(show_visual_model)
+        self.show_collision_model = bool(show_collision_model)
+        self.joint_frames = {key: bool(show_joint_frames) for key, _, _ in _DEBUG_JOINTS}
+        self.camera_azimuth = _DEFAULT_CAMERA_AZIMUTH
+        self.camera_elevation = _DEFAULT_CAMERA_ELEVATION
+        self.camera_distance = _DEFAULT_CAMERA_DISTANCE
         self.stop_event = threading.Event()
         self.lock = threading.RLock()
         self.frame_cv = threading.Condition(self.lock)
@@ -481,6 +653,11 @@ class MujocoRenderWorker:
             "height": self.height,
             "target_fps": round(1.0 / self.period_s, 3),
             "jpeg_quality": self.jpeg_quality,
+            "show_visual_model": self.show_visual_model,
+            "show_collision_model": self.show_collision_model,
+            "show_joint_frames": any(self.joint_frames.values()),
+            "joint_frames": dict(self.joint_frames),
+            "camera": self._camera_dict_locked(),
         }
 
     def start(self) -> None:
@@ -519,6 +696,89 @@ class MujocoRenderWorker:
         with self.lock:
             return dict(self.latest_info)
 
+    def settings(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "enabled": True,
+                "show_visual_model": self.show_visual_model,
+                "show_collision_model": self.show_collision_model,
+                "show_joint_frames": any(self.joint_frames.values()),
+                "joint_frames": dict(self.joint_frames),
+                "camera": self._camera_dict_locked(),
+            }
+
+    def update_settings(
+        self,
+        *,
+        show_visual_model: bool | None = None,
+        show_collision_model: bool | None = None,
+        joint_frames: dict[str, bool] | None = None,
+        camera_azimuth: float | None = None,
+        camera_elevation: float | None = None,
+        camera_distance: float | None = None,
+    ) -> dict[str, Any]:
+        with self.frame_cv:
+            if show_visual_model is not None:
+                self.show_visual_model = bool(show_visual_model)
+            if show_collision_model is not None:
+                self.show_collision_model = bool(show_collision_model)
+            if joint_frames is not None:
+                for key, value in joint_frames.items():
+                    if key in self.joint_frames:
+                        self.joint_frames[key] = bool(value)
+            if camera_azimuth is not None:
+                self.camera_azimuth = float(camera_azimuth) % 360.0
+            if camera_elevation is not None:
+                self.camera_elevation = float(np.clip(camera_elevation, -80.0, 25.0))
+            if camera_distance is not None:
+                self.camera_distance = float(np.clip(camera_distance, 0.45, 3.0))
+            self.latest_info.update(
+                {
+                    "show_visual_model": self.show_visual_model,
+                    "show_collision_model": self.show_collision_model,
+                    "show_joint_frames": any(self.joint_frames.values()),
+                    "joint_frames": dict(self.joint_frames),
+                    "camera": self._camera_dict_locked(),
+                }
+            )
+            self.frame_cv.notify_all()
+            return {
+                "enabled": True,
+                "show_visual_model": self.show_visual_model,
+                "show_collision_model": self.show_collision_model,
+                "show_joint_frames": any(self.joint_frames.values()),
+                "joint_frames": dict(self.joint_frames),
+                "camera": self._camera_dict_locked(),
+            }
+
+    def _settings_tuple(self) -> tuple[bool, bool, dict[str, bool], float, float, float]:
+        with self.lock:
+            return (
+                self.show_visual_model,
+                self.show_collision_model,
+                dict(self.joint_frames),
+                self.camera_azimuth,
+                self.camera_elevation,
+                self.camera_distance,
+            )
+
+    def _camera_dict_locked(self) -> dict[str, float]:
+        return {
+            "azimuth": round(float(self.camera_azimuth), 3),
+            "elevation": round(float(self.camera_elevation), 3),
+            "distance": round(float(self.camera_distance), 3),
+        }
+
+    def _wait_until(self, deadline_s: float) -> None:
+        while not self.stop_event.is_set():
+            remaining_s = deadline_s - time.perf_counter()
+            if remaining_s <= 0.0:
+                return
+            if remaining_s > 0.006:
+                self.stop_event.wait(min(remaining_s - 0.003, 0.01))
+            else:
+                time.sleep(0)
+
     def _run(self) -> None:
         renderer: MujocoStateRenderer | None = None
         try:
@@ -527,16 +787,39 @@ class MujocoRenderWorker:
                 width=self.width,
                 height=self.height,
             )
+            last_render_time: float | None = None
+            next_frame_at = time.perf_counter()
             while not self.stop_event.is_set():
-                started = time.monotonic()
+                self._wait_until(next_frame_at)
+                if self.stop_event.is_set():
+                    break
+                started = time.perf_counter()
                 state = self.shared.get_state()
                 if state is not None:
-                    render_started = time.monotonic()
+                    render_frame_hz = _frame_hz(last_render_time, started)
+                    last_render_time = started
+                    render_started = time.perf_counter()
+                    (
+                        show_visual_model,
+                        show_collision_model,
+                        joint_frames,
+                        camera_azimuth,
+                        camera_elevation,
+                        camera_distance,
+                    ) = self._settings_tuple()
+                    renderer.set_render_settings(
+                        show_visual_model=show_visual_model,
+                        show_collision_model=show_collision_model,
+                        joint_frames=joint_frames,
+                        camera_azimuth=camera_azimuth,
+                        camera_elevation=camera_elevation,
+                        camera_distance=camera_distance,
+                    )
                     rgb = renderer.render_rgb(state)
-                    render_ms = (time.monotonic() - render_started) * 1000.0
-                    encode_started = time.monotonic()
+                    render_ms = (time.perf_counter() - render_started) * 1000.0
+                    encode_started = time.perf_counter()
                     frame, content_type = _encode_render_frame_rgb(rgb, self.jpeg_quality)
-                    encode_ms = (time.monotonic() - encode_started) * 1000.0
+                    encode_ms = (time.perf_counter() - encode_started) * 1000.0
                     with self.frame_cv:
                         self.latest_frame = frame
                         self.latest_content_type = content_type
@@ -548,14 +831,29 @@ class MujocoRenderWorker:
                                 "frame_id": self.latest_frame_id,
                                 "content_type": content_type,
                                 "bytes": len(frame),
+                                "render_fps": (
+                                    round(render_frame_hz, 3)
+                                    if render_frame_hz is not None
+                                    else None
+                                ),
                                 "render_ms": round(render_ms, 3),
                                 "encode_ms": round(encode_ms, 3),
                                 "backend": renderer.backend_info(),
+                                "show_visual_model": show_visual_model,
+                                "show_collision_model": show_collision_model,
+                                "show_joint_frames": any(joint_frames.values()),
+                                "joint_frames": dict(joint_frames),
+                                "camera": {
+                                    "azimuth": round(float(camera_azimuth), 3),
+                                    "elevation": round(float(camera_elevation), 3),
+                                    "distance": round(float(camera_distance), 3),
+                                },
                             }
                         )
                         self.frame_cv.notify_all()
-                elapsed = time.monotonic() - started
-                self.stop_event.wait(max(self.period_s - elapsed, 0.0))
+                next_frame_at += self.period_s
+                if next_frame_at < started:
+                    next_frame_at = started + self.period_s
         except Exception as exc:
             with self.frame_cv:
                 self.error = str(exc)
@@ -576,6 +874,8 @@ class MujocoStateRenderer:
         self.lock = threading.Lock()
         self.model = mujoco.MjModel.from_xml_path(str(mjcf))
         self.data = mujoco.MjData(self.model)
+        self.scene_option = mujoco.MjvOption()
+        self._prepare_geom_groups()
         self.renderer = mujoco.Renderer(
             self.model,
             height=max(int(height), 1),
@@ -584,10 +884,10 @@ class MujocoStateRenderer:
         self.camera = mujoco.MjvCamera()
         mujoco.mjv_defaultCamera(self.camera)
         self.camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-        self.camera.distance = 0.85
+        self.camera.distance = 1.25
         self.camera.azimuth = 135.0
-        self.camera.elevation = -18.0
-        self.camera.lookat[:] = (0.0, 0.0, 0.08)
+        self.camera.elevation = -20.0
+        self.camera.lookat[:] = (0.0, 0.0, 0.10)
         self.joint_qpos = {
             name: self._joint_qpos_addr(name)
             for name in (
@@ -599,13 +899,43 @@ class MujocoStateRenderer:
                 "r_wheel_Joint",
             )
         }
+        self.debug_joint_ids = {key: self._joint_id(name) for key, name, _ in _DEBUG_JOINTS}
+        self.enabled_joint_frames = {key: False for key, _, _ in _DEBUG_JOINTS}
         self._backend_info: dict[str, str | None] | None = None
+
+    def set_render_settings(
+        self,
+        *,
+        show_visual_model: bool,
+        show_collision_model: bool,
+        joint_frames: dict[str, bool],
+        camera_azimuth: float,
+        camera_elevation: float,
+        camera_distance: float,
+    ) -> None:
+        with self.lock:
+            self.scene_option.geomgroup[_COLLISION_GEOM_GROUP] = 1 if show_collision_model else 0
+            self.scene_option.geomgroup[_VISUAL_GEOM_GROUP] = 1 if show_visual_model else 0
+            self.scene_option.geomgroup[_FLOOR_GEOM_GROUP] = 1
+            self.scene_option.flags[self.mujoco.mjtVisFlag.mjVIS_JOINT] = 0
+            self.scene_option.label = self.mujoco.mjtLabel.mjLABEL_NONE
+            self.enabled_joint_frames = {
+                key: bool(joint_frames.get(key, False)) for key, _, _ in _DEBUG_JOINTS
+            }
+            self.camera.azimuth = float(camera_azimuth)
+            self.camera.elevation = float(camera_elevation)
+            self.camera.distance = float(camera_distance)
 
     def render_rgb(self, state: PolicyStateFrame) -> np.ndarray:
         with self.lock:
             self._apply_state(state)
             self.mujoco.mj_forward(self.model, self.data)
-            self.renderer.update_scene(self.data, camera=self.camera)
+            self.renderer.update_scene(
+                self.data,
+                camera=self.camera,
+                scene_option=self.scene_option,
+            )
+            self._draw_joint_frames()
             rgb = self.renderer.render()
             self._capture_backend_info()
             return rgb
@@ -638,6 +968,12 @@ class MujocoStateRenderer:
         self._backend_info = info
 
     def _joint_qpos_addr(self, name: str) -> int | None:
+        joint_id = self._joint_id(name)
+        if joint_id is None:
+            return None
+        return int(self.model.jnt_qposadr[joint_id])
+
+    def _joint_id(self, name: str) -> int | None:
         joint_id = self.mujoco.mj_name2id(
             self.model,
             self.mujoco.mjtObj.mjOBJ_JOINT,
@@ -645,7 +981,61 @@ class MujocoStateRenderer:
         )
         if joint_id < 0:
             return None
-        return int(self.model.jnt_qposadr[joint_id])
+        return int(joint_id)
+
+    def _draw_joint_frames(self) -> None:
+        for key, _, _ in _DEBUG_JOINTS:
+            if not self.enabled_joint_frames.get(key, False):
+                continue
+            joint_id = self.debug_joint_ids.get(key)
+            if joint_id is None:
+                continue
+            anchor = np.asarray(self.data.xanchor[joint_id], dtype=np.float64)
+            body_id = int(self.model.jnt_bodyid[joint_id])
+            mat = np.asarray(self.data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+            for axis_idx, rgba in enumerate(_JOINT_FRAME_COLORS):
+                axis = mat[:, axis_idx]
+                end = anchor + axis * _JOINT_FRAME_AXIS_LENGTH
+                self._add_user_arrow(anchor, end, rgba)
+
+    def _add_user_arrow(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        rgba: np.ndarray,
+    ) -> None:
+        scene = self.renderer.scene
+        if scene.ngeom >= scene.maxgeom:
+            return
+        geom = scene.geoms[scene.ngeom]
+        self.mujoco.mjv_initGeom(
+            geom,
+            self.mujoco.mjtGeom.mjGEOM_ARROW,
+            np.zeros(3, dtype=np.float64),
+            np.zeros(3, dtype=np.float64),
+            np.eye(3, dtype=np.float64).reshape(-1),
+            rgba,
+        )
+        self.mujoco.mjv_connector(
+            geom,
+            self.mujoco.mjtGeom.mjGEOM_ARROW,
+            _JOINT_FRAME_AXIS_WIDTH,
+            np.asarray(start, dtype=np.float64),
+            np.asarray(end, dtype=np.float64),
+        )
+        scene.ngeom += 1
+
+    def _prepare_geom_groups(self) -> None:
+        floor_id = self.mujoco.mj_name2id(
+            self.model,
+            self.mujoco.mjtObj.mjOBJ_GEOM,
+            "floor",
+        )
+        if floor_id >= 0:
+            self.model.geom_group[floor_id] = _FLOOR_GEOM_GROUP
+        collision_ids = np.flatnonzero(self.model.geom_group == _COLLISION_GEOM_GROUP)
+        if collision_ids.size:
+            self.model.geom_rgba[collision_ids] = (1.0, 0.72, 0.18, 0.38)
 
     def _apply_state(self, state: PolicyStateFrame) -> None:
         self.data.qpos[:] = self.model.qpos0
@@ -822,10 +1212,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate-hz", type=float, default=50.0, help="Synthetic update rate.")
     parser.add_argument("--read-timeout-s", type=float, default=0.02, help="CDC read wait.")
     parser.add_argument("--mjcf", type=Path, default=_DEFAULT_MJCF, help="MJCF used for rendering.")
-    parser.add_argument("--render-width", type=int, default=480, help="MJCF render width.")
-    parser.add_argument("--render-height", type=int, default=270, help="MJCF render height.")
-    parser.add_argument("--render-fps", type=float, default=5.0, help="MJCF render rate.")
-    parser.add_argument("--render-jpeg-quality", type=int, default=70, help="MJCF JPEG quality.")
+    parser.add_argument(
+        "--render-width", type=int, default=_DEFAULT_RENDER_WIDTH, help="MJCF render width."
+    )
+    parser.add_argument(
+        "--render-height", type=int, default=_DEFAULT_RENDER_HEIGHT, help="MJCF render height."
+    )
+    parser.add_argument(
+        "--render-fps", type=float, default=_DEFAULT_RENDER_FPS, help="MJCF render rate."
+    )
+    parser.add_argument(
+        "--render-jpeg-quality",
+        type=int,
+        default=_DEFAULT_RENDER_JPEG_QUALITY,
+        help="MJCF JPEG quality.",
+    )
+    parser.add_argument(
+        "--show-collision", action="store_true", help="Show MJCF collision geoms by default."
+    )
+    parser.add_argument(
+        "--show-joints", action="store_true", help="Show MJCF joint axes by default."
+    )
+    parser.add_argument(
+        "--hide-visual-model", action="store_true", help="Hide MJCF visual geoms by default."
+    )
     parser.add_argument("--no-mjcf-render", action="store_true", help="Disable MJCF rendering.")
     return parser
 
@@ -879,6 +1289,9 @@ def main(argv: list[str] | None = None) -> int:
             height=int(args.render_height),
             fps=float(args.render_fps),
             jpeg_quality=int(args.render_jpeg_quality),
+            show_visual_model=not bool(args.hide_visual_model),
+            show_collision_model=bool(args.show_collision),
+            show_joint_frames=bool(args.show_joints),
         )
         renderer.start()
         print(f"MJCF render worker started from {Path(args.mjcf)}")
@@ -929,7 +1342,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     #app {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 420px;
+      grid-template-columns: minmax(0, 1fr) minmax(500px, 34vw);
       height: 100vh;
     }
     #viewWrap {
@@ -937,6 +1350,11 @@ INDEX_HTML = r"""<!doctype html>
       min-width: 0;
       border-right: 1px solid var(--line);
       background: #07090c;
+      cursor: grab;
+      touch-action: none;
+    }
+    #viewWrap.dragging {
+      cursor: grabbing;
     }
     #mjcfView {
       position: absolute;
@@ -973,10 +1391,81 @@ INDEX_HTML = r"""<!doctype html>
       backdrop-filter: blur(6px);
     }
     .pill strong { color: var(--text); font-weight: 650; }
+    #viewControls {
+      position: absolute;
+      bottom: 14px;
+      right: 14px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: calc(100% - 28px);
+      cursor: default;
+    }
+    .controlCluster {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      background: rgba(24, 29, 35, 0.78);
+      border-radius: 6px;
+      color: var(--text);
+      backdrop-filter: blur(6px);
+      user-select: none;
+      cursor: pointer;
+    }
+    .toggle input {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      accent-color: var(--cyan);
+    }
+    .toggle span {
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .toggle.small {
+      min-height: 26px;
+      padding: 4px 7px;
+      font-size: 12px;
+    }
+    .toggle.small input {
+      width: 13px;
+      height: 13px;
+    }
     #side {
       overflow: auto;
-      padding: 14px;
       background: var(--panel);
+    }
+    .sideHeader {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(24, 29, 35, 0.96);
+    }
+    #sideContent {
+      display: grid;
+      gap: 16px;
+      padding: 14px 18px 18px;
+    }
+    .section {
+      min-width: 0;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .section:first-child {
+      padding-top: 0;
+      border-top: 0;
     }
     h1, h2 {
       margin: 0;
@@ -985,7 +1474,6 @@ INDEX_HTML = r"""<!doctype html>
       font-weight: 700;
     }
     h2 {
-      margin-top: 18px;
       margin-bottom: 8px;
       color: var(--muted);
       font-size: 12px;
@@ -993,11 +1481,23 @@ INDEX_HTML = r"""<!doctype html>
     }
     .grid {
       display: grid;
-      grid-template-columns: 110px minmax(0, 1fr);
-      gap: 4px 10px;
-      align-items: baseline;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
     }
-    .k { color: var(--muted); }
+    .field {
+      min-width: 0;
+      padding: 7px 8px;
+      border: 1px solid #27313b;
+      border-radius: 6px;
+      background: #11161c;
+    }
+    .field.wide { grid-column: 1 / -1; }
+    .k {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      margin-bottom: 3px;
+    }
     .v {
       font-variant-numeric: tabular-nums;
       white-space: pre-wrap;
@@ -1009,7 +1509,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .barrow {
       display: grid;
-      grid-template-columns: 42px minmax(0, 1fr) 70px;
+      grid-template-columns: 48px minmax(0, 1fr) 76px;
       align-items: center;
       gap: 8px;
     }
@@ -1049,12 +1549,52 @@ INDEX_HTML = r"""<!doctype html>
     }
     #err {
       color: var(--red);
-      margin-top: 8px;
-      min-height: 18px;
+      margin-top: 7px;
+      min-height: 16px;
+      font-size: 12px;
     }
-    @media (max-width: 900px) {
+    .obsList {
+      display: grid;
+      gap: 8px;
+    }
+    .obsRow {
+      display: grid;
+      grid-template-columns: 140px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      min-width: 0;
+      padding: 7px 8px;
+      border: 1px solid #27313b;
+      border-radius: 6px;
+      background: #11161c;
+    }
+    .obsName {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .obsValues {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+    }
+    .chip {
+      min-width: 54px;
+      padding: 2px 5px;
+      border: 1px solid #303945;
+      border-radius: 5px;
+      background: #0d1116;
+      color: var(--text);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    @media (max-width: 1180px) {
       #app { grid-template-columns: 1fr; grid-template-rows: 58vh 42vh; }
       #viewWrap { border-right: 0; border-bottom: 1px solid var(--line); }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .obsRow { grid-template-columns: 120px minmax(0, 1fr); }
     }
   </style>
 </head>
@@ -1070,29 +1610,69 @@ INDEX_HTML = r"""<!doctype html>
         <div class="pill">output <strong id="hudOutput">-</strong></div>
         <div class="pill">render <strong id="hudRender">canvas</strong></div>
       </div>
+      <div id="viewControls">
+        <div class="controlCluster">
+          <label class="toggle"><input id="visualToggle" type="checkbox" checked><span>Visual</span></label>
+          <label class="toggle"><input id="collisionToggle" type="checkbox"><span>Collision</span></label>
+        </div>
+        <div class="controlCluster" id="jointToggleGroup">
+          <label class="toggle small"><input class="jointToggle" data-joint="lf0" type="checkbox"><span>LF0</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="lf1" type="checkbox"><span>LF1</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="lw" type="checkbox"><span>LW</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="rf0" type="checkbox"><span>RF0</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="rf1" type="checkbox"><span>RF1</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="rw" type="checkbox"><span>RW</span></label>
+        </div>
+      </div>
     </section>
     <aside id="side">
-      <h1>SerialLeg CDC State</h1>
-      <div id="err"></div>
-      <h2>Status</h2>
-      <div class="grid" id="statusGrid"></div>
-      <h2>Joint Pos</h2>
-      <div class="rows" id="jointBars"></div>
-      <h2>Joint Vel</h2>
-      <div class="rows" id="jointVelBars"></div>
-      <h2>Wheel</h2>
-      <div class="rows" id="wheelBars"></div>
-      <h2>Observation Slices</h2>
-      <div class="grid" id="obsGrid"></div>
+      <div class="sideHeader">
+        <h1>SerialLeg CDC State</h1>
+        <div id="err"></div>
+      </div>
+      <div id="sideContent">
+        <section class="section">
+          <h2>Comm</h2>
+          <div class="grid" id="commGrid"></div>
+        </section>
+        <section class="section">
+          <h2>Status</h2>
+          <div class="grid" id="statusGrid"></div>
+        </section>
+        <section class="section">
+          <h2>Joint Pos</h2>
+          <div class="rows" id="jointBars"></div>
+        </section>
+        <section class="section">
+          <h2>Joint Vel</h2>
+          <div class="rows" id="jointVelBars"></div>
+        </section>
+        <section class="section">
+          <h2>Wheel</h2>
+          <div class="rows" id="wheelBars"></div>
+        </section>
+        <section class="section">
+          <h2>Observation Slices</h2>
+          <div class="obsList" id="obsGrid"></div>
+        </section>
+      </div>
     </aside>
   </div>
 <script>
 const canvas = document.getElementById("view");
 const ctx = canvas.getContext("2d");
+const viewWrap = document.getElementById("viewWrap");
 const renderImg = document.getElementById("mjcfView");
+const visualToggle = document.getElementById("visualToggle");
+const collisionToggle = document.getElementById("collisionToggle");
+const jointToggles = Array.from(document.querySelectorAll(".jointToggle"));
 const labels = ["LF", "LB", "RF", "RB"];
 let snapshot = null;
 let mjcfRenderOk = false;
+let renderSettingsTimer = null;
+let mjcfPointerId = null;
+let mjcfLastPointer = [0, 0];
+let mjcfCamera = { azimuth: 135, elevation: -20, distance: 1.25 };
 let mouseDown = false;
 let camYaw = -0.65;
 let camPitch = 0.35;
@@ -1111,6 +1691,54 @@ renderImg.addEventListener("error", () => {
   canvas.style.opacity = "1";
   document.getElementById("hudRender").textContent = "canvas";
 });
+
+async function fetchRenderSettings(params=null) {
+  const url = params ? `/render_settings?${params.toString()}` : "/render_settings";
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) return;
+  const settings = await response.json();
+  if (!settings.enabled) return;
+  visualToggle.checked = !!settings.show_visual_model;
+  collisionToggle.checked = !!settings.show_collision_model;
+  const jointFrames = settings.joint_frames || {};
+  jointToggles.forEach(input => {
+    input.checked = !!jointFrames[input.dataset.joint];
+  });
+  if (settings.camera) {
+    mjcfCamera.azimuth = Number(settings.camera.azimuth ?? mjcfCamera.azimuth);
+    mjcfCamera.elevation = Number(settings.camera.elevation ?? mjcfCamera.elevation);
+    mjcfCamera.distance = Number(settings.camera.distance ?? mjcfCamera.distance);
+  }
+}
+async function updateRenderSettings() {
+  const params = new URLSearchParams({
+    visual: visualToggle.checked ? "1" : "0",
+    collision: collisionToggle.checked ? "1" : "0",
+    camera_azimuth: String(mjcfCamera.azimuth),
+    camera_elevation: String(mjcfCamera.elevation),
+    camera_distance: String(mjcfCamera.distance),
+  });
+  jointToggles.forEach(input => {
+    params.set(`joint_${input.dataset.joint}`, input.checked ? "1" : "0");
+  });
+  try {
+    await fetchRenderSettings(params);
+  } catch (err) {
+    document.getElementById("err").textContent = String(err);
+  }
+}
+function scheduleRenderSettingsUpdate() {
+  if (renderSettingsTimer !== null) return;
+  renderSettingsTimer = window.setTimeout(() => {
+    renderSettingsTimer = null;
+    updateRenderSettings();
+  }, 24);
+}
+visualToggle.addEventListener("change", updateRenderSettings);
+collisionToggle.addEventListener("change", updateRenderSettings);
+jointToggles.forEach(input => input.addEventListener("change", updateRenderSettings));
+fetchRenderSettings().catch(() => {});
+
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -1120,6 +1748,36 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 resize();
+
+viewWrap.addEventListener("pointerdown", ev => {
+  if (ev.target.closest("#viewControls")) return;
+  mjcfPointerId = ev.pointerId;
+  mjcfLastPointer = [ev.clientX, ev.clientY];
+  viewWrap.classList.add("dragging");
+  viewWrap.setPointerCapture(ev.pointerId);
+});
+viewWrap.addEventListener("pointermove", ev => {
+  if (mjcfPointerId !== ev.pointerId) return;
+  const dx = ev.clientX - mjcfLastPointer[0];
+  const dy = ev.clientY - mjcfLastPointer[1];
+  mjcfCamera.azimuth = (mjcfCamera.azimuth - dx * 0.22 + 360) % 360;
+  mjcfCamera.elevation = clamp(mjcfCamera.elevation + dy * 0.16, -80, 25);
+  mjcfLastPointer = [ev.clientX, ev.clientY];
+  scheduleRenderSettingsUpdate();
+});
+function endMjcfDrag(ev) {
+  if (mjcfPointerId !== ev.pointerId) return;
+  mjcfPointerId = null;
+  viewWrap.classList.remove("dragging");
+}
+viewWrap.addEventListener("pointerup", endMjcfDrag);
+viewWrap.addEventListener("pointercancel", endMjcfDrag);
+viewWrap.addEventListener("wheel", ev => {
+  if (ev.target.closest("#viewControls")) return;
+  ev.preventDefault();
+  mjcfCamera.distance = clamp(mjcfCamera.distance * Math.exp(ev.deltaY * 0.0011), 0.45, 3.0);
+  scheduleRenderSettingsUpdate();
+}, { passive: false });
 
 canvas.addEventListener("mousedown", ev => {
   mouseDown = true;
@@ -1149,6 +1807,10 @@ function arr(v, n=3) {
   if (!Array.isArray(v)) return "-";
   return "[" + v.map(x => fmt(x, n)).join(", ") + "]";
 }
+function ageMs(hostTimeS) {
+  if (!hostTimeS) return "-";
+  return fmt(Date.now() - Number(hostTimeS) * 1000.0, 1);
+}
 
 function connect() {
   const events = new EventSource("/events");
@@ -1169,14 +1831,28 @@ function updatePanel(s) {
   document.getElementById("hudSource").textContent = s.source ?? "-";
   document.getElementById("hudOutput").textContent = s.output_enabled ? "on" : "off";
 
-  setGrid("statusGrid", [
+  const latency = s.latency || {};
+  setGrid("commGrid", [
     ["connected", String(!!s.connected)],
+    ["source", s.source],
     ["port", s.port],
-    ["tick_ms", s.tick_ms],
+    ["state_hz", fmt(s.frame_hz, 2)],
+    ["state_seq", s.seq],
+    ["state_age_ms", ageMs(s.host_time_s)],
     ["target_seq", s.target_seq],
-    ["target_age_ms", s.target_age_ms],
     ["target_valid", s.target_valid],
+    ["target_age_ms", s.target_age_ms],
+    ["rx_to_output_ms", latency.rx_to_output_ms ?? s.rx_to_output_ms],
+    ["latency_policy_seq", latency.policy_seq ?? s.latency_policy_seq],
+    ["latency_age_ms", ageMs(latency.host_time_s)],
+    ["latency_output", latency.output_enabled ?? s.latency_output_enabled],
+    ["remote_url", s.remote_url],
+  ]);
+
+  setGrid("statusGrid", [
+    ["tick_ms", s.tick_ms],
     ["rc_switch_r", s.rc_switch_r],
+    ["output_enabled", s.output_enabled],
     ["base_ang_vel", arr(s.base_ang_vel)],
     ["projected_g", arr(s.projected_gravity)],
   ]);
@@ -1185,21 +1861,54 @@ function updatePanel(s) {
   setBars("wheelBars", ["L pos", "R pos", "L vel", "R vel"],
     [...(s.wheel_pos || []), ...(s.wheel_vel || [])], 60.0);
   const obs = s.obs || {};
-  setGrid("obsGrid", Object.entries(obs).map(([k, v]) => [k, arr(v)]));
+  setObsGrid("obsGrid", Object.entries(obs));
 }
 
 function setGrid(id, rows) {
   const el = document.getElementById(id);
   el.innerHTML = "";
   for (const [k, v] of rows) {
+    const field = document.createElement("div");
+    field.className = Array.isArray(v) || String(v ?? "").length > 24 ? "field wide" : "field";
     const key = document.createElement("div");
     key.className = "k";
     key.textContent = k;
     const val = document.createElement("div");
     val.className = "v";
     val.textContent = Array.isArray(v) ? arr(v) : String(v ?? "-");
-    el.appendChild(key);
-    el.appendChild(val);
+    field.appendChild(key);
+    field.appendChild(val);
+    el.appendChild(field);
+  }
+}
+
+function setObsGrid(id, entries) {
+  const el = document.getElementById(id);
+  el.innerHTML = "";
+  for (const [name, values] of entries) {
+    const row = document.createElement("div");
+    row.className = "obsRow";
+    const label = document.createElement("div");
+    label.className = "obsName";
+    label.textContent = name;
+    const valueWrap = document.createElement("div");
+    valueWrap.className = "obsValues";
+    const items = Array.isArray(values) ? values : [];
+    for (const value of items) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = fmt(value);
+      valueWrap.appendChild(chip);
+    }
+    if (!items.length) {
+      const empty = document.createElement("span");
+      empty.className = "chip";
+      empty.textContent = "-";
+      valueWrap.appendChild(empty);
+    }
+    row.appendChild(label);
+    row.appendChild(valueWrap);
+    el.appendChild(row);
   }
 }
 
