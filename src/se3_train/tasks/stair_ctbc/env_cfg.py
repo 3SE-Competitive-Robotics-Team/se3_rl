@@ -289,7 +289,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.rewards["flat_leg_contact"].weight = -2.0
     if "collision" in cfg.rewards:
         cfg.rewards["collision"].weight = -2.0
+    if "action_rate" in cfg.rewards:
+        cfg.rewards["action_rate"].func = stair_rewards.action_rate_no_ctbc
+    if "leg_torques" in cfg.rewards:
+        cfg.rewards["leg_torques"].func = stair_rewards.leg_torques_no_ctbc
+    if "leg_power" in cfg.rewards:
+        cfg.rewards["leg_power"].func = stair_rewards.leg_power_no_ctbc
+    if "stand_still" in cfg.rewards:
+        cfg.rewards["stand_still"].func = stair_rewards.stand_still_no_ctbc
     if "contact_forces" in cfg.rewards:
+        cfg.rewards["contact_forces"].func = stair_rewards.contact_forces_no_ctbc
         cfg.rewards["contact_forces"].weight = -2.0e-4
     if "tracking_height" in cfg.rewards:
         cfg.rewards["tracking_height"].weight = 3.0

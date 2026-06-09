@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -19,6 +20,14 @@ from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStair
 
 _STAIR_TERRAIN_TYPE_NAMES = ("stage_stairs", "inv_pyramid_stairs")
 _RECOVERY_COMMAND_HEIGHT = 0.30
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量；空值按默认值处理。"""
+    raw_value = os.environ.get(name)
+    if raw_value is None or raw_value == "":
+        return default
+    return int(raw_value)
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -171,9 +180,11 @@ def _configure_ctbc_anneal(cfg: ManagerBasedRlEnvCfg) -> None:
     init_event = cfg.events["init_stair_climb_state"]
     init_event.params.update(
         {
-            "ann_start_iter": 500,
-            "ann_end_iter": 1100,
-            "phantom_trigger_iter": 700,
+            "ann_start_iter": _env_int("SE3_UNIVERSAL_STAIR_CTBC_ANN_START", 800),
+            "ann_end_iter": _env_int("SE3_UNIVERSAL_STAIR_CTBC_ANN_END", 1800),
+            "phantom_trigger_iter": _env_int(
+                "SE3_UNIVERSAL_STAIR_CTBC_PHANTOM_ITER", 1000
+            ),
         }
     )
     step_event = cfg.events["step_stair_climb_state"]
