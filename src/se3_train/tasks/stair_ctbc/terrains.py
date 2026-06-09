@@ -17,6 +17,8 @@ class BoxRampTerrainCfg(SubTerrainCfg):
     """坡面角度，单位为度。"""
     height: float
     """坡顶相对入口平地的高度。"""
+    min_height_scale: float = 0.2
+    """最低课程难度下的坡高比例。"""
     approach_length: float = 1.5
     """斜坡前平地长度。"""
     top_platform_length: float = 2.0
@@ -47,9 +49,10 @@ class BoxRampTerrainCfg(SubTerrainCfg):
         rng: np.random.Generator,
     ) -> TerrainOutput:
         """生成指定坡度和高度的单向斜坡。"""
-        del difficulty, rng
+        del rng
 
         body = spec.body("terrain")
+        height = self._scaled_height(difficulty)
         run_length = self.run_length
         total_length = self.approach_length + run_length + self.top_platform_length
         start_x = max(0.0, 0.5 * (self.size[0] - total_length))
@@ -72,7 +75,7 @@ class BoxRampTerrainCfg(SubTerrainCfg):
                 x1=ramp_end_x,
                 center_y=center_y,
                 width=walkway_width,
-                height=float(self.height),
+                height=height,
                 depth=float(self.wedge_depth),
                 color=(0.58, 0.42, 0.25, 1.0),
             ),
@@ -84,12 +87,12 @@ class BoxRampTerrainCfg(SubTerrainCfg):
                     center=(
                         ramp_end_x + 0.5 * self.top_platform_length,
                         center_y,
-                        0.5 * (self.height - self.base_thickness),
+                        0.5 * (height - self.base_thickness),
                     ),
                     size=(
                         0.5 * self.top_platform_length,
                         0.5 * walkway_width,
-                        0.5 * (self.height + self.base_thickness),
+                        0.5 * (height + self.base_thickness),
                     ),
                     color=(0.40, 0.50, 0.34, 1.0),
                 )
@@ -97,6 +100,12 @@ class BoxRampTerrainCfg(SubTerrainCfg):
 
         origin = np.array([ramp_start_x + self.spawn_base_offset, center_y, 0.0])
         return TerrainOutput(origin=origin, geometries=geometries)
+
+    def _scaled_height(self, difficulty: float) -> float:
+        """按课程难度缩放坡高，最高难度等于配置目标高度。"""
+        difficulty = float(np.clip(difficulty, 0.0, 1.0))
+        scale = float(self.min_height_scale) + (1.0 - float(self.min_height_scale)) * difficulty
+        return float(self.height) * scale
 
     @staticmethod
     def _add_wedge(
@@ -231,6 +240,8 @@ class BoxStageStairsTerrainCfg(SubTerrainCfg):
     """第二级相对第一级继续上升的高度。"""
     final_drop: float = 0.05
     """第三级相对第二级下落的高度。"""
+    min_height_scale: float = 0.2
+    """最低课程难度下的台阶高度比例。"""
     walkway_width: float = 2.0
     """台阶走廊宽度。"""
     base_thickness: float = 1.0
@@ -245,7 +256,7 @@ class BoxStageStairsTerrainCfg(SubTerrainCfg):
         rng: np.random.Generator,
     ) -> TerrainOutput:
         """生成 200 mm、150 mm、-50 mm 的三段台阶。"""
-        del difficulty, rng
+        del rng
 
         body = spec.body("terrain")
         total_length = (
@@ -263,9 +274,10 @@ class BoxStageStairsTerrainCfg(SubTerrainCfg):
         second_end_x = first_end_x + self.second_platform_length
         final_end_x = second_end_x + self.final_platform_length
 
-        first_top_z = self.first_height
-        second_top_z = self.first_height + self.second_rise
-        final_top_z = second_top_z - self.final_drop
+        height_scale = self._height_scale(difficulty)
+        first_top_z = self.first_height * height_scale
+        second_top_z = first_top_z + self.second_rise * height_scale
+        final_top_z = second_top_z - self.final_drop * height_scale
 
         geometries = [
             self._add_box(
@@ -305,6 +317,11 @@ class BoxStageStairsTerrainCfg(SubTerrainCfg):
 
         origin = np.array([first_riser_x + self.spawn_base_offset, center_y, 0.0])
         return TerrainOutput(origin=origin, geometries=geometries)
+
+    def _height_scale(self, difficulty: float) -> float:
+        """按课程难度缩放台阶高度，最高难度保持实物尺寸。"""
+        difficulty = float(np.clip(difficulty, 0.0, 1.0))
+        return float(self.min_height_scale) + (1.0 - float(self.min_height_scale)) * difficulty
 
     def _add_platform(
         self,

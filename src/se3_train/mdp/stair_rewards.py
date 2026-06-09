@@ -230,6 +230,37 @@ def action_rate_no_ctbc(env: ManagerBasedRlEnv) -> torch.Tensor:
     return penalty * scale * _upright_gate(env)
 
 
+def joint_pos_penalty_no_ctbc(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    stand_still_scale: float = 5.0,
+    velocity_threshold: float = 0.5,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """CTBC 抬腿周期内豁免默认腿姿惩罚，避免压制跨台阶动作。"""
+    from se3_train.mdp import rewards
+
+    penalty = rewards.joint_pos_penalty(
+        env,
+        command_name=command_name,
+        asset_cfg=asset_cfg,
+        stand_still_scale=stand_still_scale,
+        velocity_threshold=velocity_threshold,
+        command_threshold=command_threshold,
+    )
+    triggered = _ctbc_triggered_mask(env)
+    effective = penalty * (~triggered).float()
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Stair/joint_pos_penalty_effective": effective.mean().item(),
+                "Stair/joint_pos_penalty_ctbc_exempt_rate": triggered.float().mean().item(),
+            }
+        )
+    return effective
+
+
 def contact_forces_no_ctbc(
     env: ManagerBasedRlEnv,
     threshold: float,
@@ -293,8 +324,7 @@ def stair_feet_air_time(
 
     force_mag = torch.linalg.norm(data.force, dim=-1).reshape(env.num_envs, -1)[:, :2]
     in_air = (force_mag < 1.0).float()
-    air_time = torch.clamp(in_air * float(env.step_dt), max=0.5)
-    return air_time.sum(dim=-1) * triggered
+    return in_air.sum(dim=-1) * triggered
 
 
 def stair_contact_number(
@@ -342,9 +372,7 @@ def stair_wheel_swing_zero_vel(
     robot = env.scene[asset_cfg.name]
     wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
     active_side = (ff_phase[:, :2] >= 0).float()
-    return torch.exp(-(active_side * wheel_vel**2).sum(dim=-1)) * _ctbc_triggered_mask(
-        env
-    ).float()
+    return torch.exp(-(active_side * wheel_vel**2).sum(dim=-1)) * _ctbc_triggered_mask(env).float()
 
 
 def _contact_any(

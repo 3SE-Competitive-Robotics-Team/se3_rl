@@ -158,7 +158,7 @@ nx-recovery-dry-run:
 
 # 导出 NX 轻量 NumPy policy 权重。
 nx-export-policy:
-    uv run se3-export-nx-policy --checkpoint logs/rsl_rl/se3_wheel_leg/2026-05-31_14-08-23/model_2999.pt --output logs/deploy/model_2999_recovery_stand_gru.npz
+    uv run se3-export-nx-policy
 
 # ---- sim2sim（跳跃模型） —— 默认跑 jump-sweep 历程 ----
 

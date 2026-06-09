@@ -28,7 +28,7 @@ from .protocol import (
     pack_policy_target,
 )
 
-DEFAULT_RECOVERY_CHECKPOINT = Path("logs/deploy/model_4999_recovery_gru.npz")
+DEFAULT_RECOVERY_CHECKPOINT = Path("logs/deploy/model_5999_recovery_gru.npz")
 ACTION_FLAG_DRY_RUN = 1 << 0
 ACTION_FLAG_TIMEOUT = 1 << 1
 ACTION_FLAG_NONFINITE = 1 << 2

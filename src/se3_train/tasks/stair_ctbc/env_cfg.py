@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -19,7 +20,6 @@ from mjlab.sensor import (
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
     BoxInvertedPyramidStairsTerrainCfg,
-    BoxRandomStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
 )
@@ -35,7 +35,7 @@ from se3_shared import (
     REFERENCE_CTBC_LEG_SCALE,
     REFERENCE_CTBC_SWING_ANGLE_AMPLITUDE_RAD,
 )
-from se3_train.mdp import events, stair_rewards, terminations
+from se3_train.mdp import curriculums, events, stair_rewards, terminations
 from se3_train.robot_cfg import STAIR_FOURBAR_SURROGATE_MJCF_PATH, get_serialleg_cfg
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
@@ -43,12 +43,20 @@ from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStair
 _REFERENCE_CTBC_WHEEL_SCALE = 45.0
 _REFERENCE_CTBC_WHEEL_AMP = 1.5
 _STAIR_REWARD_TERRAIN_TYPES = ("stage_stairs", "inv_pyramid_stairs")
+_TERRAIN_CURRICULUM_TYPES = (
+    "stage_stairs",
+    "inv_pyramid_stairs",
+    "ramp_43deg_400mm",
+    "ramp_17deg_350mm",
+)
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """生成台阶 CTBC 环境，继承 recovery 能力并覆盖回台阶训练分布。"""
     cfg = recovery_env_cfg(play=play)
     cfg.scene.entities["robot"] = get_serialleg_cfg(mjcf_path=STAIR_FOURBAR_SURROGATE_MJCF_PATH)
+    cfg.sim.nconmax = 96
+    cfg.sim.njmax = 640
 
     stair_sub_terrains = (
         {
@@ -59,7 +67,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
                 proportion=0.25,
                 size=(8.0, 8.0),
-                step_height_range=(0.05, 0.20),
+                step_height_range=(0.04, 0.20),
                 step_width=0.5,
                 platform_width=2.0,
                 border_width=1.0,
@@ -81,39 +89,31 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         if play
         else {
             "stage_stairs": BoxStageStairsTerrainCfg(
-                proportion=0.175,
+                proportion=0.25,
                 size=(8.0, 8.0),
             ),
             "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
-                proportion=0.175,
+                proportion=0.25,
                 size=(8.0, 8.0),
-                step_height_range=(0.05, 0.20),
+                step_height_range=(0.04, 0.20),
                 step_width=0.5,
                 platform_width=2.0,
                 border_width=1.0,
             ),
             "ramp_43deg_400mm": BoxRampTerrainCfg(
-                proportion=0.175,
+                proportion=0.20,
                 size=(8.0, 8.0),
                 slope_deg=43.0,
                 height=0.40,
             ),
             "ramp_17deg_350mm": BoxRampTerrainCfg(
-                proportion=0.175,
+                proportion=0.20,
                 size=(8.0, 8.0),
                 slope_deg=17.0,
                 height=0.35,
                 top_platform_length=0.0,
             ),
-            "random_stairs": BoxRandomStairsTerrainCfg(
-                proportion=0.15,
-                size=(8.0, 8.0),
-                step_height_range=(0.05, 0.20),
-                step_width=0.6,
-                platform_width=2.0,
-                border_width=0.5,
-            ),
-            "flat": BoxFlatTerrainCfg(proportion=0.15, size=(8.0, 8.0)),
+            "flat": BoxFlatTerrainCfg(proportion=0.10, size=(8.0, 8.0)),
         }
     )
     cfg.scene.terrain = TerrainEntityCfg(
@@ -123,7 +123,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             size=(8.0, 8.0),
             border_width=20.0,
             border_height=1.0,
-            num_rows=1 if play else 10,
+            num_rows=1 if play else 20,
             num_cols=1 if play else 20,
             difficulty_range=(1.0, 1.0) if play else (0.0, 1.0),
             add_lights=True,
@@ -175,7 +175,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
 
     command_cfg = cfg.commands["velocity_height"]
-    command_cfg.lin_vel_x_range = (0.2, 0.8)
+    command_cfg.lin_vel_x_range = (0.20, 1.00)
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
@@ -219,7 +219,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "height_offset_range": (0.0, 0.0) if play else (0.0, 0.2),
             "roll_range": (0.0, 0.0),
             "pitch_range": (0.0, 0.0),
-            "yaw_range": (0.0, 0.0) if play else (-math.pi, math.pi),
+            "yaw_range": (0.0, 0.0),
             "lin_vel_range": (0.0, 0.0),
             "ang_vel_range": (0.0, 0.0),
             "clearance_range": (0.0, 0.02) if play else (0.0, 0.05),
@@ -288,6 +288,49 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.events = new_events
 
     cfg.curriculum = {}
+    if not play:
+        cfg.curriculum = {
+            "commands_vel": CurriculumTermCfg(
+                func=curriculums.commands_vel,
+                params={
+                    "command_name": "velocity_height",
+                    "use_iterations": True,
+                    "steps_per_policy_iter": 64,
+                    "velocity_stages": [
+                        {
+                            "iteration": 0,
+                            "lin_vel_x_range": (0.20, 1.00),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
+                            "iteration": 400,
+                            "lin_vel_x_range": (0.20, 1.50),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
+                            "iteration": 900,
+                            "lin_vel_x_range": (0.20, 2.00),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                    ],
+                },
+            ),
+            "terrain_levels": CurriculumTermCfg(
+                func=curriculums.terrain_levels,
+                params={
+                    "use_iterations": True,
+                    "steps_per_policy_iter": 64,
+                    "level_stages": [
+                        {"iteration": 0, "max_difficulty": 0.0},
+                        {"iteration": 300, "max_difficulty": 0.30},
+                        {"iteration": 700, "max_difficulty": 0.50},
+                        {"iteration": 1100, "max_difficulty": 0.70},
+                        {"iteration": 1500, "max_difficulty": 1.0},
+                    ],
+                    "terrain_type_names": _TERRAIN_CURRICULUM_TYPES,
+                },
+            ),
+        }
     cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
         func=stair_rewards.stair_forward_progress,
         weight=3.0,
@@ -299,6 +342,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.rewards["collision"].weight = -2.0
     if "action_rate" in cfg.rewards:
         cfg.rewards["action_rate"].func = stair_rewards.action_rate_no_ctbc
+    if "joint_pos_penalty" in cfg.rewards:
+        cfg.rewards["joint_pos_penalty"].func = stair_rewards.joint_pos_penalty_no_ctbc
     if "leg_torques" in cfg.rewards:
         cfg.rewards["leg_torques"].func = stair_rewards.leg_torques_no_ctbc
     if "leg_power" in cfg.rewards:
