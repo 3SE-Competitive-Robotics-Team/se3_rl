@@ -89,6 +89,15 @@ uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 
 uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --agent zero --viewer viser --num-envs 1
 ```
 
+台阶/地形类任务的 play Viser 必须同时覆盖每一种训练地形，不能只开单个 env。`SE3-WheelLegged-Stair-CTBC-GRU`
+和继承它的 universal stair 任务在 `play=True` 时默认使用 4 个 env，分别对应二级台阶、倒金字塔台阶、
+43 度坡和 17 度坡；地形 generator 使用 `difficulty_range=(1.0, 1.0)`，即 play 中看到的是训练课程最高难度。
+手动传参时不要把这类任务改成 `--num-envs 1`，如需显式写命令应写：
+
+```bash
+uv run se3-play SE3-WheelLegged-Stair-CTBC-GRU --checkpoint-file logs/rsl_rl/se3_wheel_leg_stair_ctbc/<run>/model_<iter>.pt --viewer viser --num-envs 4
+```
+
 远程训练时必须把 Viser 默认 8080 端口转发到本地。没有可见 Viser 窗口的训练，视为没有完成启动值守检查。
 
 ### 本地/单卡 GPU 训练

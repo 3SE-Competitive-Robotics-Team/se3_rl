@@ -49,6 +49,7 @@ _TERRAIN_CURRICULUM_TYPES = (
     "ramp_43deg_400mm",
     "ramp_17deg_350mm",
 )
+_PLAY_NUM_ENVS = len(_TERRAIN_CURRICULUM_TYPES)
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -124,13 +125,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             border_width=20.0,
             border_height=1.0,
             num_rows=1 if play else 20,
-            num_cols=1 if play else 20,
+            num_cols=_PLAY_NUM_ENVS if play else 20,
             difficulty_range=(1.0, 1.0) if play else (0.0, 1.0),
             add_lights=True,
             sub_terrains=stair_sub_terrains,
         ),
         max_init_terrain_level=0,
     )
+    if play:
+        # curriculum=True 时 MJLab 每种地形固定一列；play 默认四个 env 正好覆盖四类地形。
+        cfg.scene.num_envs = _PLAY_NUM_ENVS
     cfg.scene.env_spacing = 4.0
 
     wheel_riser_sensor = ContactSensorCfg(

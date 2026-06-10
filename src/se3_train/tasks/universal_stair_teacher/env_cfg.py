@@ -19,6 +19,7 @@ from se3_train.tasks.stair_ctbc.env_cfg import env_cfg as stair_ctbc_env_cfg
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
 
 _STAIR_TERRAIN_TYPE_NAMES = ("stage_stairs", "inv_pyramid_stairs")
+_PLAY_NUM_ENVS = 4
 _RECOVERY_COMMAND_HEIGHT = 0.30
 
 
@@ -76,7 +77,7 @@ def _four_terrain_cfg(play: bool) -> TerrainEntityCfg:
             border_width=20.0,
             border_height=1.0,
             num_rows=1 if play else 10,
-            num_cols=1 if play else 20,
+            num_cols=_PLAY_NUM_ENVS if play else 20,
             difficulty_range=(1.0, 1.0) if play else (0.0, 1.0),
             add_lights=True,
             sub_terrains=sub_terrains,
@@ -177,9 +178,7 @@ def _configure_ctbc_anneal(cfg: ManagerBasedRlEnvCfg) -> None:
         {
             "ann_start_iter": _env_int("SE3_UNIVERSAL_STAIR_CTBC_ANN_START", 800),
             "ann_end_iter": _env_int("SE3_UNIVERSAL_STAIR_CTBC_ANN_END", 1800),
-            "phantom_trigger_iter": _env_int(
-                "SE3_UNIVERSAL_STAIR_CTBC_PHANTOM_ITER", 1000
-            ),
+            "phantom_trigger_iter": _env_int("SE3_UNIVERSAL_STAIR_CTBC_PHANTOM_ITER", 1000),
         }
     )
     step_event = cfg.events["step_stair_climb_state"]
