@@ -264,7 +264,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "height_sensor_name": "base_height_sensor",
             "kernel": "l2",
             "use_upright_gate": False,
-            "use_pose_end_gate": True,
+            # 临时实验（删除日期：2026-06-11）：关闭高度姿态端点门控，验证全姿态高度梯度是否更利于恢复。
+            "use_pose_end_gate": False,
             "upright_gate_angle_deg": 30.0,
             "inverted_gate_angle_deg": 150.0,
         },
