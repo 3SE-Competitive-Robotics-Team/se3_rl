@@ -11,6 +11,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import curriculums, events, rewards
@@ -19,6 +20,7 @@ _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
+_RECOVERY_WHEEL_KD = 0.08
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
 
@@ -26,6 +28,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """统一全姿态随机的反倒自起训练环境。"""
 
     cfg = flat_env_cfg(play=play)
+    cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_RECOVERY_WHEEL_KD)
     cfg.sim.nconmax = 64
     cfg.sim.njmax = 256
     cfg.actions["delayed_action"].height_conditioned_action_default = True

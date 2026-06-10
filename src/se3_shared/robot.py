@@ -124,7 +124,7 @@ class RobotConfig(BaseModel):
 
     leg_kp: float = 60.0
     leg_kd: float = 3.0
-    wheel_kd: float = 0.5
+    wheel_kd: float = 0.08
     torque_limits: tuple[float, ...] = (
         DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
         DM8009P.stall_torque,
@@ -157,8 +157,8 @@ class RobotConfig(BaseModel):
         _ACTIVE_ROD_ACTION_SCALE,
         pi,
         _ACTIVE_ROD_ACTION_SCALE,
-        60.0,
-        60.0,
+        45.0,
+        45.0,
     )
     action_clip: float | None = 1.0
     sim_dt: float = 0.005

@@ -15,7 +15,11 @@ def _tn_envelope(
     motor: MotorSpec,
     vel: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """计算 T-N 包络线上下界 — 与 DcMotorActuatorCfg._clip_effort 一致。"""
+    """计算 T-N 包络线上下界。"""
+    if motor.torque_speed_curve:
+        limit = motor.torque_limit_np(vel)
+        return limit, -limit
+
     sat = motor.stall_torque
     vlim = motor.no_load_speed
     elim = motor.rated_torque

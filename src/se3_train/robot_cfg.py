@@ -7,6 +7,7 @@ from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from se3_shared import DM8009P, M3508_C620_14, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.torque_speed_actuator import TorqueSpeedCurveActuatorCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
@@ -77,7 +78,9 @@ def _is_fourbar_surrogate_path(mjcf_path: Path) -> bool:
     }
 
 
-def get_serialleg_cfg(*, mjcf_path: Path | None = None) -> EntityCfg:
+def get_serialleg_cfg(
+    *, mjcf_path: Path | None = None, wheel_kd_override: float | None = None
+) -> EntityCfg:
     """构造训练实体；默认沿用全局 MJCF，也允许按任务显式覆盖。"""
     mjcf_path = _resolve_mjcf_path() if mjcf_path is None else Path(mjcf_path)
     leg_joint_names = _leg_joint_names_for(mjcf_path)
@@ -98,18 +101,18 @@ def get_serialleg_cfg(*, mjcf_path: Path | None = None) -> EntityCfg:
             velocity_limit=DM8009P.no_load_speed,
             effort_limit=DM8009P.rated_torque,
         )
+    wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
     return EntityCfg(
         spec_fn=lambda: mujoco.MjSpec.from_file(str(mjcf_path)),
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,
-                DcMotorActuatorCfg(
+                TorqueSpeedCurveActuatorCfg(
                     target_names_expr=_WHEEL_JOINT_NAMES,
                     stiffness=0.0,
-                    damping=_ROBOT_CFG.wheel_kd,
-                    saturation_effort=M3508_C620_14.stall_torque,
-                    velocity_limit=M3508_C620_14.no_load_speed,
+                    damping=wheel_kd,
                     effort_limit=M3508_C620_14.rated_torque,
+                    torque_speed_curve=M3508_C620_14.torque_speed_curve,
                 ),
             ),
         ),

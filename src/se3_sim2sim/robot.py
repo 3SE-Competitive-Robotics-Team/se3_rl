@@ -804,13 +804,7 @@ class WheelLeggedRobot:
         wheel_vel_target = decoded_action.wheel_vel_target
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
-        wheel_torque = _tn_clip(
-            wheel_torque,
-            wheel_vel,
-            M3508_C620_14.stall_torque,
-            M3508_C620_14.no_load_speed,
-            M3508_C620_14.rated_torque,
-        )
+        wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)
 
         # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。
         ctrl = np.concatenate([leg_torque, wheel_torque])
@@ -836,13 +830,7 @@ class WheelLeggedRobot:
 
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = _SHARED_ROBOT.wheel_kd * (0.0 - wheel_vel)
-        wheel_torque = _tn_clip(
-            wheel_torque,
-            wheel_vel,
-            M3508_C620_14.stall_torque,
-            M3508_C620_14.no_load_speed,
-            M3508_C620_14.rated_torque,
-        )
+        wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)
 
         ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
