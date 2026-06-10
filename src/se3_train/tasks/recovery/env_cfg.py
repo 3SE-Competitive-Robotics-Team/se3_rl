@@ -356,9 +356,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["contact_forces"] = RewardTermCfg(
         func=rewards.contact_forces,
-        weight=-1.5e-4,
+        weight=-3.0e-4,
         params={
-            "threshold": 35.0,
+            "threshold": 20.0,
             "sensor_name": "wheel_sensor",
             "asset_cfg": SceneEntityCfg("robot"),
         },
@@ -408,7 +408,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "collision_sensor_name": "collision_sensor",
             "asset_cfg": SceneEntityCfg("robot"),
             "force_threshold": 1.0,
-            "contact_force_threshold": 35.0,
+            "contact_force_threshold": 20.0,
             "action_saturation_threshold": 0.95,
             "active_rod_margin_warning": 0.05,
             "log_interval_steps": 256,
