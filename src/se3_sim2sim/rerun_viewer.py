@@ -181,6 +181,12 @@ class RerunViewer:
         self._log_scalar("/plots/state/tilt_deg", telemetry["tilt_deg"])
         self._log_scalar("/plots/state/fail_tilt_deg", telemetry["fail_tilt_deg"])
         self._log_scalar("/plots/state/reward", telemetry["reward"])
+        self._log_scalar("/plots/rc/rc_switch_r", telemetry.get("rc_switch_r", 1.0))
+        self._log_scalar("/plots/rc/output_enabled", telemetry.get("output_enabled", 1.0))
+        self._log_scalar("/plots/rc/switch_event", telemetry.get("rc_switch_event", 0.0))
+        self._log_scalar("/plots/rc/policy_reset", telemetry.get("rc_policy_reset", 0.0))
+        target_mode = 1.0 if telemetry.get("target_mode", "policy") == "policy" else 0.0
+        self._log_scalar("/plots/rc/target_mode_policy", target_mode)
         self._log_scalar("/plots/command/lin_vel_x", telemetry.get("command_lin_vel_x", 0.0))
         self._log_scalar("/plots/command/yaw_rate", telemetry.get("command_yaw_rate", 0.0))
         self._log_scalar("/plots/velocity/base_lin_vel_x", telemetry.get("base_lin_vel_x", 0.0))

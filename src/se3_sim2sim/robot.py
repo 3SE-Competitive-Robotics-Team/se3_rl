@@ -239,6 +239,15 @@ class WheelLeggedRobot:
         self.pre_policy_settle_info = {"enabled": False}
         return self.observation()
 
+    def reset_policy_io_state(self) -> None:
+        """清空 policy 输入输出历史，用于模拟真机 output disabled 时的 GRU reset。"""
+        self.last_action.fill(0.0)
+        self.last_applied_action.fill(0.0)
+        self.last_policy_action.fill(0.0)
+        self.last_clipped_policy_action.fill(0.0)
+        self.action_fifo.fill(0.0)
+        self.last_ctrl.fill(0.0)
+
     def settle_base_before_policy(
         self,
         *,
@@ -341,6 +350,27 @@ class WheelLeggedRobot:
         info = self.telemetry(reward=reward)
         info["done_reason"] = done_reason
         info["fall_detected"] = fall_detected
+        return obs, reward, done, info
+
+    def step_hold_current(self) -> tuple[np.ndarray, float, bool, dict[str, object]]:
+        """按 deploy hold_current 语义推进一步：保持当前腿部目标，轮速目标为 0。"""
+        self.reset_policy_io_state()
+        self._refresh_state()
+        leg_hold_target = self.dof_pos[JointGroup.CTRL_LEGS].copy()
+        for _ in range(self.decimation):
+            self._refresh_state()
+            ctrl = self._compute_hold_current_torques(leg_hold_target)
+            self.data.ctrl[self.motor_ctrl_ids] = ctrl
+            mujoco.mj_step(self.model, self.data)
+        self._refresh_state()
+        self.step_count += 1
+        obs = self.observation()
+        reward = -abs(float(self.projected_gravity[2]) + 1.0)
+        done, done_reason, fall_detected = self._termination_status()
+        info = self.telemetry(reward=reward)
+        info["done_reason"] = done_reason
+        info["fall_detected"] = fall_detected
+        info["target_mode"] = "hold_current"
         return obs, reward, done, info
 
     def observation(self) -> np.ndarray:
@@ -783,6 +813,37 @@ class WheelLeggedRobot:
         )
 
         # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。
+        ctrl = np.concatenate([leg_torque, wheel_torque])
+        self.last_ctrl[:] = ctrl
+        return ctrl
+
+    def _compute_hold_current_torques(self, leg_hold_target: np.ndarray) -> np.ndarray:
+        """计算 output disabled 时的保持目标力矩。"""
+        dof_pos = self.dof_pos
+        dof_vel = self.dof_vel
+        leg_target = np.asarray(leg_hold_target, dtype=np.float64).reshape(4)
+        leg_pos = dof_pos[JointGroup.CTRL_LEGS]
+        leg_vel = dof_vel[JointGroup.CTRL_LEGS]
+        leg_torque = _SHARED_ROBOT.leg_kp * (leg_target - leg_pos)
+        leg_torque -= _SHARED_ROBOT.leg_kd * leg_vel
+        leg_torque = _tn_clip(
+            leg_torque,
+            leg_vel,
+            DM8009P.stall_torque,
+            DM8009P.no_load_speed,
+            DM8009P.rated_torque,
+        )
+
+        wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
+        wheel_torque = _SHARED_ROBOT.wheel_kd * (0.0 - wheel_vel)
+        wheel_torque = _tn_clip(
+            wheel_torque,
+            wheel_vel,
+            M3508_C620_14.stall_torque,
+            M3508_C620_14.no_load_speed,
+            M3508_C620_14.rated_torque,
+        )
+
         ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
         return ctrl

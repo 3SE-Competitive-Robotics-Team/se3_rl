@@ -137,6 +137,41 @@ class JumpScheduleConfig(BaseModel):
         return self
 
 
+class RcSwitchEventConfig(BaseModel):
+    """遥控器输出使能切换事件。"""
+
+    trigger_time_s: Annotated[float, Field(ge=0.0)]
+    """触发时间，单位秒。"""
+
+    output_enabled: bool
+    """是否允许 policy 输出真正接管机器人。"""
+
+    @model_validator(mode="after")
+    def _check_finite(self) -> RcSwitchEventConfig:
+        if not math.isfinite(self.trigger_time_s):
+            raise ValueError(f"trigger_time_s must be finite, got {self.trigger_time_s}")
+        return self
+
+
+class RcSwitchScheduleConfig(BaseModel):
+    """sim2sim 中模拟遥控器开关 / output enable 的时间表。"""
+
+    initial_output_enabled: bool = True
+    """仿真开始时是否允许 policy 输出。"""
+
+    events: tuple[RcSwitchEventConfig, ...] = ()
+    """按绝对时间切换 output enable 的事件列表。"""
+
+    @model_validator(mode="after")
+    def _check_schedule(self) -> RcSwitchScheduleConfig:
+        last_time = -math.inf
+        for event in self.events:
+            if event.trigger_time_s <= last_time:
+                raise ValueError("rc switch event times must be strictly increasing")
+            last_time = event.trigger_time_s
+        return self
+
+
 class RobotConfig(BaseModel):
     """sim2sim 机器人运行配置。"""
 
@@ -199,6 +234,8 @@ class RobotConfig(BaseModel):
     """跳跃参考相位参数，与训练端 JumpCommandTerm 对齐。"""
     jump_schedule: JumpScheduleConfig = Field(default_factory=JumpScheduleConfig)
     """定时跳跃调度配置。"""
+    rc_switch: RcSwitchScheduleConfig = Field(default_factory=RcSwitchScheduleConfig)
+    """sim2sim 中的遥控器输出使能脚本；关闭时按 deploy runtime 重置 GRU 并保持当前目标。"""
 
 
 class PolicyConfig(BaseModel):

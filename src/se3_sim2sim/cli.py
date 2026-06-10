@@ -16,6 +16,8 @@ from .config import (
     JumpEventConfig,
     JumpScheduleConfig,
     PolicyConfig,
+    RcSwitchEventConfig,
+    RcSwitchScheduleConfig,
     RobotConfig,
     RunConfig,
     ViewerConfig,
@@ -77,6 +79,45 @@ def _parse_jump_script(value: str) -> tuple[JumpEventConfig, ...]:
     for event in events:
         if event.trigger_time_s <= last_time:
             raise argparse.ArgumentTypeError("jump script event times must be strictly increasing")
+        last_time = event.trigger_time_s
+    return tuple(events)
+
+
+def _parse_rc_switch_script(value: str) -> tuple[RcSwitchEventConfig, ...]:
+    """解析遥控器输出使能脚本，例：`1s:off, 2s:on`。"""
+    events: list[RcSwitchEventConfig] = []
+    for token in re.split(r"[,;]", value.strip()):
+        item = token.strip()
+        if not item:
+            continue
+        if ":" not in item:
+            raise argparse.ArgumentTypeError(
+                f"rc switch item must be '<time>:<on|off>', got {item!r}"
+            )
+        time_raw, state_raw = item.split(":", 1)
+        trigger_time_s = _parse_unit_float(time_raw, name="rc switch time", suffixes=("sec", "s"))
+        state_key = state_raw.strip().lower()
+        if state_key in {"on", "enable", "enabled", "1", "true", "up"}:
+            output_enabled = True
+        elif state_key in {"off", "disable", "disabled", "0", "false", "down"}:
+            output_enabled = False
+        else:
+            raise argparse.ArgumentTypeError(f"rc switch state must be on/off, got {state_raw!r}")
+        try:
+            events.append(
+                RcSwitchEventConfig(
+                    trigger_time_s=trigger_time_s,
+                    output_enabled=output_enabled,
+                )
+            )
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not events:
+        raise argparse.ArgumentTypeError("rc switch script must contain at least one event")
+    last_time = -math.inf
+    for event in events:
+        if event.trigger_time_s <= last_time:
+            raise argparse.ArgumentTypeError("rc switch event times must be strictly increasing")
         last_time = event.trigger_time_s
     return tuple(events)
 
@@ -373,6 +414,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="按绝对时间触发跳跃的简单 DSL，例如 '3s:0.4m,8s:0.2m'。"
         "时间单位默认秒，高度单位默认米；不能和 --jump-interval-s 同时使用。",
     )
+    parser.add_argument(
+        "--rc-switch-script",
+        type=_parse_rc_switch_script,
+        default=(),
+        metavar="TIME:STATE[,TIME:STATE...]",
+        help=(
+            "模拟遥控器输出使能切换，例：'1s:off,2s:on'。"
+            "off 时按 deploy runtime 重置 GRU hidden、清零 last_action，并保持当前关节目标。"
+        ),
+    )
+    parser.add_argument(
+        "--rc-start-off",
+        action="store_true",
+        help="仿真开始时遥控器输出关闭，直到 --rc-switch-script 切到 on。",
+    )
     return parser
 
 
@@ -456,6 +512,10 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 interval_s=float(args.jump_interval_s) if args.jump_interval_s is not None else 5.0,
                 target_height=float(args.jump_target_height),
                 events=tuple(args.jump_script),
+            ),
+            rc_switch=RcSwitchScheduleConfig(
+                initial_output_enabled=not bool(args.rc_start_off),
+                events=tuple(args.rc_switch_script),
             ),
         ),
         policy=PolicyConfig(

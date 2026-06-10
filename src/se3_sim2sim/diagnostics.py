@@ -110,6 +110,10 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "applied_action_delta_l2",
         "applied_action_delta_max_abs",
         "applied_action_delta_sq_sum",
+        "rc_switch_r",
+        "output_enabled",
+        "rc_switch_event",
+        "rc_policy_reset",
     ):
         if key in samples[0]:
             values = np.asarray([s[key] for s in samples], dtype=np.float64)

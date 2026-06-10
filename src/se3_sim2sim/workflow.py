@@ -83,6 +83,15 @@ class Sim2SimWorkflow:
         _traj_steps = self._trajectory_steps_for_height(float(self.robot.command[6]))
         _prev_action: np.ndarray | None = None
         _prev_applied_action: np.ndarray | None = None
+        rc_sched = self.cfg.robot.rc_switch
+        rc_events = tuple(rc_sched.events)
+        _next_rc_event = 0
+        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+        _policy_memory_clean = True
+        if not _rc_output_enabled:
+            self.policy.reset()
+            self.robot.reset_policy_io_state()
+            obs = self.robot.observation()
 
         # 初始化：静态模式下读取用户命令中的 jump_flag；调度模式下初始不跳
         if sched.enabled or script_events:
@@ -130,6 +139,7 @@ class Sim2SimWorkflow:
 
         try:
             for step in step_iter:
+                sim_time_s = (step - 1) * control_dt
                 # --- jump_phase 更新（对齐训练端参考轨迹）---
                 if _jump_active:
                     self.robot.command[5] = 1.0
@@ -174,7 +184,6 @@ class Sim2SimWorkflow:
                         )
                         _jump_active = True  # 触发下一次跳跃
                 elif script_events and not _jump_active:
-                    sim_time_s = (step - 1) * control_dt
                     if _next_script_event < len(script_events):
                         event = script_events[_next_script_event]
                         if sim_time_s + 1.0e-9 >= float(event.trigger_time_s):
@@ -202,8 +211,34 @@ class Sim2SimWorkflow:
                     self.robot.command[0] = vx
                     self.robot.command[1] = yaw
                     obs = self.robot.observation()
-                action = self.policy.act(obs)
-                obs, reward, done, info = self.robot.step(action)
+
+                rc_switch_event = 0.0
+                while _next_rc_event < len(rc_events):
+                    event = rc_events[_next_rc_event]
+                    if sim_time_s + 1.0e-9 < float(event.trigger_time_s):
+                        break
+                    _rc_output_enabled = bool(event.output_enabled)
+                    _next_rc_event += 1
+                    rc_switch_event = 1.0
+
+                rc_policy_reset = 0.0
+                if _rc_output_enabled:
+                    action = self.policy.act(obs)
+                    _policy_memory_clean = False
+                    obs, reward, done, info = self.robot.step(action)
+                    info["target_mode"] = "policy"
+                else:
+                    if not _policy_memory_clean:
+                        self.policy.reset()
+                        self.robot.reset_policy_io_state()
+                        obs = self.robot.observation()
+                        _policy_memory_clean = True
+                        rc_policy_reset = 1.0
+                    obs, reward, done, info = self.robot.step_hold_current()
+                info["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                info["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                info["rc_switch_event"] = rc_switch_event
+                info["rc_policy_reset"] = rc_policy_reset
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
                 action_delta = (
@@ -258,6 +293,10 @@ class Sim2SimWorkflow:
                     "applied_action_delta_sq_sum": float(np.sum(np.square(applied_action_delta))),
                     "action_delay_steps": float(info["action_delay_steps"]),
                     "action_delay_s": float(info["action_delay_s"]),
+                    "rc_switch_r": float(info.get("rc_switch_r", 1.0)),
+                    "output_enabled": float(info.get("output_enabled", 1.0)),
+                    "rc_switch_event": float(info.get("rc_switch_event", 0.0)),
+                    "rc_policy_reset": float(info.get("rc_policy_reset", 0.0)),
                 }
                 samples.append(sample)
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
@@ -280,9 +319,17 @@ class Sim2SimWorkflow:
                                 f" course_vx={float(report.get('vx', 0.0)):+.2f}"
                                 f" course_yaw={float(report.get('yaw', 0.0)):+.2f}"
                             )
+                    rc_info = ""
+                    if rc_events or not bool(rc_sched.initial_output_enabled):
+                        rc_info = (
+                            f" rc={'on' if _rc_output_enabled else 'off'}"
+                            f" mode={info.get('target_mode', 'policy')}"
+                            f" reset={int(float(info.get('rc_policy_reset', 0.0)))}"
+                        )
                     line = (
                         f"step={step:05d} time={float(info['time']):.3f}"
                         f"{course_info}"
+                        f"{rc_info}"
                         f" base_h={float(info['height']):.3f} "
                         f"wheel_clr={float(info.get('wheel_clearance', 0.0)):.3f} "
                         f"tilt={float(info['tilt_deg']):.2f} "
@@ -329,6 +376,12 @@ class Sim2SimWorkflow:
         }
         if script_events:
             summary["jump_events"] = self._jump_event_diagnostics(samples, script_events)
+        if rc_events or not bool(rc_sched.initial_output_enabled):
+            summary["rc_switch"] = self._rc_switch_diagnostics(
+                samples,
+                rc_events,
+                bool(rc_sched.initial_output_enabled),
+            )
         if self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
             summary["upright_velocity_sweep"] = self._upright_velocity_sweep_diagnostics(
                 samples,
@@ -369,6 +422,53 @@ class Sim2SimWorkflow:
         if not isinstance(values, list):
             return str(values)
         return "[" + ",".join(f"{float(v):+.3f}" for v in values) + "]"
+
+    @staticmethod
+    def _rc_switch_diagnostics(
+        samples: list[dict[str, float]],
+        events: tuple[object, ...],
+        initial_output_enabled: bool,
+    ) -> dict[str, object]:
+        """统计遥控器开关脚本对 policy 输出和 GRU reset 的影响。"""
+        if not samples:
+            return {
+                "initial_output_enabled": bool(initial_output_enabled),
+                "events": [],
+                "samples": 0,
+            }
+        output_enabled = np.asarray([s["output_enabled"] for s in samples], dtype=np.float64)
+        resets = np.asarray([s["rc_policy_reset"] for s in samples], dtype=np.float64)
+        action_delta = np.asarray([s["action_delta_l2"] for s in samples], dtype=np.float64)
+        switch_events = np.asarray([s["rc_switch_event"] for s in samples], dtype=np.float64)
+        event_reports: list[dict[str, object]] = []
+        for event in events:
+            trigger = float(event.trigger_time_s)
+            after = [s for s in samples if trigger <= float(s["time"]) <= trigger + 0.2]
+            event_reports.append(
+                {
+                    "trigger_time_s": trigger,
+                    "output_enabled": bool(event.output_enabled),
+                    "samples_200ms": len(after),
+                    "max_action_delta_l2_200ms": float(
+                        max((s["action_delta_l2"] for s in after), default=0.0)
+                    ),
+                    "max_applied_action_delta_l2_200ms": float(
+                        max((s["applied_action_delta_l2"] for s in after), default=0.0)
+                    ),
+                    "policy_reset_seen_200ms": bool(
+                        any(float(s["rc_policy_reset"]) > 0.5 for s in after)
+                    ),
+                }
+            )
+        return {
+            "initial_output_enabled": bool(initial_output_enabled),
+            "events": event_reports,
+            "samples": len(samples),
+            "enabled_rate": float(np.mean(output_enabled > 0.5)),
+            "switch_count": int(np.sum(switch_events > 0.5)),
+            "policy_reset_count": int(np.sum(resets > 0.5)),
+            "max_action_delta_l2": float(np.max(action_delta)),
+        }
 
     @staticmethod
     def _jump_event_diagnostics(
