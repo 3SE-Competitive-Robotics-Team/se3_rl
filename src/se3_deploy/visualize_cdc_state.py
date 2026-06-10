@@ -1301,9 +1301,11 @@ class MujocoStateRenderer:
             round(float(base_qpos[active_addrs[0]]), 3),
             round(float(base_qpos[active_addrs[1]]), 3),
         )
-        seeds = self._closed_chain_solver_seeds(passive_joints, passive_addrs)
         if self.closed_chain_failed_signatures.get(side) == active_signature:
-            seeds = seeds[:1]
+            self.mujoco.mj_forward(self.model, self.data)
+            return self._closed_chain_residual_norm(site_ids)
+
+        seeds = self._closed_chain_solver_seeds(passive_joints, passive_addrs)
         best_error = math.inf
         best_passive = (
             float(self.data.qpos[passive_addrs[0]]),
