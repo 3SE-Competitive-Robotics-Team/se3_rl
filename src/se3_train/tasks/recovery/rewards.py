@@ -11,6 +11,7 @@ from se3_train.mdp.rewards import (
     upright_wheel_slip_penalty,
     upward,
     upward_progress,
+    wheel_air_velocity_penalty,
 )
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
@@ -25,4 +26,5 @@ __all__ = [
     "upright_leg_contact_penalty",
     "upright_wheel_contact_penalty",
     "upright_wheel_slip_penalty",
+    "wheel_air_velocity_penalty",
 ]

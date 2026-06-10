@@ -362,6 +362,19 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
+    cfg.rewards["wheel_air_velocity"] = RewardTermCfg(
+        func=rewards.wheel_air_velocity_penalty,
+        weight=-5.0e-4,
+        params={
+            "sensor_name": "wheel_sensor",
+            "force_threshold": 1.0,
+            "velocity_scale": 1.0,
+            "max_penalty": 10000.0,
+            "recovery_active_only": True,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "log_prefix": "Recovery",
+        },
+    )
     cfg.rewards["upright_leg_contact"] = RewardTermCfg(
         func=rewards.upright_leg_contact_penalty,
         weight=-1.0,

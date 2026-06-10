@@ -1665,6 +1665,75 @@ def flat_wheel_contact_penalty(
     return penalty * active.float()
 
 
+def wheel_air_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    velocity_scale: float = 1.0,
+    max_penalty: float = 10000.0,
+    recovery_active_only: bool = False,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    log_prefix: str = "Recovery",
+) -> torch.Tensor:
+    """Penalize wheel joint speed only while the corresponding wheel is airborne."""
+    robot = env.scene[asset_cfg.name]
+    wheel_vel = torch.nan_to_num(
+        robot.data.joint_vel[:, wheel_joint_ids(robot)],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    if force_mag.ndim == 1:
+        force_mag = force_mag.unsqueeze(1)
+    elif force_mag.ndim > 2:
+        force_mag = force_mag.flatten(start_dim=2).amax(dim=2)
+
+    if force_mag.shape[1] == 1 and wheel_vel.shape[1] > 1:
+        force_mag = force_mag.expand(-1, wheel_vel.shape[1])
+    elif force_mag.shape[1] != wheel_vel.shape[1]:
+        cols = min(force_mag.shape[1], wheel_vel.shape[1])
+        force_mag = force_mag[:, :cols]
+        wheel_vel = wheel_vel[:, :cols]
+
+    in_contact = force_mag > float(force_threshold)
+    air_mask = (~in_contact).float()
+    scale = max(float(velocity_scale), 1.0e-6)
+    penalty_per_wheel = air_mask * (wheel_vel / scale) ** 2
+    penalty = torch.sum(penalty_per_wheel, dim=1)
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+
+    if recovery_active_only:
+        active = _recovery_reset_mask(env)
+    else:
+        active = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+    result = penalty * active.float()
+
+    if (
+        hasattr(env, "extras")
+        and isinstance(env.extras.get("log"), dict)
+        and _should_log_step(env)
+    ):
+        log_name = log_prefix.rstrip("/")
+        air_ratio = air_mask.mean(dim=1)
+        air_vel_abs = torch.mean(torch.abs(wheel_vel) * air_mask, dim=1)
+        env.extras["log"].update(
+            {
+                f"{log_name}/wheel_air_velocity_penalty": _masked_mean(result, active),
+                f"{log_name}/wheel_air_ratio": _masked_mean(air_ratio, active),
+                f"{log_name}/wheel_air_joint_vel_abs": _masked_mean(air_vel_abs, active),
+            }
+        )
+
+    return result
+
+
 def upright_leg_contact_penalty(
     env: ManagerBasedRlEnv,
     command_name: str,
