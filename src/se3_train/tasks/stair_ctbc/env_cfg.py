@@ -348,6 +348,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "terminate": False,
         },
     )
+    if "tracking_ang_vel" in cfg.rewards:
+        cfg.rewards["tracking_ang_vel"].weight = 3.0
+        cfg.rewards["tracking_ang_vel"].params.update(
+            {
+                "sigma": 0.25,
+                "use_upright_gate": True,
+            }
+        )
 
     new_events = dict(cfg.events)
     new_events["reset_root_state"] = EventTermCfg(
