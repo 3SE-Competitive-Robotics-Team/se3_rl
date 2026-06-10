@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
+import re
+from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -39,6 +43,7 @@ from se3_train.mdp import curriculums, events, stair_rewards, terminations
 from se3_train.robot_cfg import STAIR_FOURBAR_SURROGATE_MJCF_PATH, get_serialleg_cfg
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
+from se3_train.training_runtime import TRAINING_STATUS_FILENAME
 
 _REFERENCE_CTBC_WHEEL_SCALE = 45.0
 _REFERENCE_CTBC_WHEEL_AMP = 1.5
@@ -50,6 +55,137 @@ _TERRAIN_CURRICULUM_TYPES = (
     "ramp_17deg_350mm",
 )
 _PLAY_NUM_ENVS = len(_TERRAIN_CURRICULUM_TYPES)
+_TERRAIN_LEVEL_STAGES = (
+    {"iteration": 0, "max_difficulty": 0.0},
+    {"iteration": 300, "max_difficulty": 0.30},
+    {"iteration": 700, "max_difficulty": 0.50},
+    {"iteration": 1100, "max_difficulty": 0.70},
+    {"iteration": 1500, "max_difficulty": 1.0},
+)
+_CHECKPOINT_ITER_PATTERN = re.compile(r"model_(\d+)\.pt$")
+
+
+def play_terrain_difficulty_from_training() -> float:
+    """按当前训练进度返回 play 地形难度。"""
+    forced_difficulty = _env_float("SE3_PLAY_TERRAIN_DIFFICULTY")
+    if forced_difficulty is not None:
+        return _clamp_unit(forced_difficulty)
+
+    iteration = _play_training_iteration()
+    if iteration is None:
+        return 1.0
+    return _terrain_difficulty_for_iteration(iteration)
+
+
+def _play_training_iteration() -> int | None:
+    """从显式环境变量、训练状态文件或 checkpoint 名称推断训练 iteration。"""
+    forced_iteration = _env_int("SE3_PLAY_TERRAIN_ITERATION")
+    if forced_iteration is not None:
+        return forced_iteration
+
+    run_dir = _training_run_dir_from_env()
+    if run_dir is not None:
+        status_iteration = _training_status_iteration(run_dir)
+        if status_iteration is not None:
+            return status_iteration
+
+    checkpoint_iteration = _checkpoint_iteration_from_env()
+    if checkpoint_iteration is not None:
+        return checkpoint_iteration
+
+    if run_dir is not None:
+        return _latest_checkpoint_iteration(run_dir)
+    return None
+
+
+def _terrain_difficulty_for_iteration(iteration: int) -> float:
+    """复用训练课程 stage，把 iteration 映射到当前最大地形难度。"""
+    difficulty = 0.0
+    for stage in _TERRAIN_LEVEL_STAGES:
+        if iteration >= int(stage["iteration"]):
+            difficulty = float(stage["max_difficulty"])
+    return _clamp_unit(difficulty)
+
+
+def _training_run_dir_from_env() -> Path | None:
+    """读取 se3-play 包装层注入的训练 run 目录。"""
+    raw_value = os.environ.get("SE3_VISER_TRAIN_RUN_DIR")
+    if raw_value is None or raw_value == "":
+        return None
+    return Path(raw_value).expanduser()
+
+
+def _training_status_iteration(run_dir: Path) -> int | None:
+    """读取训练 runner 轮询写出的实时 iteration。"""
+    try:
+        payload = json.loads((run_dir / TRAINING_STATUS_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _coerce_int(payload.get("iteration"))
+
+
+def _checkpoint_iteration_from_env() -> int | None:
+    """读取 se3-play 当前选中的 checkpoint iteration。"""
+    raw_value = os.environ.get("SE3_VISER_SELECTED_CHECKPOINT")
+    if raw_value is None or raw_value == "":
+        return None
+    return _checkpoint_iteration(Path(raw_value).name)
+
+
+def _latest_checkpoint_iteration(run_dir: Path) -> int | None:
+    """按数值排序获取 run 目录下最新 checkpoint iteration。"""
+    iterations = [
+        iteration
+        for checkpoint in run_dir.glob("model_*.pt")
+        if (iteration := _checkpoint_iteration(checkpoint.name)) is not None
+    ]
+    return max(iterations) if iterations else None
+
+
+def _checkpoint_iteration(name: str) -> int | None:
+    """从 model_<iter>.pt 文件名解析 iteration。"""
+    match = _CHECKPOINT_ITER_PATTERN.match(name)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _env_int(name: str) -> int | None:
+    """读取整数环境变量。"""
+    raw_value = os.environ.get(name)
+    if raw_value is None or raw_value == "":
+        return None
+    try:
+        return int(raw_value)
+    except ValueError:
+        return None
+
+
+def _env_float(name: str) -> float | None:
+    """读取浮点环境变量。"""
+    raw_value = os.environ.get(name)
+    if raw_value is None or raw_value == "":
+        return None
+    try:
+        return float(raw_value)
+    except ValueError:
+        return None
+
+
+def _coerce_int(value: object) -> int | None:
+    """把 JSON 字段收窄为 int。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _clamp_unit(value: float) -> float:
+    """把地形难度限制到 TerrainGenerator 支持的 0-1 区间。"""
+    return min(max(float(value), 0.0), 1.0)
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -117,6 +253,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "flat": BoxFlatTerrainCfg(proportion=0.10, size=(8.0, 8.0)),
         }
     )
+    play_difficulty = play_terrain_difficulty_from_training() if play else None
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=TerrainGeneratorCfg(
@@ -126,7 +263,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             border_height=1.0,
             num_rows=1 if play else 20,
             num_cols=_PLAY_NUM_ENVS if play else 20,
-            difficulty_range=(1.0, 1.0) if play else (0.0, 1.0),
+            difficulty_range=(play_difficulty, play_difficulty) if play else (0.0, 1.0),
             add_lights=True,
             sub_terrains=stair_sub_terrains,
         ),
@@ -324,13 +461,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={
                     "use_iterations": True,
                     "steps_per_policy_iter": 64,
-                    "level_stages": [
-                        {"iteration": 0, "max_difficulty": 0.0},
-                        {"iteration": 300, "max_difficulty": 0.30},
-                        {"iteration": 700, "max_difficulty": 0.50},
-                        {"iteration": 1100, "max_difficulty": 0.70},
-                        {"iteration": 1500, "max_difficulty": 1.0},
-                    ],
+                    "level_stages": list(_TERRAIN_LEVEL_STAGES),
                     "terrain_type_names": _TERRAIN_CURRICULUM_TYPES,
                 },
             ),

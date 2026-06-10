@@ -15,7 +15,12 @@ from mjlab.terrains import (
 )
 
 from se3_train.mdp import curriculums, events
-from se3_train.tasks.stair_ctbc.env_cfg import env_cfg as stair_ctbc_env_cfg
+from se3_train.tasks.stair_ctbc.env_cfg import (
+    env_cfg as stair_ctbc_env_cfg,
+)
+from se3_train.tasks.stair_ctbc.env_cfg import (
+    play_terrain_difficulty_from_training,
+)
 from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
 
 _STAIR_TERRAIN_TYPE_NAMES = ("stage_stairs", "inv_pyramid_stairs")
@@ -45,6 +50,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 def _four_terrain_cfg(play: bool) -> TerrainEntityCfg:
     """只保留二级台阶、金字塔台阶、17 度坡、43 度坡四类地形。"""
+    play_difficulty = play_terrain_difficulty_from_training() if play else None
     sub_terrains = {
         "stage_stairs": BoxStageStairsTerrainCfg(proportion=0.25, size=(8.0, 8.0)),
         "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
@@ -78,7 +84,7 @@ def _four_terrain_cfg(play: bool) -> TerrainEntityCfg:
             border_height=1.0,
             num_rows=1 if play else 10,
             num_cols=_PLAY_NUM_ENVS if play else 20,
-            difficulty_range=(1.0, 1.0) if play else (0.0, 1.0),
+            difficulty_range=(play_difficulty, play_difficulty) if play else (0.0, 1.0),
             add_lights=True,
             sub_terrains=sub_terrains,
         ),
