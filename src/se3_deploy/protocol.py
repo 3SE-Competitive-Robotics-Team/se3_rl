@@ -10,7 +10,7 @@ import numpy as np
 
 SOF = b"\xa5\x5a"
 VERSION = 1
-MAX_PAYLOAD_SIZE = 96
+MAX_PAYLOAD_SIZE = 160
 
 MSG_STATE = 0x01
 MSG_TARGET = 0x02
@@ -22,7 +22,9 @@ MSG_POLICY_ACTION = MSG_TARGET
 HEADER_STRUCT = struct.Struct("<BBBBHH")
 CRC_STRUCT = struct.Struct("<H")
 
-POLICY_STATE_STRUCT = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f")
+POLICY_STATE_STRUCT_V1 = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f")
+POLICY_STATE_STRUCT_V2 = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f")
+POLICY_STATE_STRUCT = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f2f2f")
 POLICY_TARGET_STRUCT = struct.Struct("<I4f2f")
 POLICY_LATENCY_STRUCT = struct.Struct("<IIB3x")
 
@@ -44,6 +46,10 @@ class PolicyStateFrame:
     joint_vel: tuple[float, float, float, float]
     wheel_pos: tuple[float, float]
     wheel_vel: tuple[float, float]
+    target_joint_pos: tuple[float, float, float, float]
+    hip_torque: tuple[float, float, float, float]
+    wheel_torque: tuple[float, float]
+    wheel_motor_torque: tuple[float, float]
 
     payload_struct: ClassVar[struct.Struct] = POLICY_STATE_STRUCT
 
@@ -74,11 +80,57 @@ class PolicyStateFrame:
             *finite_floats(self.joint_vel, 4, "joint_vel"),
             *finite_floats(self.wheel_pos, 2, "wheel_pos"),
             *finite_floats(self.wheel_vel, 2, "wheel_vel"),
+            *finite_floats(self.target_joint_pos, 4, "target_joint_pos"),
+            *finite_floats(self.hip_torque, 4, "hip_torque"),
+            *finite_floats(self.wheel_torque, 2, "wheel_torque"),
+            *finite_floats(self.wheel_motor_torque, 2, "wheel_motor_torque"),
         )
         return self.payload_struct.pack(*values)
 
     @classmethod
     def from_payload(cls, payload: bytes) -> PolicyStateFrame:
+        if len(payload) == POLICY_STATE_STRUCT_V1.size:
+            values = POLICY_STATE_STRUCT_V1.unpack(payload)
+            return cls(
+                tick_ms=int(values[0]),
+                seq=int(values[1]),
+                target_seq=int(values[2]),
+                target_age_ms=int(values[3]),
+                target_valid=int(values[4]),
+                rc_switch_r=int(values[5]),
+                output_enabled=int(values[6]),
+                base_ang_vel_body=tuple(float(v) for v in values[7:10]),
+                projected_gravity=tuple(float(v) for v in values[10:13]),
+                joint_pos=tuple(float(v) for v in values[13:17]),
+                joint_vel=tuple(float(v) for v in values[17:21]),
+                wheel_pos=tuple(float(v) for v in values[21:23]),
+                wheel_vel=tuple(float(v) for v in values[23:25]),
+                target_joint_pos=(0.0, 0.0, 0.0, 0.0),
+                hip_torque=(0.0, 0.0, 0.0, 0.0),
+                wheel_torque=(0.0, 0.0),
+                wheel_motor_torque=(0.0, 0.0),
+            )
+        if len(payload) == POLICY_STATE_STRUCT_V2.size:
+            values = POLICY_STATE_STRUCT_V2.unpack(payload)
+            return cls(
+                tick_ms=int(values[0]),
+                seq=int(values[1]),
+                target_seq=int(values[2]),
+                target_age_ms=int(values[3]),
+                target_valid=int(values[4]),
+                rc_switch_r=int(values[5]),
+                output_enabled=int(values[6]),
+                base_ang_vel_body=tuple(float(v) for v in values[7:10]),
+                projected_gravity=tuple(float(v) for v in values[10:13]),
+                joint_pos=tuple(float(v) for v in values[13:17]),
+                joint_vel=tuple(float(v) for v in values[17:21]),
+                wheel_pos=tuple(float(v) for v in values[21:23]),
+                wheel_vel=tuple(float(v) for v in values[23:25]),
+                target_joint_pos=tuple(float(v) for v in values[25:29]),
+                hip_torque=tuple(float(v) for v in values[29:33]),
+                wheel_torque=(0.0, 0.0),
+                wheel_motor_torque=(0.0, 0.0),
+            )
         if len(payload) != cls.payload_struct.size:
             raise ValueError(f"state payload size mismatch: {len(payload)}")
         values = cls.payload_struct.unpack(payload)
@@ -96,6 +148,10 @@ class PolicyStateFrame:
             joint_vel=tuple(float(v) for v in values[17:21]),
             wheel_pos=tuple(float(v) for v in values[21:23]),
             wheel_vel=tuple(float(v) for v in values[23:25]),
+            target_joint_pos=tuple(float(v) for v in values[25:29]),
+            hip_torque=tuple(float(v) for v in values[29:33]),
+            wheel_torque=tuple(float(v) for v in values[33:35]),
+            wheel_motor_torque=tuple(float(v) for v in values[35:37]),
         )
 
 

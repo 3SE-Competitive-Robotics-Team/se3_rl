@@ -152,6 +152,20 @@ sim-headless:
 sim-headless-ckpt checkpoint:
     uv run se3-sim2sim --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 
+# sim2sim 真实闭链模型回放（自动选最新 checkpoint，Rerun，walk-sweep 历程）
+sim-closedchain:
+    uv run se3-sim2sim --model-variant closedchain --max-steps 3000 --course walk-sweep
+
+# sim2sim 真实闭链模型回放（指定 checkpoint，Rerun，walk-sweep 历程）
+# 用法: just sim-closedchain-ckpt logs/.../model_4999.pt
+sim-closedchain-ckpt checkpoint:
+    uv run se3-sim2sim --model-variant closedchain --checkpoint {{checkpoint}} --max-steps 3000 --course walk-sweep
+
+# sim2sim 真实闭链模型无 GUI 快速验证（指定 checkpoint）
+# 用法: just sim-headless-closedchain-ckpt logs/.../model_4999.pt
+sim-headless-closedchain-ckpt checkpoint:
+    uv run se3-sim2sim --model-variant closedchain --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+
 # NX recovery-only runtime dry-run：不连接 STM32，只验证 checkpoint 推理链路。
 nx-recovery-dry-run:
     uv run se3-nx-recovery --dry-run --max-steps 100 --print-every 25

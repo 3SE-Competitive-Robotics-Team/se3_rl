@@ -37,6 +37,23 @@ class Sim2SimWorkflow:
 
     def run(self) -> dict[str, object]:
         obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
+        pre_policy_settle = {"enabled": False}
+        if self.cfg.robot.settle_base_before_policy:
+            pre_policy_settle = self.robot.settle_base_before_policy(
+                max_s=self.cfg.robot.pre_policy_settle_max_s,
+                contact_steps=self.cfg.robot.pre_policy_settle_contact_steps,
+            )
+            print(
+                "[pre-policy settle] "
+                f"success={pre_policy_settle['success']} "
+                f"steps={pre_policy_settle['steps']} "
+                f"time={float(pre_policy_settle['time_s']):.3f}s "
+                f"base_touching={pre_policy_settle.get('base_touching', False)} "
+                f"base_contact={pre_policy_settle['base_contact']} "
+                f"snap_down={float(pre_policy_settle.get('base_snap_down_m', 0.0)):.4f}m "
+                f"base_clearance={float(pre_policy_settle['base_clearance']):+.4f}m"
+            )
+            obs = self.robot.observation()
         samples: list[dict[str, float]] = []
         model_diag = self.robot.diagnostics()
         if self.viewer is not None:
@@ -306,6 +323,7 @@ class Sim2SimWorkflow:
                 "spec": self.policy.spec.to_dict(),
             },
             "model_diagnostics": model_diag,
+            "pre_policy_settle": pre_policy_settle,
             "rollout": rollout_diagnostics(samples),
             "done_reason": done_reason,
         }
@@ -337,6 +355,7 @@ class Sim2SimWorkflow:
             record_to_rrd=self.cfg.viewer.record_to_rrd,
             memory_limit=self.cfg.viewer.memory_limit,
             follow_body=self.cfg.viewer.follow_body,
+            geom_view=self.cfg.viewer.geom_view,
         )
 
     @staticmethod

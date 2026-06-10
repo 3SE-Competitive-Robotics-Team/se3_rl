@@ -25,6 +25,7 @@ from urllib.request import urlopen
 import numpy as np
 
 from se3_shared import RobotConfig
+from se3_shared.fourbar import policy_to_output_pos_np
 
 from .cdc import CdcSerial
 from .observation import RecoveryObservationBuilder
@@ -56,9 +57,14 @@ _DEBUG_JOINTS = (
     ("rf1", "rf1_Joint", "RF1"),
     ("rw", "r_wheel_Joint", "RW"),
 )
+_DEBUG_BODY_FRAMES = (("base", "base_link", "base_link"),)
+_DEBUG_FRAME_KEYS = tuple(key for key, _, _ in (*_DEBUG_BODY_FRAMES, *_DEBUG_JOINTS))
+_DEFAULT_NX_RELAY_URL = "http://192.168.137.100:8081"
 _DEFAULT_CAMERA_AZIMUTH = 135.0
 _DEFAULT_CAMERA_ELEVATION = -20.0
 _DEFAULT_CAMERA_DISTANCE = 1.25
+_DEFAULT_USE_GRAVITY_ATTITUDE = True
+_MAX_GYRO_INTEGRATION_DT_S = 0.05
 _JOINT_FRAME_AXIS_LENGTH = 0.13
 _JOINT_FRAME_AXIS_WIDTH = 0.008
 _JOINT_FRAME_COLORS = (
@@ -66,15 +72,6 @@ _JOINT_FRAME_COLORS = (
     np.array([0.1, 0.85, 0.24, 0.92], dtype=np.float32),
     np.array([0.22, 0.52, 1.0, 0.92], dtype=np.float32),
 )
-_KNEE_X = -0.17993464
-_KNEE_Z = 0.00489576
-_CALF_X = 0.05003347
-_CALF_Z = 0.04149627
-_DRIVE_X = 0.04009536
-_DRIVE_Z = 0.04530576
-_COUPLER_LEN = float(np.hypot(-0.16999653, 0.00108627))
-_CALF_LEN = float(np.hypot(_CALF_X, _CALF_Z))
-_CALF_ZERO_ANGLE = float(np.arctan2(_CALF_Z, _CALF_X))
 
 
 @dataclass(slots=True)
@@ -152,6 +149,7 @@ class VisualizerServer(ThreadingHTTPServer):
         show_visual_model: bool | None = None,
         show_collision_model: bool | None = None,
         joint_frames: dict[str, bool] | None = None,
+        use_gravity_attitude: bool | None = None,
         camera_azimuth: float | None = None,
         camera_elevation: float | None = None,
         camera_distance: float | None = None,
@@ -162,6 +160,7 @@ class VisualizerServer(ThreadingHTTPServer):
             show_visual_model=show_visual_model,
             show_collision_model=show_collision_model,
             joint_frames=joint_frames,
+            use_gravity_attitude=use_gravity_attitude,
             camera_azimuth=camera_azimuth,
             camera_elevation=camera_elevation,
             camera_distance=camera_distance,
@@ -234,6 +233,9 @@ class VisualizerHandler(BaseHTTPRequestHandler):
         show_collision_model = (
             _query_bool(params["collision"][-1]) if "collision" in params else None
         )
+        use_gravity_attitude = (
+            _query_bool(params["gravity_attitude"][-1]) if "gravity_attitude" in params else None
+        )
         joint_frames = _joint_settings_from_query(params)
         camera_azimuth = _query_float(params, "camera_azimuth")
         camera_elevation = _query_float(params, "camera_elevation")
@@ -242,6 +244,7 @@ class VisualizerHandler(BaseHTTPRequestHandler):
             show_visual_model is None
             and show_collision_model is None
             and joint_frames is None
+            and use_gravity_attitude is None
             and camera_azimuth is None
             and camera_elevation is None
             and camera_distance is None
@@ -252,6 +255,7 @@ class VisualizerHandler(BaseHTTPRequestHandler):
                 show_visual_model=show_visual_model,
                 show_collision_model=show_collision_model,
                 joint_frames=joint_frames,
+                use_gravity_attitude=use_gravity_attitude,
                 camera_azimuth=camera_azimuth,
                 camera_elevation=camera_elevation,
                 camera_distance=camera_distance,
@@ -332,10 +336,10 @@ def _query_float(params: dict[str, list[str]], key: str) -> float | None:
 def _joint_settings_from_query(params: dict[str, list[str]]) -> dict[str, bool] | None:
     if "joints" in params:
         value = _query_bool(params["joints"][-1])
-        return {key: value for key, _, _ in _DEBUG_JOINTS}
+        return {key: value for key in _DEBUG_FRAME_KEYS}
 
     settings: dict[str, bool] = {}
-    for key, _, _ in _DEBUG_JOINTS:
+    for key in _DEBUG_FRAME_KEYS:
         query_key = f"joint_{key}"
         if query_key in params:
             settings[key] = _query_bool(params[query_key][-1])
@@ -469,6 +473,10 @@ def snapshot_to_state(snapshot: dict[str, Any]) -> PolicyStateFrame | None:
         joint_vel=_tuple_from_snapshot(snapshot, "joint_vel", 4),
         wheel_pos=_tuple_from_snapshot(snapshot, "wheel_pos", 2),
         wheel_vel=_tuple_from_snapshot(snapshot, "wheel_vel", 2),
+        target_joint_pos=_tuple_from_snapshot(snapshot, "target_joint_pos", 4),
+        hip_torque=_tuple_from_snapshot(snapshot, "hip_torque", 4),
+        wheel_torque=_tuple_from_snapshot(snapshot, "wheel_torque", 2),
+        wheel_motor_torque=_tuple_from_snapshot(snapshot, "wheel_motor_torque", 2),
     )
 
 
@@ -509,30 +517,15 @@ def run_synthetic_reader(
 def synthetic_state(seq: int, t: float) -> PolicyStateFrame:
     base = np.asarray(_ROBOT_CFG.default_dof_pos, dtype=np.float32)
     joint_pos = base[:4].copy()
-    joint_pos += np.asarray(
-        [
-            0.35 * math.sin(t * 1.2),
-            0.45 * math.sin(t * 1.1 + 0.7),
-            0.35 * math.sin(t * 1.2 + 1.2),
-            0.45 * math.sin(t * 1.1 + 1.9),
-        ],
-        dtype=np.float32,
-    )
-    joint_vel = np.asarray(
-        [
-            0.42 * math.cos(t * 1.2),
-            0.50 * math.cos(t * 1.1 + 0.7),
-            0.42 * math.cos(t * 1.2 + 1.2),
-            0.50 * math.cos(t * 1.1 + 1.9),
-        ],
-        dtype=np.float32,
-    )
-    wheel_pos = np.asarray([t * 2.0, -t * 1.6], dtype=np.float32)
-    wheel_vel = np.asarray([2.0, -1.6], dtype=np.float32)
+    joint_vel = np.zeros(4, dtype=np.float32)
+    wheel_pos = np.zeros(2, dtype=np.float32)
+    wheel_vel = np.zeros(2, dtype=np.float32)
+    gravity_x = 0.15 * math.sin(t * 0.5)
+    gravity_y = -0.22 * math.sin(t * 0.4)
     projected_gravity = (
-        0.15 * math.sin(t * 0.5),
-        -0.22 * math.sin(t * 0.4),
-        -0.96,
+        gravity_x,
+        gravity_y,
+        -math.sqrt(max(1.0 - gravity_x * gravity_x - gravity_y * gravity_y, 0.0)),
     )
     return PolicyStateFrame(
         seq=seq,
@@ -542,12 +535,20 @@ def synthetic_state(seq: int, t: float) -> PolicyStateFrame:
         target_valid=0,
         rc_switch_r=0,
         output_enabled=0,
-        base_ang_vel_body=(0.0, 0.0, 0.0),
+        base_ang_vel_body=(
+            0.18 * math.sin(t * 0.6),
+            0.14 * math.cos(t * 0.5),
+            0.10 * math.sin(t * 0.4),
+        ),
         projected_gravity=projected_gravity,
         joint_pos=tuple(float(v) for v in joint_pos),
         joint_vel=tuple(float(v) for v in joint_vel),
         wheel_pos=tuple(float(v) for v in wheel_pos),
         wheel_vel=tuple(float(v) for v in wheel_vel),
+        target_joint_pos=tuple(float(v) for v in joint_pos),
+        hip_torque=(0.0, 0.0, 0.0, 0.0),
+        wheel_torque=(0.0, 0.0),
+        wheel_motor_torque=(0.0, 0.0),
     )
 
 
@@ -560,6 +561,10 @@ def state_to_snapshot(
 ) -> dict[str, Any]:
     obs_result = builder.build(state, _ZERO_ACTION)
     obs = obs_result.obs
+    joint_pos = np.asarray(state.joint_pos, dtype=np.float64)
+    target_joint_pos = np.asarray(state.target_joint_pos, dtype=np.float64)
+    render_joint_pos = _policy_to_output_pos_np(joint_pos)
+    joint_pos_error = _wrap_angle_np(target_joint_pos - joint_pos)
     return {
         "source": source,
         "connected": True,
@@ -575,7 +580,15 @@ def state_to_snapshot(
         "base_ang_vel": _finite_list(state.base_ang_vel_body),
         "projected_gravity": _finite_list(state.projected_gravity),
         "joint_pos": _finite_list(state.joint_pos),
+        "target_joint_pos": _finite_list(state.target_joint_pos),
+        "joint_pos_error": _finite_list(joint_pos_error),
+        "joint_active": _finite_list(_policy_active_angles_np(joint_pos)),
+        "target_active": _finite_list(_policy_active_angles_np(target_joint_pos)),
+        "render_joint_pos": _finite_list(render_joint_pos),
         "joint_vel": _finite_list(state.joint_vel),
+        "hip_torque": _finite_list(state.hip_torque),
+        "wheel_torque": _finite_list(state.wheel_torque),
+        "wheel_motor_torque": _finite_list(state.wheel_motor_torque),
         "wheel_pos": _finite_list(state.wheel_pos),
         "wheel_vel": _finite_list(state.wheel_vel),
         "obs": {
@@ -591,6 +604,15 @@ def state_to_snapshot(
         },
         "obs_had_nonfinite_input": bool(obs_result.had_nonfinite_input),
     }
+
+
+def _wrap_angle_np(angle: np.ndarray) -> np.ndarray:
+    return np.remainder(np.asarray(angle, dtype=np.float64) + np.pi, 2.0 * np.pi) - np.pi
+
+
+def _policy_active_angles_np(joint_pos: np.ndarray) -> np.ndarray:
+    q = np.asarray(joint_pos, dtype=np.float64).reshape(4)
+    return _wrap_angle_np(np.asarray([q[0] - q[1], q[3] - q[2]], dtype=np.float64))
 
 
 def latency_to_snapshot(latency: PolicyLatencyFrame) -> dict[str, Any]:
@@ -634,7 +656,8 @@ class MujocoRenderWorker:
         self.jpeg_quality = int(np.clip(jpeg_quality, 30, 95))
         self.show_visual_model = bool(show_visual_model)
         self.show_collision_model = bool(show_collision_model)
-        self.joint_frames = {key: bool(show_joint_frames) for key, _, _ in _DEBUG_JOINTS}
+        self.use_gravity_attitude = _DEFAULT_USE_GRAVITY_ATTITUDE
+        self.joint_frames = {key: bool(show_joint_frames) for key in _DEBUG_FRAME_KEYS}
         self.camera_azimuth = _DEFAULT_CAMERA_AZIMUTH
         self.camera_elevation = _DEFAULT_CAMERA_ELEVATION
         self.camera_distance = _DEFAULT_CAMERA_DISTANCE
@@ -655,6 +678,8 @@ class MujocoRenderWorker:
             "jpeg_quality": self.jpeg_quality,
             "show_visual_model": self.show_visual_model,
             "show_collision_model": self.show_collision_model,
+            "use_gravity_attitude": self.use_gravity_attitude,
+            "attitude_source": self._attitude_source_locked(),
             "show_joint_frames": any(self.joint_frames.values()),
             "joint_frames": dict(self.joint_frames),
             "camera": self._camera_dict_locked(),
@@ -702,6 +727,8 @@ class MujocoRenderWorker:
                 "enabled": True,
                 "show_visual_model": self.show_visual_model,
                 "show_collision_model": self.show_collision_model,
+                "use_gravity_attitude": self.use_gravity_attitude,
+                "attitude_source": self._attitude_source_locked(),
                 "show_joint_frames": any(self.joint_frames.values()),
                 "joint_frames": dict(self.joint_frames),
                 "camera": self._camera_dict_locked(),
@@ -713,6 +740,7 @@ class MujocoRenderWorker:
         show_visual_model: bool | None = None,
         show_collision_model: bool | None = None,
         joint_frames: dict[str, bool] | None = None,
+        use_gravity_attitude: bool | None = None,
         camera_azimuth: float | None = None,
         camera_elevation: float | None = None,
         camera_distance: float | None = None,
@@ -726,16 +754,20 @@ class MujocoRenderWorker:
                 for key, value in joint_frames.items():
                     if key in self.joint_frames:
                         self.joint_frames[key] = bool(value)
+            if use_gravity_attitude is not None:
+                self.use_gravity_attitude = bool(use_gravity_attitude)
             if camera_azimuth is not None:
                 self.camera_azimuth = float(camera_azimuth) % 360.0
             if camera_elevation is not None:
-                self.camera_elevation = float(np.clip(camera_elevation, -80.0, 25.0))
+                self.camera_elevation = float(np.clip(camera_elevation, -80.0, 35.0))
             if camera_distance is not None:
                 self.camera_distance = float(np.clip(camera_distance, 0.45, 3.0))
             self.latest_info.update(
                 {
                     "show_visual_model": self.show_visual_model,
                     "show_collision_model": self.show_collision_model,
+                    "use_gravity_attitude": self.use_gravity_attitude,
+                    "attitude_source": self._attitude_source_locked(),
                     "show_joint_frames": any(self.joint_frames.values()),
                     "joint_frames": dict(self.joint_frames),
                     "camera": self._camera_dict_locked(),
@@ -746,21 +778,27 @@ class MujocoRenderWorker:
                 "enabled": True,
                 "show_visual_model": self.show_visual_model,
                 "show_collision_model": self.show_collision_model,
+                "use_gravity_attitude": self.use_gravity_attitude,
+                "attitude_source": self._attitude_source_locked(),
                 "show_joint_frames": any(self.joint_frames.values()),
                 "joint_frames": dict(self.joint_frames),
                 "camera": self._camera_dict_locked(),
             }
 
-    def _settings_tuple(self) -> tuple[bool, bool, dict[str, bool], float, float, float]:
+    def _settings_tuple(self) -> tuple[bool, bool, dict[str, bool], bool, float, float, float]:
         with self.lock:
             return (
                 self.show_visual_model,
                 self.show_collision_model,
                 dict(self.joint_frames),
+                self.use_gravity_attitude,
                 self.camera_azimuth,
                 self.camera_elevation,
                 self.camera_distance,
             )
+
+    def _attitude_source_locked(self) -> str:
+        return "gravity" if self.use_gravity_attitude else "gyro"
 
     def _camera_dict_locked(self) -> dict[str, float]:
         return {
@@ -803,6 +841,7 @@ class MujocoRenderWorker:
                         show_visual_model,
                         show_collision_model,
                         joint_frames,
+                        use_gravity_attitude,
                         camera_azimuth,
                         camera_elevation,
                         camera_distance,
@@ -811,6 +850,7 @@ class MujocoRenderWorker:
                         show_visual_model=show_visual_model,
                         show_collision_model=show_collision_model,
                         joint_frames=joint_frames,
+                        use_gravity_attitude=use_gravity_attitude,
                         camera_azimuth=camera_azimuth,
                         camera_elevation=camera_elevation,
                         camera_distance=camera_distance,
@@ -841,6 +881,8 @@ class MujocoRenderWorker:
                                 "backend": renderer.backend_info(),
                                 "show_visual_model": show_visual_model,
                                 "show_collision_model": show_collision_model,
+                                "use_gravity_attitude": use_gravity_attitude,
+                                "attitude_source": ("gravity" if use_gravity_attitude else "gyro"),
                                 "show_joint_frames": any(joint_frames.values()),
                                 "joint_frames": dict(joint_frames),
                                 "camera": {
@@ -900,7 +942,13 @@ class MujocoStateRenderer:
             )
         }
         self.debug_joint_ids = {key: self._joint_id(name) for key, name, _ in _DEBUG_JOINTS}
-        self.enabled_joint_frames = {key: False for key, _, _ in _DEBUG_JOINTS}
+        self.debug_body_ids = {key: self._body_id(name) for key, name, _ in _DEBUG_BODY_FRAMES}
+        self.enabled_joint_frames = {key: False for key in _DEBUG_FRAME_KEYS}
+        self.use_gravity_attitude = _DEFAULT_USE_GRAVITY_ATTITUDE
+        self._gyro_quat = np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+        self._gyro_last_tick_ms: int | None = None
+        self._gyro_last_seq: int | None = None
+        self._gyro_reset_pending = True
         self._backend_info: dict[str, str | None] | None = None
 
     def set_render_settings(
@@ -909,6 +957,7 @@ class MujocoStateRenderer:
         show_visual_model: bool,
         show_collision_model: bool,
         joint_frames: dict[str, bool],
+        use_gravity_attitude: bool,
         camera_azimuth: float,
         camera_elevation: float,
         camera_distance: float,
@@ -920,8 +969,12 @@ class MujocoStateRenderer:
             self.scene_option.flags[self.mujoco.mjtVisFlag.mjVIS_JOINT] = 0
             self.scene_option.label = self.mujoco.mjtLabel.mjLABEL_NONE
             self.enabled_joint_frames = {
-                key: bool(joint_frames.get(key, False)) for key, _, _ in _DEBUG_JOINTS
+                key: bool(joint_frames.get(key, False)) for key in _DEBUG_FRAME_KEYS
             }
+            next_use_gravity_attitude = bool(use_gravity_attitude)
+            if next_use_gravity_attitude != self.use_gravity_attitude:
+                self._gyro_reset_pending = True
+            self.use_gravity_attitude = next_use_gravity_attitude
             self.camera.azimuth = float(camera_azimuth)
             self.camera.elevation = float(camera_elevation)
             self.camera.distance = float(camera_distance)
@@ -983,7 +1036,27 @@ class MujocoStateRenderer:
             return None
         return int(joint_id)
 
+    def _body_id(self, name: str) -> int | None:
+        body_id = self.mujoco.mj_name2id(
+            self.model,
+            self.mujoco.mjtObj.mjOBJ_BODY,
+            name,
+        )
+        if body_id < 0:
+            return None
+        return int(body_id)
+
     def _draw_joint_frames(self) -> None:
+        for key, _, _ in _DEBUG_BODY_FRAMES:
+            if not self.enabled_joint_frames.get(key, False):
+                continue
+            body_id = self.debug_body_ids.get(key)
+            if body_id is None:
+                continue
+            anchor = np.asarray(self.data.xpos[body_id], dtype=np.float64)
+            mat = np.asarray(self.data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+            self._draw_frame_axes(anchor, mat)
+
         for key, _, _ in _DEBUG_JOINTS:
             if not self.enabled_joint_frames.get(key, False):
                 continue
@@ -993,10 +1066,13 @@ class MujocoStateRenderer:
             anchor = np.asarray(self.data.xanchor[joint_id], dtype=np.float64)
             body_id = int(self.model.jnt_bodyid[joint_id])
             mat = np.asarray(self.data.xmat[body_id], dtype=np.float64).reshape(3, 3)
-            for axis_idx, rgba in enumerate(_JOINT_FRAME_COLORS):
-                axis = mat[:, axis_idx]
-                end = anchor + axis * _JOINT_FRAME_AXIS_LENGTH
-                self._add_user_arrow(anchor, end, rgba)
+            self._draw_frame_axes(anchor, mat)
+
+    def _draw_frame_axes(self, anchor: np.ndarray, mat: np.ndarray) -> None:
+        for axis_idx, rgba in enumerate(_JOINT_FRAME_COLORS):
+            axis = mat[:, axis_idx]
+            end = anchor + axis * _JOINT_FRAME_AXIS_LENGTH
+            self._add_user_arrow(anchor, end, rgba)
 
     def _add_user_arrow(
         self,
@@ -1045,7 +1121,7 @@ class MujocoStateRenderer:
                 0.0,
                 float(getattr(_ROBOT_CFG, "default_base_height", 0.22)),
             )
-            self.data.qpos[3:7] = _quat_from_projected_gravity(state.projected_gravity)
+            self.data.qpos[3:7] = self._base_quat_for_state(state)
 
         policy_pos = np.asarray(state.joint_pos, dtype=np.float64).reshape(4)
         output_pos = _policy_to_output_pos_np(policy_pos)
@@ -1063,42 +1139,50 @@ class MujocoStateRenderer:
             if addr is not None and addr < self.model.nq:
                 self.data.qpos[addr] = value
 
+    def _base_quat_for_state(self, state: PolicyStateFrame) -> np.ndarray:
+        gravity_quat = _quat_from_projected_gravity(state.projected_gravity)
+        if self.use_gravity_attitude:
+            self._reset_gyro_integrator(gravity_quat, state)
+            return gravity_quat
+
+        if self._gyro_reset_pending:
+            self._reset_gyro_integrator(gravity_quat, state)
+            self._gyro_reset_pending = False
+            return self._gyro_quat.copy()
+
+        if self._gyro_last_seq == int(state.seq):
+            return self._gyro_quat.copy()
+
+        dt_s = self._gyro_dt_s(state)
+        self._gyro_quat = _quat_integrate_body_omega(
+            self._gyro_quat,
+            np.asarray(state.base_ang_vel_body, dtype=np.float64),
+            dt_s,
+        )
+        self._gyro_last_tick_ms = int(state.tick_ms)
+        self._gyro_last_seq = int(state.seq)
+        return self._gyro_quat.copy()
+
+    def _reset_gyro_integrator(self, quat: np.ndarray, state: PolicyStateFrame) -> None:
+        self._gyro_quat = _quat_normalized(quat)
+        self._gyro_last_tick_ms = int(state.tick_ms)
+        self._gyro_last_seq = int(state.seq)
+
+    def _gyro_dt_s(self, state: PolicyStateFrame) -> float:
+        tick_ms = int(state.tick_ms)
+        seq = int(state.seq)
+        dt_s: float
+        if self._gyro_last_tick_ms is not None and tick_ms > self._gyro_last_tick_ms:
+            dt_s = float(tick_ms - self._gyro_last_tick_ms) / 1000.0
+        elif self._gyro_last_seq is not None and seq > self._gyro_last_seq:
+            dt_s = float(seq - self._gyro_last_seq) * float(_ROBOT_CFG.control_dt)
+        else:
+            dt_s = float(_ROBOT_CFG.control_dt)
+        return float(np.clip(dt_s, 0.0, _MAX_GYRO_INTEGRATION_DT_S))
+
 
 def _policy_to_output_pos_np(policy_pos: np.ndarray) -> np.ndarray:
-    arr = np.asarray(policy_pos, dtype=np.float64).reshape(4).copy()
-    lower, upper = _ROBOT_CFG.active_rod_angle_limits
-    left_alpha = np.clip(arr[0] - arr[1], float(lower), float(upper))
-    right_alpha = np.clip(arr[3] - arr[2], float(lower), float(upper))
-    arr[1] = _output_knee_from_active_angle_np(left_alpha, float(lower), float(upper))
-    arr[3] = -_output_knee_from_active_angle_np(right_alpha, float(lower), float(upper))
-    return arr
-
-
-def _output_knee_from_active_angle_np(active_angle: float, lower: float, upper: float) -> float:
-    alpha = float(np.clip(active_angle, lower, upper))
-    beta = -alpha
-    cos_b = math.cos(beta)
-    sin_b = math.sin(beta)
-    px = cos_b * _DRIVE_X + sin_b * _DRIVE_Z
-    pz = -sin_b * _DRIVE_X + cos_b * _DRIVE_Z
-
-    dx = px - _KNEE_X
-    dz = pz - _KNEE_Z
-    dist = math.sqrt(max(dx * dx + dz * dz, 1.0e-12))
-    ex = dx / dist
-    ez = dz / dist
-
-    along = (_CALF_LEN**2 - _COUPLER_LEN**2 + dist * dist) / (2.0 * dist)
-    height = math.sqrt(max(_CALF_LEN**2 - along * along, 0.0))
-    cx = _KNEE_X + along * ex - height * ez
-    cz = _KNEE_Z + along * ez + height * ex
-
-    phi = math.atan2(cz - _KNEE_Z, cx - _KNEE_X)
-    return _wrap_angle(_CALF_ZERO_ANGLE - phi)
-
-
-def _wrap_angle(angle: float) -> float:
-    return math.remainder(float(angle), 2.0 * math.pi)
+    return np.asarray(policy_to_output_pos_np(np.asarray(policy_pos, dtype=np.float64))).reshape(4)
 
 
 def _quat_from_projected_gravity(projected_gravity: tuple[float, float, float]) -> np.ndarray:
@@ -1138,6 +1222,49 @@ def _quat_between_vectors(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
         dtype=np.float64,
     )
     return quat / max(float(np.linalg.norm(quat)), 1.0e-12)
+
+
+def _quat_normalized(quat: np.ndarray) -> np.ndarray:
+    arr = np.nan_to_num(np.asarray(quat, dtype=np.float64).reshape(4), nan=0.0)
+    norm = float(np.linalg.norm(arr))
+    if norm < 1.0e-12:
+        return np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+    if arr[0] < 0.0:
+        arr = -arr
+    return arr / norm
+
+
+def _quat_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    lw, lx, ly, lz = np.asarray(left, dtype=np.float64).reshape(4)
+    rw, rx, ry, rz = np.asarray(right, dtype=np.float64).reshape(4)
+    return np.asarray(
+        (
+            lw * rw - lx * rx - ly * ry - lz * rz,
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+        ),
+        dtype=np.float64,
+    )
+
+
+def _quat_integrate_body_omega(quat: np.ndarray, omega_body: np.ndarray, dt_s: float) -> np.ndarray:
+    omega = np.nan_to_num(np.asarray(omega_body, dtype=np.float64).reshape(3), nan=0.0)
+    angle = float(np.linalg.norm(omega)) * max(float(dt_s), 0.0)
+    if angle < 1.0e-12:
+        return _quat_normalized(quat)
+    axis = omega / max(float(np.linalg.norm(omega)), 1.0e-12)
+    half = 0.5 * angle
+    delta = np.asarray(
+        (
+            math.cos(half),
+            axis[0] * math.sin(half),
+            axis[1] * math.sin(half),
+            axis[2] * math.sin(half),
+        ),
+        dtype=np.float64,
+    )
+    return _quat_normalized(_quat_multiply(quat, delta))
 
 
 def _encode_png_rgb(rgb: np.ndarray) -> bytes:
@@ -1202,10 +1329,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Web visualizer for STM32 CDC state frames.")
     parser.add_argument("--port", default="auto", help="USB CDC device path or auto.")
     parser.add_argument("--baudrate", type=int, default=921600, help="CDC baudrate hint.")
-    parser.add_argument("--host", default="0.0.0.0", help="HTTP bind address.")
-    parser.add_argument("--viewer-port", type=int, default=8081, help="HTTP viewer port.")
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind address.")
+    parser.add_argument("--viewer-port", type=int, default=8097, help="HTTP viewer port.")
     parser.add_argument("--synthetic", action="store_true", help="Use animated synthetic state.")
-    parser.add_argument("--remote-url", default="", help="Remote CDC visualizer base URL.")
+    parser.add_argument(
+        "--local-cdc",
+        action="store_true",
+        help="Read USB CDC directly instead of the default NX relay.",
+    )
+    parser.add_argument(
+        "--remote-url",
+        default=_DEFAULT_NX_RELAY_URL,
+        help="Remote CDC visualizer base URL.",
+    )
     parser.add_argument(
         "--remote-timeout-s", type=float, default=10.0, help="Remote stream timeout."
     )
@@ -1245,23 +1381,23 @@ def main(argv: list[str] | None = None) -> int:
     shared = SharedSnapshot()
     stop_event = threading.Event()
 
-    if args.remote_url:
+    if args.synthetic:
+        reader = threading.Thread(
+            target=run_synthetic_reader,
+            kwargs={
+                "shared": shared,
+                "rate_hz": float(args.rate_hz),
+                "stop_event": stop_event,
+            },
+            daemon=True,
+        )
+    elif not args.local_cdc and args.remote_url:
         reader = threading.Thread(
             target=run_remote_reader,
             kwargs={
                 "shared": shared,
                 "remote_url": str(args.remote_url),
                 "timeout_s": float(args.remote_timeout_s),
-                "stop_event": stop_event,
-            },
-            daemon=True,
-        )
-    elif args.synthetic:
-        reader = threading.Thread(
-            target=run_synthetic_reader,
-            kwargs={
-                "shared": shared,
-                "rate_hz": float(args.rate_hz),
                 "stop_event": stop_event,
             },
             daemon=True,
@@ -1608,14 +1744,17 @@ INDEX_HTML = r"""<!doctype html>
         <div class="pill">hz <strong id="hudHz">-</strong></div>
         <div class="pill">source <strong id="hudSource">-</strong></div>
         <div class="pill">output <strong id="hudOutput">-</strong></div>
+        <div class="pill">att <strong id="hudAttitude">gravity</strong></div>
         <div class="pill">render <strong id="hudRender">canvas</strong></div>
       </div>
       <div id="viewControls">
         <div class="controlCluster">
           <label class="toggle"><input id="visualToggle" type="checkbox" checked><span>Visual</span></label>
           <label class="toggle"><input id="collisionToggle" type="checkbox"><span>Collision</span></label>
+          <label class="toggle"><input id="gravityAttitudeToggle" type="checkbox" checked><span>Gravity</span></label>
         </div>
         <div class="controlCluster" id="jointToggleGroup">
+          <label class="toggle small"><input class="jointToggle" data-joint="base" type="checkbox"><span>base_link</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="lf0" type="checkbox"><span>LF0</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="lf1" type="checkbox"><span>LF1</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="lw" type="checkbox"><span>LW</span></label>
@@ -1665,11 +1804,15 @@ const viewWrap = document.getElementById("viewWrap");
 const renderImg = document.getElementById("mjcfView");
 const visualToggle = document.getElementById("visualToggle");
 const collisionToggle = document.getElementById("collisionToggle");
+const gravityAttitudeToggle = document.getElementById("gravityAttitudeToggle");
 const jointToggles = Array.from(document.querySelectorAll(".jointToggle"));
 const labels = ["LF", "LB", "RF", "RB"];
+const CAMERA_SEND_INTERVAL_MS = 16;
 let snapshot = null;
 let mjcfRenderOk = false;
 let renderSettingsTimer = null;
+let renderSettingsInFlight = false;
+let renderSettingsDirty = false;
 let mjcfPointerId = null;
 let mjcfLastPointer = [0, 0];
 let mjcfCamera = { azimuth: 135, elevation: -20, distance: 1.25 };
@@ -1683,37 +1826,22 @@ renderImg.addEventListener("load", () => {
   mjcfRenderOk = true;
   renderImg.style.opacity = "1";
   canvas.style.opacity = "0";
+  canvas.style.pointerEvents = "none";
   document.getElementById("hudRender").textContent = "mjcf";
 });
 renderImg.addEventListener("error", () => {
   mjcfRenderOk = false;
   renderImg.style.opacity = "0";
   canvas.style.opacity = "1";
+  canvas.style.pointerEvents = "auto";
   document.getElementById("hudRender").textContent = "canvas";
 });
 
-async function fetchRenderSettings(params=null) {
-  const url = params ? `/render_settings?${params.toString()}` : "/render_settings";
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) return;
-  const settings = await response.json();
-  if (!settings.enabled) return;
-  visualToggle.checked = !!settings.show_visual_model;
-  collisionToggle.checked = !!settings.show_collision_model;
-  const jointFrames = settings.joint_frames || {};
-  jointToggles.forEach(input => {
-    input.checked = !!jointFrames[input.dataset.joint];
-  });
-  if (settings.camera) {
-    mjcfCamera.azimuth = Number(settings.camera.azimuth ?? mjcfCamera.azimuth);
-    mjcfCamera.elevation = Number(settings.camera.elevation ?? mjcfCamera.elevation);
-    mjcfCamera.distance = Number(settings.camera.distance ?? mjcfCamera.distance);
-  }
-}
-async function updateRenderSettings() {
+function renderSettingsParams() {
   const params = new URLSearchParams({
     visual: visualToggle.checked ? "1" : "0",
     collision: collisionToggle.checked ? "1" : "0",
+    gravity_attitude: gravityAttitudeToggle.checked ? "1" : "0",
     camera_azimuth: String(mjcfCamera.azimuth),
     camera_elevation: String(mjcfCamera.elevation),
     camera_distance: String(mjcfCamera.distance),
@@ -1721,21 +1849,71 @@ async function updateRenderSettings() {
   jointToggles.forEach(input => {
     params.set(`joint_${input.dataset.joint}`, input.checked ? "1" : "0");
   });
+  return params;
+}
+function applyRenderSettings(settings, syncCamera=true) {
+  if (!settings.enabled) return;
+  visualToggle.checked = !!settings.show_visual_model;
+  collisionToggle.checked = !!settings.show_collision_model;
+  gravityAttitudeToggle.checked = !!settings.use_gravity_attitude;
+  updateAttitudeLabel();
+  const jointFrames = settings.joint_frames || {};
+  jointToggles.forEach(input => {
+    input.checked = !!jointFrames[input.dataset.joint];
+  });
+  if (syncCamera && settings.camera) {
+    mjcfCamera.azimuth = Number(settings.camera.azimuth ?? mjcfCamera.azimuth);
+    mjcfCamera.elevation = Number(settings.camera.elevation ?? mjcfCamera.elevation);
+    mjcfCamera.distance = Number(settings.camera.distance ?? mjcfCamera.distance);
+  }
+}
+function updateAttitudeLabel() {
+  document.getElementById("hudAttitude").textContent = gravityAttitudeToggle.checked ? "gravity" : "gyro";
+}
+async function fetchRenderSettings(params=null, syncCamera=true) {
+  const url = params ? `/render_settings?${params.toString()}` : "/render_settings";
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) return;
+  applyRenderSettings(await response.json(), syncCamera);
+}
+async function updateRenderSettings() {
   try {
-    await fetchRenderSettings(params);
+    await fetchRenderSettings(renderSettingsParams(), true);
   } catch (err) {
     document.getElementById("err").textContent = String(err);
   }
 }
 function scheduleRenderSettingsUpdate() {
+  renderSettingsDirty = true;
+  if (renderSettingsInFlight) return;
   if (renderSettingsTimer !== null) return;
   renderSettingsTimer = window.setTimeout(() => {
     renderSettingsTimer = null;
-    updateRenderSettings();
-  }, 24);
+    flushRenderSettingsUpdate();
+  }, CAMERA_SEND_INTERVAL_MS);
+}
+async function flushRenderSettingsUpdate() {
+  if (!renderSettingsDirty || renderSettingsInFlight) return;
+  renderSettingsDirty = false;
+  renderSettingsInFlight = true;
+  try {
+    const response = await fetch(`/render_settings?${renderSettingsParams().toString()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`render settings ${response.status}`);
+  } catch (err) {
+    document.getElementById("err").textContent = String(err);
+  } finally {
+    renderSettingsInFlight = false;
+    if (renderSettingsDirty) scheduleRenderSettingsUpdate();
+  }
 }
 visualToggle.addEventListener("change", updateRenderSettings);
 collisionToggle.addEventListener("change", updateRenderSettings);
+gravityAttitudeToggle.addEventListener("change", () => {
+  updateAttitudeLabel();
+  updateRenderSettings();
+});
 jointToggles.forEach(input => input.addEventListener("change", updateRenderSettings));
 fetchRenderSettings().catch(() => {});
 
@@ -1750,29 +1928,39 @@ window.addEventListener("resize", resize);
 resize();
 
 viewWrap.addEventListener("pointerdown", ev => {
+  if (!mjcfRenderOk) return;
   if (ev.target.closest("#viewControls")) return;
+  if (ev.button !== 0) return;
+  ev.preventDefault();
   mjcfPointerId = ev.pointerId;
   mjcfLastPointer = [ev.clientX, ev.clientY];
   viewWrap.classList.add("dragging");
   viewWrap.setPointerCapture(ev.pointerId);
 });
 viewWrap.addEventListener("pointermove", ev => {
-  if (mjcfPointerId !== ev.pointerId) return;
-  const dx = ev.clientX - mjcfLastPointer[0];
-  const dy = ev.clientY - mjcfLastPointer[1];
-  mjcfCamera.azimuth = (mjcfCamera.azimuth - dx * 0.22 + 360) % 360;
-  mjcfCamera.elevation = clamp(mjcfCamera.elevation + dy * 0.16, -80, 25);
-  mjcfLastPointer = [ev.clientX, ev.clientY];
+  if (!mjcfRenderOk || mjcfPointerId !== ev.pointerId) return;
+  ev.preventDefault();
+  const events = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [ev];
+  for (const item of events) {
+    const dx = item.clientX - mjcfLastPointer[0];
+    const dy = item.clientY - mjcfLastPointer[1];
+    mjcfCamera.azimuth = (mjcfCamera.azimuth - dx * 0.28 + 360) % 360;
+    mjcfCamera.elevation = clamp(mjcfCamera.elevation + dy * 0.20, -80, 35);
+    mjcfLastPointer = [item.clientX, item.clientY];
+  }
   scheduleRenderSettingsUpdate();
 });
 function endMjcfDrag(ev) {
   if (mjcfPointerId !== ev.pointerId) return;
+  ev.preventDefault();
   mjcfPointerId = null;
   viewWrap.classList.remove("dragging");
+  scheduleRenderSettingsUpdate();
 }
 viewWrap.addEventListener("pointerup", endMjcfDrag);
 viewWrap.addEventListener("pointercancel", endMjcfDrag);
 viewWrap.addEventListener("wheel", ev => {
+  if (!mjcfRenderOk) return;
   if (ev.target.closest("#viewControls")) return;
   ev.preventDefault();
   mjcfCamera.distance = clamp(mjcfCamera.distance * Math.exp(ev.deltaY * 0.0011), 0.45, 3.0);
@@ -1780,12 +1968,13 @@ viewWrap.addEventListener("wheel", ev => {
 }, { passive: false });
 
 canvas.addEventListener("mousedown", ev => {
+  if (mjcfRenderOk) return;
   mouseDown = true;
   lastMouse = [ev.clientX, ev.clientY];
 });
 window.addEventListener("mouseup", () => mouseDown = false);
 window.addEventListener("mousemove", ev => {
-  if (!mouseDown) return;
+  if (mjcfRenderOk || !mouseDown) return;
   const dx = ev.clientX - lastMouse[0];
   const dy = ev.clientY - lastMouse[1];
   camYaw += dx * 0.006;
@@ -1793,6 +1982,7 @@ window.addEventListener("mousemove", ev => {
   lastMouse = [ev.clientX, ev.clientY];
 });
 canvas.addEventListener("wheel", ev => {
+  if (mjcfRenderOk) return;
   ev.preventDefault();
   camScale *= Math.exp(-ev.deltaY * 0.001);
   camScale = clamp(camScale, 350, 1800);
@@ -1850,11 +2040,19 @@ function updatePanel(s) {
   ]);
 
   setGrid("statusGrid", [
+    ["attitude_source", gravityAttitudeToggle.checked ? "gravity" : "gyro"],
     ["tick_ms", s.tick_ms],
     ["rc_switch_r", s.rc_switch_r],
     ["output_enabled", s.output_enabled],
     ["base_ang_vel", arr(s.base_ang_vel)],
     ["projected_g", arr(s.projected_gravity)],
+    ["target_joint_pos", arr(s.target_joint_pos)],
+    ["joint_pos_error", arr(s.joint_pos_error)],
+    ["joint_active", arr(s.joint_active)],
+    ["target_active", arr(s.target_active)],
+    ["hip_torque", arr(s.hip_torque)],
+    ["wheel_torque", arr(s.wheel_torque)],
+    ["wheel_motor_torque", arr(s.wheel_motor_torque)],
   ]);
   setBars("jointBars", labels, s.joint_pos || [], Math.PI);
   setBars("jointVelBars", labels, s.joint_vel || [], 8.0);
@@ -2027,7 +2225,7 @@ function draw() {
     return;
   }
 
-  const q = snapshot.joint_pos || [0, 0, 0, 0];
+  const q = snapshot.render_joint_pos || snapshot.joint_pos || [0, 0, 0, 0];
   const wp = snapshot.wheel_pos || [0, 0];
   const g = snapshot.projected_gravity || [0, 0, -1];
   const body = [];

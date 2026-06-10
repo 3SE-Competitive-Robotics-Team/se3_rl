@@ -8,7 +8,15 @@ import math
 from pathlib import Path
 from typing import Any
 
-from se3_sim2sim.config import PolicyConfig, RobotConfig, RunConfig, ViewerConfig, YawPidConfig
+from se3_sim2sim.config import (
+    SIM_MODEL_VARIANT_CHOICES,
+    PolicyConfig,
+    RobotConfig,
+    RunConfig,
+    ViewerConfig,
+    YawPidConfig,
+    model_path_for_variant,
+)
 from se3_sim2sim.course import CourseConfig, CourseType
 from se3_sim2sim.workflow import run_sim2sim
 
@@ -26,6 +34,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="保存 JSON/Rerun 的目录。",
     )
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--model-variant",
+        choices=SIM_MODEL_VARIANT_CHOICES,
+        default="closedchain",
+        help="选择 sim2sim 内置 MJCF 模型变体；closedchain 会直接用真实闭链模型验证。",
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help="直接指定 MJCF 路径；设置后覆盖 --model-variant。",
+    )
     parser.add_argument("--record-rerun", action="store_true", help="保存 .rrd 回放。")
     parser.add_argument(
         "--fail-on-threshold",
@@ -151,7 +171,9 @@ def _base_cfg(
     """构造共享 sim2sim 配置。"""
     return RunConfig(
         robot=RobotConfig(
+            model_path=_model_path_from_args(args),
             yaw_pid=YawPidConfig(enabled=False),
+            height_conditioned_action_default=True,
         ),
         policy=PolicyConfig(checkpoint=checkpoint, device=str(args.device)),
         viewer=ViewerConfig(
@@ -165,6 +187,13 @@ def _base_cfg(
         print_every=int(args.print_every),
         json_output=json_output,
     )
+
+
+def _model_path_from_args(args: argparse.Namespace) -> Path:
+    """解析评估使用的 MJCF 路径。"""
+    if args.model is not None:
+        return args.model
+    return model_path_for_variant(str(args.model_variant))
 
 
 def _check_selfright(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:

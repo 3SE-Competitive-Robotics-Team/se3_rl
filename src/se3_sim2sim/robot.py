@@ -11,10 +11,10 @@ from se3_shared import (
     FOURBAR_SURROGATE_MARKER,
     ActionDelayConfig,
     JointGroup,
+    PolicyActionDecoder,
     Termination,
     output_to_policy_pos_np,
     output_to_policy_vel_np,
-    policy_default_from_height_np,
     policy_to_output_torque_np,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -29,6 +29,7 @@ from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
 _RESET_FLOOR_CLEARANCE_M = 0.01
+_BASE_CONTACT_PENETRATION_M = 0.001
 
 
 def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
@@ -145,12 +146,19 @@ class WheelLeggedRobot:
             fourbar_surrogate=self.fourbar_surrogate,
         )
         self.action_scale = as_float64(cfg.action_scale)
-        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
-        self.active_rod_target_lower = float(lower) - float(
-            cfg.active_rod_target_lower_preload_margin
+        self.active_rod_action_semantics = (
+            self.policy_joint_names == JointGroup.POLICY_JOINT_NAMES or self.fourbar_surrogate
         )
-        self.active_rod_target_upper = float(upper) + float(
-            cfg.active_rod_target_upper_preload_margin
+        self.action_decoder = PolicyActionDecoder(
+            robot_cfg=_SHARED_ROBOT,
+            action_scale=self.action_scale,
+            height_conditioned_action_default=(
+                bool(cfg.height_conditioned_action_default) and self.active_rod_action_semantics
+            ),
+            active_rod_semantics=self.active_rod_action_semantics,
+            active_rod_target_lower_preload_margin=cfg.active_rod_target_lower_preload_margin,
+            active_rod_target_upper_preload_margin=cfg.active_rod_target_upper_preload_margin,
+            dtype=np.float64,
         )
         self.torque_limits = as_float64(cfg.torque_limits)
         self.motor_actuator_names = tuple(f"{name}_motor" for name in self.policy_joint_names)
@@ -190,6 +198,7 @@ class WheelLeggedRobot:
             dtype=np.float64,
         )
         self.step_count = 0
+        self.pre_policy_settle_info: dict[str, object] = {"enabled": False}
         self.reset()
 
     def reset(self, *, fixed: bool = True, randomize_root: bool = False) -> np.ndarray:
@@ -227,7 +236,73 @@ class WheelLeggedRobot:
         if self.cfg.yaw_pid.enabled:
             self.command[1] = yaw_rate_cmd
         self.step_count = 0
+        self.pre_policy_settle_info = {"enabled": False}
         return self.observation()
+
+    def settle_base_before_policy(
+        self,
+        *,
+        max_s: float,
+        contact_steps: int,
+    ) -> dict[str, object]:
+        """policy 推理前用零控制推进物理，直到 base_link 连续接地。"""
+        base_clearance_before = float(self._min_collision_geom_z_for(self._base_geom_ids))
+        base_snap_down_m = 0.0
+        if self._base_geom_ids and base_clearance_before > -_BASE_CONTACT_PENETRATION_M:
+            base_snap_down_m = base_clearance_before + _BASE_CONTACT_PENETRATION_M
+            self.data.qpos[2] -= base_snap_down_m
+            mujoco.mj_forward(self.model, self.data)
+            self._refresh_state()
+        base_clearance_after_snap = float(self._min_collision_geom_z_for(self._base_geom_ids))
+        max_steps = max(0, round(float(max_s) / self.sim_dt))
+        required_contact_steps = max(1, int(contact_steps))
+        consecutive_contact_steps = 0
+        steps = 0
+        base_touching = bool(self._base_geom_ids) and base_clearance_after_snap <= 0.0
+        base_contact = bool(self._ground_contact_state()["base_contact"])
+        if max_steps > 0:
+            for _ in range(max_steps + 1):
+                contact = self._ground_contact_state()
+                base_contact = bool(contact["base_contact"])
+                if base_contact:
+                    consecutive_contact_steps += 1
+                    if consecutive_contact_steps >= required_contact_steps:
+                        break
+                else:
+                    consecutive_contact_steps = 0
+                if steps >= max_steps:
+                    break
+                self.data.ctrl[:] = 0.0
+                mujoco.mj_step(self.model, self.data)
+                steps += 1
+                self._refresh_state()
+
+        settle_time_s = float(steps * self.sim_dt)
+        info = {
+            "enabled": True,
+            "success": bool(base_touching or consecutive_contact_steps >= required_contact_steps),
+            "steps": int(steps),
+            "time_s": settle_time_s,
+            "base_touching": bool(base_touching),
+            "base_contact": bool(base_contact),
+            "base_clearance_before_snap": base_clearance_before,
+            "base_snap_down_m": float(base_snap_down_m),
+            "base_clearance_after_snap": base_clearance_after_snap,
+            "base_clearance": float(self._min_collision_geom_z_for(self._base_geom_ids)),
+            "required_contact_steps": int(required_contact_steps),
+            "consecutive_contact_steps": int(consecutive_contact_steps),
+        }
+        self.pre_policy_settle_info = info
+        self.data.time = 0.0
+        self.step_count = 0
+        self.last_action.fill(0.0)
+        self.last_applied_action.fill(0.0)
+        self.last_policy_action.fill(0.0)
+        self.last_clipped_policy_action.fill(0.0)
+        self.action_fifo.fill(0.0)
+        self.last_ctrl.fill(0.0)
+        self._refresh_state()
+        return info
 
     def update_yaw_command(self) -> float:
         """按当前 yaw 更新 policy command 中的 yaw 维度。"""
@@ -618,6 +693,26 @@ class WheelLeggedRobot:
             if jid < 0:
                 continue
             self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
+        if self.cfg.initial_leg_joint_pos is None:
+            return
+        initial_leg_pos = np.asarray(self.cfg.initial_leg_joint_pos, dtype=np.float64).reshape(-1)
+        if initial_leg_pos.shape == (2,):
+            left_front, left_back = initial_leg_pos
+            initial_leg_pos = np.asarray(
+                [left_front, left_back, left_front, left_back],
+                dtype=np.float64,
+            )
+        elif initial_leg_pos.shape != (4,):
+            raise ValueError(
+                "initial_leg_joint_pos must contain 2 mirrored or 4 policy-order values"
+            )
+        if not np.isfinite(initial_leg_pos).all():
+            raise ValueError("initial_leg_joint_pos must be finite")
+        for joint_name, value in zip(self.policy_joint_names[:4], initial_leg_pos, strict=True):
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                raise ValueError(f"missing leg joint in MJCF: {joint_name}")
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
 
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
@@ -642,11 +737,15 @@ class WheelLeggedRobot:
 
         output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
         output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
+        decoded_action = self.action_decoder.decode(
+            action,
+            command_height=float(self.command[4]),
+            fallback_default=self.default_dof_pos[JointGroup.CTRL_LEGS],
+        )
         if self.fourbar_surrogate:
             policy_pos = output_to_policy_pos_np(output_leg_pos)
             policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
-            policy_default = self._policy_action_default()
-            policy_target = self._leg_action_to_policy_target(action[:4], policy_default)
+            policy_target = decoded_action.leg_target
             policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
             policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
             policy_torque = _tn_clip(
@@ -659,8 +758,7 @@ class WheelLeggedRobot:
             leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
             leg_vel = policy_vel
         else:
-            leg_default = self._policy_action_default()
-            leg_target = self._leg_action_to_policy_target(action[:4], leg_default)
+            leg_target = decoded_action.leg_target
             leg_pos_err = leg_target - output_leg_pos
             leg_vel = output_leg_vel
             leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
@@ -673,8 +771,7 @@ class WheelLeggedRobot:
                 DM8009P.rated_torque,
             )
 
-        wheel_scale = self.action_scale[JointGroup.WHEEL_ACTUATORS]
-        wheel_vel_target = action[4:6] * wheel_scale
+        wheel_vel_target = decoded_action.wheel_vel_target
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
         wheel_torque = _tn_clip(
@@ -689,66 +786,6 @@ class WheelLeggedRobot:
         ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
         return ctrl
-
-    def _policy_action_default(self) -> np.ndarray:
-        """返回当前 leg action 零点姿态。"""
-        if self.fourbar_surrogate:
-            if self.cfg.height_conditioned_action_default:
-                return policy_default_from_height_np(float(self.command[4]), _SHARED_ROBOT).reshape(
-                    4
-                )
-            return as_float64(_SHARED_ROBOT.default_dof_pos)[JointGroup.CTRL_LEGS]
-        return self.default_dof_pos[JointGroup.CTRL_LEGS]
-
-    def _clamp_active_rod_angle_target(self, leg_target: np.ndarray) -> np.ndarray:
-        """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
-        if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES and not self.fourbar_surrogate:
-            return leg_target
-        target = np.asarray(leg_target, dtype=np.float64).copy()
-        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
-        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
-            angle = np.clip(
-                front_coef * target[front_idx] + back_coef * target[back_idx],
-                lower,
-                upper,
-            )
-            target[back_idx] = (angle - front_coef * target[front_idx]) / back_coef
-        return target
-
-    def _leg_action_to_policy_target(
-        self, leg_action: np.ndarray, policy_default: np.ndarray
-    ) -> np.ndarray:
-        """把腿部 action 解释为前杆角和主动杆夹角目标。"""
-        if self.policy_joint_names != JointGroup.POLICY_JOINT_NAMES and not self.fourbar_surrogate:
-            return np.asarray(leg_action, dtype=np.float64) * self.action_scale[
-                JointGroup.LEG_ACTUATORS
-            ] + np.asarray(policy_default, dtype=np.float64)
-
-        leg_action = np.asarray(leg_action, dtype=np.float64)
-        policy_default = np.asarray(policy_default, dtype=np.float64)
-        leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
-        target = np.empty_like(policy_default)
-        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
-        active_mid = 0.5 * (float(lower) + float(upper))
-        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
-            front_target = policy_default[front_idx] + leg_action[front_idx] * leg_scale[front_idx]
-            if self.cfg.height_conditioned_action_default:
-                active_default = (
-                    front_coef * policy_default[front_idx] + back_coef * policy_default[back_idx]
-                )
-            else:
-                active_default = active_mid
-            active_raw = active_default + leg_action[back_idx] * leg_scale[back_idx]
-            active_target = np.clip(
-                active_raw,
-                self.active_rod_target_lower,
-                self.active_rod_target_upper,
-            )
-            target[front_idx] = front_target
-            target[back_idx] = (active_target - front_coef * front_target) / back_coef
-        return target
 
     def _sample_action_delay_steps(self) -> int:
         if self.min_action_delay_steps == self.max_action_delay_steps:

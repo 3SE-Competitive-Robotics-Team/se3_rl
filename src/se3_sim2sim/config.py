@@ -14,10 +14,56 @@ from se3_shared import ActionDelayConfig, Termination
 from .course import CourseConfig
 
 ViewerMode = Literal["rerun", "none"]
+RerunGeomView = Literal["visual", "collision", "both"]
+SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
 
 _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
+_MJCF_DIR = Path("assets/robots/serialleg/mjcf")
+
+DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "fourbar-surrogate"
+SIM_MODEL_VARIANT_CHOICES: tuple[SimModelVariant, ...] = (
+    "fourbar-surrogate",
+    "closedchain",
+    "openchain",
+)
+SIM_MODEL_VARIANT_PATHS: dict[SimModelVariant, Path] = {
+    "fourbar-surrogate": _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml",
+    "closedchain": _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml",
+    "openchain": _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml",
+}
+_SIM_MODEL_VARIANT_ALIASES: dict[str, SimModelVariant] = {
+    "default": "fourbar-surrogate",
+    "fourbar": "fourbar-surrogate",
+    "fourbar-surrogate": "fourbar-surrogate",
+    "fourbar_surrogate": "fourbar-surrogate",
+    "surrogate": "fourbar-surrogate",
+    "equivalent-openchain": "fourbar-surrogate",
+    "closedchain": "closedchain",
+    "closed-chain": "closedchain",
+    "closedchain-obb": "closedchain",
+    "closedchain_obb": "closedchain",
+    "no-spring": "closedchain",
+    "no_spring": "closedchain",
+    "openchain": "openchain",
+    "open-chain": "openchain",
+}
+
+
+def normalize_model_variant(value: str) -> SimModelVariant:
+    """规范化 sim2sim 模型变体名称。"""
+    key = value.strip().lower()
+    try:
+        return _SIM_MODEL_VARIANT_ALIASES[key]
+    except KeyError as exc:
+        allowed = "/".join(SIM_MODEL_VARIANT_CHOICES)
+        raise ValueError(f"不支持的 sim2sim 模型变体 {value!r}；可选 {allowed}") from exc
+
+
+def model_path_for_variant(value: str) -> Path:
+    """返回指定 sim2sim 模型变体对应的 MJCF 路径。"""
+    return SIM_MODEL_VARIANT_PATHS[normalize_model_variant(value)]
 
 
 class YawPidConfig(BaseModel):
@@ -96,7 +142,7 @@ class RobotConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model_path: Path = Path("assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml")
+    model_path: Path = model_path_for_variant(DEFAULT_SIM_MODEL_VARIANT)
     task: str = "wheel_legged_joint_pos"
     seed: int = 0
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
@@ -124,6 +170,14 @@ class RobotConfig(BaseModel):
     """
     command_scale: tuple[float, ...] = _shared_obs.command_scale
     default_dof_pos: tuple[float, ...] = _shared_robot.default_dof_pos
+    initial_leg_joint_pos: tuple[float, ...] | None = None
+    """reset 时覆写腿部初始关节位置；2 个值表示左右同型，4 个值表示 policy 腿部顺序。"""
+    settle_base_before_policy: bool = False
+    """policy 推理前先用零控制等待 base_link 接地。"""
+    pre_policy_settle_max_s: Annotated[float, Field(ge=0.0)] = 0.0
+    """base_link 贴地后额外等待接触稳定的最大仿真时间；默认不做被动滚动。"""
+    pre_policy_settle_contact_steps: Annotated[int, Field(ge=1)] = 5
+    """判定 base_link 已接地需要连续满足的 MuJoCo step 数。"""
     action_scale: tuple[float, ...] = _shared_robot.action_scale
     action_clip: float | None = _shared_robot.action_clip
     height_conditioned_action_default: bool = False
@@ -169,6 +223,8 @@ class ViewerConfig(BaseModel):
     memory_limit: str = "1GB"
     log_every: int = 1
     follow_body: str = "base_link"
+    geom_view: RerunGeomView = "visual"
+    """Rerun 3D 场景显示的 MJCF 几何：visual 默认用于复查外观，collision 用于接触诊断。"""
 
 
 class RunConfig(BaseModel):

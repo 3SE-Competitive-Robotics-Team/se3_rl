@@ -10,7 +10,9 @@ from pathlib import Path
 from se3_shared import ActionDelayConfig
 
 from .config import (
+    DEFAULT_SIM_MODEL_VARIANT,
     MAX_YAW_RATE_RAD_S,
+    SIM_MODEL_VARIANT_CHOICES,
     JumpEventConfig,
     JumpScheduleConfig,
     PolicyConfig,
@@ -18,6 +20,7 @@ from .config import (
     RunConfig,
     ViewerConfig,
     YawPidConfig,
+    model_path_for_variant,
 )
 from .course import CourseConfig, CourseType
 
@@ -83,7 +86,18 @@ def build_parser() -> argparse.ArgumentParser:
     robot_defaults = RobotConfig()
     delay_defaults = robot_defaults.action_delay
     yaw_defaults = robot_defaults.yaw_pid
-    parser.add_argument("--model", type=Path, default=robot_defaults.model_path)
+    parser.add_argument(
+        "--model-variant",
+        choices=SIM_MODEL_VARIANT_CHOICES,
+        default=DEFAULT_SIM_MODEL_VARIANT,
+        help="选择内置 MJCF 模型变体：fourbar-surrogate 为训练默认等效开树，closedchain 为真实闭链 OBB 对照，openchain 为旧开链模型。",
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help="直接指定 MJCF 路径；设置后覆盖 --model-variant。",
+    )
     parser.add_argument(
         "--task",
         default=robot_defaults.task,
@@ -119,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
+    parser.add_argument(
+        "--rerun-geom-view",
+        choices=("visual", "collision", "both"),
+        default=ViewerConfig().geom_view,
+        help="Rerun 3D 场景显示的 MJCF 几何。visual 显示外观模型，collision 显示接触几何，both 同时显示。",
+    )
     parser.add_argument(
         "--rerun-memory-limit",
         default="1GB",
@@ -162,6 +182,34 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Reset 初始 base 高度（米）。默认使用共享站立高度。",
+    )
+    parser.add_argument(
+        "--initial-leg-joint-pos",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="Q",
+        help=(
+            "Reset 腿部初始关节位置。传 2 个值时左右镜像成 [LF, LB, RF, RB]；"
+            "传 4 个值时按 policy 腿部顺序写入。"
+        ),
+    )
+    parser.add_argument(
+        "--settle-base-before-policy",
+        action="store_true",
+        help="reset 后先用零控制等待 base_link 接地，再开始 policy 推理和 Rerun 录制。",
+    )
+    parser.add_argument(
+        "--pre-policy-settle-max-s",
+        type=float,
+        default=robot_defaults.pre_policy_settle_max_s,
+        help="base_link 贴地后额外等待接触稳定的最大仿真时间（秒）；默认 0 表示不做被动滚动。",
+    )
+    parser.add_argument(
+        "--pre-policy-settle-contact-steps",
+        type=int,
+        default=robot_defaults.pre_policy_settle_contact_steps,
+        help="base_link 连续接地多少个 MuJoCo step 后开始 policy。",
     )
     parser.add_argument(
         "--command",
@@ -338,9 +386,12 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         min_delay_s=float(args.action_delay_min_ms) / 1000.0,
         max_delay_s=float(args.action_delay_max_ms) / 1000.0,
     )
+    model_path = (
+        args.model if args.model is not None else model_path_for_variant(str(args.model_variant))
+    )
     return RunConfig(
         robot=RobotConfig(
-            model_path=args.model,
+            model_path=model_path,
             task=str(args.task),
             seed=int(args.seed),
             sim_dt=float(args.sim_dt),
@@ -352,6 +403,10 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             initial_base_height=(
                 None if args.initial_base_height is None else float(args.initial_base_height)
             ),
+            initial_leg_joint_pos=_initial_leg_joint_pos_from_args(args.initial_leg_joint_pos),
+            settle_base_before_policy=bool(args.settle_base_before_policy),
+            pre_policy_settle_max_s=float(args.pre_policy_settle_max_s),
+            pre_policy_settle_contact_steps=max(1, int(args.pre_policy_settle_contact_steps)),
             command=tuple(float(v) for v in args.command),
             yaw_pid=YawPidConfig(
                 enabled=_yaw_pid_enabled_from_args(args),
@@ -393,6 +448,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             record_to_rrd=args.rerun_record,
             memory_limit=str(args.rerun_memory_limit),
             log_every=max(1, int(args.viewer_log_every)),
+            geom_view=str(args.rerun_geom_view),
         ),
         max_steps=int(args.max_steps),
         fixed_reset=not bool(args.random_reset),
@@ -405,6 +461,18 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         fail_tilt_deg=float(args.fail_tilt_deg),
         fail_height_m=float(args.fail_height_m),
     )
+
+
+def _initial_leg_joint_pos_from_args(values: list[float] | None) -> tuple[float, ...] | None:
+    """规范化 CLI 输入的腿部初始关节位置。"""
+    if values is None:
+        return None
+    if len(values) == 2:
+        left_front, left_back = (float(v) for v in values)
+        return (left_front, left_back, left_front, left_back)
+    if len(values) == 4:
+        return tuple(float(v) for v in values)
+    raise ValueError("--initial-leg-joint-pos expects 2 mirrored values or 4 policy-order values")
 
 
 def main() -> int:
@@ -440,6 +508,16 @@ def main() -> int:
         f"action_delay={action_delay_s * 1000.0:.1f}ms "
         f"steps={action_delay_steps} enabled={delay_enabled} randomize={delay_randomize}"
     )
+    settle = summary.get("pre_policy_settle")
+    if isinstance(settle, dict) and bool(settle.get("enabled", False)):
+        print(
+            "  pre_policy_settle="
+            f"success={bool(settle.get('success', False))} "
+            f"steps={int(settle.get('steps', 0))} "
+            f"time={float(settle.get('time_s', 0.0)):.3f}s "
+            f"base_touching={bool(settle.get('base_touching', False))} "
+            f"base_contact={bool(settle.get('base_contact', False))}"
+        )
     if final:
         print(
             f"  final_height={float(final['height']):.3f} "

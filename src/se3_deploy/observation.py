@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-from se3_shared import JointGroup, ObservationConfig, RobotConfig
+from se3_shared import (
+    ObservationConfig,
+    PolicyObservationResult,
+    RobotConfig,
+    build_policy_observation_np,
+)
 
 from .protocol import PolicyStateFrame
 
 _OBS_CFG = ObservationConfig()
 _ROBOT_CFG = RobotConfig()
-
-
-@dataclass(frozen=True, slots=True)
-class ObservationResult:
-    """一次观测拼装结果。"""
-
-    obs: np.ndarray
-    had_nonfinite_input: bool
 
 
 class RecoveryObservationBuilder:
@@ -42,41 +37,20 @@ class RecoveryObservationBuilder:
             dtype=np.float32,
         )
 
-    def build(self, state: PolicyStateFrame, last_action: np.ndarray) -> ObservationResult:
-        had_nonfinite = False
-        base_ang_vel_body, bad = _finite_array(state.base_ang_vel_body, 3)
-        had_nonfinite = had_nonfinite or bad
-        projected_gravity, bad = _projected_gravity(state.projected_gravity)
-        had_nonfinite = had_nonfinite or bad
-        dof_pos, bad = _finite_array(state.dof_pos, 6)
-        had_nonfinite = had_nonfinite or bad
-        dof_vel, bad = _finite_array(state.dof_vel, 6)
-        had_nonfinite = had_nonfinite or bad
-        action_obs, bad = _finite_array(last_action, 6)
-        had_nonfinite = had_nonfinite or bad
-
-        obs: list[float] = []
-        obs.extend((base_ang_vel_body * _OBS_CFG.ang_vel_scale).tolist())
-        obs.extend(projected_gravity.tolist())
-        obs.extend((self.command[:5] * self.command_scale).tolist())
-
-        leg_pos_rel = dof_pos[JointGroup.CTRL_LEGS] - self.default_dof_pos[JointGroup.CTRL_LEGS]
-        obs.extend(leg_pos_rel.tolist())
-
-        leg_vel = dof_vel[JointGroup.CTRL_LEGS] * _OBS_CFG.leg_vel_scale
-        obs.extend(leg_vel.tolist())
-
-        obs.extend(dof_pos[JointGroup.CTRL_WHEELS].tolist())
-        obs.extend((dof_vel[JointGroup.CTRL_WHEELS] * _OBS_CFG.wheel_vel_scale).tolist())
-        obs.extend(action_obs.tolist())
-        obs.extend(self.command[5:8].tolist())
-
-        arr = np.asarray(obs, dtype=np.float32)
-        if arr.shape != (_OBS_CFG.num_obs,):
-            raise RuntimeError(f"recovery obs shape mismatch: {arr.shape}")
-        limit = float(_OBS_CFG.clip_value)
-        arr = np.nan_to_num(arr, nan=0.0, posinf=limit, neginf=-limit)
-        return ObservationResult(obs=np.clip(arr, -limit, limit), had_nonfinite_input=had_nonfinite)
+    def build(self, state: PolicyStateFrame, last_action: np.ndarray) -> PolicyObservationResult:
+        return build_policy_observation_np(
+            base_ang_vel_body=np.asarray(state.base_ang_vel_body, dtype=np.float32),
+            projected_gravity=np.asarray(state.projected_gravity, dtype=np.float32),
+            dof_pos=np.asarray(state.dof_pos, dtype=np.float32),
+            dof_vel=np.asarray(state.dof_vel, dtype=np.float32),
+            command=self.command,
+            action_obs=np.asarray(last_action, dtype=np.float32),
+            default_dof_pos=self.default_dof_pos,
+            command_scale=self.command_scale,
+            expected_num_obs=_OBS_CFG.num_obs,
+            clip_value=_OBS_CFG.clip_value,
+            normalize_projected_gravity=True,
+        )
 
 
 def synthetic_recovery_state(seq: int = 0) -> PolicyStateFrame:
@@ -97,23 +71,8 @@ def synthetic_recovery_state(seq: int = 0) -> PolicyStateFrame:
         joint_vel=(0.0, 0.0, 0.0, 0.0),
         wheel_pos=dof_pos[4:6],
         wheel_vel=(0.0, 0.0),
+        target_joint_pos=(0.0, 0.0, 0.0, 0.0),
+        hip_torque=(0.0, 0.0, 0.0, 0.0),
+        wheel_torque=(0.0, 0.0),
+        wheel_motor_torque=(0.0, 0.0),
     )
-
-
-def _finite_array(values: object, size: int) -> tuple[np.ndarray, bool]:
-    arr = np.asarray(values, dtype=np.float32).reshape(-1)
-    if arr.shape != (int(size),):
-        raise ValueError(f"array shape mismatch: expected {(size,)}, got {arr.shape}")
-    finite = np.isfinite(arr)
-    if finite.all():
-        return arr, False
-    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0), True
-
-
-def _projected_gravity(values: object) -> tuple[np.ndarray, bool]:
-    arr, bad = _finite_array(values, 3)
-    norm = float(np.linalg.norm(arr))
-    if norm < 1.0e-6:
-        return np.asarray([0.0, 0.0, -1.0], dtype=np.float32), True
-    normalized = arr / norm
-    return np.clip(normalized, -1.0, 1.0), bad

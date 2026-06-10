@@ -196,7 +196,7 @@ default_base_height = 0.22 m
 
 验收：
 
-- `uv run se3-sim2sim --viewer none --max-steps 200` 能加载闭链模型。
+- `uv run se3-sim2sim --model-variant closedchain --viewer none --max-steps 200` 能加载闭链模型。
 - `data.ctrl` 维度与 `model.nu` 一致，6 个电机 ctrl 只写对应槽位。
 - 默认站姿静置 1-2 秒无 NaN、无爆约束、无非预期腿部触地。
 

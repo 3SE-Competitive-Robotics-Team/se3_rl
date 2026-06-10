@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
 from se3_shared import (
-    Joint,
-    JointGroup,
     ObservationConfig,
+    PolicyActionDecoder,
     RobotConfig,
 )
 
@@ -29,24 +31,11 @@ from .protocol import (
 )
 
 DEFAULT_RECOVERY_CHECKPOINT = Path("logs/deploy/model_5999_recovery_gru.npz")
+DEFAULT_CDC_PORT = "auto"
 ACTION_FLAG_DRY_RUN = 1 << 0
 ACTION_FLAG_TIMEOUT = 1 << 1
 ACTION_FLAG_NONFINITE = 1 << 2
-_HEIGHT_LUT_SIZE = 1024
-_WHEEL_RADIUS = 0.06
-_BASE_COM_X = -0.01780372
-_LF1_BODY_XZ = (-0.12990117, 0.04639203)
-_LF1_JOINT_XZ = (-0.05003347, -0.04149627)
-_WHEEL_BODY_XZ = (-0.15699, -0.21049)
-_KNEE_X = -0.17993464
-_KNEE_Z = 0.00489576
-_CALF_X = 0.05003347
-_CALF_Z = 0.04149627
-_DRIVE_X = 0.04009536
-_DRIVE_Z = 0.04530576
-_COUPLER_LEN = float(np.hypot(-0.16999653, 0.00108627))
-_CALF_LEN = float(np.hypot(_CALF_X, _CALF_Z))
-_CALF_ZERO_ANGLE = float(np.arctan2(_CALF_Z, _CALF_X))
+ACTION_FLAG_OUTPUT_DISABLED_HOLD = 1 << 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +50,9 @@ class RecoveryRuntimeConfig:
     max_steps: int
     dry_run: bool
     print_every: int
+    telemetry_log: Path | None
+    telemetry_log_every: int
+    telemetry_flush_every: int
 
 
 @dataclass(slots=True)
@@ -72,6 +64,13 @@ class RuntimeStats:
     nonfinite_frames: int = 0
     last_state_seq: int = 0
     last_action: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    last_target_joint_pos: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+    last_target_wheel_vel: tuple[float, ...] = (0.0, 0.0)
+    last_state_joint_pos: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+    last_state_target_joint_pos: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+    last_state_hip_torque: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+    last_state_wheel_torque: tuple[float, ...] = (0.0, 0.0)
+    last_state_wheel_motor_torque: tuple[float, ...] = (0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,134 +87,97 @@ class RecoveryActionTargetDecoder:
     def __init__(self, *, command_height: float, robot_cfg: RobotConfig | None = None) -> None:
         self.robot_cfg = RobotConfig() if robot_cfg is None else robot_cfg
         self.command_height = float(command_height)
-        self.leg_scales = np.asarray(self.robot_cfg.action_scale, dtype=np.float32)[
-            JointGroup.LEG_ACTUATORS
-        ]
-        self.wheel_scale = float(self.robot_cfg.action_scale[Joint.L_WHEEL])
-        self.action_clip = self.robot_cfg.action_clip
-        self.active_coeffs = np.asarray(
-            self.robot_cfg.active_rod_angle_coeffs,
+        self.decoder = PolicyActionDecoder(
+            robot_cfg=self.robot_cfg,
+            height_conditioned_action_default=True,
+            active_rod_semantics=True,
             dtype=np.float32,
-        )
-        lower, upper = self.robot_cfg.active_rod_angle_limits
-        self.active_lower = float(lower) - float(self.robot_cfg.active_rod_lower_target_overdrive)
-        self.active_upper = float(upper)
-        self.policy_default = (
-            _policy_default_from_height_np(
-                self.command_height,
-                self.robot_cfg,
-            )
-            .astype(np.float32, copy=False)
-            .reshape(4)
         )
 
     def decode(self, action: np.ndarray) -> DecodedPolicyTarget:
-        raw = self.clip_action(action)
-
-        policy_default = self.policy_default
-
-        target = np.empty(4, dtype=np.float32)
-        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-            front_coef, back_coef = self.active_coeffs[side_idx]
-            front_target = policy_default[front_idx] + raw[front_idx] * self.leg_scales[front_idx]
-            active_default = (
-                front_coef * policy_default[front_idx] + back_coef * policy_default[back_idx]
-            )
-            active_raw = active_default + raw[back_idx] * self.leg_scales[back_idx]
-            active_target = np.clip(active_raw, self.active_lower, self.active_upper)
-            target[front_idx] = front_target
-            target[back_idx] = (active_target - front_coef * front_target) / back_coef
-
-        wheel_vel = raw[JointGroup.CTRL_WHEELS] * self.wheel_scale
+        decoded = self.decoder.decode(action, command_height=self.command_height)
         return DecodedPolicyTarget(
-            joint_pos=tuple(float(v) for v in target),
-            wheel_vel=tuple(float(v) for v in wheel_vel),
+            joint_pos=tuple(float(v) for v in decoded.leg_target),
+            wheel_vel=tuple(float(v) for v in decoded.wheel_vel_target),
         )
 
     def clip_action(self, action: np.ndarray) -> np.ndarray:
-        raw = np.asarray(action, dtype=np.float32).reshape(6)
-        if self.action_clip is None:
-            return raw.astype(np.float32, copy=True)
-        clip = float(self.action_clip)
-        return np.clip(raw, -clip, clip).astype(np.float32, copy=False)
+        return self.decoder.clip_action(action)
 
 
-def _policy_default_from_height_np(command_height: float, cfg: RobotConfig) -> np.ndarray:
-    height = np.asarray(command_height, dtype=np.float64).reshape(-1)
-    active_by_length, length_grid, active_grid, vec_x_grid, vec_z_grid = _height_default_lut_np(cfg)
-    target_x = np.full_like(height, _BASE_COM_X)
-    target_z = _WHEEL_RADIUS - height
-    target_length = np.clip(
-        np.hypot(target_x, target_z),
-        length_grid[0],
-        length_grid[-1],
-    )
-    active = np.interp(target_length, length_grid, active_by_length)
-    vec_x = np.interp(active, active_grid, vec_x_grid)
-    vec_z = np.interp(active, active_grid, vec_z_grid)
-    lf = np.arctan2(vec_x, -vec_z) - np.arctan2(target_x, -target_z)
-    rf = -lf
-    lb = lf - active
-    rb = rf + active
-    return np.stack((lf, lb, rf, rb), axis=1)
+def _wrap_angle_np(angle: np.ndarray) -> np.ndarray:
+    return np.remainder(np.asarray(angle, dtype=np.float32) + np.pi, 2.0 * np.pi) - np.pi
 
 
-def _height_default_lut_np(
-    cfg: RobotConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    lower, upper = cfg.active_rod_angle_limits
-    active = np.linspace(float(lower), float(upper), _HEIGHT_LUT_SIZE, dtype=np.float64)
-    output_knee = _output_knee_from_active_angle_np_array(active, float(lower), float(upper))
-    vec_x, vec_z = _leg_vector_np(output_knee)
-    length = np.hypot(vec_x, vec_z)
-    order = np.argsort(length)
-    return active[order], length[order], active, vec_x, vec_z
+def _fmt_values(values: object) -> str:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    return " ".join(f"{float(v):+.3f}" for v in arr)
 
 
-def _output_knee_from_active_angle_np_array(
-    active_angle: np.ndarray,
-    lower: float,
-    upper: float,
-) -> np.ndarray:
-    alpha = np.clip(np.asarray(active_angle, dtype=np.float64), lower, upper)
-    beta = -alpha
-    cos_b = np.cos(beta)
-    sin_b = np.sin(beta)
-    px = cos_b * _DRIVE_X + sin_b * _DRIVE_Z
-    pz = -sin_b * _DRIVE_X + cos_b * _DRIVE_Z
-
-    dx = px - _KNEE_X
-    dz = pz - _KNEE_Z
-    dist = np.sqrt(np.maximum(dx * dx + dz * dz, 1.0e-12))
-    ex = dx / dist
-    ez = dz / dist
-
-    along = (_CALF_LEN**2 - _COUPLER_LEN**2 + dist * dist) / (2.0 * dist)
-    height = np.sqrt(np.maximum(_CALF_LEN**2 - along * along, 0.0))
-    cx = _KNEE_X + along * ex - height * ez
-    cz = _KNEE_Z + along * ez + height * ex
-
-    phi = np.arctan2(cz - _KNEE_Z, cx - _KNEE_X)
-    return _wrap_angle_np_array(_CALF_ZERO_ANGLE - phi)
+def _float_list(values: object) -> list[float]:
+    arr = np.asarray(values, dtype=np.float32).reshape(-1)
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    return [float(v) for v in arr]
 
 
-def _leg_vector_np(output_knee: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    body = np.asarray(_LF1_BODY_XZ, dtype=np.float64)
-    joint = np.asarray(_LF1_JOINT_XZ, dtype=np.float64)
-    wheel = np.asarray(_WHEEL_BODY_XZ, dtype=np.float64)
-    cos_q = np.cos(output_knee)
-    sin_q = np.sin(output_knee)
-    rot_joint_x = cos_q * joint[0] + sin_q * joint[1]
-    rot_joint_z = -sin_q * joint[0] + cos_q * joint[1]
-    rot_wheel_x = cos_q * wheel[0] + sin_q * wheel[1]
-    rot_wheel_z = -sin_q * wheel[0] + cos_q * wheel[1]
-    x = body[0] + joint[0] - rot_joint_x + rot_wheel_x
-    z = body[1] + joint[1] - rot_joint_z + rot_wheel_z
-    return x, z
+def _policy_active_angles(values: object) -> list[float]:
+    q = np.asarray(values, dtype=np.float32).reshape(4)
+    active = np.asarray([q[0] - q[1], q[3] - q[2]], dtype=np.float32)
+    return _float_list(_wrap_angle_np(active))
 
 
-def _wrap_angle_np_array(angle: np.ndarray) -> np.ndarray:
-    return np.remainder(angle + np.pi, 2.0 * np.pi) - np.pi
+def _action_flag_names(flags: int) -> list[str]:
+    names: list[str] = []
+    if flags & ACTION_FLAG_DRY_RUN:
+        names.append("dry_run")
+    if flags & ACTION_FLAG_TIMEOUT:
+        names.append("timeout")
+    if flags & ACTION_FLAG_NONFINITE:
+        names.append("nonfinite")
+    if flags & ACTION_FLAG_OUTPUT_DISABLED_HOLD:
+        names.append("output_disabled_hold")
+    return names
+
+
+def _resolve_telemetry_log_path(path: Path) -> Path:
+    if path.suffix.lower() == ".jsonl":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path.mkdir(parents=True, exist_ok=True)
+    return path / f"recovery_telemetry_{timestamp}.jsonl"
+
+
+class TelemetryLogger:
+    """按 policy step 追加写入 NX runtime 调试 JSONL。"""
+
+    def __init__(self, path: Path | None, *, every: int, flush_every: int) -> None:
+        self.path: Path | None = None
+        self.every = max(int(every), 1)
+        self.flush_every = max(int(flush_every), 1)
+        self._file = None
+        self._written = 0
+        if path is None:
+            return
+        self.path = _resolve_telemetry_log_path(path)
+        self._file = self.path.open("a", encoding="utf-8")
+        print(f"telemetry log: {self.path}")
+
+    def write(self, step: int, record: dict[str, object]) -> None:
+        if self._file is None or int(step) % self.every != 0:
+            return
+        self._file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+        self._file.write("\n")
+        self._written += 1
+        if self._written % self.flush_every == 0:
+            self._file.flush()
+
+    def close(self) -> None:
+        if self._file is None:
+            return
+        self._file.flush()
+        self._file.close()
+        self._file = None
 
 
 class RecoveryRuntime:
@@ -233,6 +195,12 @@ class RecoveryRuntime:
         self.stats = RuntimeStats()
         self._last_action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
         self._action_seq = 0
+        self._policy_memory_clean = True
+        self.telemetry = TelemetryLogger(
+            cfg.telemetry_log,
+            every=cfg.telemetry_log_every,
+            flush_every=cfg.telemetry_flush_every,
+        )
 
     def run(self) -> RuntimeStats:
         print(
@@ -240,10 +208,13 @@ class RecoveryRuntime:
             f"checkpoint={self.cfg.checkpoint} iter={self.policy.iteration} "
             f"type={self.policy.policy_type} device={self.cfg.device}"
         )
-        if self.cfg.dry_run:
-            self._run_dry()
-        else:
-            self._run_cdc()
+        try:
+            if self.cfg.dry_run:
+                self._run_dry()
+            else:
+                self._run_cdc()
+        finally:
+            self.telemetry.close()
         return self.stats
 
     def _run_dry(self) -> None:
@@ -251,9 +222,11 @@ class RecoveryRuntime:
         for step in range(max_steps):
             state = synthetic_recovery_state(seq=step)
             self.stats.state_frames += 1
-            action, flags = self._act_from_state(state)
+            action, flags, obs = self._act_from_state(state)
             flags |= ACTION_FLAG_DRY_RUN
+            self._decode_target(action)
             self._record_action(state, action, flags)
+            self._write_telemetry(state, obs, action, flags)
             self._maybe_print()
 
     def _run_cdc(self) -> None:
@@ -286,14 +259,29 @@ class RecoveryRuntime:
                 age_s = now - latest_state_time
                 flags = 0
                 if age_s > self.cfg.state_timeout_s:
+                    self._reset_policy_memory()
                     action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
                     flags |= ACTION_FLAG_TIMEOUT
+                    obs, obs_flags = self._build_observation(latest_state)
+                    flags |= obs_flags
+                    if obs_flags & ACTION_FLAG_NONFINITE:
+                        self.stats.nonfinite_frames += 1
+                    packet = self._make_hold_target_packet(latest_state)
+                elif latest_state.output_enabled == 0:
+                    self._reset_policy_memory()
+                    obs, obs_flags = self._build_observation(latest_state)
+                    action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
+                    flags |= obs_flags | ACTION_FLAG_OUTPUT_DISABLED_HOLD
+                    if obs_flags & ACTION_FLAG_NONFINITE:
+                        self.stats.nonfinite_frames += 1
+                    packet = self._make_hold_target_packet(latest_state)
                 else:
-                    action, flags = self._act_from_state(latest_state)
+                    action, flags, obs = self._act_from_state(latest_state)
+                    packet = self._make_target_packet(action)
 
-                packet = self._make_target_packet(action)
                 serial.write_all(packet, timeout_s=self.cfg.write_timeout_s)
                 self._record_action(latest_state, action, flags)
+                self._write_telemetry(latest_state, obs, action, flags)
                 self._maybe_print()
 
     def _read_states(
@@ -315,19 +303,31 @@ class RecoveryRuntime:
                 self.stats.state_frames += 1
                 self.stats.last_state_seq = latest_state.seq
 
-    def _act_from_state(self, state: PolicyStateFrame) -> tuple[np.ndarray, int]:
+    def _build_observation(self, state: PolicyStateFrame) -> tuple[np.ndarray, int]:
         result = self.obs_builder.build(state, self._last_action)
-        action = self.policy.act(result.obs)
         flags = ACTION_FLAG_NONFINITE if result.had_nonfinite_input else 0
+        return result.obs.astype(np.float32, copy=False), flags
+
+    def _act_from_state(self, state: PolicyStateFrame) -> tuple[np.ndarray, int, np.ndarray]:
+        obs, flags = self._build_observation(state)
+        action = self.policy.act(obs)
         if not np.isfinite(action).all():
             flags |= ACTION_FLAG_NONFINITE
             action = np.nan_to_num(action, nan=0.0, posinf=0.0, neginf=0.0)
         if flags & ACTION_FLAG_NONFINITE:
             self.stats.nonfinite_frames += 1
-        return action.astype(np.float32, copy=False), flags
+        self._policy_memory_clean = False
+        return action.astype(np.float32, copy=False), flags, obs
+
+    def _reset_policy_memory(self) -> None:
+        if self._policy_memory_clean:
+            return
+        self.policy.reset()
+        self._last_action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
+        self._policy_memory_clean = True
 
     def _make_target_packet(self, action: np.ndarray) -> bytes:
-        target = self.target_decoder.decode(action)
+        target = self._decode_target(action)
         frame = PolicyTargetFrame(
             seq=self._action_seq,
             joint_pos=target.joint_pos,
@@ -336,24 +336,113 @@ class RecoveryRuntime:
         self._action_seq = (self._action_seq + 1) & 0xFFFFFFFF
         return pack_policy_target(frame)
 
+    def _make_hold_target_packet(self, state: PolicyStateFrame) -> bytes:
+        joint_pos = tuple(
+            float(v) for v in np.asarray(state.joint_pos, dtype=np.float32).reshape(4)
+        )
+        wheel_vel = (0.0, 0.0)
+        self.stats.last_target_joint_pos = joint_pos
+        self.stats.last_target_wheel_vel = wheel_vel
+        frame = PolicyTargetFrame(
+            seq=self._action_seq,
+            joint_pos=joint_pos,
+            wheel_vel=wheel_vel,
+        )
+        self._action_seq = (self._action_seq + 1) & 0xFFFFFFFF
+        return pack_policy_target(frame)
+
+    def _decode_target(self, action: np.ndarray) -> DecodedPolicyTarget:
+        target = self.target_decoder.decode(action)
+        self.stats.last_target_joint_pos = tuple(float(v) for v in target.joint_pos)
+        self.stats.last_target_wheel_vel = tuple(float(v) for v in target.wheel_vel)
+        return target
+
     def _record_action(self, state: PolicyStateFrame, action: np.ndarray, flags: int) -> None:
         self.stats.steps += 1
         self.stats.action_frames += 1
         self.stats.last_state_seq = state.seq
         self._last_action = self.target_decoder.clip_action(action)
         self.stats.last_action = tuple(float(v) for v in self._last_action)
+        self.stats.last_state_joint_pos = tuple(float(v) for v in state.joint_pos)
+        self.stats.last_state_target_joint_pos = tuple(float(v) for v in state.target_joint_pos)
+        self.stats.last_state_hip_torque = tuple(float(v) for v in state.hip_torque)
+        self.stats.last_state_wheel_torque = tuple(float(v) for v in state.wheel_torque)
+        self.stats.last_state_wheel_motor_torque = tuple(float(v) for v in state.wheel_motor_torque)
         if flags & ACTION_FLAG_TIMEOUT:
             self.stats.timeout_frames += 1
+
+    def _write_telemetry(
+        self,
+        state: PolicyStateFrame,
+        obs: np.ndarray,
+        action: np.ndarray,
+        flags: int,
+    ) -> None:
+        joint_pos = np.asarray(state.joint_pos, dtype=np.float32)
+        stm_target = np.asarray(state.target_joint_pos, dtype=np.float32)
+        nx_target = np.asarray(self.stats.last_target_joint_pos, dtype=np.float32)
+        record: dict[str, object] = {
+            "schema": "se3_nx_recovery_telemetry_v1",
+            "wall_time_s": time.time(),
+            "monotonic_time_s": time.monotonic(),
+            "step": int(self.stats.steps),
+            "state_seq": int(state.seq),
+            "tick_ms": int(state.tick_ms),
+            "target_seq": int(state.target_seq),
+            "target_age_ms": int(state.target_age_ms),
+            "target_valid": int(state.target_valid),
+            "rc_switch_r": int(state.rc_switch_r),
+            "output_enabled": int(state.output_enabled),
+            "flags": int(flags),
+            "flag_names": _action_flag_names(flags),
+            "target_mode": "hold_current"
+            if flags & (ACTION_FLAG_OUTPUT_DISABLED_HOLD | ACTION_FLAG_TIMEOUT)
+            else "policy",
+            "obs": _float_list(obs),
+            "action": _float_list(action),
+            "clipped_action": _float_list(self._last_action),
+            "nx_target_joint_pos": _float_list(nx_target),
+            "nx_target_active": _policy_active_angles(nx_target),
+            "nx_target_wheel_vel": _float_list(self.stats.last_target_wheel_vel),
+            "stm_target_joint_pos": _float_list(stm_target),
+            "stm_target_active": _policy_active_angles(stm_target),
+            "joint_pos": _float_list(joint_pos),
+            "joint_vel": _float_list(state.joint_vel),
+            "joint_active": _policy_active_angles(joint_pos),
+            "joint_pos_error_nx_target": _float_list(_wrap_angle_np(nx_target - joint_pos)),
+            "joint_pos_error_stm_target": _float_list(_wrap_angle_np(stm_target - joint_pos)),
+            "wheel_pos": _float_list(state.wheel_pos),
+            "wheel_vel": _float_list(state.wheel_vel),
+            "hip_torque": _float_list(state.hip_torque),
+            "wheel_torque": _float_list(state.wheel_torque),
+            "wheel_motor_torque": _float_list(state.wheel_motor_torque),
+            "base_ang_vel_body": _float_list(state.base_ang_vel_body),
+            "projected_gravity": _float_list(state.projected_gravity),
+        }
+        self.telemetry.write(self.stats.steps, record)
 
     def _maybe_print(self) -> None:
         if self.cfg.print_every <= 0 or self.stats.steps % self.cfg.print_every != 0:
             return
-        action = " ".join(f"{v:+.3f}" for v in self.stats.last_action)
+        action = _fmt_values(self.stats.last_action[:4])
+        target = _fmt_values(self.stats.last_target_joint_pos)
+        stm_target = _fmt_values(self.stats.last_state_target_joint_pos)
+        joint = _fmt_values(self.stats.last_state_joint_pos)
+        error = _fmt_values(
+            _wrap_angle_np(
+                np.asarray(self.stats.last_state_target_joint_pos, dtype=np.float32)
+                - np.asarray(self.stats.last_state_joint_pos, dtype=np.float32)
+            )
+        )
+        torque = _fmt_values(self.stats.last_state_hip_torque)
+        wheel_torque = _fmt_values(self.stats.last_state_wheel_motor_torque)
         print(
             f"step={self.stats.steps} states={self.stats.state_frames} "
             f"actions={self.stats.action_frames} last_state={self.stats.last_state_seq} "
             f"timeouts={self.stats.timeout_frames} nonfinite={self.stats.nonfinite_frames} "
-            f"action=[{action}]"
+            f"action4=[{action}] target4=[{target}] stm_target4=[{stm_target}] "
+            f"joint4=[{joint}] err4=[{error}] torque4=[{torque}] "
+            f"wheel_motor_torque=[{wheel_torque}]"
         )
 
 
@@ -368,6 +457,46 @@ def load_policy_runtime(checkpoint: Path, device: str) -> object:
     return PolicyRuntime(checkpoint=checkpoint, device=device, runtime=RuntimeSpec())
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return int(default)
+    return int(value)
+
+
+def _telemetry_log_path(value: str | None) -> Path | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if text.lower() in {"", "0", "false", "none", "off"}:
+        return None
+    return Path(text)
+
+
+def _default_cdc_port() -> str:
+    by_id_dir = Path("/dev/serial/by-id")
+    for pattern in (
+        "*STMicroelectronics*Virtual_ComPort*",
+        "*STM32*Virtual_ComPort*",
+        "*STMicroelectronics*",
+    ):
+        ports = sorted(by_id_dir.glob(pattern))
+        if ports:
+            return str(ports[0])
+    for pattern in ("/dev/ttyACM*", "/dev/ttyUSB*"):
+        ports = sorted(Path("/").glob(pattern.lstrip("/")))
+        if ports:
+            return str(ports[0])
+    return "/dev/ttyACM0"
+
+
+def _resolve_cdc_port(value: object) -> str:
+    port = str(value).strip()
+    if port.lower() == "auto":
+        return _default_cdc_port()
+    return port
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run recovery-only policy on Jetson Orin NX.")
     parser.add_argument(
@@ -376,7 +505,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_RECOVERY_CHECKPOINT,
         help="Recovery checkpoint path (.pt or exported .npz).",
     )
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB CDC device path.")
+    parser.add_argument(
+        "--port",
+        default=os.environ.get("SE3_CDC_PORT", DEFAULT_CDC_PORT),
+        help="USB CDC device path, or auto to prefer STM32 /dev/serial/by-id.",
+    )
     parser.add_argument("--baudrate", type=int, default=921600, help="CDC baudrate hint.")
     parser.add_argument(
         "--device", default="cpu", help="Torch device, usually cpu on NX first pass."
@@ -393,6 +526,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--print-every", type=int, default=50, help="Print one status line per N steps."
     )
+    parser.add_argument(
+        "--telemetry-log",
+        type=_telemetry_log_path,
+        default=_telemetry_log_path(os.environ.get("SE3_TELEMETRY_LOG")),
+        help="Write JSONL telemetry to this file, or create a timestamped file in this directory.",
+    )
+    parser.add_argument(
+        "--telemetry-log-every",
+        type=int,
+        default=_env_int("SE3_TELEMETRY_LOG_EVERY", 1),
+        help="Write one telemetry row per N policy steps.",
+    )
+    parser.add_argument(
+        "--telemetry-flush-every",
+        type=int,
+        default=_env_int("SE3_TELEMETRY_FLUSH_EVERY", 25),
+        help="Flush telemetry after N written rows.",
+    )
     return parser
 
 
@@ -400,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     cfg = RecoveryRuntimeConfig(
         checkpoint=args.checkpoint,
-        port=str(args.port),
+        port=_resolve_cdc_port(args.port),
         baudrate=int(args.baudrate),
         device=str(args.device),
         rate_hz=float(args.rate_hz),
@@ -409,6 +560,9 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=int(args.max_steps),
         dry_run=bool(args.dry_run),
         print_every=int(args.print_every),
+        telemetry_log=args.telemetry_log,
+        telemetry_log_every=int(args.telemetry_log_every),
+        telemetry_flush_every=int(args.telemetry_flush_every),
     )
     RecoveryRuntime(cfg).run()
     return 0

@@ -8,7 +8,15 @@ import math
 from pathlib import Path
 from typing import Any
 
-from se3_sim2sim.config import PolicyConfig, RobotConfig, RunConfig, ViewerConfig, YawPidConfig
+from se3_sim2sim.config import (
+    SIM_MODEL_VARIANT_CHOICES,
+    PolicyConfig,
+    RobotConfig,
+    RunConfig,
+    ViewerConfig,
+    YawPidConfig,
+    model_path_for_variant,
+)
 from se3_sim2sim.workflow import run_sim2sim
 
 _STAND_COMMAND = (0.0, 0.0, 0.0, 0.0, 0.22, 0.0, 0.0, 0.0)
@@ -20,6 +28,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/recovery_stand_eval"))
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--model-variant",
+        choices=SIM_MODEL_VARIANT_CHOICES,
+        default="closedchain",
+        help="选择 sim2sim 内置 MJCF 模型变体；closedchain 会直接用真实闭链模型验证。",
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help="直接指定 MJCF 路径；设置后覆盖 --model-variant。",
+    )
     parser.add_argument("--record-rerun", action="store_true")
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--print-every", type=int, default=200)
@@ -89,9 +109,11 @@ def _run_case(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -> d
     rrd_output = output_dir / f"{name}.rrd" if args.record_rerun else None
     cfg = RunConfig(
         robot=RobotConfig(
+            model_path=_model_path_from_args(args),
             yaw_pid=YawPidConfig(enabled=False),
             command=_STAND_COMMAND,
             initial_base_height=0.16,
+            height_conditioned_action_default=True,
         ),
         policy=PolicyConfig(checkpoint=checkpoint, device=str(args.device)),
         viewer=ViewerConfig(
@@ -118,6 +140,13 @@ def _run_case(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -> d
         "done_reason": summary["done_reason"],
         "rollout": summary["rollout"],
     }
+
+
+def _model_path_from_args(args: argparse.Namespace) -> Path:
+    """解析评估使用的 MJCF 路径。"""
+    if args.model is not None:
+        return args.model
+    return model_path_for_variant(str(args.model_variant))
 
 
 def _check_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import mujoco
 import numpy as np
 
 from .math_utils import quat_wxyz_to_xyzw
+
+GeomView = Literal["visual", "collision", "both"]
 
 SIDE_LABELS = ("left", "right")
 ACTION_LABELS = (
@@ -42,6 +45,7 @@ class RerunViewer:
         record_to_rrd: Path | None = None,
         memory_limit: str = "1GB",
         follow_body: str = "base_link",
+        geom_view: GeomView = "visual",
         manage_recording: bool = True,
     ) -> None:
         import rerun as rr
@@ -49,6 +53,7 @@ class RerunViewer:
 
         self.rr = rr
         self.follow_body = follow_body
+        self.geom_view = geom_view
         self.body_paths: list[str] = []
         self.geom_paths: dict[int, str] = {}
         self.follow_body_id = -1
@@ -75,14 +80,27 @@ class RerunViewer:
             mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.follow_body)
         )
         for geom_id in range(model.ngeom):
-            if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
-                continue
-            if int(model.geom_contype[geom_id]) == 0 and int(model.geom_conaffinity[geom_id]) == 0:
+            if not self._should_log_geom(model, geom_id):
                 continue
             body_id = int(model.geom_bodyid[geom_id])
             path = f"{self.body_paths[body_id]}/geoms/{self._geom_name(model, geom_id)}"
             self.geom_paths[geom_id] = path
             self._log_static_geom(model, geom_id, path)
+
+    def _should_log_geom(self, model: mujoco.MjModel, geom_id: int) -> bool:
+        """按 Rerun 显示模式筛选 MJCF 几何。"""
+        if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
+            return False
+        if self.geom_view == "both":
+            return True
+
+        group = int(model.geom_group[geom_id])
+        has_contact = (
+            int(model.geom_contype[geom_id]) != 0 or int(model.geom_conaffinity[geom_id]) != 0
+        )
+        if self.geom_view == "visual":
+            return group == 1 or not has_contact
+        return has_contact
 
     def log_state(
         self, model: mujoco.MjModel, data: mujoco.MjData, *, step: int, telemetry: dict[str, object]

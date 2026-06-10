@@ -11,6 +11,7 @@ export PYTHONPATH="${PWD}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 
 exec python -m se3_deploy.visualize_cdc_state \
+    --local-cdc \
     --host "${CDC_VIS_HOST:-0.0.0.0}" \
     --viewer-port "${CDC_VIS_PORT:-8081}" \
     "$@"

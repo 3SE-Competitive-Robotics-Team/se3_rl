@@ -5,7 +5,11 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import torch
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None  # type: ignore[assignment]
 
 FOURBAR_SURROGATE_MARKER = "fourbar_surrogate_marker"
 

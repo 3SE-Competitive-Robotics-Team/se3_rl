@@ -36,6 +36,12 @@ from .fourbar import (
 from .height_default import policy_default_from_height_np, policy_default_from_height_torch
 from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
+from .policy_io import (
+    DecodedPolicyAction,
+    PolicyActionDecoder,
+    PolicyObservationResult,
+    build_policy_observation_np,
+)
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
@@ -53,12 +59,16 @@ __all__ = [
     "REFERENCE_CTBC_LEG_SCALE",
     "REFERENCE_CTBC_SWING_ANGLE_AMPLITUDE_RAD",
     "ActionDelayConfig",
+    "DecodedPolicyAction",
     "Joint",
     "JointGroup",
     "MotorSpec",
     "ObservationConfig",
+    "PolicyActionDecoder",
+    "PolicyObservationResult",
     "RobotConfig",
     "Termination",
+    "build_policy_observation_np",
     "current_leg_action_scales_np",
     "delay_seconds_to_steps",
     "is_fourbar_surrogate_name_set",
