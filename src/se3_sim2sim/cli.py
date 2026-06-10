@@ -233,8 +233,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--height-conditioned-action-default",
+        dest="height_conditioned_action_default",
         action="store_true",
-        help="让腿部 action=0 对应当前 command height 下的默认腿型，用于 recovery one-policy checkpoint。",
+        default=None,
+        help="让腿部 action=0 对应当前 command height 下的默认腿型；不传时 recovery deploy npz 自动启用。",
+    )
+    parser.add_argument(
+        "--no-height-conditioned-action-default",
+        dest="height_conditioned_action_default",
+        action="store_false",
+        help="显式关闭 height-conditioned action 默认腿型，覆盖 recovery deploy npz 自动检测。",
     )
     parser.add_argument(
         "--active-rod-target-lower-preload-margin",
@@ -378,6 +386,20 @@ def _yaw_pid_enabled_from_args(args: argparse.Namespace) -> bool:
     return bool(RobotConfig().yaw_pid.enabled and not initial_tilt_requested)
 
 
+def _height_conditioned_action_default_from_args(args: argparse.Namespace) -> bool:
+    """解析 sim2sim action 默认腿型语义，deploy recovery npz 默认对齐真机。"""
+    explicit = getattr(args, "height_conditioned_action_default", None)
+    if explicit is not None:
+        return bool(explicit)
+    checkpoint = getattr(args, "checkpoint", None)
+    if checkpoint is None:
+        return bool(RobotConfig().height_conditioned_action_default)
+    path = Path(checkpoint)
+    if path.suffix.lower() == ".npz" and "recovery" in path.name.lower():
+        return True
+    return bool(RobotConfig().height_conditioned_action_default)
+
+
 def config_from_args(args: argparse.Namespace) -> RunConfig:
     action_delay = ActionDelayConfig(
         enabled=not bool(args.no_action_delay),
@@ -420,7 +442,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             action_delay_steps=(
                 None if args.action_delay_steps is None else max(0, int(args.action_delay_steps))
             ),
-            height_conditioned_action_default=bool(args.height_conditioned_action_default),
+            height_conditioned_action_default=_height_conditioned_action_default_from_args(args),
             active_rod_target_lower_preload_margin=float(
                 args.active_rod_target_lower_preload_margin
             ),
