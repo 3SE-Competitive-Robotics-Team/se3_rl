@@ -82,7 +82,7 @@ projected_gravity   3
 commands            5   [vx, yaw_rate, pitch, roll, base_height]
 leg_joint_pos       4
 leg_joint_vel       4
-wheel_pos           2
+wheel_pos_zero      2   固定为 0，保留策略输入维度
 wheel_vel           2
 last_actions        6
 jump_commands       3   本任务中固定为 0

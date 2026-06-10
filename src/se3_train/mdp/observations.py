@@ -88,9 +88,10 @@ def leg_joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def wheel_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """轮子关节位置（MJCF 已修正轴方向,无需手动取反）。"""
+    """保留轮子位置观测槽位，但固定为 0，避免连续转角无限累计。"""
     robot = env.scene["robot"]
-    return _finite_clamp(robot.data.joint_pos[:, wheel_joint_ids(robot)])
+    wheel_ids = wheel_joint_ids(robot)
+    return torch.zeros_like(robot.data.joint_pos[:, wheel_ids])
 
 
 def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

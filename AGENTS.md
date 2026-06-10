@@ -246,7 +246,7 @@ se3_jump_to/
 [6:11]  commands × (2.0, 0.25, 5.0, 5.0, 5.0)
 [11:15] leg_joint_pos（相对默认姿态）
 [15:19] leg_joint_vel × 0.25
-[19:21] wheel_pos
+[19:21] wheel_pos_zero（固定为 0；轮子连续转角不进入 policy）
 [21:23] wheel_vel × 0.05
 [23:29] last_actions
 [29:32] jump_commands  [jump_flag, jump_target_height, jump_phase]

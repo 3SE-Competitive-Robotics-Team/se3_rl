@@ -219,7 +219,8 @@ def build_policy_observation_np(
         leg_vel = output_to_policy_vel_np(dof_pos[JointGroup.CTRL_LEGS], leg_vel)
     obs.extend((leg_pos - default_leg_pos).tolist())
     obs.extend((leg_vel * _OBS_CFG.leg_vel_scale).tolist())
-    obs.extend(dof_pos[JointGroup.CTRL_WHEELS].tolist())
+    # 轮子是连续关节，累计位置会无界增长；保留 2D 槽位以兼容策略输入维度。
+    obs.extend((0.0, 0.0))
     obs.extend((dof_vel[JointGroup.CTRL_WHEELS] * _OBS_CFG.wheel_vel_scale).tolist())
     obs.extend(action_obs.tolist())
     if command_arr.shape[0] >= 8:

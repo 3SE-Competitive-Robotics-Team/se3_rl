@@ -57,7 +57,7 @@ class RuntimeSpec:
         ObservationTermSpec("commands", 5),
         ObservationTermSpec("leg_joint_pos", 4),
         ObservationTermSpec("leg_joint_vel", 4),
-        ObservationTermSpec("wheel_pos", 2),
+        ObservationTermSpec("wheel_pos_zero", 2),
         ObservationTermSpec("wheel_vel", 2),
         ObservationTermSpec("actions", 6),
         ObservationTermSpec("jump_commands", 3),  # [jump_flag, jump_target_height, jump_phase]

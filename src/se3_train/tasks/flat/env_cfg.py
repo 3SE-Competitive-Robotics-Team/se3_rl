@@ -147,7 +147,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=observations.leg_joint_vel_obs,
             noise=Unoise(n_min=-1.5, n_max=1.5),
         ),
-        "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
+        "wheel_pos_zero": ObservationTermCfg(func=observations.wheel_pos_obs),
         "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
         "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
         "jump_commands": ObservationTermCfg(func=observations.jump_commands_obs),
