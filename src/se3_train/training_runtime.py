@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import dataclass
+from os import PathLike
 from pathlib import Path
 from time import perf_counter
+
+TRAINING_STATUS_FILENAME = "se3_training_status.json"
 
 
 @dataclass(frozen=True)
@@ -171,6 +176,37 @@ class IterationTimer:
             total_s=total_s,
             steps_per_second=steps_per_second,
         )
+
+
+def write_training_status(
+    log_dir: str | PathLike[str] | None,
+    *,
+    iteration: int,
+    total_iterations: int,
+    timing: IterationTiming,
+) -> None:
+    """把当前训练进度原子写入 run 目录，供 Viser 值守面板轮询。"""
+    if log_dir is None:
+        return
+
+    status_path = Path(log_dir) / TRAINING_STATUS_FILENAME
+    tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
+    payload = {
+        "iteration": int(iteration),
+        "total_iterations": int(total_iterations),
+        "collect_time_s": float(timing.collect_s),
+        "learning_time_s": float(timing.returns_s + timing.learn_s),
+        "iter_time_s": float(timing.total_s),
+        "updated_at_unix_s": float(time.time()),
+    }
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tmp_path.replace(status_path)
+    except OSError:
+        return
 
 
 def update_extras_log(extras: object, values: dict[str, float]) -> None:

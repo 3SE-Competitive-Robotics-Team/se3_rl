@@ -14,6 +14,7 @@ from se3_train.training_runtime import (
     IterationTiming,
     detect_training_runtime,
     format_runtime_summary,
+    write_training_status,
 )
 
 
@@ -115,6 +116,13 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
             )
             self._log_profile_scalars(it, timing)
+            if not self.is_distributed or self.gpu_global_rank == 0:
+                write_training_status(
+                    self.logger.log_dir,  # type: ignore[arg-type]
+                    iteration=it,
+                    total_iterations=total_it,
+                    timing=timing,
+                )
 
             if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore[arg-type]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import sys
@@ -18,7 +19,12 @@ from mjlab.scripts.play import PlayConfig
 from mjlab.tasks.registry import list_tasks, load_rl_cfg
 from mjlab.viewer.viser.viewer import ViserPlayViewer
 
+from se3_train.training_runtime import TRAINING_STATUS_FILENAME
+
 _TRAINING_ITER_PATTERN = re.compile(r"Learning iteration\s+(\d+)/(\d+)")
+_TRAINING_COLLECT_PATTERN = re.compile(r"Collection time:\s+([0-9.]+)s")
+_TRAINING_LEARNING_PATTERN = re.compile(r"Learning time:\s+([0-9.]+)s")
+_TRAINING_ITER_TIME_PATTERN = re.compile(r"Iteration time:\s+([0-9.]+)s")
 _TRAINING_ITER_UPDATE_INTERVAL_S = 2.0
 _LOG_TAIL_BYTES = 256 * 1024
 
@@ -98,6 +104,8 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         self._se3_train_iter_last_update = now
 
         progress = _read_training_progress(self._se3_train_run_dir)
+        if self._ckpt_mgr is not None:
+            progress["selected_checkpoint"] = self._ckpt_mgr.current_name
         self._se3_train_iter_html.content = _format_training_progress_html(
             self._se3_train_run_dir, progress
         )
@@ -111,14 +119,24 @@ def _training_run_dir_from_env() -> Path | None:
     return Path(raw).expanduser()
 
 
-def _read_training_progress(run_dir: Path) -> dict[str, int | str | None]:
+def _read_training_progress(run_dir: Path) -> dict[str, int | float | str | None]:
     """读取训练日志和 checkpoint，返回 Viser 面板需要的进度字段。"""
-    iteration, total = _latest_logged_iteration(run_dir)
+    logged_progress = _latest_logged_progress(run_dir)
+    status_progress = _read_training_status(run_dir)
+    progress = logged_progress
+    if status_progress is not None:
+        progress = {
+            key: value if value is not None else logged_progress[key]
+            for key, value in status_progress.items()
+        }
     checkpoint_iter = _latest_checkpoint_iteration(run_dir)
     selected_checkpoint = _selected_checkpoint_from_env()
     return {
-        "iteration": iteration,
-        "total": total,
+        "iteration": progress["iteration"],
+        "total": progress["total"],
+        "collect_time_s": progress["collect_time_s"],
+        "learning_time_s": progress["learning_time_s"],
+        "iter_time_s": progress["iter_time_s"],
         "checkpoint_iter": checkpoint_iter,
         "selected_checkpoint": selected_checkpoint,
         "updated_at": time.strftime("%H:%M:%S"),
@@ -133,10 +151,36 @@ def _selected_checkpoint_from_env() -> str | None:
     return Path(raw).name
 
 
-def _latest_logged_iteration(run_dir: Path) -> tuple[int | None, int | None]:
-    """从 rank0 日志尾部提取最新的 Learning iteration。"""
+def _read_training_status(run_dir: Path) -> dict[str, int | float | None] | None:
+    """读取训练 runner 写出的实时状态文件。"""
+    status_path = run_dir / TRAINING_STATUS_FILENAME
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    return {
+        "iteration": _coerce_int(payload.get("iteration")),
+        "total": _coerce_int(payload.get("total_iterations")),
+        "collect_time_s": _coerce_float(payload.get("collect_time_s")),
+        "learning_time_s": _coerce_float(payload.get("learning_time_s")),
+        "iter_time_s": _coerce_float(payload.get("iter_time_s")),
+    }
+
+
+def _latest_logged_progress(run_dir: Path) -> dict[str, int | float | None]:
+    """从 rank0 日志尾部提取最新的训练进度和耗时。"""
+    empty = {
+        "iteration": None,
+        "total": None,
+        "collect_time_s": None,
+        "learning_time_s": None,
+        "iter_time_s": None,
+    }
     if not run_dir.exists():
-        return None, None
+        return empty
 
     log_files = sorted(
         run_dir.glob("torchrunx/*/localhost[0].log"),
@@ -155,8 +199,15 @@ def _latest_logged_iteration(run_dir: Path) -> tuple[int | None, int | None]:
         matches = list(_TRAINING_ITER_PATTERN.finditer(text))
         if matches:
             match = matches[-1]
-            return int(match.group(1)), int(match.group(2))
-    return None, None
+            latest_block = text[match.end() :]
+            return {
+                "iteration": int(match.group(1)),
+                "total": int(match.group(2)),
+                "collect_time_s": _latest_pattern_float(_TRAINING_COLLECT_PATTERN, latest_block),
+                "learning_time_s": _latest_pattern_float(_TRAINING_LEARNING_PATTERN, latest_block),
+                "iter_time_s": _latest_pattern_float(_TRAINING_ITER_TIME_PATTERN, latest_block),
+            }
+    return empty
 
 
 def _latest_checkpoint_iteration(run_dir: Path) -> int | None:
@@ -182,10 +233,48 @@ def _read_file_tail(path: Path, max_bytes: int) -> str:
         return ""
 
 
-def _format_training_progress_html(run_dir: Path, progress: dict[str, int | str | None]) -> str:
+def _latest_pattern_float(pattern: re.Pattern[str], text: str) -> float | None:
+    """返回文本中最后一次匹配到的浮点数。"""
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    return float(matches[-1].group(1))
+
+
+def _coerce_int(value: object) -> int | None:
+    """把 JSON 字段收窄为 int。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _coerce_float(value: object) -> float | None:
+    """把 JSON 字段收窄为 float。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _format_seconds(value: object) -> str:
+    """格式化秒级耗时字段。"""
+    if isinstance(value, int | float):
+        return f"{float(value):.3f}s"
+    return "waiting"
+
+
+def _format_training_progress_html(
+    run_dir: Path, progress: dict[str, int | float | str | None]
+) -> str:
     """格式化训练进度面板 HTML。"""
     iteration = progress["iteration"]
     total = progress["total"]
+    collect_time_s = progress["collect_time_s"]
+    learning_time_s = progress["learning_time_s"]
+    iter_time_s = progress["iter_time_s"]
     checkpoint_iter = progress["checkpoint_iter"]
     selected_checkpoint = progress["selected_checkpoint"]
     updated_at = progress["updated_at"]
@@ -193,8 +282,8 @@ def _format_training_progress_html(run_dir: Path, progress: dict[str, int | str 
     if isinstance(iteration, int) and isinstance(total, int):
         iter_text = f"{iteration} / {total}"
     else:
-        iter_text = "waiting for log"
-    ckpt_text = str(checkpoint_iter) if isinstance(checkpoint_iter, int) else "none"
+        iter_text = "waiting for status"
+    ckpt_text = f"model_{checkpoint_iter}.pt" if isinstance(checkpoint_iter, int) else "none"
     selected_text = (
         str(selected_checkpoint) if isinstance(selected_checkpoint, str) else "unspecified"
     )
@@ -202,17 +291,61 @@ def _format_training_progress_html(run_dir: Path, progress: dict[str, int | str 
     iter_text = html.escape(iter_text)
     ckpt_text = html.escape(ckpt_text)
     selected_text = html.escape(selected_text)
+    iter_time_text = html.escape(_format_seconds(iter_time_s))
+    collect_time_text = html.escape(_format_seconds(collect_time_s))
+    learning_time_text = html.escape(_format_seconds(learning_time_s))
     updated_text = html.escape(str(updated_at))
 
     return f"""
       <div style="font-size:0.85em; line-height:1.35; padding:0 1em 0.5em 1em;">
-        <strong>Training iter:</strong> {iter_text}<br/>
+        <strong>Training progress:</strong> {iter_text}<br/>
+        <strong>iter_time:</strong> {iter_time_text}<br/>
+        <strong>collect_time:</strong> {collect_time_text}<br/>
+        <strong>learning_time:</strong> {learning_time_text}<br/>
         <strong>Selected checkpoint:</strong> {selected_text}<br/>
-        <strong>Latest checkpoint:</strong> model_{ckpt_text}.pt<br/>
+        <strong>Latest checkpoint:</strong> {ckpt_text}<br/>
         <strong>Run:</strong> {run_name}<br/>
         <strong>Updated:</strong> {updated_text}
       </div>
     """
+
+
+def _configure_viser_training_env(task_id: str, cfg: PlayConfig) -> None:
+    """为 se3-play 自动选择要显示的训练 run。"""
+    if cfg.checkpoint_file is not None and not os.environ.get("SE3_VISER_SELECTED_CHECKPOINT"):
+        os.environ["SE3_VISER_SELECTED_CHECKPOINT"] = Path(cfg.checkpoint_file).name
+
+    if os.environ.get("SE3_VISER_TRAIN_RUN_DIR"):
+        return
+
+    run_dir = _training_run_dir_from_checkpoint(cfg.checkpoint_file)
+    if run_dir is None and cfg.wandb_run_path is None:
+        run_dir = _latest_training_run_dir(task_id, Path(cfg.log_root))
+    if run_dir is not None:
+        os.environ["SE3_VISER_TRAIN_RUN_DIR"] = str(run_dir)
+
+
+def _training_run_dir_from_checkpoint(checkpoint_file: str | None) -> Path | None:
+    """从本地 checkpoint 路径推断训练 run 目录。"""
+    if checkpoint_file is None:
+        return None
+    checkpoint = Path(checkpoint_file).expanduser()
+    return checkpoint.parent if checkpoint.exists() else None
+
+
+def _latest_training_run_dir(task_id: str, log_root: Path) -> Path | None:
+    """按任务配置自动选择最近更新的本地训练 run。"""
+    root = log_root.expanduser()
+    if not root.is_absolute():
+        root = Path.cwd() / root
+    experiment_name = load_rl_cfg(task_id).experiment_name
+    experiment_root = root / experiment_name
+    if not experiment_root.exists():
+        return None
+    runs = [path for path in experiment_root.iterdir() if path.is_dir()]
+    if not runs:
+        return None
+    return max(runs, key=lambda path: (path.stat().st_mtime, path.name))
 
 
 def _install_se3_viser_viewer() -> None:
@@ -244,7 +377,9 @@ def main() -> None:
     del remaining_args
 
     _install_se3_viser_viewer()
-    mjlab_play.run_play(chosen_task, _resolve_play_config(chosen_task, args))
+    resolved_args = _resolve_play_config(chosen_task, args)
+    _configure_viser_training_env(chosen_task, resolved_args)
+    mjlab_play.run_play(chosen_task, resolved_args)
 
 
 if __name__ == "__main__":
