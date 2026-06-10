@@ -41,7 +41,7 @@ from .protocol import (
 
 _ROBOT_CFG = RobotConfig()
 _ZERO_ACTION = np.zeros(6, dtype=np.float32)
-_DEFAULT_MJCF = Path("assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml")
+_DEFAULT_MJCF = Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml")
 _DEFAULT_RENDER_WIDTH = 1280
 _DEFAULT_RENDER_HEIGHT = 720
 _DEFAULT_RENDER_FPS = 50.0
@@ -52,9 +52,13 @@ _FLOOR_GEOM_GROUP = 2
 _DEBUG_JOINTS = (
     ("lf0", "lf0_Joint", "LF0"),
     ("lf1", "lf1_Joint", "LF1"),
+    ("lb", "l_drive_bar_Joint", "LB"),
+    ("lc", "l_coupler_Joint", "LC"),
     ("lw", "l_wheel_Joint", "LW"),
     ("rf0", "rf0_Joint", "RF0"),
     ("rf1", "rf1_Joint", "RF1"),
+    ("rb", "r_drive_bar_Joint", "RB"),
+    ("rc", "r_coupler_Joint", "RC"),
     ("rw", "r_wheel_Joint", "RW"),
 )
 _DEBUG_BODY_FRAMES = (("base", "base_link", "base_link"),)
@@ -65,6 +69,10 @@ _DEFAULT_CAMERA_ELEVATION = -20.0
 _DEFAULT_CAMERA_DISTANCE = 1.25
 _DEFAULT_USE_GRAVITY_ATTITUDE = True
 _MAX_GYRO_INTEGRATION_DT_S = 0.05
+_CLOSED_CHAIN_SOLVER_EPS = 1.0e-5
+_CLOSED_CHAIN_SOLVER_ITERS = 10
+_CLOSED_CHAIN_RETRY_ERROR_M = 1.0e-6
+_CLOSED_CHAIN_STEP_LIMIT_RAD = 0.6
 _JOINT_FRAME_AXIS_LENGTH = 0.13
 _JOINT_FRAME_AXIS_WIDTH = 0.008
 _JOINT_FRAME_COLORS = (
@@ -563,7 +571,6 @@ def state_to_snapshot(
     obs = obs_result.obs
     joint_pos = np.asarray(state.joint_pos, dtype=np.float64)
     target_joint_pos = np.asarray(state.target_joint_pos, dtype=np.float64)
-    render_joint_pos = _policy_to_output_pos_np(joint_pos)
     joint_pos_error = _wrap_angle_np(target_joint_pos - joint_pos)
     return {
         "source": source,
@@ -584,7 +591,7 @@ def state_to_snapshot(
         "joint_pos_error": _finite_list(joint_pos_error),
         "joint_active": _finite_list(_policy_active_angles_np(joint_pos)),
         "target_active": _finite_list(_policy_active_angles_np(target_joint_pos)),
-        "render_joint_pos": _finite_list(render_joint_pos),
+        "render_joint_pos": _finite_list(joint_pos),
         "joint_vel": _finite_list(state.joint_vel),
         "hip_torque": _finite_list(state.hip_torque),
         "wheel_torque": _finite_list(state.wheel_torque),
@@ -608,6 +615,10 @@ def state_to_snapshot(
 
 def _wrap_angle_np(angle: np.ndarray) -> np.ndarray:
     return np.remainder(np.asarray(angle, dtype=np.float64) + np.pi, 2.0 * np.pi) - np.pi
+
+
+def _wrap_angle_scalar(angle: float) -> float:
+    return float((float(angle) + math.pi) % (2.0 * math.pi) - math.pi)
 
 
 def _policy_active_angles_np(joint_pos: np.ndarray) -> np.ndarray:
@@ -676,6 +687,9 @@ class MujocoRenderWorker:
             "height": self.height,
             "target_fps": round(1.0 / self.period_s, 3),
             "jpeg_quality": self.jpeg_quality,
+            "mjcf": str(self.mjcf),
+            "model_kind": "loading",
+            "closure_error_m": {},
             "show_visual_model": self.show_visual_model,
             "show_collision_model": self.show_collision_model,
             "use_gravity_attitude": self.use_gravity_attitude,
@@ -879,6 +893,8 @@ class MujocoRenderWorker:
                                 "render_ms": round(render_ms, 3),
                                 "encode_ms": round(encode_ms, 3),
                                 "backend": renderer.backend_info(),
+                                "model_kind": renderer.model_kind,
+                                "closure_error_m": renderer.closure_error(),
                                 "show_visual_model": show_visual_model,
                                 "show_collision_model": show_collision_model,
                                 "use_gravity_attitude": use_gravity_attitude,
@@ -916,6 +932,11 @@ class MujocoStateRenderer:
         self.lock = threading.Lock()
         self.model = mujoco.MjModel.from_xml_path(str(mjcf))
         self.data = mujoco.MjData(self.model)
+        self.neutral_qpos = (
+            np.asarray(self.model.key_qpos[0], dtype=np.float64).copy()
+            if self.model.nkey > 0
+            else np.asarray(self.model.qpos0, dtype=np.float64).copy()
+        )
         self.scene_option = mujoco.MjvOption()
         self._prepare_geom_groups()
         self.renderer = mujoco.Renderer(
@@ -936,11 +957,29 @@ class MujocoStateRenderer:
                 "lf0_Joint",
                 "lf1_Joint",
                 "l_wheel_Joint",
+                "l_drive_bar_Joint",
+                "l_coupler_Joint",
                 "rf0_Joint",
                 "rf1_Joint",
                 "r_wheel_Joint",
+                "r_drive_bar_Joint",
+                "r_coupler_Joint",
             )
         }
+        self.closure_site_ids = {
+            name: self._site_id(name)
+            for name in (
+                "l_coupler_end",
+                "lf_coupler_closure",
+                "r_coupler_end",
+                "rf_coupler_closure",
+            )
+        }
+        self.closed_chain_enabled = self._has_closed_chain_render_joints()
+        self.model_kind = "closed_chain" if self.closed_chain_enabled else "fourbar_surrogate"
+        self.closed_chain_passive_seed = self._initial_closed_chain_passive_seed()
+        self.closed_chain_failed_signatures: dict[str, tuple[float, float]] = {}
+        self.last_closure_error_m: dict[str, float] = {}
         self.debug_joint_ids = {key: self._joint_id(name) for key, name, _ in _DEBUG_JOINTS}
         self.debug_body_ids = {key: self._body_id(name) for key, name, _ in _DEBUG_BODY_FRAMES}
         self.enabled_joint_frames = {key: False for key in _DEBUG_FRAME_KEYS}
@@ -999,6 +1038,9 @@ class MujocoStateRenderer:
     def backend_info(self) -> dict[str, str | None]:
         return dict(self._backend_info or {})
 
+    def closure_error(self) -> dict[str, float]:
+        return dict(self.last_closure_error_m)
+
     def close(self) -> None:
         with self.lock, suppress(Exception):
             self.renderer.close()
@@ -1045,6 +1087,47 @@ class MujocoStateRenderer:
         if body_id < 0:
             return None
         return int(body_id)
+
+    def _site_id(self, name: str) -> int | None:
+        site_id = self.mujoco.mj_name2id(
+            self.model,
+            self.mujoco.mjtObj.mjOBJ_SITE,
+            name,
+        )
+        if site_id < 0:
+            return None
+        return int(site_id)
+
+    def _has_closed_chain_render_joints(self) -> bool:
+        required_joints = (
+            "lf0_Joint",
+            "lf1_Joint",
+            "l_wheel_Joint",
+            "l_drive_bar_Joint",
+            "l_coupler_Joint",
+            "rf0_Joint",
+            "rf1_Joint",
+            "r_wheel_Joint",
+            "r_drive_bar_Joint",
+            "r_coupler_Joint",
+        )
+        required_sites = (
+            "l_coupler_end",
+            "lf_coupler_closure",
+            "r_coupler_end",
+            "rf_coupler_closure",
+        )
+        return all(self.joint_qpos.get(name) is not None for name in required_joints) and all(
+            self.closure_site_ids.get(name) is not None for name in required_sites
+        )
+
+    def _initial_closed_chain_passive_seed(self) -> dict[str, float]:
+        seed: dict[str, float] = {}
+        for name in ("lf1_Joint", "l_coupler_Joint", "rf1_Joint", "r_coupler_Joint"):
+            addr = self.joint_qpos.get(name)
+            if addr is not None and addr < self.neutral_qpos.size:
+                seed[name] = float(self.neutral_qpos[addr])
+        return seed
 
     def _draw_joint_frames(self) -> None:
         for key, _, _ in _DEBUG_BODY_FRAMES:
@@ -1114,7 +1197,7 @@ class MujocoStateRenderer:
             self.model.geom_rgba[collision_ids] = (1.0, 0.72, 0.18, 0.38)
 
     def _apply_state(self, state: PolicyStateFrame) -> None:
-        self.data.qpos[:] = self.model.qpos0
+        self.data.qpos[:] = self.neutral_qpos
         if self.model.nq >= 7:
             self.data.qpos[0:3] = (
                 0.0,
@@ -1124,20 +1207,197 @@ class MujocoStateRenderer:
             self.data.qpos[3:7] = self._base_quat_for_state(state)
 
         policy_pos = np.asarray(state.joint_pos, dtype=np.float64).reshape(4)
-        output_pos = _policy_to_output_pos_np(policy_pos)
         wheel_pos = np.asarray(state.wheel_pos, dtype=np.float64).reshape(2)
+        if self.closed_chain_enabled:
+            self._apply_closed_chain_state(policy_pos, wheel_pos)
+            return
+
+        self._apply_surrogate_state(policy_pos, wheel_pos)
+
+    def _apply_closed_chain_state(self, policy_pos: np.ndarray, wheel_pos: np.ndarray) -> None:
         values = {
-            "lf0_Joint": float(output_pos[0]),
-            "lf1_Joint": float(output_pos[1]),
+            "lf0_Joint": float(policy_pos[0]),
+            "l_drive_bar_Joint": float(policy_pos[1]),
             "l_wheel_Joint": float(wheel_pos[0]),
-            "rf0_Joint": float(output_pos[2]),
-            "rf1_Joint": float(output_pos[3]),
+            "rf0_Joint": float(policy_pos[2]),
+            "r_drive_bar_Joint": float(policy_pos[3]),
             "r_wheel_Joint": float(wheel_pos[1]),
         }
+        self._set_qpos_values(values)
+        for name, value in self.closed_chain_passive_seed.items():
+            self._set_qpos_value(name, value)
+        self._project_closed_chain_passive_joints()
+
+    def _apply_surrogate_state(self, policy_pos: np.ndarray, wheel_pos: np.ndarray) -> None:
+        output_pos = _policy_to_output_pos_np(policy_pos)
+        self._set_qpos_values(
+            {
+                "lf0_Joint": float(output_pos[0]),
+                "lf1_Joint": float(output_pos[1]),
+                "l_wheel_Joint": float(wheel_pos[0]),
+                "rf0_Joint": float(output_pos[2]),
+                "rf1_Joint": float(output_pos[3]),
+                "r_wheel_Joint": float(wheel_pos[1]),
+            }
+        )
+
+    def _set_qpos_values(self, values: dict[str, float]) -> None:
         for name, value in values.items():
-            addr = self.joint_qpos.get(name)
-            if addr is not None and addr < self.model.nq:
-                self.data.qpos[addr] = value
+            self._set_qpos_value(name, value)
+
+    def _set_qpos_value(self, name: str, value: float) -> None:
+        addr = self.joint_qpos.get(name)
+        if addr is not None and addr < self.model.nq:
+            self.data.qpos[addr] = value
+
+    def _project_closed_chain_passive_joints(self) -> None:
+        self.last_closure_error_m = {
+            "left": round(
+                self._solve_closed_chain_side(
+                    side="left",
+                    active_joints=("lf0_Joint", "l_drive_bar_Joint"),
+                    passive_joints=("lf1_Joint", "l_coupler_Joint"),
+                    site_a="l_coupler_end",
+                    site_b="lf_coupler_closure",
+                ),
+                9,
+            ),
+            "right": round(
+                self._solve_closed_chain_side(
+                    side="right",
+                    active_joints=("rf0_Joint", "r_drive_bar_Joint"),
+                    passive_joints=("rf1_Joint", "r_coupler_Joint"),
+                    site_a="r_coupler_end",
+                    site_b="rf_coupler_closure",
+                ),
+                9,
+            ),
+        }
+
+    def _solve_closed_chain_side(
+        self,
+        *,
+        side: str,
+        active_joints: tuple[str, str],
+        passive_joints: tuple[str, str],
+        site_a: str,
+        site_b: str,
+    ) -> float:
+        passive_addrs = tuple(self.joint_qpos.get(name) for name in passive_joints)
+        active_addrs = tuple(self.joint_qpos.get(name) for name in active_joints)
+        site_ids = (self.closure_site_ids.get(site_a), self.closure_site_ids.get(site_b))
+        if (
+            passive_addrs[0] is None
+            or passive_addrs[1] is None
+            or active_addrs[0] is None
+            or active_addrs[1] is None
+            or site_ids[0] is None
+            or site_ids[1] is None
+        ):
+            return 0.0
+
+        base_qpos = self.data.qpos.copy()
+        active_signature = (
+            round(float(base_qpos[active_addrs[0]]), 3),
+            round(float(base_qpos[active_addrs[1]]), 3),
+        )
+        seeds = self._closed_chain_solver_seeds(passive_joints, passive_addrs)
+        if self.closed_chain_failed_signatures.get(side) == active_signature:
+            seeds = seeds[:1]
+        best_error = math.inf
+        best_passive = (
+            float(self.data.qpos[passive_addrs[0]]),
+            float(self.data.qpos[passive_addrs[1]]),
+        )
+        for seed in seeds:
+            self.data.qpos[:] = base_qpos
+            self.data.qpos[passive_addrs[0]] = float(seed[0])
+            self.data.qpos[passive_addrs[1]] = float(seed[1])
+            error = self._refine_closed_chain_side(passive_addrs, site_ids)
+            if error < best_error:
+                best_error = error
+                best_passive = (
+                    _wrap_angle_scalar(float(self.data.qpos[passive_addrs[0]])),
+                    _wrap_angle_scalar(float(self.data.qpos[passive_addrs[1]])),
+                )
+            if error <= _CLOSED_CHAIN_RETRY_ERROR_M:
+                break
+
+        self.data.qpos[:] = base_qpos
+        self.data.qpos[passive_addrs[0]] = best_passive[0]
+        self.data.qpos[passive_addrs[1]] = best_passive[1]
+        self.closed_chain_passive_seed[passive_joints[0]] = best_passive[0]
+        self.closed_chain_passive_seed[passive_joints[1]] = best_passive[1]
+        self.mujoco.mj_forward(self.model, self.data)
+        final_error = self._closed_chain_residual_norm(site_ids)
+        if final_error > _CLOSED_CHAIN_RETRY_ERROR_M:
+            self.closed_chain_failed_signatures[side] = active_signature
+        else:
+            self.closed_chain_failed_signatures.pop(side, None)
+        return final_error
+
+    def _closed_chain_solver_seeds(
+        self,
+        passive_joints: tuple[str, str],
+        passive_addrs: tuple[int, int],
+    ) -> tuple[tuple[float, float], ...]:
+        current = (
+            float(self.data.qpos[passive_addrs[0]]),
+            float(self.data.qpos[passive_addrs[1]]),
+        )
+        neutral = (
+            float(self.neutral_qpos[passive_addrs[0]]),
+            float(self.neutral_qpos[passive_addrs[1]]),
+        )
+        previous = (
+            self.closed_chain_passive_seed.get(passive_joints[0], neutral[0]),
+            self.closed_chain_passive_seed.get(passive_joints[1], neutral[1]),
+        )
+        return (
+            previous,
+            current,
+            neutral,
+            (0.0, 0.0),
+            (-1.0, 1.0),
+            (1.0, -1.0),
+            (-2.0, 2.0),
+            (2.0, -2.0),
+            (neutral[0] + math.pi, neutral[1] + math.pi),
+            (neutral[0] - math.pi, neutral[1] - math.pi),
+        )
+
+    def _refine_closed_chain_side(
+        self,
+        passive_addrs: tuple[int, int],
+        site_ids: tuple[int, int],
+    ) -> float:
+        for _ in range(_CLOSED_CHAIN_SOLVER_ITERS):
+            residual = self._closed_chain_residual(site_ids)
+            error = float(np.linalg.norm(residual))
+            if error <= _CLOSED_CHAIN_RETRY_ERROR_M:
+                return error
+
+            jacobian = np.zeros((3, 2), dtype=np.float64)
+            for col, addr in enumerate(passive_addrs):
+                old_value = float(self.data.qpos[addr])
+                self.data.qpos[addr] = old_value + _CLOSED_CHAIN_SOLVER_EPS
+                residual_plus = self._closed_chain_residual(site_ids)
+                self.data.qpos[addr] = old_value
+                jacobian[:, col] = (residual_plus - residual) / _CLOSED_CHAIN_SOLVER_EPS
+
+            delta = np.linalg.lstsq(jacobian, -residual, rcond=None)[0]
+            delta = np.clip(delta, -_CLOSED_CHAIN_STEP_LIMIT_RAD, _CLOSED_CHAIN_STEP_LIMIT_RAD)
+            for col, addr in enumerate(passive_addrs):
+                self.data.qpos[addr] += float(delta[col])
+
+        return self._closed_chain_residual_norm(site_ids)
+
+    def _closed_chain_residual(self, site_ids: tuple[int, int]) -> np.ndarray:
+        self.mujoco.mj_forward(self.model, self.data)
+        return np.asarray(self.data.site_xpos[site_ids[0]] - self.data.site_xpos[site_ids[1]])
+
+    def _closed_chain_residual_norm(self, site_ids: tuple[int, int]) -> float:
+        return float(np.linalg.norm(self._closed_chain_residual(site_ids)))
 
     def _base_quat_for_state(self, state: PolicyStateFrame) -> np.ndarray:
         gravity_quat = _quat_from_projected_gravity(state.projected_gravity)
@@ -1757,9 +2017,13 @@ INDEX_HTML = r"""<!doctype html>
           <label class="toggle small"><input class="jointToggle" data-joint="base" type="checkbox"><span>base_link</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="lf0" type="checkbox"><span>LF0</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="lf1" type="checkbox"><span>LF1</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="lb" type="checkbox"><span>LB</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="lc" type="checkbox"><span>LC</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="lw" type="checkbox"><span>LW</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="rf0" type="checkbox"><span>RF0</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="rf1" type="checkbox"><span>RF1</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="rb" type="checkbox"><span>RB</span></label>
+          <label class="toggle small"><input class="jointToggle" data-joint="rc" type="checkbox"><span>RC</span></label>
           <label class="toggle small"><input class="jointToggle" data-joint="rw" type="checkbox"><span>RW</span></label>
         </div>
       </div>
@@ -1809,6 +2073,7 @@ const jointToggles = Array.from(document.querySelectorAll(".jointToggle"));
 const labels = ["LF", "LB", "RF", "RB"];
 const CAMERA_SEND_INTERVAL_MS = 16;
 let snapshot = null;
+let renderInfo = {};
 let mjcfRenderOk = false;
 let renderSettingsTimer = null;
 let renderSettingsInFlight = false;
@@ -1916,6 +2181,18 @@ gravityAttitudeToggle.addEventListener("change", () => {
 });
 jointToggles.forEach(input => input.addEventListener("change", updateRenderSettings));
 fetchRenderSettings().catch(() => {});
+
+async function fetchRenderInfo() {
+  try {
+    const response = await fetch("/render_info", { cache: "no-store" });
+    if (!response.ok) return;
+    renderInfo = await response.json();
+  } catch (_) {
+    renderInfo = {};
+  }
+}
+setInterval(fetchRenderInfo, 1000);
+fetchRenderInfo().catch(() => {});
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
@@ -2040,6 +2317,9 @@ function updatePanel(s) {
   ]);
 
   setGrid("statusGrid", [
+    ["model_kind", renderInfo.model_kind],
+    ["closure_error_m", closureErrorText(renderInfo.closure_error_m)],
+    ["render_fps", fmt(renderInfo.render_fps, 1)],
     ["attitude_source", gravityAttitudeToggle.checked ? "gravity" : "gyro"],
     ["tick_ms", s.tick_ms],
     ["rc_switch_r", s.rc_switch_r],
@@ -2060,6 +2340,13 @@ function updatePanel(s) {
     [...(s.wheel_pos || []), ...(s.wheel_vel || [])], 60.0);
   const obs = s.obs || {};
   setObsGrid("obsGrid", Object.entries(obs));
+}
+
+function closureErrorText(value) {
+  if (!value || typeof value !== "object") return "-";
+  const left = value.left ?? null;
+  const right = value.right ?? null;
+  return `L ${fmt(left, 5)} / R ${fmt(right, 5)}`;
 }
 
 function setGrid(id, rows) {

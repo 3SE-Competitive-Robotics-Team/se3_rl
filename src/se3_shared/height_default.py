@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-import torch
 
 from .fourbar import output_knee_from_active_angle_np_array, output_knee_from_active_angle_torch
 from .robot import RobotConfig
+
+if TYPE_CHECKING:
+    import torch
 
 _ROBOT_CFG = RobotConfig()
 _LUT_SIZE = 1024
@@ -27,6 +31,7 @@ def policy_default_from_height_torch(
     cfg: RobotConfig | None = None,
 ) -> torch.Tensor:
     """根据 base height command 返回 policy 语义下的 [LF, LB, RF, RB] 默认姿态。"""
+    torch = _import_torch()
     _ = cfg
     height = command_height.reshape(-1).to(dtype=torch.float32)
     active_by_length, length_grid, active_grid, vec_x_grid, vec_z_grid = _height_default_lut_torch(
@@ -82,6 +87,7 @@ def _height_default_lut_torch(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    torch = _import_torch()
     key = (str(device), dtype)
     cached = _TORCH_CACHE.get(key)
     if cached is not None:
@@ -115,6 +121,7 @@ def _height_default_lut_np() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
 
 
 def _leg_vector_torch(output_knee: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    torch = _import_torch()
     body = torch.as_tensor(_LF1_BODY_XZ, device=output_knee.device, dtype=output_knee.dtype)
     joint = torch.as_tensor(_LF1_JOINT_XZ, device=output_knee.device, dtype=output_knee.dtype)
     wheel = torch.as_tensor(_WHEEL_BODY_XZ, device=output_knee.device, dtype=output_knee.dtype)
@@ -151,6 +158,7 @@ def _interp_monotonic_torch(
     xp: torch.Tensor,
     fp: torch.Tensor,
 ) -> torch.Tensor:
+    torch = _import_torch()
     x_clamped = torch.clamp(x, min=xp[0], max=xp[-1])
     idx = torch.searchsorted(xp, x_clamped, right=True)
     idx = torch.clamp(idx, 1, xp.numel() - 1)
@@ -160,3 +168,9 @@ def _interp_monotonic_torch(
     y1 = fp[idx]
     t = (x_clamped - x0) / torch.clamp(x1 - x0, min=1.0e-12)
     return y0 + t * (y1 - y0)
+
+
+def _import_torch():
+    import torch
+
+    return torch

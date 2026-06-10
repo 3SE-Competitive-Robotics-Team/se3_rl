@@ -74,6 +74,8 @@ http://127.0.0.1:8097
 - 左上角 `source` 应为 `remote`。
 - 左上角 `hz` 应接近 `50`。
 - `render` 应为 `mjcf`，不是 `canvas`。
+- 右侧 `Status.model_kind` 应为 `closed_chain`。
+- 右侧 `Status.closure_error_m` 左右两侧应接近 0，通常应小于 `1e-5 m`。
 - 右侧 `Comm` 显示通信健康状态和延迟字段。
 - `joint_pos`、`joint_vel`、`wheel`、`Observation Slices` 应持续刷新。
 - `Visual` / `Collision` 可切换视觉模型和碰撞体。
@@ -85,7 +87,7 @@ http://127.0.0.1:8097
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8097/render_info |
-  Select-Object ready,render_fps,attitude_source,use_gravity_attitude,width,height,error |
+  Select-Object ready,model_kind,closure_error_m,render_fps,attitude_source,use_gravity_attitude,width,height,error |
   Format-List
 ```
 
