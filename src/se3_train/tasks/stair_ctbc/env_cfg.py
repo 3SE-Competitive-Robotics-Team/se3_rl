@@ -548,6 +548,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "force_threshold": 1.0,
         },
     )
+    cfg.rewards["stair_yaw_diagnostics"] = RewardTermCfg(
+        func=stair_rewards.stair_yaw_diagnostics,
+        weight=0.001,
+        params={"command_name": "velocity_height"},
+    )
 
     cfg.episode_length_s = 8.0 if not play else 9999.0
     return cfg

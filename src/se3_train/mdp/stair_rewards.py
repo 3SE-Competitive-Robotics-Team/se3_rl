@@ -168,6 +168,92 @@ def stair_contact_diagnostics(
     return torch.zeros(env.num_envs, device=env.device)
 
 
+def stair_yaw_diagnostics(
+    env: ManagerBasedRlEnv,
+    command_name: str = "velocity_height",
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """临时记录台阶 play 自转来源，不参与奖励。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    cmd_yaw = cmd[:, 1]
+    base_yaw_rate = robot.data.root_link_ang_vel_b[:, 2]
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_yaw_drive = wheel_vel[:, 0] + wheel_vel[:, 1]
+    wheel_forward_drive = wheel_vel[:, 0] - wheel_vel[:, 1]
+    action = env.action_manager.action
+    wheel_action_yaw_drive = action[:, 4] + action[:, 5]
+    wheel_action_forward_drive = action[:, 4] - action[:, 5]
+    leg_action_mirror = torch.mean(
+        torch.abs(torch.stack((action[:, 0] + action[:, 2], action[:, 1] + action[:, 3]), dim=1)),
+        dim=1,
+    )
+    ctbc_active = _ctbc_triggered_mask(env)
+
+    action_term = _serial_action_term(env, robot)
+    raw_wheel_yaw_drive = wheel_action_yaw_drive
+    raw_leg_action_mirror = leg_action_mirror
+    delayed_wheel_yaw_drive = wheel_action_yaw_drive
+    if action_term is not None:
+        raw_action = getattr(action_term, "raw_action", None)
+        delayed_action = getattr(action_term, "delayed_action", None)
+        if isinstance(raw_action, torch.Tensor) and raw_action.shape[-1] >= 6:
+            raw_wheel_yaw_drive = raw_action[:, 4] + raw_action[:, 5]
+            raw_leg_action_mirror = torch.mean(
+                torch.abs(
+                    torch.stack(
+                        (raw_action[:, 0] + raw_action[:, 2], raw_action[:, 1] + raw_action[:, 3]),
+                        dim=1,
+                    )
+                ),
+                dim=1,
+            )
+        if isinstance(delayed_action, torch.Tensor) and delayed_action.shape[-1] >= 6:
+            delayed_wheel_yaw_drive = delayed_action[:, 4] + delayed_action[:, 5]
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        log = {
+            "StairYaw/cmd_yaw_mean": cmd_yaw.mean().item(),
+            "StairYaw/cmd_yaw_abs_mean": torch.abs(cmd_yaw).mean().item(),
+            "StairYaw/base_yaw_rate_mean": base_yaw_rate.mean().item(),
+            "StairYaw/base_yaw_rate_abs_mean": torch.abs(base_yaw_rate).mean().item(),
+            "StairYaw/base_yaw_rate_abs_ctbc": _masked_mean(torch.abs(base_yaw_rate), ctbc_active),
+            "StairYaw/base_yaw_rate_abs_no_ctbc": _masked_mean(
+                torch.abs(base_yaw_rate), ~ctbc_active
+            ),
+            "StairYaw/ctbc_active_rate": ctbc_active.float().mean().item(),
+            "StairYaw/wheel_vel_yaw_drive_mean": wheel_yaw_drive.mean().item(),
+            "StairYaw/wheel_vel_yaw_drive_abs_mean": torch.abs(wheel_yaw_drive).mean().item(),
+            "StairYaw/wheel_vel_yaw_drive_abs_ctbc": _masked_mean(
+                torch.abs(wheel_yaw_drive), ctbc_active
+            ),
+            "StairYaw/wheel_vel_yaw_drive_abs_no_ctbc": _masked_mean(
+                torch.abs(wheel_yaw_drive), ~ctbc_active
+            ),
+            "StairYaw/wheel_vel_forward_drive_abs_mean": torch.abs(wheel_forward_drive)
+            .mean()
+            .item(),
+            "StairYaw/action_wheel_yaw_drive_abs_mean": torch.abs(wheel_action_yaw_drive)
+            .mean()
+            .item(),
+            "StairYaw/action_wheel_forward_drive_abs_mean": torch.abs(wheel_action_forward_drive)
+            .mean()
+            .item(),
+            "StairYaw/raw_action_wheel_yaw_drive_abs_mean": torch.abs(raw_wheel_yaw_drive)
+            .mean()
+            .item(),
+            "StairYaw/delayed_action_wheel_yaw_drive_abs_mean": torch.abs(delayed_wheel_yaw_drive)
+            .mean()
+            .item(),
+            "StairYaw/leg_action_mirror_abs_mean": leg_action_mirror.mean().item(),
+            "StairYaw/raw_leg_action_mirror_abs_mean": raw_leg_action_mirror.mean().item(),
+        }
+        log.update(_terrain_yaw_logs(env, torch.abs(base_yaw_rate), torch.abs(wheel_yaw_drive)))
+        env.extras["log"].update(log)
+
+    return torch.zeros(env.num_envs, device=env.device)
+
+
 def ctbc_active_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
     """返回 CTBC 当前是否激活，用于后续门控奖励。"""
     return _ctbc_triggered_mask(env)
@@ -386,3 +472,47 @@ def _contact_any(
         return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
     force = torch.linalg.norm(data.force, dim=-1).reshape(env.num_envs, -1)
     return (force > float(force_threshold)).any(dim=1)
+
+
+def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
+    """计算 mask 内均值；空 mask 返回 0。"""
+    mask = mask.to(device=values.device, dtype=torch.bool).reshape(-1)
+    values = values.reshape(-1)
+    if not bool(mask.any()):
+        return 0.0
+    return values[mask].float().mean().item()
+
+
+def _serial_action_term(env: ManagerBasedRlEnv, robot: object) -> object | None:
+    """找到 SerialLeg action term，读取 raw/delayed action 诊断。"""
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is None:
+        return None
+    for term_name in action_manager.active_terms:
+        term = action_manager.get_term(term_name)
+        if getattr(term, "_entity", None) is robot:
+            return term
+    return None
+
+
+def _terrain_yaw_logs(
+    env: ManagerBasedRlEnv,
+    yaw_rate_abs: torch.Tensor,
+    wheel_yaw_abs: torch.Tensor,
+) -> dict[str, float]:
+    """按每类地形拆分 yaw 诊断，定位是否某个地形触发自转。"""
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    cfg = getattr(terrain, "cfg", None)
+    generator_cfg = getattr(cfg, "terrain_generator", None)
+    sub_terrains = getattr(generator_cfg, "sub_terrains", {}) or {}
+    if not isinstance(terrain_types, torch.Tensor) or not sub_terrains:
+        return {}
+    terrain_types = terrain_types.to(device=env.device).reshape(-1)
+    logs: dict[str, float] = {}
+    for terrain_index, terrain_name in enumerate(sub_terrains):
+        mask = terrain_types == terrain_index
+        safe_name = str(terrain_name).replace("/", "_")
+        logs[f"StairYaw/terrain_{safe_name}_base_yaw_abs"] = _masked_mean(yaw_rate_abs, mask)
+        logs[f"StairYaw/terrain_{safe_name}_wheel_yaw_abs"] = _masked_mean(wheel_yaw_abs, mask)
+    return logs
