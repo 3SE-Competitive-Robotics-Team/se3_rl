@@ -21,6 +21,7 @@ from se3_shared import (
 from .cdc import CdcSerial
 from .numpy_policy import NumpyPolicyRuntime
 from .observation import RecoveryObservationBuilder, synthetic_recovery_state
+from .onnx_policy import OnnxPolicyRuntime
 from .protocol import (
     MSG_POLICY_STATE,
     PolicyStateFrame,
@@ -30,7 +31,7 @@ from .protocol import (
     pack_policy_target,
 )
 
-DEFAULT_RECOVERY_CHECKPOINT = Path("logs/deploy/model_5999_recovery_gru.npz")
+DEFAULT_RECOVERY_CHECKPOINT = Path("assets/base_model/model_5999_gru_actor_only.npz")
 DEFAULT_CDC_PORT = "auto"
 ACTION_FLAG_DRY_RUN = 1 << 0
 ACTION_FLAG_TIMEOUT = 1 << 1
@@ -71,6 +72,13 @@ class RuntimeStats:
     last_state_hip_torque: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
     last_state_wheel_torque: tuple[float, ...] = (0.0, 0.0)
     last_state_wheel_motor_torque: tuple[float, ...] = (0.0, 0.0)
+    policy_inference_frames: int = 0
+    last_policy_inference_ms: float = 0.0
+    total_policy_inference_ms: float = 0.0
+    max_policy_inference_ms: float = 0.0
+    last_step_policy_inference_ms: float | None = None
+    last_action_flags: int = 0
+    last_state_output_enabled: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +204,9 @@ class RecoveryRuntime:
         self._last_action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
         self._action_seq = 0
         self._policy_memory_clean = True
+        self._start_monotonic = time.monotonic()
+        self._last_print_monotonic = self._start_monotonic
+        self._last_print_steps = 0
         self.telemetry = TelemetryLogger(
             cfg.telemetry_log,
             every=cfg.telemetry_log_every,
@@ -222,11 +233,11 @@ class RecoveryRuntime:
         for step in range(max_steps):
             state = synthetic_recovery_state(seq=step)
             self.stats.state_frames += 1
-            action, flags, obs = self._act_from_state(state)
+            action, flags, obs, policy_inference_ms = self._act_from_state(state)
             flags |= ACTION_FLAG_DRY_RUN
             self._decode_target(action)
-            self._record_action(state, action, flags)
-            self._write_telemetry(state, obs, action, flags)
+            self._record_action(state, action, flags, policy_inference_ms)
+            self._write_telemetry(state, obs, action, flags, policy_inference_ms)
             self._maybe_print()
 
     def _run_cdc(self) -> None:
@@ -258,6 +269,7 @@ class RecoveryRuntime:
 
                 age_s = now - latest_state_time
                 flags = 0
+                policy_inference_ms: float | None = None
                 if age_s > self.cfg.state_timeout_s:
                     self._reset_policy_memory()
                     action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
@@ -276,12 +288,12 @@ class RecoveryRuntime:
                         self.stats.nonfinite_frames += 1
                     packet = self._make_hold_target_packet(latest_state)
                 else:
-                    action, flags, obs = self._act_from_state(latest_state)
+                    action, flags, obs, policy_inference_ms = self._act_from_state(latest_state)
                     packet = self._make_target_packet(action)
 
                 serial.write_all(packet, timeout_s=self.cfg.write_timeout_s)
-                self._record_action(latest_state, action, flags)
-                self._write_telemetry(latest_state, obs, action, flags)
+                self._record_action(latest_state, action, flags, policy_inference_ms)
+                self._write_telemetry(latest_state, obs, action, flags, policy_inference_ms)
                 self._maybe_print()
 
     def _read_states(
@@ -308,16 +320,32 @@ class RecoveryRuntime:
         flags = ACTION_FLAG_NONFINITE if result.had_nonfinite_input else 0
         return result.obs.astype(np.float32, copy=False), flags
 
-    def _act_from_state(self, state: PolicyStateFrame) -> tuple[np.ndarray, int, np.ndarray]:
+    def _act_from_state(self, state: PolicyStateFrame) -> tuple[np.ndarray, int, np.ndarray, float]:
         obs, flags = self._build_observation(state)
+        started = time.perf_counter()
         action = self.policy.act(obs)
+        policy_inference_ms = (time.perf_counter() - started) * 1000.0
+        self._record_policy_inference(policy_inference_ms)
         if not np.isfinite(action).all():
             flags |= ACTION_FLAG_NONFINITE
             action = np.nan_to_num(action, nan=0.0, posinf=0.0, neginf=0.0)
         if flags & ACTION_FLAG_NONFINITE:
             self.stats.nonfinite_frames += 1
         self._policy_memory_clean = False
-        return action.astype(np.float32, copy=False), flags, obs
+        return action.astype(np.float32, copy=False), flags, obs, policy_inference_ms
+
+    def _record_policy_inference(self, policy_inference_ms: float) -> None:
+        value = float(policy_inference_ms)
+        self.stats.policy_inference_frames += 1
+        self.stats.last_policy_inference_ms = value
+        self.stats.total_policy_inference_ms += value
+        self.stats.max_policy_inference_ms = max(self.stats.max_policy_inference_ms, value)
+
+    def _avg_policy_inference_ms(self) -> float:
+        count = int(self.stats.policy_inference_frames)
+        if count <= 0:
+            return 0.0
+        return float(self.stats.total_policy_inference_ms) / float(count)
 
     def _reset_policy_memory(self) -> None:
         if self._policy_memory_clean:
@@ -357,10 +385,19 @@ class RecoveryRuntime:
         self.stats.last_target_wheel_vel = tuple(float(v) for v in target.wheel_vel)
         return target
 
-    def _record_action(self, state: PolicyStateFrame, action: np.ndarray, flags: int) -> None:
+    def _record_action(
+        self,
+        state: PolicyStateFrame,
+        action: np.ndarray,
+        flags: int,
+        policy_inference_ms: float | None,
+    ) -> None:
         self.stats.steps += 1
         self.stats.action_frames += 1
         self.stats.last_state_seq = state.seq
+        self.stats.last_action_flags = int(flags)
+        self.stats.last_state_output_enabled = int(state.output_enabled)
+        self.stats.last_step_policy_inference_ms = policy_inference_ms
         self._last_action = self.target_decoder.clip_action(action)
         self.stats.last_action = tuple(float(v) for v in self._last_action)
         self.stats.last_state_joint_pos = tuple(float(v) for v in state.joint_pos)
@@ -377,6 +414,7 @@ class RecoveryRuntime:
         obs: np.ndarray,
         action: np.ndarray,
         flags: int,
+        policy_inference_ms: float | None,
     ) -> None:
         joint_pos = np.asarray(state.joint_pos, dtype=np.float32)
         stm_target = np.asarray(state.target_joint_pos, dtype=np.float32)
@@ -395,6 +433,13 @@ class RecoveryRuntime:
             "output_enabled": int(state.output_enabled),
             "flags": int(flags),
             "flag_names": _action_flag_names(flags),
+            "policy_inference_ms": None
+            if policy_inference_ms is None
+            else float(policy_inference_ms),
+            "policy_inference_ms_last": float(self.stats.last_policy_inference_ms),
+            "policy_inference_ms_avg": float(self._avg_policy_inference_ms()),
+            "policy_inference_ms_max": float(self.stats.max_policy_inference_ms),
+            "policy_inference_frames": int(self.stats.policy_inference_frames),
             "target_mode": "hold_current"
             if flags & (ACTION_FLAG_OUTPUT_DISABLED_HOLD | ACTION_FLAG_TIMEOUT)
             else "policy",
@@ -424,6 +469,26 @@ class RecoveryRuntime:
     def _maybe_print(self) -> None:
         if self.cfg.print_every <= 0 or self.stats.steps % self.cfg.print_every != 0:
             return
+        now = time.monotonic()
+        interval_s = max(now - self._last_print_monotonic, 1.0e-3)
+        total_s = max(now - self._start_monotonic, 1.0e-3)
+        recent_fps = float(self.stats.steps - self._last_print_steps) / interval_s
+        avg_fps = float(self.stats.steps) / total_s
+        self._last_print_monotonic = now
+        self._last_print_steps = int(self.stats.steps)
+        policy_ms = (
+            "--"
+            if self.stats.last_step_policy_inference_ms is None
+            else f"{self.stats.last_step_policy_inference_ms:.3f}"
+        )
+        flag_names = _action_flag_names(self.stats.last_action_flags)
+        flags_text = ",".join(flag_names) if flag_names else "none"
+        target_mode = (
+            "hold_current"
+            if self.stats.last_action_flags
+            & (ACTION_FLAG_OUTPUT_DISABLED_HOLD | ACTION_FLAG_TIMEOUT)
+            else "policy"
+        )
         action = _fmt_values(self.stats.last_action[:4])
         target = _fmt_values(self.stats.last_target_joint_pos)
         stm_target = _fmt_values(self.stats.last_state_target_joint_pos)
@@ -440,6 +505,13 @@ class RecoveryRuntime:
             f"step={self.stats.steps} states={self.stats.state_frames} "
             f"actions={self.stats.action_frames} last_state={self.stats.last_state_seq} "
             f"timeouts={self.stats.timeout_frames} nonfinite={self.stats.nonfinite_frames} "
+            f"mode={target_mode} output={self.stats.last_state_output_enabled} "
+            f"flags={flags_text} "
+            f"fps={recent_fps:.1f}/{avg_fps:.1f} "
+            f"policy_ms={policy_ms}/"
+            f"{self._avg_policy_inference_ms():.3f}/"
+            f"{self.stats.max_policy_inference_ms:.3f} "
+            f"policy_n={self.stats.policy_inference_frames} "
             f"action4=[{action}] target4=[{target}] stm_target4=[{stm_target}] "
             f"joint4=[{joint}] err4=[{error}] torque4=[{torque}] "
             f"wheel_motor_torque=[{wheel_torque}]"
@@ -447,8 +519,10 @@ class RecoveryRuntime:
 
 
 def load_policy_runtime(checkpoint: Path, device: str) -> object:
-    """按 checkpoint 类型加载 PyTorch 或 NumPy actor。"""
+    """按 checkpoint 类型加载 ONNX、NumPy 或 PyTorch actor。"""
 
+    if checkpoint.suffix == ".onnx":
+        return OnnxPolicyRuntime(checkpoint)
     if checkpoint.suffix == ".npz":
         return NumpyPolicyRuntime(checkpoint)
     from se3_sim2sim.policy import PolicyRuntime

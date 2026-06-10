@@ -68,7 +68,9 @@ _DEFAULT_CAMERA_AZIMUTH = 135.0
 _DEFAULT_CAMERA_ELEVATION = -20.0
 _DEFAULT_CAMERA_DISTANCE = 1.25
 _DEFAULT_USE_GRAVITY_ATTITUDE = True
+_DEFAULT_WHEEL_RENDER_MODE = "position"
 _MAX_GYRO_INTEGRATION_DT_S = 0.05
+_MAX_WHEEL_INTEGRATION_DT_S = 0.05
 _CLOSED_CHAIN_SOLVER_EPS = 1.0e-5
 _CLOSED_CHAIN_SOLVER_ITERS = 10
 _CLOSED_CHAIN_RETRY_ERROR_M = 1.0e-6
@@ -158,6 +160,7 @@ class VisualizerServer(ThreadingHTTPServer):
         show_collision_model: bool | None = None,
         joint_frames: dict[str, bool] | None = None,
         use_gravity_attitude: bool | None = None,
+        wheel_render_mode: str | None = None,
         camera_azimuth: float | None = None,
         camera_elevation: float | None = None,
         camera_distance: float | None = None,
@@ -169,6 +172,7 @@ class VisualizerServer(ThreadingHTTPServer):
             show_collision_model=show_collision_model,
             joint_frames=joint_frames,
             use_gravity_attitude=use_gravity_attitude,
+            wheel_render_mode=wheel_render_mode,
             camera_azimuth=camera_azimuth,
             camera_elevation=camera_elevation,
             camera_distance=camera_distance,
@@ -244,6 +248,7 @@ class VisualizerHandler(BaseHTTPRequestHandler):
         use_gravity_attitude = (
             _query_bool(params["gravity_attitude"][-1]) if "gravity_attitude" in params else None
         )
+        wheel_render_mode = _wheel_render_mode_from_query(params)
         joint_frames = _joint_settings_from_query(params)
         camera_azimuth = _query_float(params, "camera_azimuth")
         camera_elevation = _query_float(params, "camera_elevation")
@@ -253,6 +258,7 @@ class VisualizerHandler(BaseHTTPRequestHandler):
             and show_collision_model is None
             and joint_frames is None
             and use_gravity_attitude is None
+            and wheel_render_mode is None
             and camera_azimuth is None
             and camera_elevation is None
             and camera_distance is None
@@ -264,6 +270,7 @@ class VisualizerHandler(BaseHTTPRequestHandler):
                 show_collision_model=show_collision_model,
                 joint_frames=joint_frames,
                 use_gravity_attitude=use_gravity_attitude,
+                wheel_render_mode=wheel_render_mode,
                 camera_azimuth=camera_azimuth,
                 camera_elevation=camera_elevation,
                 camera_distance=camera_distance,
@@ -338,6 +345,23 @@ def _query_float(params: dict[str, list[str]], key: str) -> float | None:
         return None
     with suppress(Exception):
         return float(params[key][-1])
+    return None
+
+
+def _wheel_render_mode_from_query(params: dict[str, list[str]]) -> str | None:
+    if "wheel_render_mode" in params:
+        return _parse_wheel_render_mode(params["wheel_render_mode"][-1])
+    if "wheel_velocity" in params:
+        return "velocity" if _query_bool(params["wheel_velocity"][-1]) else "position"
+    return None
+
+
+def _parse_wheel_render_mode(value: object) -> str | None:
+    mode = str(value).strip().lower().replace("-", "_")
+    if mode in {"position", "pos", "wheel_pos", "encoder_pos"}:
+        return "position"
+    if mode in {"velocity", "vel", "wheel_vel", "speed"}:
+        return "velocity"
     return None
 
 
@@ -668,6 +692,7 @@ class MujocoRenderWorker:
         self.show_visual_model = bool(show_visual_model)
         self.show_collision_model = bool(show_collision_model)
         self.use_gravity_attitude = _DEFAULT_USE_GRAVITY_ATTITUDE
+        self.wheel_render_mode = _DEFAULT_WHEEL_RENDER_MODE
         self.joint_frames = {key: bool(show_joint_frames) for key in _DEBUG_FRAME_KEYS}
         self.camera_azimuth = _DEFAULT_CAMERA_AZIMUTH
         self.camera_elevation = _DEFAULT_CAMERA_ELEVATION
@@ -694,6 +719,7 @@ class MujocoRenderWorker:
             "show_collision_model": self.show_collision_model,
             "use_gravity_attitude": self.use_gravity_attitude,
             "attitude_source": self._attitude_source_locked(),
+            "wheel_render_mode": self.wheel_render_mode,
             "show_joint_frames": any(self.joint_frames.values()),
             "joint_frames": dict(self.joint_frames),
             "camera": self._camera_dict_locked(),
@@ -743,6 +769,7 @@ class MujocoRenderWorker:
                 "show_collision_model": self.show_collision_model,
                 "use_gravity_attitude": self.use_gravity_attitude,
                 "attitude_source": self._attitude_source_locked(),
+                "wheel_render_mode": self.wheel_render_mode,
                 "show_joint_frames": any(self.joint_frames.values()),
                 "joint_frames": dict(self.joint_frames),
                 "camera": self._camera_dict_locked(),
@@ -755,6 +782,7 @@ class MujocoRenderWorker:
         show_collision_model: bool | None = None,
         joint_frames: dict[str, bool] | None = None,
         use_gravity_attitude: bool | None = None,
+        wheel_render_mode: str | None = None,
         camera_azimuth: float | None = None,
         camera_elevation: float | None = None,
         camera_distance: float | None = None,
@@ -770,6 +798,9 @@ class MujocoRenderWorker:
                         self.joint_frames[key] = bool(value)
             if use_gravity_attitude is not None:
                 self.use_gravity_attitude = bool(use_gravity_attitude)
+            parsed_wheel_mode = _parse_wheel_render_mode(wheel_render_mode)
+            if parsed_wheel_mode is not None:
+                self.wheel_render_mode = parsed_wheel_mode
             if camera_azimuth is not None:
                 self.camera_azimuth = float(camera_azimuth) % 360.0
             if camera_elevation is not None:
@@ -782,6 +813,7 @@ class MujocoRenderWorker:
                     "show_collision_model": self.show_collision_model,
                     "use_gravity_attitude": self.use_gravity_attitude,
                     "attitude_source": self._attitude_source_locked(),
+                    "wheel_render_mode": self.wheel_render_mode,
                     "show_joint_frames": any(self.joint_frames.values()),
                     "joint_frames": dict(self.joint_frames),
                     "camera": self._camera_dict_locked(),
@@ -794,18 +826,22 @@ class MujocoRenderWorker:
                 "show_collision_model": self.show_collision_model,
                 "use_gravity_attitude": self.use_gravity_attitude,
                 "attitude_source": self._attitude_source_locked(),
+                "wheel_render_mode": self.wheel_render_mode,
                 "show_joint_frames": any(self.joint_frames.values()),
                 "joint_frames": dict(self.joint_frames),
                 "camera": self._camera_dict_locked(),
             }
 
-    def _settings_tuple(self) -> tuple[bool, bool, dict[str, bool], bool, float, float, float]:
+    def _settings_tuple(
+        self,
+    ) -> tuple[bool, bool, dict[str, bool], bool, str, float, float, float]:
         with self.lock:
             return (
                 self.show_visual_model,
                 self.show_collision_model,
                 dict(self.joint_frames),
                 self.use_gravity_attitude,
+                self.wheel_render_mode,
                 self.camera_azimuth,
                 self.camera_elevation,
                 self.camera_distance,
@@ -856,6 +892,7 @@ class MujocoRenderWorker:
                         show_collision_model,
                         joint_frames,
                         use_gravity_attitude,
+                        wheel_render_mode,
                         camera_azimuth,
                         camera_elevation,
                         camera_distance,
@@ -865,6 +902,7 @@ class MujocoRenderWorker:
                         show_collision_model=show_collision_model,
                         joint_frames=joint_frames,
                         use_gravity_attitude=use_gravity_attitude,
+                        wheel_render_mode=wheel_render_mode,
                         camera_azimuth=camera_azimuth,
                         camera_elevation=camera_elevation,
                         camera_distance=camera_distance,
@@ -899,6 +937,7 @@ class MujocoRenderWorker:
                                 "show_collision_model": show_collision_model,
                                 "use_gravity_attitude": use_gravity_attitude,
                                 "attitude_source": ("gravity" if use_gravity_attitude else "gyro"),
+                                "wheel_render_mode": wheel_render_mode,
                                 "show_joint_frames": any(joint_frames.values()),
                                 "joint_frames": dict(joint_frames),
                                 "camera": {
@@ -984,10 +1023,15 @@ class MujocoStateRenderer:
         self.debug_body_ids = {key: self._body_id(name) for key, name, _ in _DEBUG_BODY_FRAMES}
         self.enabled_joint_frames = {key: False for key in _DEBUG_FRAME_KEYS}
         self.use_gravity_attitude = _DEFAULT_USE_GRAVITY_ATTITUDE
+        self.wheel_render_mode = _DEFAULT_WHEEL_RENDER_MODE
         self._gyro_quat = np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
         self._gyro_last_tick_ms: int | None = None
         self._gyro_last_seq: int | None = None
         self._gyro_reset_pending = True
+        self._wheel_integrated_pos = np.zeros(2, dtype=np.float64)
+        self._wheel_last_tick_ms: int | None = None
+        self._wheel_last_seq: int | None = None
+        self._wheel_reset_pending = True
         self._backend_info: dict[str, str | None] | None = None
 
     def set_render_settings(
@@ -997,6 +1041,7 @@ class MujocoStateRenderer:
         show_collision_model: bool,
         joint_frames: dict[str, bool],
         use_gravity_attitude: bool,
+        wheel_render_mode: str,
         camera_azimuth: float,
         camera_elevation: float,
         camera_distance: float,
@@ -1014,6 +1059,12 @@ class MujocoStateRenderer:
             if next_use_gravity_attitude != self.use_gravity_attitude:
                 self._gyro_reset_pending = True
             self.use_gravity_attitude = next_use_gravity_attitude
+            next_wheel_render_mode = (
+                _parse_wheel_render_mode(wheel_render_mode) or _DEFAULT_WHEEL_RENDER_MODE
+            )
+            if next_wheel_render_mode != self.wheel_render_mode:
+                self._wheel_reset_pending = True
+            self.wheel_render_mode = next_wheel_render_mode
             self.camera.azimuth = float(camera_azimuth)
             self.camera.elevation = float(camera_elevation)
             self.camera.distance = float(camera_distance)
@@ -1207,7 +1258,7 @@ class MujocoStateRenderer:
             self.data.qpos[3:7] = self._base_quat_for_state(state)
 
         policy_pos = np.asarray(state.joint_pos, dtype=np.float64).reshape(4)
-        wheel_pos = np.asarray(state.wheel_pos, dtype=np.float64).reshape(2)
+        wheel_pos = self._wheel_pos_for_state(state)
         if self.closed_chain_enabled:
             self._apply_closed_chain_state(policy_pos, wheel_pos)
             return
@@ -1441,6 +1492,55 @@ class MujocoStateRenderer:
         else:
             dt_s = float(_ROBOT_CFG.control_dt)
         return float(np.clip(dt_s, 0.0, _MAX_GYRO_INTEGRATION_DT_S))
+
+    def _wheel_pos_for_state(self, state: PolicyStateFrame) -> np.ndarray:
+        measured_pos = np.nan_to_num(
+            np.asarray(state.wheel_pos, dtype=np.float64).reshape(2),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        if self.wheel_render_mode == "position":
+            self._reset_wheel_integrator(measured_pos, state)
+            return measured_pos
+
+        if self._wheel_reset_pending:
+            self._reset_wheel_integrator(measured_pos, state)
+            self._wheel_reset_pending = False
+            return self._wheel_integrated_pos.copy()
+
+        if self._wheel_last_seq == int(state.seq):
+            return self._wheel_integrated_pos.copy()
+
+        wheel_vel = np.nan_to_num(
+            np.asarray(state.wheel_vel, dtype=np.float64).reshape(2),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        self._wheel_integrated_pos = _wrap_angle_np(
+            self._wheel_integrated_pos + wheel_vel * self._wheel_dt_s(state)
+        )
+        self._wheel_last_tick_ms = int(state.tick_ms)
+        self._wheel_last_seq = int(state.seq)
+        return self._wheel_integrated_pos.copy()
+
+    def _reset_wheel_integrator(self, wheel_pos: np.ndarray, state: PolicyStateFrame) -> None:
+        self._wheel_integrated_pos = _wrap_angle_np(wheel_pos)
+        self._wheel_last_tick_ms = int(state.tick_ms)
+        self._wheel_last_seq = int(state.seq)
+
+    def _wheel_dt_s(self, state: PolicyStateFrame) -> float:
+        tick_ms = int(state.tick_ms)
+        seq = int(state.seq)
+        dt_s: float
+        if self._wheel_last_tick_ms is not None and tick_ms > self._wheel_last_tick_ms:
+            dt_s = float(tick_ms - self._wheel_last_tick_ms) / 1000.0
+        elif self._wheel_last_seq is not None and seq > self._wheel_last_seq:
+            dt_s = float(seq - self._wheel_last_seq) * float(_ROBOT_CFG.control_dt)
+        else:
+            dt_s = float(_ROBOT_CFG.control_dt)
+        return float(np.clip(dt_s, 0.0, _MAX_WHEEL_INTEGRATION_DT_S))
 
 
 def _policy_to_output_pos_np(policy_pos: np.ndarray) -> np.ndarray:
@@ -2007,6 +2107,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="pill">source <strong id="hudSource">-</strong></div>
         <div class="pill">output <strong id="hudOutput">-</strong></div>
         <div class="pill">att <strong id="hudAttitude">gravity</strong></div>
+        <div class="pill">wheel <strong id="hudWheelMode">pos</strong></div>
         <div class="pill">render <strong id="hudRender">canvas</strong></div>
       </div>
       <div id="viewControls">
@@ -2014,6 +2115,7 @@ INDEX_HTML = r"""<!doctype html>
           <label class="toggle"><input id="visualToggle" type="checkbox" checked><span>Visual</span></label>
           <label class="toggle"><input id="collisionToggle" type="checkbox"><span>Collision</span></label>
           <label class="toggle"><input id="gravityAttitudeToggle" type="checkbox" checked><span>Gravity</span></label>
+          <label class="toggle"><input id="wheelVelocityToggle" type="checkbox"><span>Wheel Vel</span></label>
         </div>
         <div class="controlCluster" id="jointToggleGroup">
           <label class="toggle small"><input class="jointToggle" data-joint="base" type="checkbox"><span>base_link</span></label>
@@ -2071,6 +2173,7 @@ const renderImg = document.getElementById("mjcfView");
 const visualToggle = document.getElementById("visualToggle");
 const collisionToggle = document.getElementById("collisionToggle");
 const gravityAttitudeToggle = document.getElementById("gravityAttitudeToggle");
+const wheelVelocityToggle = document.getElementById("wheelVelocityToggle");
 const jointToggles = Array.from(document.querySelectorAll(".jointToggle"));
 const labels = ["LF", "LB", "RF", "RB"];
 const CAMERA_SEND_INTERVAL_MS = 16;
@@ -2088,6 +2191,9 @@ let camYaw = -0.65;
 let camPitch = 0.35;
 let camScale = 900;
 let lastMouse = [0, 0];
+let canvasWheelPos = [0, 0];
+let canvasWheelLastSeq = null;
+let canvasWheelLastTickMs = null;
 
 renderImg.addEventListener("load", () => {
   mjcfRenderOk = true;
@@ -2109,6 +2215,7 @@ function renderSettingsParams() {
     visual: visualToggle.checked ? "1" : "0",
     collision: collisionToggle.checked ? "1" : "0",
     gravity_attitude: gravityAttitudeToggle.checked ? "1" : "0",
+    wheel_render_mode: wheelVelocityToggle.checked ? "velocity" : "position",
     camera_azimuth: String(mjcfCamera.azimuth),
     camera_elevation: String(mjcfCamera.elevation),
     camera_distance: String(mjcfCamera.distance),
@@ -2124,6 +2231,8 @@ function applyRenderSettings(settings, syncCamera=true) {
   collisionToggle.checked = !!settings.show_collision_model;
   gravityAttitudeToggle.checked = !!settings.use_gravity_attitude;
   updateAttitudeLabel();
+  wheelVelocityToggle.checked = settings.wheel_render_mode === "velocity";
+  updateWheelModeLabel();
   const jointFrames = settings.joint_frames || {};
   jointToggles.forEach(input => {
     input.checked = !!jointFrames[input.dataset.joint];
@@ -2136,6 +2245,9 @@ function applyRenderSettings(settings, syncCamera=true) {
 }
 function updateAttitudeLabel() {
   document.getElementById("hudAttitude").textContent = gravityAttitudeToggle.checked ? "gravity" : "gyro";
+}
+function updateWheelModeLabel() {
+  document.getElementById("hudWheelMode").textContent = wheelVelocityToggle.checked ? "vel" : "pos";
 }
 async function fetchRenderSettings(params=null, syncCamera=true) {
   const url = params ? `/render_settings?${params.toString()}` : "/render_settings";
@@ -2179,6 +2291,11 @@ visualToggle.addEventListener("change", updateRenderSettings);
 collisionToggle.addEventListener("change", updateRenderSettings);
 gravityAttitudeToggle.addEventListener("change", () => {
   updateAttitudeLabel();
+  updateRenderSettings();
+});
+wheelVelocityToggle.addEventListener("change", () => {
+  updateWheelModeLabel();
+  resetCanvasWheelIntegrator(snapshot);
   updateRenderSettings();
 });
 jointToggles.forEach(input => input.addEventListener("change", updateRenderSettings));
@@ -2323,6 +2440,7 @@ function updatePanel(s) {
     ["closure_error_m", closureErrorText(renderInfo.closure_error_m)],
     ["render_fps", fmt(renderInfo.render_fps, 1)],
     ["attitude_source", gravityAttitudeToggle.checked ? "gravity" : "gyro"],
+    ["wheel_render_mode", renderInfo.wheel_render_mode || (wheelVelocityToggle.checked ? "velocity" : "position")],
     ["tick_ms", s.tick_ms],
     ["rc_switch_r", s.rc_switch_r],
     ["output_enabled", s.output_enabled],
@@ -2425,6 +2543,49 @@ function setBars(id, names, values, limit) {
   });
 }
 
+function resetCanvasWheelIntegrator(s) {
+  const wp = Array.isArray(s?.wheel_pos) ? s.wheel_pos : [0, 0];
+  canvasWheelPos = [Number(wp[0] || 0), Number(wp[1] || 0)];
+  canvasWheelLastSeq = s?.seq ?? null;
+  canvasWheelLastTickMs = s?.tick_ms ?? null;
+}
+
+function wheelAnglesForCanvas(s) {
+  const measured = Array.isArray(s?.wheel_pos) ? s.wheel_pos : [0, 0];
+  if (!wheelVelocityToggle.checked) {
+    resetCanvasWheelIntegrator(s);
+    return measured;
+  }
+
+  if (canvasWheelLastSeq === null) {
+    resetCanvasWheelIntegrator(s);
+    return canvasWheelPos;
+  }
+  if (canvasWheelLastSeq === s.seq) {
+    return canvasWheelPos;
+  }
+
+  let dt = 0.02;
+  if (canvasWheelLastTickMs !== null && Number(s.tick_ms) > Number(canvasWheelLastTickMs)) {
+    dt = (Number(s.tick_ms) - Number(canvasWheelLastTickMs)) / 1000.0;
+  } else if (canvasWheelLastSeq !== null && Number(s.seq) > Number(canvasWheelLastSeq)) {
+    dt = (Number(s.seq) - Number(canvasWheelLastSeq)) * 0.02;
+  }
+  dt = clamp(dt, 0, 0.05);
+  const wv = Array.isArray(s?.wheel_vel) ? s.wheel_vel : [0, 0];
+  canvasWheelPos = [
+    wrapAngle(canvasWheelPos[0] + Number(wv[0] || 0) * dt),
+    wrapAngle(canvasWheelPos[1] + Number(wv[1] || 0) * dt),
+  ];
+  canvasWheelLastSeq = s.seq ?? null;
+  canvasWheelLastTickMs = s.tick_ms ?? null;
+  return canvasWheelPos;
+}
+
+function wrapAngle(v) {
+  return ((Number(v || 0) + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+}
+
 function rotX(p, a) {
   const c = Math.cos(a), s = Math.sin(a);
   return [p[0], c*p[1] - s*p[2], s*p[1] + c*p[2]];
@@ -2515,7 +2676,7 @@ function draw() {
   }
 
   const q = snapshot.render_joint_pos || snapshot.joint_pos || [0, 0, 0, 0];
-  const wp = snapshot.wheel_pos || [0, 0];
+  const wp = wheelAnglesForCanvas(snapshot);
   const g = snapshot.projected_gravity || [0, 0, -1];
   const body = [];
   for (const x of [-0.16, 0.16]) for (const y of [-0.11, 0.11]) for (const z of [-0.045, 0.045]) {

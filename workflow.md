@@ -80,6 +80,7 @@ http://127.0.0.1:8097
 - `joint_pos`、`joint_vel`、`wheel`、`Observation Slices` 应持续刷新。
 - `Visual` / `Collision` 可切换视觉模型和碰撞体。
 - `Gravity` 开关只切换 `base_link` 姿态来源：打开用 `projected_gravity`，关闭用 `base_ang_vel` 积分。
+- `Wheel Vel` 开关只切换轮子显示来源：关闭用 `wheel_pos` 回传，打开用 `wheel_vel` 在 viewer 端积分。
 - `base_link`、`LF0`、`LF1`、`LW`、`RF0`、`RF1`、`RW` 可独立打开坐标系显示。
 - 鼠标拖动 MJCF 画面可旋转视角，滚轮可缩放。
 
@@ -87,7 +88,7 @@ http://127.0.0.1:8097
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8097/render_info |
-  Select-Object ready,model_kind,closure_error_m,render_fps,attitude_source,use_gravity_attitude,width,height,error |
+  Select-Object ready,model_kind,closure_error_m,render_fps,attitude_source,wheel_render_mode,use_gravity_attitude,width,height,error |
   Format-List
 ```
 

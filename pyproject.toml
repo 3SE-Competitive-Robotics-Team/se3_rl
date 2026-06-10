@@ -18,6 +18,7 @@ dependencies = [
     "wandb==0.26.1",
     "pydantic==2.13.4",
     "casadi",
+    "onnxruntime>=1.26.0",
 ]
 
 [project.scripts]
@@ -26,6 +27,7 @@ se3-play = "se3_train.play:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
 se3-nx-recovery = "se3_deploy.cli:main"
 se3-export-nx-policy = "se3_deploy.export_npz:main"
+se3-export-nx-policy-onnx = "se3_deploy.export_onnx:main"
 se3-visualize-cdc-state = "se3_deploy.visualize_cdc_state:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
