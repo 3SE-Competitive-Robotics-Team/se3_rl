@@ -29,8 +29,8 @@ TASK_SPECS: dict[str, DistillTaskSpec] = {
     "gait": DistillTaskSpec(
         name="gait",
         mode=TaskMode.GAIT,
-        task_id="SE3-WheelLegged-FlowMatch-Gait-FineTune-GRU",
-        teacher_path=Path("assets/base_model/model_1999_gait_finetune_expert.pt"),
+        task_id="SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU",
+        teacher_path=Path("assets/base_model/model_4999_gait_stage3_expert.pt"),
         action_policy="zero_wheels",
     ),
     "wheel_leg": DistillTaskSpec(

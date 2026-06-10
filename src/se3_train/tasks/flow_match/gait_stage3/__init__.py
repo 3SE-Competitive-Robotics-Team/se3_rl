@@ -1,4 +1,4 @@
-"""纯 GAIT PreTrain GRU 任务。"""
+"""FlowMatch GAIT Stage3 上台阶 GRU 任务。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from se3_train.tasks.common import Se3WarmStartRunner
 from .env_cfg import env_cfg
 from .rl_cfg import rl_cfg
 
-TASK_ID = "SE3-WheelLegged-FlowMatch-Gait-PreTrain-GRU"
+TASK_ID = "SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU"
 
 
 def register() -> None:
-    """注册纯 GAIT PreTrain GRU 任务。"""
+    """注册 GAIT Stage3 上台阶 GRU 任务。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),

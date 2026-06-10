@@ -74,31 +74,6 @@ def single_label_gru_ppo_runner_cfg(
     return cfg
 
 
-def gait_pretrain_gru_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """纯 GAIT 预训练 GRU PPO 配置。"""
-    cfg = _gru_ppo_runner_cfg(smoke=smoke)
-    cfg.experiment_name = "se3_wheel_leg_flow_match_gait_pretrain"
-    cfg.resume = False
-    if not (smoke or os.environ.get("SE3_SMOKE", "0") == "1"):
-        cfg.max_iterations = 5000
-    return cfg
-
-
-def gait_finetune_gru_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """纯 GAIT fine-tune GRU PPO 配置。"""
-    cfg = _gru_ppo_runner_cfg(smoke=smoke)
-    cfg.experiment_name = "se3_wheel_leg_flow_match_gait_finetune"
-    cfg.resume = False
-    cfg.algorithm.learning_rate = 2.0e-4
-    cfg.algorithm.desired_kl = 0.006
-    cfg.algorithm.entropy_coef = 0.003
-    if not (smoke or os.environ.get("SE3_SMOKE", "0") == "1"):
-        cfg.max_iterations = 2000
-    return cfg
-
-
 __all__ = [
-    "gait_finetune_gru_ppo_runner_cfg",
-    "gait_pretrain_gru_ppo_runner_cfg",
     "single_label_gru_ppo_runner_cfg",
 ]

@@ -11,8 +11,9 @@
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
 | `flow_match/wheel/` | `SE3-WheelLegged-FlowMatch-Wheel-GRU` | FlowMatch `WHEEL=0` 单标签平地轮式能力任务 |
-| `flow_match/gait_pretrain/` | `SE3-WheelLegged-FlowMatch-Gait-PreTrain-GRU` | FlowMatch `GAIT=1` 单标签预训练任务 |
-| `flow_match/gait_finetune/` | `SE3-WheelLegged-FlowMatch-Gait-FineTune-GRU` | FlowMatch `GAIT=1` 单标签地形与速度 FineTune 任务 |
+| `flow_match/gait_stage1/` | `SE3-WheelLegged-FlowMatch-Gait-Stage1-GRU` | FlowMatch `GAIT=1` 平地 `0-1.05m/s` 基础步态任务 |
+| `flow_match/gait_stage2/` | `SE3-WheelLegged-FlowMatch-Gait-Stage2-GRU` | FlowMatch `GAIT=1` 低矮随机地形和最高 `8cm` 台阶任务 |
+| `flow_match/gait_stage3/` | `SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU` | FlowMatch `GAIT=1` `8-24cm` 上台阶专项任务 |
 | `flow_match/wheel_leg/` | `SE3-WheelLegged-FlowMatch-WheelLeg-GRU` | FlowMatch `WHEEL_LEG=2` 单标签能力任务 |
 | `flow_match/gait_wheel/` | `SE3-WheelLegged-FlowMatch-GaitWheel-GRU` | FlowMatch `GAIT_WHEEL=3` 单标签能力任务 |
 | `flow_match/jump/` | `SE3-WheelLegged-FlowMatch-Jump-GRU` | FlowMatch `JUMP=4` 单标签能力任务 |
@@ -21,7 +22,15 @@
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
-FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 保留已经训练过的 `PreTrain` 和 `FineTune` 两个入口，`WHEEL` 使用 `SE3-WheelLegged-FlowMatch-Wheel-GRU` 纯平地入口。
+FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 使用 Stage1/Stage2/Stage3 三段正式课程，阶段交接通过 CLI 显式传 `--agent.resume True --agent.load-run <上一阶段run> --agent.load-checkpoint <checkpoint>`，不在配置里写死 checkpoint。
+
+### `WHEEL_LEG` 与 `GAIT_WHEEL` 语义边界
+
+`WHEEL_LEG` 是轮式 locomotion 的腿增强版：轮子是主要推进源，腿的职责是抬升机身、越障、解卡和维持轮地接触。判断标准是，即使腿不形成稳定左右交替步态，机器人仍应主要靠轮速完成前进。
+
+`GAIT_WHEEL` 是步态 locomotion 的轮增强版：腿部左右交替摆动/蹬地形成主要步态节律，轮子在支撑和滑行阶段继续贡献前进速度与转向修正，目标行为类似“滑旱冰”。判断标准是，去掉交替步态后行为不应退化成纯轮式巡航；去掉轮子主动推进后也应明显损失滑行效率。
+
+reward 函数可以集中复用，但 reward 表属于具体 task。新增或调整语义任务时，应在对应 `tasks/<task>/env_cfg.py` 中显式列出该任务的 reward term、weight 和 params，避免把语义藏进共享 mode-gated 大表。
 
 ## 单个 task 的目录结构
 
@@ -118,8 +127,9 @@ git diff --check
 uv run python - <<'PY'
 from se3_train.tasks import flat, jump_finetune, jump_pretrain, rough
 from se3_train.tasks.flow_match import (
-    gait_finetune,
-    gait_pretrain,
+    gait_stage1,
+    gait_stage2,
+    gait_stage3,
     gait_wheel,
     jump,
     wheel,
@@ -130,8 +140,9 @@ for module in (
     rough,
     flat,
     wheel,
-    gait_pretrain,
-    gait_finetune,
+    gait_stage1,
+    gait_stage2,
+    gait_stage3,
     wheel_leg,
     gait_wheel,
     jump,

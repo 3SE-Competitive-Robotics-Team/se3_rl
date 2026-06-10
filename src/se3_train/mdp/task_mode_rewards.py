@@ -23,6 +23,13 @@ if TYPE_CHECKING:
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _WHEEL_RADIUS = 0.059
+_GAIT_TERRAIN_TYPES = (
+    (0, "flat"),
+    (1, "random_grid"),
+    (2, "random_spread_boxes"),
+    (3, "open_stairs_up"),
+    (4, "open_stairs_down"),
+)
 
 
 def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
@@ -30,6 +37,17 @@ def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
     if mask.any():
         return float(value[mask].mean().item())
     return 0.0
+
+
+def _terrain_types(env: ManagerBasedRlEnv) -> torch.Tensor | None:
+    """读取每个 env 当前地形类型；没有地形课程时返回 None。"""
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if not isinstance(terrain_types, torch.Tensor):
+        return None
+    if terrain_types.numel() < env.num_envs:
+        return None
+    return terrain_types[: env.num_envs].to(device=env.device, dtype=torch.long)
 
 
 def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
@@ -99,6 +117,7 @@ def gait_leg_contact_force(
     force_scale: float = 50.0,
     contact_threshold: float = 1.0,
     contact_event_scale: float = 0.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """GAIT 模式腿部连杆触地连续惩罚。
 
@@ -112,7 +131,7 @@ def gait_leg_contact_force(
 
     force_mag = finite_contact_force_norm(data.force)
     force_norm = torch.clamp(force_mag / float(force_scale), max=2.0)
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
     contact = force_mag > float(contact_threshold)
     contact_event = contact.any(dim=1).float() * float(contact_event_scale)
     active = gate > 0.0
@@ -133,6 +152,21 @@ def gait_leg_contact_force(
                 contact[:, idx].float(),
                 active,
             )
+        terrain_types = _terrain_types(env)
+        if terrain_types is not None:
+            contact_any = contact.any(dim=1).float()
+            force_max = force_mag.max(dim=1).values
+            for terrain_id, terrain_name in _GAIT_TERRAIN_TYPES:
+                terrain_mask = active & (terrain_types == terrain_id)
+                prefix = f"TaskMode/diag_gait_terrain_{terrain_name}"
+                log[f"{prefix}_leg_contact_ratio"] = _mean_on_mask(
+                    contact_any,
+                    terrain_mask,
+                )
+                log[f"{prefix}_leg_contact_force_max"] = _mean_on_mask(
+                    force_max,
+                    terrain_mask,
+                )
         env.extras["log"].update(log)
     return (torch.sum(force_norm, dim=1) + contact_event) * gate
 
@@ -185,6 +219,7 @@ def gait_natural_swing_clearance(
     leg_contact_force_threshold: float = 0.2,
     wheel_radius: float = _WHEEL_RADIUS,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """无相位双侧摆腿高度奖励。
 
@@ -231,7 +266,7 @@ def gait_natural_swing_clearance(
 
     setattr(env, left_attr, left_ema.detach())
     setattr(env, right_attr, right_ema.detach())
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -264,6 +299,7 @@ def gait_single_support_contact(
     command_name: str,
     sensor_name: str,
     contact_force_threshold: float = 1.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """无相位单腿支撑接触奖励。
 
@@ -277,7 +313,7 @@ def gait_single_support_contact(
     contact = finite_contact_force_norm(data.force) > float(contact_force_threshold)
     contact_count = contact.float().sum(dim=1)
     reward = (contact_count == 1.0).float()
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -297,6 +333,7 @@ def gait_single_support_air_time(
     target_air_time: float = 0.08,
     min_command: float = 0.05,
     contact_force_threshold: float = 1.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """单支撑持续离地奖励。
 
@@ -339,7 +376,7 @@ def gait_single_support_air_time(
 
     setattr(env, attr_time, air_time.detach())
 
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -365,6 +402,7 @@ def gait_stuck_stance_penalty(
     sensor_name: str,
     grace_time_s: float = 0.35,
     contact_force_threshold: float = 1.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """惩罚同一侧轮子长时间连续作为唯一支撑。
 
@@ -402,7 +440,7 @@ def gait_stuck_stance_penalty(
     grace_steps = max(round(float(grace_time_s) / env.step_dt), 1)
     excess = torch.clamp(steps.float() - float(grace_steps), min=0.0)
     penalty = torch.clamp(excess / float(grace_steps), max=2.0)
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -422,6 +460,7 @@ def gait_swing_side_balance_penalty(
     window_s: float = 1.0,
     min_single_support_ratio: float = 0.2,
     contact_force_threshold: float = 1.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """惩罚左右摆腿占比长期失衡。
 
@@ -462,7 +501,7 @@ def gait_swing_side_balance_penalty(
     setattr(env, left_attr, left_ema.detach())
     setattr(env, right_attr, right_ema.detach())
 
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -487,6 +526,7 @@ def gait_air_time(
     min_command: float = 0.1,
     contact_force_threshold: float = 1.0,
     leg_contact_force_threshold: float = 0.2,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """Legged Gym 风格离地时间奖励。
 
@@ -544,7 +584,7 @@ def gait_air_time(
     setattr(env, attr_last_contact, contact.detach())
     setattr(env, attr_dirty_air, dirty_air.detach())
 
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -578,6 +618,7 @@ def gait_alternating_air_time(
     min_command: float = 0.05,
     contact_force_threshold: float = 1.0,
     leg_contact_force_threshold: float = 0.2,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """无相位交替落地奖励。
 
@@ -657,7 +698,7 @@ def gait_alternating_air_time(
     setattr(env, attr_last_touch_side, last_touch_side.detach())
     setattr(env, attr_dirty_air, dirty_air.detach())
 
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -685,6 +726,7 @@ def gait_short_air_time_penalty(
     min_air_time: float = 0.04,
     min_command: float = 0.05,
     contact_force_threshold: float = 1.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """惩罚过短离地后的落地。
 
@@ -726,7 +768,7 @@ def gait_short_air_time_penalty(
     setattr(env, attr_time, air_time.detach())
     setattr(env, attr_last_contact, contact.detach())
 
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -746,6 +788,7 @@ def gait_action_smoothness(
     env: ManagerBasedRlEnv,
     command_name: str,
     max_penalty: float = 80.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """GAIT 模式二阶动作平滑惩罚。
 
@@ -774,7 +817,7 @@ def gait_action_smoothness(
     startup = env.episode_length_buf < 3
     penalty = torch.where(startup, torch.zeros_like(penalty), penalty)
     penalty = torch.clamp(penalty, max=float(max_penalty))
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -797,6 +840,7 @@ def gait_touchdown_softness(
     allowed_down_vel: float = 0.12,
     max_penalty: float = 4.0,
     contact_force_threshold: float = 1.0,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """GAIT 模式摆动轮落地缓冲惩罚。
 
@@ -824,7 +868,7 @@ def gait_touchdown_softness(
     penalty = torch.clamp(down_vel**2, max=float(max_penalty)) * touchdown.any(dim=1).float()
     setattr(env, last_attr, contact.detach())
 
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
@@ -1231,6 +1275,7 @@ def gait_leg_idle_penalty(
     command_name: str,
     motion_threshold: float = 0.02,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    modes: tuple[int, ...] = (int(TaskMode.GAIT),),
 ) -> torch.Tensor:
     """GAIT 模式下腿不动的惩罚。
 
@@ -1240,7 +1285,7 @@ def gait_leg_idle_penalty(
     leg_vel = robot.data.joint_vel[:, JointGroup.LEGS]
     leg_speed = torch.abs(leg_vel).mean(dim=1)
     idle = (leg_speed < motion_threshold).float()
-    gate = mode_weight(env, command_name, TaskMode.GAIT)
+    gate = mode_weight(env, command_name, *modes)
     return idle * gate
 
 
@@ -1263,6 +1308,187 @@ def gait_wheel_velocity_assist(
     assist = torch.tanh(cmd[:, 0] * forward_vel_proxy * 0.05)
     gate = mode_weight(env, command_name, TaskMode.GAIT_WHEEL)
     return assist * gate
+
+
+def gait_wheel_support_velocity_assist(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    wheel_radius: float = _WHEEL_RADIUS,
+    min_command: float = 0.08,
+    contact_force_threshold: float = 1.0,
+    speed_scale: float = 0.45,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """GAIT_WHEEL 单支撑轮速辅助奖励。
+
+    滑行步态的关键不是轮子随便转，而是支撑侧轮子在接地阶段继续沿指令方向滚动。
+    该项只在单支撑且有速度指令时给分，避免退化成双轮纯滚动。
+    """
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    cmd = env.command_manager.get_command(command_name)
+    moving = torch.abs(cmd[:, 0]) > float(min_command)
+    contact = finite_contact_force_norm(data.force) > float(contact_force_threshold)
+    left_support = contact[:, 0] & (~contact[:, 1])
+    right_support = contact[:, 1] & (~contact[:, 0])
+    single_support = left_support | right_support
+
+    robot = env.scene[asset_cfg.name]
+    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    support_speed = torch.zeros(env.num_envs, device=env.device)
+    support_speed = torch.where(left_support, wheel_forward_speed[:, 0], support_speed)
+    support_speed = torch.where(right_support, wheel_forward_speed[:, 1], support_speed)
+
+    signed_assist = cmd[:, 0] * support_speed
+    reward = torch.tanh(signed_assist / max(float(speed_scale), 1.0e-6))
+    reward = reward * single_support.float() * moving.float()
+    gate = mode_weight(env, command_name, TaskMode.GAIT_WHEEL)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_gait_wheel_support_assist": _mean_on_mask(reward, active),
+                "TaskMode/diag_gait_wheel_single_support_ratio": _mean_on_mask(
+                    single_support.float(),
+                    active,
+                ),
+                "TaskMode/diag_gait_wheel_support_speed_abs": _mean_on_mask(
+                    torch.abs(support_speed),
+                    active & single_support,
+                ),
+                "TaskMode/diag_gait_wheel_base_speed_abs": _mean_on_mask(
+                    torch.abs(robot.data.root_link_lin_vel_b[:, 0]),
+                    active,
+                ),
+            }
+        )
+
+    return reward * gate
+
+
+def gait_risk_conditioned_stability(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    base_scale: float = 0.35,
+    speed_start: float = 0.75,
+    speed_full: float = 1.35,
+    speed_scale: float = 0.35,
+    tilt_start_deg: float = 8.0,
+    tilt_full_deg: float = 20.0,
+    tilt_scale: float = 0.65,
+    ang_vel_weight: float = 0.18,
+    max_penalty: float = 6.0,
+) -> torch.Tensor:
+    """GAIT 模式风险加权稳定项。
+
+    基础稳定压力始终存在，避免低风险样本摆烂；速度高或倾角大时再加码，
+    让策略优先学习"高速也能救回来"，而不是全程选择慢走保守解。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    robot = env.scene["robot"]
+
+    cmd_speed = torch.abs(cmd[:, 0])
+    speed_span = max(float(speed_full) - float(speed_start), 1.0e-6)
+    speed_risk = torch.clamp((cmd_speed - float(speed_start)) / speed_span, 0.0, 1.0)
+
+    pg = robot.data.projected_gravity_b
+    tilt = torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0))
+    tilt_deg = torch.rad2deg(tilt)
+    tilt_span = max(float(tilt_full_deg) - float(tilt_start_deg), 1.0e-6)
+    tilt_risk = torch.clamp((tilt_deg - float(tilt_start_deg)) / tilt_span, 0.0, 1.0)
+
+    risk_scale = float(base_scale) + float(speed_scale) * speed_risk + float(tilt_scale) * tilt_risk
+    orientation_penalty = torch.sum(torch.square(pg[:, :2]), dim=1)
+    ang_vel = robot.data.root_link_ang_vel_b
+    ang_vel_xy = ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2
+    penalty = risk_scale * (orientation_penalty + float(ang_vel_weight) * ang_vel_xy)
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+    gate = mode_weight(env, command_name, TaskMode.GAIT)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_gait_risk_stability_scale": _mean_on_mask(
+                    risk_scale,
+                    active,
+                ),
+                "TaskMode/diag_gait_risk_speed": _mean_on_mask(speed_risk, active),
+                "TaskMode/diag_gait_risk_tilt": _mean_on_mask(tilt_risk, active),
+                "TaskMode/diag_gait_tilt_deg": _mean_on_mask(tilt_deg, active),
+                "TaskMode/diag_gait_ang_vel_xy": _mean_on_mask(
+                    torch.sqrt(ang_vel_xy),
+                    active,
+                ),
+            }
+        )
+
+    return penalty * gate
+
+
+def gait_safe_tracking_lin_vel(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma_move: float = 0.18,
+    sigma_stand: float = 0.08,
+    vz_weight: float = 1.0,
+    tilt_safe_deg: float = 7.0,
+    tilt_unsafe_deg: float = 18.0,
+    ang_vel_safe: float = 0.8,
+    ang_vel_unsafe: float = 2.0,
+) -> torch.Tensor:
+    """GAIT 模式安全窗口速度跟踪奖励。
+
+    该项只在机身姿态和横滚/俯仰角速度处于安全窗口时额外奖励跟速。
+    它补速度梯度，但不鼓励策略用失稳姿态换速度。
+    """
+    robot = env.scene["robot"]
+    tracking = rewards.tracking_lin_vel(env, command_name, sigma_move, sigma_stand, vz_weight)
+
+    pg = robot.data.projected_gravity_b
+    tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0)))
+    tilt_band = max(float(tilt_unsafe_deg) - float(tilt_safe_deg), 1.0e-6)
+    tilt_gate = torch.clamp((float(tilt_unsafe_deg) - tilt_deg) / tilt_band, 0.0, 1.0)
+
+    ang_vel = robot.data.root_link_ang_vel_b
+    ang_vel_xy = torch.sqrt(torch.clamp(ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2, min=0.0))
+    ang_vel_band = max(float(ang_vel_unsafe) - float(ang_vel_safe), 1.0e-6)
+    ang_vel_gate = torch.clamp((float(ang_vel_unsafe) - ang_vel_xy) / ang_vel_band, 0.0, 1.0)
+
+    safety_gate = tilt_gate * ang_vel_gate
+    reward = tracking * safety_gate
+    gate = mode_weight(env, command_name, TaskMode.GAIT)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "TaskMode/diag_gait_safe_tracking_reward": _mean_on_mask(reward, active),
+                "TaskMode/diag_gait_safe_tracking_gate": _mean_on_mask(safety_gate, active),
+                "TaskMode/diag_gait_safe_tracking_tilt_gate": _mean_on_mask(
+                    tilt_gate,
+                    active,
+                ),
+                "TaskMode/diag_gait_safe_tracking_ang_vel_gate": _mean_on_mask(
+                    ang_vel_gate,
+                    active,
+                ),
+            }
+        )
+
+    return reward * gate
 
 
 def wheel_swing_clearance(
@@ -1519,6 +1745,8 @@ __all__ = [
     "gait_natural_swing_clearance",
     "gait_no_wheel_drive",
     "gait_pose",
+    "gait_risk_conditioned_stability",
+    "gait_safe_tracking_lin_vel",
     "gait_short_air_time_penalty",
     "gait_single_support_air_time",
     "gait_single_support_contact",
@@ -1526,6 +1754,7 @@ __all__ = [
     "gait_swing_side_balance_penalty",
     "gait_touchdown_softness",
     "gait_touchdown_support_alignment",
+    "gait_wheel_support_velocity_assist",
     "gait_wheel_velocity_assist",
     "leg_obstacle_collision",
     "loco_ang_vel_xy",
