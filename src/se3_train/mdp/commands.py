@@ -13,9 +13,45 @@ import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import matrix_from_quat
 
+from se3_shared import TaskMode
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
     from mjlab.viewer.debug_visualizer import DebugVisualizer
+
+_GAIT_TERRAIN_TYPES = (
+    (0, "flat"),
+    (1, "random_grid"),
+    (2, "random_spread_boxes"),
+    (3, "open_stairs_up"),
+    (4, "open_stairs_down"),
+)
+
+
+def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
+    """计算掩码内均值；无样本时返回 0。"""
+    if mask.any():
+        return float(value[mask].mean().item())
+    return 0.0
+
+
+def _ratio_on_mask(mask: torch.Tensor, denominator_mask: torch.Tensor) -> float:
+    """计算 mask 在 denominator_mask 内的占比；无样本时返回 0。"""
+    denominator = float(denominator_mask.float().sum().item())
+    if denominator > 0:
+        return float((mask & denominator_mask).float().sum().item() / denominator)
+    return 0.0
+
+
+def _terrain_types(env: ManagerBasedRlEnv) -> torch.Tensor | None:
+    """读取每个 env 当前地形类型；没有地形课程时返回 None。"""
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if not isinstance(terrain_types, torch.Tensor):
+        return None
+    if terrain_types.numel() < env.num_envs:
+        return None
+    return terrain_types[: env.num_envs].to(device=env.device, dtype=torch.long)
 
 
 @dataclass
@@ -150,7 +186,114 @@ class BasicCommandTerm(CommandTerm):
 
     def _update_metrics(self) -> None:
         """更新指令指标。"""
-        pass
+        if not hasattr(self._env, "extras") or not isinstance(self._env.extras.get("log"), dict):
+            return
+
+        lin_vel_b = self._robot.data.root_link_lin_vel_b
+        ang_vel_b = self._robot.data.root_link_ang_vel_b
+        cmd = self._command
+
+        moving = torch.abs(cmd[:, 0]) > self.cfg.lin_vel_deadband
+        yawing = torch.abs(cmd[:, 1]) > self.cfg.yaw_deadband
+        active = moving | yawing
+
+        vx_error = lin_vel_b[:, 0] - cmd[:, 0]
+        yaw_error = ang_vel_b[:, 2] - cmd[:, 1]
+        lateral_vel_abs = torch.abs(lin_vel_b[:, 1])
+        vz_abs = torch.abs(lin_vel_b[:, 2])
+
+        pg = self._robot.data.projected_gravity_b
+        pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
+        roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
+        pitch_error = pitch - cmd[:, 2]
+        roll_error = roll - cmd[:, 3]
+
+        log = self._env.extras["log"]
+        log.update(
+            {
+                "Command/diag_active_ratio": float(active.float().mean().item()),
+                "Command/diag_standing_ratio": float(self._standing_mask.float().mean().item()),
+                "Command/diag_cmd_vx_abs": float(torch.abs(cmd[:, 0]).mean().item()),
+                "Command/diag_actual_vx": float(lin_vel_b[:, 0].mean().item()),
+                "Command/diag_vx_error_abs": float(torch.abs(vx_error).mean().item()),
+                "Command/diag_vx_error_abs_active": _mean_on_mask(torch.abs(vx_error), active),
+                "Command/diag_cmd_yaw_abs": float(torch.abs(cmd[:, 1]).mean().item()),
+                "Command/diag_actual_yaw": float(ang_vel_b[:, 2].mean().item()),
+                "Command/diag_yaw_error_abs": float(torch.abs(yaw_error).mean().item()),
+                "Command/diag_yaw_error_abs_active": _mean_on_mask(torch.abs(yaw_error), active),
+                "Command/diag_lateral_vel_abs": float(lateral_vel_abs.mean().item()),
+                "Command/diag_vz_abs": float(vz_abs.mean().item()),
+                "Command/diag_pitch_error_abs_deg": float(
+                    torch.rad2deg(torch.abs(pitch_error)).mean().item()
+                ),
+                "Command/diag_roll_error_abs_deg": float(
+                    torch.rad2deg(torch.abs(roll_error)).mean().item()
+                ),
+            }
+        )
+
+        if cmd.shape[1] <= 8:
+            return
+
+        mode_ids = cmd[:, 8].round().long()
+        mode_names = ("wheel", "gait", "wheel_leg", "gait_wheel", "jump")
+        for mode_id, mode_name in enumerate(mode_names):
+            mode_mask = mode_ids == mode_id
+            mode_active = mode_mask & active
+            log[f"TaskMode/diag_{mode_name}_vx_error_abs"] = _mean_on_mask(
+                torch.abs(vx_error), mode_mask
+            )
+            log[f"TaskMode/diag_{mode_name}_vx_error_abs_active"] = _mean_on_mask(
+                torch.abs(vx_error), mode_active
+            )
+            log[f"TaskMode/diag_{mode_name}_yaw_error_abs"] = _mean_on_mask(
+                torch.abs(yaw_error), mode_mask
+            )
+            log[f"TaskMode/diag_{mode_name}_lateral_vel_abs"] = _mean_on_mask(
+                lateral_vel_abs, mode_mask
+            )
+
+        self._update_gait_terrain_metrics(
+            log=log,
+            terrain_types=_terrain_types(self._env),
+            gait_active=(mode_ids == int(TaskMode.GAIT)) & active,
+            vx_error_abs=torch.abs(vx_error),
+            yaw_error_abs=torch.abs(yaw_error),
+            lateral_vel_abs=lateral_vel_abs,
+            pitch_error_abs_deg=torch.rad2deg(torch.abs(pitch_error)),
+            roll_error_abs_deg=torch.rad2deg(torch.abs(roll_error)),
+            cmd_vx_abs=torch.abs(cmd[:, 0]),
+            actual_vx=lin_vel_b[:, 0],
+        )
+
+    def _update_gait_terrain_metrics(
+        self,
+        log: dict,
+        terrain_types: torch.Tensor | None,
+        gait_active: torch.Tensor,
+        vx_error_abs: torch.Tensor,
+        yaw_error_abs: torch.Tensor,
+        lateral_vel_abs: torch.Tensor,
+        pitch_error_abs_deg: torch.Tensor,
+        roll_error_abs_deg: torch.Tensor,
+        cmd_vx_abs: torch.Tensor,
+        actual_vx: torch.Tensor,
+    ) -> None:
+        """按 GAIT fine-tune 地形类型拆分速度和姿态误差。"""
+        if terrain_types is None:
+            return
+
+        for terrain_id, terrain_name in _GAIT_TERRAIN_TYPES:
+            terrain_mask = gait_active & (terrain_types == terrain_id)
+            prefix = f"TaskMode/diag_gait_terrain_{terrain_name}"
+            log[f"{prefix}_ratio"] = _ratio_on_mask(terrain_mask, gait_active)
+            log[f"{prefix}_cmd_vx_abs"] = _mean_on_mask(cmd_vx_abs, terrain_mask)
+            log[f"{prefix}_actual_vx"] = _mean_on_mask(actual_vx, terrain_mask)
+            log[f"{prefix}_vx_error_abs_active"] = _mean_on_mask(vx_error_abs, terrain_mask)
+            log[f"{prefix}_yaw_error_abs"] = _mean_on_mask(yaw_error_abs, terrain_mask)
+            log[f"{prefix}_lateral_vel_abs"] = _mean_on_mask(lateral_vel_abs, terrain_mask)
+            log[f"{prefix}_pitch_error_abs_deg"] = _mean_on_mask(pitch_error_abs_deg, terrain_mask)
+            log[f"{prefix}_roll_error_abs_deg"] = _mean_on_mask(roll_error_abs_deg, terrain_mask)
 
     def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
         """绘制期望线速度和实际线速度箭头。"""
