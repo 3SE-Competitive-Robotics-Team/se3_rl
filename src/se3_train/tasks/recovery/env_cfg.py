@@ -250,7 +250,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "tracking_lin_yaw_joint",
         "bad_tilt",
         "angular_momentum",
-        "wheel_torques",
         "flat_base_height",
         "flat_base_lin_vel_z",
         "flat_action_smoothness",
@@ -309,7 +308,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "max_penalty": 6.0,
         },
     )
-    cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate, weight=-0.05)
+    cfg.rewards.pop("action_rate", None)
+    cfg.rewards["leg_action_rate"] = RewardTermCfg(
+        func=rewards.leg_action_rate,
+        weight=-0.02,
+    )
+    cfg.rewards["wheel_action_rate"] = RewardTermCfg(
+        func=rewards.wheel_action_rate,
+        weight=-0.10,
+    )
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
         weight=-0.01,
@@ -319,7 +326,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "gate_full_deg": 30.0,
             "max_penalty": 80.0,
             "leg_scale": 1.0,
-            "wheel_scale": 1.0,
+            "wheel_scale": 2.0,
         },
     )
     cfg.rewards["leg_torques"] = RewardTermCfg(
@@ -336,6 +343,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         func=rewards.leg_power,
         weight=-2.0e-5,
         params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["wheel_torques"] = RewardTermCfg(
+        func=rewards.wheel_torques,
+        weight=-1.0e-4,
+        params={"max_torque": 3.0, "asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["stand_still"] = RewardTermCfg(
         func=rewards.stand_still,
@@ -372,7 +384,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["collision"] = RewardTermCfg(
         func=rewards.collision,
         weight=-1.0,
-        params={"sensor_name": "collision_sensor", "asset_cfg": SceneEntityCfg("robot")},
+        params={
+            "sensor_name": "collision_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "use_recovery_gate": False,
+        },
     )
     cfg.rewards["contact_forces"] = RewardTermCfg(
         func=rewards.contact_forces,
@@ -381,6 +397,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "threshold": 20.0,
             "sensor_name": "wheel_sensor",
             "asset_cfg": SceneEntityCfg("robot"),
+            "use_recovery_gate": False,
         },
     )
     cfg.rewards["wheel_air_velocity"] = RewardTermCfg(
@@ -396,14 +413,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "log_prefix": "Recovery",
         },
     )
-    cfg.rewards["upright_leg_contact"] = RewardTermCfg(
-        func=rewards.upright_leg_contact_penalty,
+    cfg.rewards["leg_contact"] = RewardTermCfg(
+        func=rewards.leg_contact_penalty,
         weight=-1.0,
         params={
-            "command_name": "velocity_height",
             "sensor_name": "leg_contact_sensor",
             "force_threshold": 1.0,
-            "min_upright_gate": 0.0,
         },
     )
     cfg.rewards["wheel_contact_without_cmd"] = RewardTermCfg(

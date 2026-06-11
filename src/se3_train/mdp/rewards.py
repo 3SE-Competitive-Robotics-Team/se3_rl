@@ -969,6 +969,37 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
     return penalty
 
 
+def _action_rate_slice(
+    env: ManagerBasedRlEnv,
+    start: int,
+    stop: int,
+    recovery_scale: float | None = None,
+) -> torch.Tensor:
+    """指定动作维度的一阶变化平方和。"""
+    action = env.action_manager.action[:, start:stop]
+    prev_action = env.action_manager.prev_action[:, start:stop]
+    penalty = torch.sum((action - prev_action) ** 2, dim=1)
+    if recovery_scale is not None:
+        penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
+    return penalty
+
+
+def leg_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+    """腿部动作一阶变化平方和。"""
+    penalty = _action_rate_slice(env, 0, 4, recovery_scale=recovery_scale)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"]["Recovery/diag_leg_action_rate"] = penalty.mean().item()
+    return penalty
+
+
+def wheel_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+    """轮子动作一阶变化平方和。"""
+    penalty = _action_rate_slice(env, 4, 6, recovery_scale=recovery_scale)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"]["Recovery/diag_wheel_action_rate"] = penalty.mean().item()
+    return penalty
+
+
 def action_smoothness(
     env: ManagerBasedRlEnv,
     command_name: str | None = None,
@@ -1715,11 +1746,7 @@ def wheel_air_velocity_penalty(
         active = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
     result = penalty * active.float()
 
-    if (
-        hasattr(env, "extras")
-        and isinstance(env.extras.get("log"), dict)
-        and _should_log_step(env)
-    ):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         log_name = log_prefix.rstrip("/")
         air_ratio = air_mask.mean(dim=1)
         air_vel_abs = torch.mean(torch.abs(wheel_vel) * air_mask, dim=1)
@@ -1766,6 +1793,28 @@ def upright_leg_contact_penalty(
         )
 
     return penalty * active.float()
+
+
+def leg_contact_penalty(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """腿部触地惩罚，不使用直立门控。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    has_contact = (force_mag > float(force_threshold)).any(dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"]["Recovery/diag_leg_contact_penalty_rate"] = (
+            has_contact.float().mean().item()
+        )
+
+    return has_contact.float()
 
 
 def upright_wheel_contact_penalty(
@@ -2748,11 +2797,12 @@ def collision(
     env: ManagerBasedRlEnv,
     sensor_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    use_recovery_gate: bool = True,
 ) -> torch.Tensor:
-    """受惩罚的身体接触计数,恢复惩罚门控。"""
+    """受惩罚的身体接触计数，可关闭恢复姿态门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _recovery_penalty_gate(env, pg_z)
+    gate = _recovery_penalty_gate(env, pg_z) if use_recovery_gate else torch.ones_like(pg_z)
 
     sensor: ContactSensor = env.scene[sensor_name]
     data = sensor.data
@@ -2780,11 +2830,12 @@ def contact_forces(
     threshold: float,
     sensor_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    use_recovery_gate: bool = True,
 ) -> torch.Tensor:
-    """轮子接触力超过阈值的部分,除以 100 归一化,恢复门控。"""
+    """轮子接触力超过阈值的部分,除以 100 归一化，可关闭恢复姿态门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _recovery_penalty_gate(env, pg_z)
+    gate = _recovery_penalty_gate(env, pg_z) if use_recovery_gate else torch.ones_like(pg_z)
 
     sensor: ContactSensor = env.scene[sensor_name]
     data = sensor.data
