@@ -29,6 +29,15 @@ ACTION_LABELS = (
 LEG_LABELS = ("left_front", "left_back", "right_front", "right_back")
 WHEEL_LABELS = ("left_wheel", "right_wheel")
 XYZ_LABELS = ("x", "y", "z")
+POLICY_JOINT_NAMES = (
+    "lf0_Joint",
+    "l_drive_bar_Joint",
+    "rf0_Joint",
+    "r_drive_bar_Joint",
+    "l_wheel_Joint",
+    "r_wheel_Joint",
+)
+DEFAULT_RERUN_MODEL = Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml")
 
 
 class PolicyRuntimeLike(Protocol):
@@ -110,9 +119,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rerun-app-id", default="se3_nx_telemetry_replay")
     parser.add_argument(
+        "--rerun-model",
+        type=Path,
+        default=DEFAULT_RERUN_MODEL,
+        help="MJCF model to animate from logged joint positions.",
+    )
+    parser.add_argument(
+        "--no-rerun-robot",
+        action="store_true",
+        help="Disable approximate MJCF robot animation in the Rerun 3D view.",
+    )
+    parser.add_argument(
         "--no-rerun-3d",
         action="store_true",
-        help="Only log scalar plots, not approximate IMU vectors.",
+        help="Only log scalar plots, not approximate IMU vectors or robot geometry.",
     )
     return parser
 
@@ -138,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         spawn=args.rerun_spawn,
         address=args.rerun_address,
         log_3d=not args.no_rerun_3d,
+        model_path=None if args.no_rerun_robot or args.no_rerun_3d else args.rerun_model,
     )
     try:
         stats, period_ms = replay_rows(
@@ -279,10 +300,12 @@ class _RerunSink:
         spawn: bool,
         address: str | None,
         log_3d: bool,
+        model_path: Path | None,
     ) -> None:
         self.enabled = bool(enabled)
         self.log_3d = bool(log_3d)
         self.rr: Any | None = None
+        self.robot_logger: _RobotKinematicsLogger | None = None
         if not self.enabled:
             return
         import rerun as rr
@@ -296,6 +319,12 @@ class _RerunSink:
         if record_to_rrd is not None:
             record_to_rrd.parent.mkdir(parents=True, exist_ok=True)
             rr.save(str(record_to_rrd))
+        if self.log_3d and model_path is not None:
+            self.robot_logger = _RobotKinematicsLogger.try_create(
+                rr=rr,
+                app_id=app_id,
+                model_path=model_path,
+            )
 
     def log_event(self, row: dict[str, object]) -> None:
         if self.rr is None:
@@ -356,6 +385,8 @@ class _RerunSink:
         self._array("/imu/base_ang_vel_body", row.get("base_ang_vel_body"), XYZ_LABELS)
         self._array("/imu/projected_gravity", row.get("projected_gravity"), XYZ_LABELS)
         if self.log_3d:
+            if self.robot_logger is not None:
+                self.robot_logger.log_sample(row)
             self._log_3d_vectors(row)
 
     def close(self) -> None:
@@ -399,6 +430,90 @@ class _RerunSink:
         except Exception as exc:
             self.log_3d = False
             self.rr.log("/warnings/replay_3d_disabled", self.rr.TextLog(str(exc)))
+
+
+class _RobotKinematicsLogger:
+    def __init__(self, *, rr: Any, model_path: Path, app_id: str) -> None:
+        import mujoco
+
+        from se3_sim2sim.math_utils import quat_wxyz_to_xyzw
+        from se3_sim2sim.rerun_viewer import RerunViewer
+
+        self.rr = rr
+        self.mujoco = mujoco
+        self.quat_wxyz_to_xyzw = quat_wxyz_to_xyzw
+        self.model_path = model_path
+        self.model = mujoco.MjModel.from_xml_path(str(model_path))
+        self.data = mujoco.MjData(self.model)
+        mujoco.mj_resetData(self.model, self.data)
+        self.default_qpos = np.asarray(self.data.qpos, dtype=np.float64).copy()
+        self.free_qpos_adr = self._free_joint_qpos_adr()
+        self.joint_qpos_by_name = self._joint_qpos_by_name()
+        self.base_height = float(RobotConfig().default_base_height)
+        self.viewer = RerunViewer(
+            app_id=app_id,
+            spawn=False,
+            manage_recording=False,
+        )
+        self.viewer.log_model(self.model)
+
+    @classmethod
+    def try_create(cls, *, rr: Any, app_id: str, model_path: Path) -> _RobotKinematicsLogger | None:
+        path = Path(model_path)
+        if not path.exists():
+            rr.log(
+                "/warnings/replay_robot_model_missing",
+                rr.TextLog(f"MJCF model not found: {path}"),
+            )
+            return None
+        try:
+            return cls(rr=rr, app_id=app_id, model_path=path)
+        except Exception as exc:
+            rr.log("/warnings/replay_robot_disabled", rr.TextLog(str(exc)))
+            return None
+
+    def log_sample(self, row: dict[str, object]) -> None:
+        self.data.qpos[:] = self.default_qpos
+        if self.free_qpos_adr is not None:
+            qadr = self.free_qpos_adr
+            self.data.qpos[qadr : qadr + 3] = np.asarray([0.0, 0.0, self.base_height])
+            self.data.qpos[qadr + 3 : qadr + 7] = _quat_from_projected_gravity(
+                row.get("projected_gravity")
+            )
+
+        joint_pos = np.asarray(row.get("joint_pos", []), dtype=np.float64).reshape(-1)
+        wheel_pos = np.asarray(row.get("wheel_pos", []), dtype=np.float64).reshape(-1)
+        policy_qpos = np.concatenate([joint_pos[:4], wheel_pos[:2]])
+        for name, value in zip(POLICY_JOINT_NAMES, policy_qpos, strict=False):
+            qadr = self.joint_qpos_by_name.get(name)
+            if qadr is not None:
+                self.data.qpos[qadr] = float(value)
+
+        self.mujoco.mj_forward(self.model, self.data)
+        for body_id, path in enumerate(self.viewer.body_paths):
+            self.rr.log(
+                path,
+                self.rr.Transform3D(
+                    translation=np.asarray(self.data.xpos[body_id], dtype=np.float32),
+                    quaternion=self.quat_wxyz_to_xyzw(
+                        np.asarray(self.data.xquat[body_id], dtype=np.float32)
+                    ),
+                ),
+            )
+
+    def _free_joint_qpos_adr(self) -> int | None:
+        for joint_id in range(self.model.njnt):
+            if int(self.model.jnt_type[joint_id]) == int(self.mujoco.mjtJoint.mjJNT_FREE):
+                return int(self.model.jnt_qposadr[joint_id])
+        return None
+
+    def _joint_qpos_by_name(self) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for name in POLICY_JOINT_NAMES:
+            joint_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id >= 0:
+                result[name] = int(self.model.jnt_qposadr[joint_id])
+        return result
 
 
 def _iter_jsonl(path: Path) -> Iterator[tuple[int, dict[str, object]]]:
@@ -496,6 +611,37 @@ def _row_time_s(row: dict[str, object]) -> float:
     step = _optional_float(row.get("step")) or 0.0
     period_ms = _optional_float(row.get("sample_period_ms")) or 20.0
     return step * period_ms / 1000.0
+
+
+def _quat_from_projected_gravity(values: object) -> np.ndarray:
+    gravity = np.asarray(values if values is not None else (0.0, 0.0, -1.0), dtype=np.float64)
+    gravity = gravity.reshape(-1)
+    if gravity.shape != (3,) or not np.isfinite(gravity).all():
+        gravity = np.asarray([0.0, 0.0, -1.0], dtype=np.float64)
+    norm = float(np.linalg.norm(gravity))
+    if norm > 1.0e-6:
+        gravity = gravity / norm
+    roll = math.asin(float(np.clip(-gravity[1], -1.0, 1.0)))
+    pitch = math.asin(float(np.clip(gravity[0], -1.0, 1.0)))
+    return _euler_xyz_to_quat_wxyz(roll, pitch, 0.0)
+
+
+def _euler_xyz_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    cr = math.cos(0.5 * roll)
+    sr = math.sin(0.5 * roll)
+    cp = math.cos(0.5 * pitch)
+    sp = math.sin(0.5 * pitch)
+    cy = math.cos(0.5 * yaw)
+    sy = math.sin(0.5 * yaw)
+    return np.asarray(
+        [
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ],
+        dtype=np.float64,
+    )
 
 
 def _optional_float(value: object) -> float | None:
