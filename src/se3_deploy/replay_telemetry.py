@@ -42,6 +42,9 @@ DEFAULT_RERUN_MODEL = Path(
 )
 _CLOSURE_TOLERANCE_M = 1.0e-7
 _CLOSURE_WARN_M = 1.0e-4
+_CLOSURE_SOLVER_EPS = 1.0e-5
+_CLOSURE_SOLVER_ITERS = 10
+_CLOSURE_STEP_LIMIT_RAD = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,6 +647,7 @@ class _LegClosureSolver:
             [self.data.qpos[self.knee_qpos], self.data.qpos[self.coupler_qpos]],
             dtype=np.float64,
         )
+        self.neutral_passive = self.passive_guess.copy()
 
     @classmethod
     def try_create(
@@ -683,57 +687,83 @@ class _LegClosureSolver:
         )
 
     def solve(self) -> float:
-        front = float(self.data.qpos[self.front_qpos])
-        drive = float(self.data.qpos[self.drive_qpos])
-        passive = self.passive_guess.copy()
-        residual = np.zeros(2, dtype=np.float64)
-        for _ in range(40):
-            residual = self._residual(front, drive, passive)
-            if float(np.linalg.norm(residual)) < _CLOSURE_TOLERANCE_M:
+        base_qpos = self.data.qpos.copy()
+        best_error = math.inf
+        best_passive = (
+            float(self.data.qpos[self.knee_qpos]),
+            float(self.data.qpos[self.coupler_qpos]),
+        )
+        for seed in self._solver_seeds(best_passive):
+            self.data.qpos[:] = base_qpos
+            self.data.qpos[self.knee_qpos] = float(seed[0])
+            self.data.qpos[self.coupler_qpos] = float(seed[1])
+            error = self._refine_passive_joints()
+            if error < best_error:
+                best_error = error
+                best_passive = (
+                    _wrap_angle_scalar(float(self.data.qpos[self.knee_qpos])),
+                    _wrap_angle_scalar(float(self.data.qpos[self.coupler_qpos])),
+                )
+            if error <= _CLOSURE_TOLERANCE_M:
                 break
-            jac = self._jacobian(front, drive, passive, residual)
-            try:
-                step = np.linalg.solve(jac, residual)
-            except np.linalg.LinAlgError:
-                step = np.linalg.lstsq(jac, residual, rcond=None)[0]
-            if not np.isfinite(step).all():
-                break
-            passive -= step
-        self.passive_guess = passive.copy()
-        final_residual = self._residual(front, drive, passive)
-        return float(np.linalg.norm(final_residual))
 
-    def _jacobian(
-        self,
-        front: float,
-        drive: float,
-        passive: np.ndarray,
-        residual: np.ndarray,
-    ) -> np.ndarray:
-        jac = np.zeros((2, 2), dtype=np.float64)
-        eps = 1.0e-7
-        for idx in range(2):
-            perturbed = passive.copy()
-            perturbed[idx] += eps
-            jac[:, idx] = (self._residual(front, drive, perturbed) - residual) / eps
-        return jac
+        self.data.qpos[:] = base_qpos
+        self.data.qpos[self.knee_qpos] = best_passive[0]
+        self.data.qpos[self.coupler_qpos] = best_passive[1]
+        self.passive_guess = np.asarray(best_passive, dtype=np.float64)
+        self.mujoco.mj_forward(self.model, self.data)
+        return self._residual_norm()
 
-    def _residual(self, front: float, drive: float, passive: np.ndarray) -> np.ndarray:
-        self._set_qpos(front, drive, passive)
-        coupler_end = self._site_xz(self.coupler_end_site)
-        calf_closure = self._site_xz(self.calf_closure_site)
-        return coupler_end - calf_closure
+    def _solver_seeds(self, current: tuple[float, float]) -> tuple[tuple[float, float], ...]:
+        previous = (float(self.passive_guess[0]), float(self.passive_guess[1]))
+        neutral = (float(self.neutral_passive[0]), float(self.neutral_passive[1]))
+        return (
+            previous,
+            current,
+            neutral,
+            (0.0, 0.0),
+            (-1.0, 1.0),
+            (1.0, -1.0),
+            (-2.0, 2.0),
+            (2.0, -2.0),
+            (neutral[0] + math.pi, neutral[1] + math.pi),
+            (neutral[0] - math.pi, neutral[1] - math.pi),
+        )
 
-    def _set_qpos(self, front: float, drive: float, passive: np.ndarray) -> None:
-        self.data.qpos[self.front_qpos] = float(front)
-        self.data.qpos[self.drive_qpos] = float(drive)
-        self.data.qpos[self.knee_qpos] = float(passive[0])
-        self.data.qpos[self.coupler_qpos] = float(passive[1])
-        self.mujoco.mj_kinematics(self.model, self.data)
+    def _refine_passive_joints(self) -> float:
+        passive_qpos = (self.knee_qpos, self.coupler_qpos)
+        for _ in range(_CLOSURE_SOLVER_ITERS):
+            residual = self._residual()
+            error = float(np.linalg.norm(residual))
+            if error <= _CLOSURE_TOLERANCE_M:
+                return error
 
-    def _site_xz(self, site_id: int) -> np.ndarray:
-        pos = np.asarray(self.data.site_xpos[site_id], dtype=np.float64)
-        return np.asarray([pos[0], pos[2]], dtype=np.float64)
+            jacobian = np.zeros((3, 2), dtype=np.float64)
+            for col, qpos_addr in enumerate(passive_qpos):
+                old_value = float(self.data.qpos[qpos_addr])
+                self.data.qpos[qpos_addr] = old_value + _CLOSURE_SOLVER_EPS
+                residual_plus = self._residual()
+                self.data.qpos[qpos_addr] = old_value
+                jacobian[:, col] = (residual_plus - residual) / _CLOSURE_SOLVER_EPS
+
+            delta = np.linalg.lstsq(jacobian, -residual, rcond=None)[0]
+            if not np.isfinite(delta).all():
+                return math.inf
+            delta = np.clip(delta, -_CLOSURE_STEP_LIMIT_RAD, _CLOSURE_STEP_LIMIT_RAD)
+            for col, qpos_addr in enumerate(passive_qpos):
+                self.data.qpos[qpos_addr] += float(delta[col])
+        return self._residual_norm()
+
+    def _residual(self) -> np.ndarray:
+        self.mujoco.mj_forward(self.model, self.data)
+        return np.asarray(
+            self.data.site_xpos[self.coupler_end_site]
+            - self.data.site_xpos[self.calf_closure_site],
+            dtype=np.float64,
+        )
+
+    def _residual_norm(self) -> float:
+        return float(np.linalg.norm(self._residual()))
 
 
 def _sim2sim_telemetry_from_row(row: dict[str, object], *, base_height: float) -> dict[str, object]:
@@ -892,6 +922,10 @@ def _row_vector(
     if arr.shape != (int(size),) or not np.isfinite(arr).all():
         return np.asarray(fallback, dtype=np.float64).reshape(int(size))
     return arr
+
+
+def _wrap_angle_scalar(angle: float) -> float:
+    return float((float(angle) + math.pi) % (2.0 * math.pi) - math.pi)
 
 
 def _row_time_s(row: dict[str, object]) -> float:
