@@ -27,6 +27,8 @@ _TRAINING_LEARNING_PATTERN = re.compile(r"Learning time:\s+([0-9.]+)s")
 _TRAINING_ITER_TIME_PATTERN = re.compile(r"Iteration time:\s+([0-9.]+)s")
 _TRAINING_ITER_UPDATE_INTERVAL_S = 2.0
 _LOG_TAIL_BYTES = 256 * 1024
+_VISER_FRAME_RATE_ENV = "SE3_VISER_FRAME_RATE"
+_VISER_INITIAL_SPEED_ENV = "SE3_VISER_INITIAL_SPEED"
 
 
 def _resolve_play_config(task_id: str, cfg: PlayConfig) -> PlayConfig:
@@ -75,6 +77,14 @@ def _checkpoint_iteration(path: Path) -> int:
 class _Se3ViserPlayViewer(ViserPlayViewer):
     """在 MJLab Viser 面板中显示正在值守的训练进度。"""
 
+    def __init__(self, *args, **kwargs) -> None:
+        """按环境变量降低常驻值守的刷新和仿真速率。"""
+        kwargs.setdefault("frame_rate", _viser_frame_rate_from_env(default=60.0))
+        super().__init__(*args, **kwargs)
+        initial_speed = _viser_initial_speed_from_env()
+        if initial_speed is not None:
+            self._set_initial_speed(initial_speed)
+
     def setup(self) -> None:
         """初始化 viewer，并按需添加训练状态面板。"""
         super().setup()
@@ -93,6 +103,13 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         super().sync_env_to_viewer()
         self._update_training_iter_display()
 
+    def _set_initial_speed(self, speed: float) -> None:
+        """把初始播放速度吸附到 MJLab 支持的最近档位。"""
+        speeds = list(self.SPEED_MULTIPLIERS)
+        speed_index = min(range(len(speeds)), key=lambda index: abs(speeds[index] - speed))
+        self._speed_index = speed_index
+        self._time_multiplier = speeds[speed_index]
+
     def _update_training_iter_display(self, force: bool = False) -> None:
         """低频读取训练日志，把当前 PPO iter 写入 Viser GUI。"""
         if self._se3_train_iter_html is None or self._se3_train_run_dir is None:
@@ -109,6 +126,47 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         self._se3_train_iter_html.content = _format_training_progress_html(
             self._se3_train_run_dir, progress
         )
+
+
+def _viser_frame_rate_from_env(*, default: float) -> float:
+    """读取 Viser 目标刷新率；无配置时保持 MJLab 默认行为。"""
+    raw = os.environ.get(_VISER_FRAME_RATE_ENV)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"[WARN]: 忽略非法 {_VISER_FRAME_RATE_ENV}={raw!r}")
+        return default
+    if value <= 0.0:
+        print(f"[WARN]: 忽略非正 {_VISER_FRAME_RATE_ENV}={raw!r}")
+        return default
+    return value
+
+
+def _viser_initial_speed_from_env() -> float | None:
+    """读取 Viser 初始播放速度；支持小数或 1/32 这类分数写法。"""
+    raw = os.environ.get(_VISER_INITIAL_SPEED_ENV)
+    if not raw:
+        return None
+    try:
+        value = _parse_positive_float(raw)
+    except ValueError:
+        print(f"[WARN]: 忽略非法 {_VISER_INITIAL_SPEED_ENV}={raw!r}")
+        return None
+    if value <= 0.0:
+        print(f"[WARN]: 忽略非正 {_VISER_INITIAL_SPEED_ENV}={raw!r}")
+        return None
+    return value
+
+
+def _parse_positive_float(raw: str) -> float:
+    """解析正浮点数或分数字符串。"""
+    text = raw.strip()
+    if "/" not in text:
+        return float(text)
+    numerator, denominator = text.split("/", 1)
+    return float(numerator) / float(denominator)
 
 
 def _training_run_dir_from_env() -> Path | None:
