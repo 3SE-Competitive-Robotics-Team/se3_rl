@@ -40,6 +40,38 @@ POLICY_JOINT_NAMES = (
 DEFAULT_RERUN_MODEL = Path(
     "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 )
+_CLOSURE_TOLERANCE_M = 1.0e-7
+_CLOSURE_WARN_M = 1.0e-4
+
+
+@dataclass(frozen=True, slots=True)
+class _LegClosureSpec:
+    front_joint: str
+    drive_joint: str
+    knee_joint: str
+    coupler_joint: str
+    coupler_end_site: str
+    calf_closure_site: str
+
+
+LEG_CLOSURE_SPECS = (
+    _LegClosureSpec(
+        front_joint="lf0_Joint",
+        drive_joint="l_drive_bar_Joint",
+        knee_joint="lf1_Joint",
+        coupler_joint="l_coupler_Joint",
+        coupler_end_site="l_coupler_end",
+        calf_closure_site="lf_coupler_closure",
+    ),
+    _LegClosureSpec(
+        front_joint="rf0_Joint",
+        drive_joint="r_drive_bar_Joint",
+        knee_joint="rf1_Joint",
+        coupler_joint="r_coupler_Joint",
+        coupler_end_site="r_coupler_end",
+        calf_closure_site="rf_coupler_closure",
+    ),
+)
 
 
 class PolicyRuntimeLike(Protocol):
@@ -447,10 +479,20 @@ class _RobotKinematicsLogger:
         self.model = mujoco.MjModel.from_xml_path(str(model_path))
         self.data = mujoco.MjData(self.model)
         mujoco.mj_resetData(self.model, self.data)
-        self.default_qpos = np.asarray(self.data.qpos, dtype=np.float64).copy()
         self.free_qpos_adr = self._free_joint_qpos_adr()
         self.joint_qpos_by_name = self._joint_qpos_by_name()
-        self.base_height = float(RobotConfig().default_base_height)
+        robot_cfg = RobotConfig()
+        self.base_height = float(robot_cfg.default_base_height)
+        self._apply_default_joint_positions(robot_cfg.default_model_joint_pos)
+        mujoco.mj_forward(self.model, self.data)
+        self.default_qpos = np.asarray(self.data.qpos, dtype=np.float64).copy()
+        self.closed_chain_solver = _ClosedChainClosureSolver.try_create(
+            mujoco=mujoco,
+            model=self.model,
+            data=self.data,
+            joint_qpos_by_name=self.joint_qpos_by_name,
+        )
+        self._warned_bad_closure = False
         self.viewer = RerunViewer(
             app_id=app_id,
             spawn=False,
@@ -484,15 +526,32 @@ class _RobotKinematicsLogger:
                 row.get("projected_gravity")
             )
 
-        joint_pos = np.asarray(row.get("joint_pos", []), dtype=np.float64).reshape(-1)
-        wheel_pos = np.asarray(row.get("wheel_pos", []), dtype=np.float64).reshape(-1)
+        joint_pos = _row_vector(row, "joint_pos", 4)
+        wheel_pos = _row_vector(row, "wheel_pos", 2)
         policy_qpos = np.concatenate([joint_pos[:4], wheel_pos[:2]])
         for name, value in zip(POLICY_JOINT_NAMES, policy_qpos, strict=False):
             qadr = self.joint_qpos_by_name.get(name)
             if qadr is not None:
                 self.data.qpos[qadr] = float(value)
 
+        closure_residual_m = None
+        if self.closed_chain_solver is not None:
+            closure_residual_m = self.closed_chain_solver.solve()
         self.mujoco.mj_forward(self.model, self.data)
+        if closure_residual_m is not None:
+            self.rr.log(
+                "/kinematics/closure_residual_max_m",
+                self.rr.Scalars(scalars=float(closure_residual_m)),
+            )
+            if closure_residual_m > _CLOSURE_WARN_M and not self._warned_bad_closure:
+                self._warned_bad_closure = True
+                self.rr.log(
+                    "/warnings/closed_chain_residual",
+                    self.rr.TextLog(
+                        "Closed-chain replay residual exceeded "
+                        f"{_CLOSURE_WARN_M:.1e} m: {closure_residual_m:.3e} m"
+                    ),
+                )
         self.viewer.log_state(
             self.model,
             self.data,
@@ -508,11 +567,173 @@ class _RobotKinematicsLogger:
 
     def _joint_qpos_by_name(self) -> dict[str, int]:
         result: dict[str, int] = {}
-        for name in POLICY_JOINT_NAMES:
-            joint_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_JOINT, name)
-            if joint_id >= 0:
+        for joint_id in range(self.model.njnt):
+            if int(self.model.jnt_type[joint_id]) == int(self.mujoco.mjtJoint.mjJNT_FREE):
+                continue
+            name = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+            if name:
                 result[name] = int(self.model.jnt_qposadr[joint_id])
         return result
+
+    def _apply_default_joint_positions(self, joint_pos_by_name: dict[str, float]) -> None:
+        for name, value in joint_pos_by_name.items():
+            qadr = self.joint_qpos_by_name.get(name)
+            if qadr is not None:
+                self.data.qpos[qadr] = float(value)
+
+
+class _ClosedChainClosureSolver:
+    def __init__(self, legs: tuple[_LegClosureSolver, ...]) -> None:
+        self.legs = legs
+
+    @classmethod
+    def try_create(
+        cls,
+        *,
+        mujoco: Any,
+        model: Any,
+        data: Any,
+        joint_qpos_by_name: dict[str, int],
+    ) -> _ClosedChainClosureSolver | None:
+        legs: list[_LegClosureSolver] = []
+        for spec in LEG_CLOSURE_SPECS:
+            leg = _LegClosureSolver.try_create(
+                mujoco=mujoco,
+                model=model,
+                data=data,
+                joint_qpos_by_name=joint_qpos_by_name,
+                spec=spec,
+            )
+            if leg is not None:
+                legs.append(leg)
+        if len(legs) != len(LEG_CLOSURE_SPECS):
+            return None
+        return cls(tuple(legs))
+
+    def solve(self) -> float:
+        residuals = [leg.solve() for leg in self.legs]
+        return float(max(residuals, default=0.0))
+
+
+class _LegClosureSolver:
+    def __init__(
+        self,
+        *,
+        mujoco: Any,
+        model: Any,
+        data: Any,
+        spec: _LegClosureSpec,
+        front_qpos: int,
+        drive_qpos: int,
+        knee_qpos: int,
+        coupler_qpos: int,
+        coupler_end_site: int,
+        calf_closure_site: int,
+    ) -> None:
+        self.mujoco = mujoco
+        self.model = model
+        self.data = data
+        self.spec = spec
+        self.front_qpos = int(front_qpos)
+        self.drive_qpos = int(drive_qpos)
+        self.knee_qpos = int(knee_qpos)
+        self.coupler_qpos = int(coupler_qpos)
+        self.coupler_end_site = int(coupler_end_site)
+        self.calf_closure_site = int(calf_closure_site)
+        self.passive_guess = np.asarray(
+            [self.data.qpos[self.knee_qpos], self.data.qpos[self.coupler_qpos]],
+            dtype=np.float64,
+        )
+
+    @classmethod
+    def try_create(
+        cls,
+        *,
+        mujoco: Any,
+        model: Any,
+        data: Any,
+        joint_qpos_by_name: dict[str, int],
+        spec: _LegClosureSpec,
+    ) -> _LegClosureSolver | None:
+        joint_names = (
+            spec.front_joint,
+            spec.drive_joint,
+            spec.knee_joint,
+            spec.coupler_joint,
+        )
+        if any(name not in joint_qpos_by_name for name in joint_names):
+            return None
+        coupler_end_site = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, spec.coupler_end_site)
+        calf_closure_site = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_SITE, spec.calf_closure_site
+        )
+        if coupler_end_site < 0 or calf_closure_site < 0:
+            return None
+        return cls(
+            mujoco=mujoco,
+            model=model,
+            data=data,
+            spec=spec,
+            front_qpos=joint_qpos_by_name[spec.front_joint],
+            drive_qpos=joint_qpos_by_name[spec.drive_joint],
+            knee_qpos=joint_qpos_by_name[spec.knee_joint],
+            coupler_qpos=joint_qpos_by_name[spec.coupler_joint],
+            coupler_end_site=coupler_end_site,
+            calf_closure_site=calf_closure_site,
+        )
+
+    def solve(self) -> float:
+        front = float(self.data.qpos[self.front_qpos])
+        drive = float(self.data.qpos[self.drive_qpos])
+        passive = self.passive_guess.copy()
+        residual = np.zeros(2, dtype=np.float64)
+        for _ in range(40):
+            residual = self._residual(front, drive, passive)
+            if float(np.linalg.norm(residual)) < _CLOSURE_TOLERANCE_M:
+                break
+            jac = self._jacobian(front, drive, passive, residual)
+            try:
+                step = np.linalg.solve(jac, residual)
+            except np.linalg.LinAlgError:
+                step = np.linalg.lstsq(jac, residual, rcond=None)[0]
+            if not np.isfinite(step).all():
+                break
+            passive -= step
+        self.passive_guess = passive.copy()
+        final_residual = self._residual(front, drive, passive)
+        return float(np.linalg.norm(final_residual))
+
+    def _jacobian(
+        self,
+        front: float,
+        drive: float,
+        passive: np.ndarray,
+        residual: np.ndarray,
+    ) -> np.ndarray:
+        jac = np.zeros((2, 2), dtype=np.float64)
+        eps = 1.0e-7
+        for idx in range(2):
+            perturbed = passive.copy()
+            perturbed[idx] += eps
+            jac[:, idx] = (self._residual(front, drive, perturbed) - residual) / eps
+        return jac
+
+    def _residual(self, front: float, drive: float, passive: np.ndarray) -> np.ndarray:
+        self._set_qpos(front, drive, passive)
+        coupler_end = self._site_xz(self.coupler_end_site)
+        calf_closure = self._site_xz(self.calf_closure_site)
+        return coupler_end - calf_closure
+
+    def _set_qpos(self, front: float, drive: float, passive: np.ndarray) -> None:
+        self.data.qpos[self.front_qpos] = float(front)
+        self.data.qpos[self.drive_qpos] = float(drive)
+        self.data.qpos[self.knee_qpos] = float(passive[0])
+        self.data.qpos[self.coupler_qpos] = float(passive[1])
+        self.mujoco.mj_kinematics(self.model, self.data)
+
+    def _site_xz(self, site_id: int) -> np.ndarray:
+        pos = np.asarray(self.data.site_xpos[site_id], dtype=np.float64)
+        return np.asarray([pos[0], pos[2]], dtype=np.float64)
 
 
 def _sim2sim_telemetry_from_row(row: dict[str, object], *, base_height: float) -> dict[str, object]:
