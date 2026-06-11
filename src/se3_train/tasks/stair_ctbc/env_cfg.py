@@ -23,7 +23,6 @@ from mjlab.sensor import (
 )
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
-    BoxPyramidStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
 )
@@ -42,7 +41,11 @@ from se3_shared import (
 from se3_train.mdp import curriculums, events, stair_rewards, terminations
 from se3_train.robot_cfg import STAIR_FOURBAR_SURROGATE_MJCF_PATH, get_serialleg_cfg
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
-from se3_train.tasks.stair_ctbc.terrains import BoxRampTerrainCfg, BoxStageStairsTerrainCfg
+from se3_train.tasks.stair_ctbc.terrains import (
+    BoxApproachPyramidStairsTerrainCfg,
+    BoxRampTerrainCfg,
+    BoxStageStairsTerrainCfg,
+)
 from se3_train.training_runtime import TRAINING_STATUS_FILENAME
 
 _REFERENCE_CTBC_WHEEL_SCALE = 45.0
@@ -201,7 +204,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 proportion=0.25,
                 size=(8.0, 8.0),
             ),
-            "pyramid_stairs": BoxPyramidStairsTerrainCfg(
+            "pyramid_stairs": BoxApproachPyramidStairsTerrainCfg(
                 proportion=0.25,
                 size=(8.0, 8.0),
                 step_height_range=(0.04, 0.20),
@@ -229,7 +232,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 proportion=0.25,
                 size=(8.0, 8.0),
             ),
-            "pyramid_stairs": BoxPyramidStairsTerrainCfg(
+            "pyramid_stairs": BoxApproachPyramidStairsTerrainCfg(
                 proportion=0.25,
                 size=(8.0, 8.0),
                 step_height_range=(0.04, 0.20),

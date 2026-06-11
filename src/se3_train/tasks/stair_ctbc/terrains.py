@@ -6,7 +6,28 @@ from dataclasses import dataclass
 
 import mujoco
 import numpy as np
+from mjlab.terrains import BoxPyramidStairsTerrainCfg as MjlabBoxPyramidStairsTerrainCfg
 from mjlab.terrains.terrain_generator import SubTerrainCfg, TerrainGeometry, TerrainOutput
+
+
+@dataclass(kw_only=True)
+class BoxApproachPyramidStairsTerrainCfg(MjlabBoxPyramidStairsTerrainCfg):
+    """从金字塔底部入口出生的正金字塔台阶。"""
+
+    spawn_base_offset: float = -0.08
+    """出生点相对金字塔第一层入口的 x 偏移，负值表示在入口前。"""
+
+    def function(
+        self,
+        difficulty: float,
+        spec: mujoco.MjSpec,
+        rng: np.random.Generator,
+    ) -> TerrainOutput:
+        """复用 MJLab 正金字塔几何，但把 origin 放到底部入口。"""
+        output = super().function(difficulty, spec, rng)
+        entry_x = max(0.0, float(self.border_width) + float(self.spawn_base_offset))
+        origin = np.array([entry_x, 0.5 * float(self.size[1]), 0.0])
+        return TerrainOutput(origin=origin, geometries=output.geometries)
 
 
 @dataclass(kw_only=True)
