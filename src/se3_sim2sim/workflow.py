@@ -453,6 +453,7 @@ class Sim2SimWorkflow:
                     key_callback=key_callback,
                     pose_joint_names=self.robot.policy_joint_names[:4],
                     follow_body=self.cfg.viewer.follow_body,
+                    geom_view=self.cfg.viewer.geom_view,
                 )
             )
             return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]

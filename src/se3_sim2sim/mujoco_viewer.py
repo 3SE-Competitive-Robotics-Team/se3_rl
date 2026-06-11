@@ -14,6 +14,7 @@ from .math_utils import euler_xyz_to_quat_wxyz, quat_wxyz_to_xyzw
 
 _PANEL_MIN_WIDTH = 280
 _PANEL_MAX_WIDTH = 360
+_GROUND_GEOM_GROUP = 2
 _JOINT_FALLBACK_LIMIT_RAD = 2.2
 _BASE_ATTITUDE_LIMIT_RAD = math.radians(90.0)
 _BASE_YAW_LIMIT_RAD = math.pi
@@ -61,9 +62,10 @@ class MujocoViewer:
         *,
         model: mujoco.MjModel,
         data: mujoco.MjData,
-        key_callback: Callable[[int], None] | None = None,
+        key_callback: Callable[..., None] | None = None,
         pose_joint_names: tuple[str, ...] = (),
         follow_body: str = "base_link",
+        geom_view: str = "visual",
         title: str = "SE3 sim2sim teleop",
         width: int = 1280,
         height: int = 720,
@@ -74,6 +76,7 @@ class MujocoViewer:
         self._data = data
         self._key_callback = key_callback
         self._pose_editor = _PoseEditor(model, data, joint_names=pose_joint_names[:4])
+        self._geom_view = str(geom_view)
         self._window = glfw.create_window(int(width), int(height), title, None, None)
         if self._window is None:
             glfw.terminate()
@@ -88,6 +91,7 @@ class MujocoViewer:
 
         self._camera = mujoco.MjvCamera()
         self._option = mujoco.MjvOption()
+        self._configure_geom_groups()
         self._scene = mujoco.MjvScene(model, maxgeom=10000)
         self._context = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150.value)
         self._configure_tracking_camera(model, follow_body)
@@ -111,6 +115,19 @@ class MujocoViewer:
         self._camera.azimuth = 135.0
         self._camera.elevation = -18.0
 
+    def _configure_geom_groups(self) -> None:
+        if self._geom_view == "visual":
+            self._option.geomgroup[:] = 0
+            self._option.geomgroup[1] = 1
+        elif self._geom_view == "collision":
+            self._option.geomgroup[:] = 0
+            self._option.geomgroup[0] = 1
+        elif self._geom_view == "both":
+            self._option.geomgroup[:] = 1
+        else:
+            raise ValueError(f"未知几何显示模式: {self._geom_view}")
+        self._option.geomgroup[_GROUND_GEOM_GROUP] = 1
+
     def log_model(self, model: mujoco.MjModel) -> None:
         del model
 
@@ -132,6 +149,7 @@ class MujocoViewer:
         layout = _make_layout(int(viewport_width), int(viewport_height))
         self._layout = layout
         self._pose_editor.set_output_enabled(float(telemetry.get("output_enabled", 1.0)) > 0.5)
+        self._configure_geom_groups()
         glfw.poll_events()
         if self._closed or glfw.window_should_close(self._window):
             self._closed = True
@@ -160,10 +178,10 @@ class MujocoViewer:
 
     def _on_key(self, window: object, key: int, scancode: int, action: int, mods: int) -> None:
         del window, scancode, mods
-        if action not in (glfw.PRESS, glfw.REPEAT):
+        if action not in (glfw.PRESS, glfw.REPEAT, glfw.RELEASE):
             return
         if self._key_callback is not None:
-            self._key_callback(int(key))
+            self._key_callback(int(key), int(action))
 
     def _on_mouse_button(self, window: object, button: int, action: int, mods: int) -> None:
         del window, mods

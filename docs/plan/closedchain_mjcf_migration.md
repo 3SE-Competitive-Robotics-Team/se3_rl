@@ -2,13 +2,13 @@
 
 ## 目标
 
-将 SerialLeg 训练和 sim2sim 的默认机器人模型从串联开链 MJCF 迁移到四连杆语义。当前默认入口是解析四连杆等效开树 `fourbar-surrogate`，真实闭链 OBB 模型保留为显式 `closedchain` A/B 对照；旧开链 XML 保留为显式 `openchain` variant，用于定位和回退诊断。
+将 SerialLeg 训练和 sim2sim 的默认机器人模型从串联开链 MJCF 迁移到四连杆语义。当前 sim2sim 默认入口是真实闭链 OBB `closedchain`，解析四连杆等效开树 `fourbar-surrogate` 保留为显式快速对照；旧开链 XML 保留为显式 `openchain` variant，用于定位和回退诊断。
 
 第一版目标是跑通基础站立、行走、恢复和 sim2sim，不迁移跳跃参考轨迹、RSI 和轨迹跟踪。
 
 ## 当前实验修订（2026-06-01）
 
-长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，下一轮平地基模训练先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧常力版本。2026-06-03 起默认入口使用解析四连杆等效开树模型，降低闭链求解成本；显式 `closedchain` variant 保留 OBB 裁剪闭链模型作为 A/B 对照：
+长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，下一轮平地基模训练先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧常力版本。2026-06-03 起训练默认入口使用解析四连杆等效开树模型，降低闭链求解成本；当前 sim2sim 默认入口重新切回 OBB 裁剪闭链模型，解析等效开树保留为 A/B 对照：
 
 ```text
 assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml
@@ -29,7 +29,7 @@ default_base_height = 0.22 m
 
 ## 已确认决策
 
-1. 默认模型切换为解析四连杆等效开树 MJCF；真实闭链 OBB 模型保留为显式 `closedchain` A/B 对照，当前实验阶段默认不启用气弹簧常力。
+1. 训练默认模型切换为解析四连杆等效开树 MJCF；sim2sim 默认模型切换为真实闭链 OBB 模型，当前实验阶段默认不启用气弹簧常力。
 2. 旧开链 XML 文件保留，训练端和 sim2sim 端保留显式 `openchain` variant。
 3. policy 仍为 6 维动作，actor 观测维度保持 32 维。
 4. 腿部 action 和 actor 腿部观测改为主动杆坐标。
@@ -270,7 +270,7 @@ MJCF 自带气弹簧 actuator 后，`model.nu` 不再等于 6。
 
 ## 完成标准
 
-- 默认训练和 sim2sim 都使用解析四连杆等效开树模型，真实闭链模型保留为显式 A/B 对照。
+- 默认训练使用解析四连杆等效开树模型，sim2sim 使用真实闭链 OBB 模型；两者保留显式 variant 方便 A/B 对照。
 - openchain variant 仍可显式启用。
 - policy action/actor 腿部观测语义为主动杆坐标。
 - 闭链默认站姿稳定，无 NaN、无约束爆炸、无意外穿地。

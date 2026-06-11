@@ -11,6 +11,10 @@ from threading import Lock
 from types import TracebackType
 from typing import Protocol, Self
 
+_HOLD_KEYS = {"w", "s", "a", "d", "up", "down", "e", "c"}
+DEFAULT_COMMAND_LIN_VEL_X = 2.4
+DEFAULT_COMMAND_YAW_RATE = 8.0
+
 
 @dataclass(frozen=True)
 class CommandInputUpdate:
@@ -44,8 +48,12 @@ class KeyboardTeleopSource:
         yaw_rate: float = 0.0,
         command_height: float = 0.22,
         default_command_height: float = 0.22,
-        command_lin_vel_x: float = 0.5,
-        command_yaw_rate: float = 0.8,
+        command_lin_vel_x: float = DEFAULT_COMMAND_LIN_VEL_X,
+        command_yaw_rate: float = DEFAULT_COMMAND_YAW_RATE,
+        command_lin_accel_x: float = 0.8,
+        command_yaw_accel: float = 1.6,
+        command_lin_decay_x: float = 0.4,
+        command_yaw_decay: float = 2.4,
         command_height_rate: float = 0.12,
         min_command_height: float = 0.195,
         max_command_height: float = 0.390,
@@ -54,6 +62,10 @@ class KeyboardTeleopSource:
     ) -> None:
         self.command_lin_vel_x = _finite_positive(command_lin_vel_x, "command_lin_vel_x")
         self.command_yaw_rate = _finite_positive(command_yaw_rate, "command_yaw_rate")
+        self.command_lin_accel_x = _finite_positive(command_lin_accel_x, "command_lin_accel_x")
+        self.command_yaw_accel = _finite_positive(command_yaw_accel, "command_yaw_accel")
+        self.command_lin_decay_x = _finite_non_negative(command_lin_decay_x, "command_lin_decay_x")
+        self.command_yaw_decay = _finite_non_negative(command_yaw_decay, "command_yaw_decay")
         self.command_height_rate = _finite_positive(command_height_rate, "command_height_rate")
         self.min_command_height = _finite(min_command_height, "min_command_height")
         self.max_command_height = _finite(max_command_height, "max_command_height")
@@ -67,9 +79,14 @@ class KeyboardTeleopSource:
         self._lin_vel_x = _finite(lin_vel_x, "lin_vel_x")
         self._yaw_rate = _finite(yaw_rate, "yaw_rate")
         self._command_height = self._clamp_height(_finite(command_height, "command_height"))
-        self._last_vx_key_at = -math.inf
-        self._last_yaw_key_at = -math.inf
+        self._last_w_key_at = -math.inf
+        self._last_s_key_at = -math.inf
+        self._last_a_key_at = -math.inf
+        self._last_d_key_at = -math.inf
         self._last_height_key_at = -math.inf
+        self._last_up_key_at = -math.inf
+        self._last_down_key_at = -math.inf
+        self._last_motion_update_at = time.monotonic()
         self._last_height_update_at = time.monotonic()
         self._height_direction = 0.0
         self._interactive = False
@@ -78,10 +95,13 @@ class KeyboardTeleopSource:
         self._termios: object | None = None
         self._msvcrt: object | None = None
         self._queued_keys: list[str] = []
+        self._held_keys: set[str] = set()
         self._queued_keys_lock = Lock()
 
     def __enter__(self) -> Self:
         self._wall_start_s = time.monotonic()
+        self._last_motion_update_at = self._wall_start_s
+        self._last_height_update_at = self._wall_start_s
         self._interactive = bool(sys.stdin.isatty())
         if not self._interactive:
             return self
@@ -125,25 +145,38 @@ class KeyboardTeleopSource:
         """返回终端提示文本。"""
 
         return (
+            "[teleop] W/S/A/D 使用斜坡式速度目标；按住累加，松开平滑回零。 "
             "[teleop] R: 切换遥控器输出 | W/S: 前进/后退 | A/D: 左/右旋转 | "
             "按住 ↑/E: 连续站高 | 按住 ↓/C: 连续站低 | H: 默认站高 | "
             "右侧面板: RC off 时可拖动四关节和 base 姿态 | Space/X: 清零速度 | Q/Esc: 退出"
         )
 
-    def key_callback(self, keycode: int) -> None:
+    def key_callback(self, keycode: int, action: int | None = None) -> None:
         """接收 MuJoCo viewer 的按键回调。"""
 
+        key: str
         if keycode == 256:
-            self.queue_key("\x1b")
+            key = "\x1b"
+        elif keycode == 265:
+            key = "up"
+        elif keycode == 264:
+            key = "down"
+        elif 0 <= int(keycode) < 256:
+            key = chr(int(keycode)).lower()
+        else:
             return
-        if keycode == 265:
-            self.queue_key("up")
+
+        if action is None:
+            self.queue_key(key)
             return
-        if keycode == 264:
-            self.queue_key("down")
+        if int(action) == 0:
+            self.queue_key_up(key)
             return
-        if 0 <= int(keycode) < 256:
-            self.queue_key(chr(int(keycode)))
+        if key in _HOLD_KEYS:
+            self.queue_key_down(key)
+            return
+        if int(action) == 1:
+            self.queue_key(key)
 
     def queue_key(self, key: str) -> None:
         """把外部 viewer 收到的按键加入下一控制步处理队列。"""
@@ -152,6 +185,37 @@ class KeyboardTeleopSource:
             return
         with self._queued_keys_lock:
             self._queued_keys.append(key.lower())
+
+    def queue_key_down(self, key: str) -> None:
+        """璁板綍 MuJoCo viewer 鐨勬寜閿寜涓嬬姸鎬併€?"""
+
+        if not key:
+            return
+        key = key.lower()
+        with self._queued_keys_lock:
+            self._held_keys.add(key)
+            self._queued_keys.append(key)
+
+    def queue_key_up(self, key: str) -> None:
+        """璁板綍 MuJoCo viewer 鐨勬寜閿澗寮€鐘舵€併€?"""
+
+        if not key:
+            return
+        key = key.lower()
+        with self._queued_keys_lock:
+            self._held_keys.discard(key)
+        if key == "w":
+            self._last_w_key_at = -math.inf
+        elif key == "s":
+            self._last_s_key_at = -math.inf
+        elif key == "a":
+            self._last_a_key_at = -math.inf
+        elif key == "d":
+            self._last_d_key_at = -math.inf
+        elif key in {"up", "e"}:
+            self._last_up_key_at = -math.inf
+        elif key in {"down", "c"}:
+            self._last_down_key_at = -math.inf
 
     def pace(self, sim_time_s: float) -> None:
         if not self.realtime or self._wall_start_s is None:
@@ -164,54 +228,62 @@ class KeyboardTeleopSource:
     def poll(self, sim_time_s: float) -> CommandInputUpdate:
         del sim_time_s
         now_s = time.monotonic()
+        motion_dt = max(0.0, now_s - self._last_motion_update_at)
         keys = tuple(self._read_pending_keys())
         toggle_output = False
         quit_requested = False
+        clear_motion = False
 
         for key in keys:
             if key == "r":
                 toggle_output = True
             elif key == "w":
-                self._lin_vel_x = self.command_lin_vel_x
-                self._last_vx_key_at = now_s
+                self._last_w_key_at = now_s
             elif key == "s":
-                self._lin_vel_x = -self.command_lin_vel_x
-                self._last_vx_key_at = now_s
+                self._last_s_key_at = now_s
             elif key == "a":
-                self._yaw_rate = self.command_yaw_rate
-                self._last_yaw_key_at = now_s
+                self._last_a_key_at = now_s
             elif key == "d":
-                self._yaw_rate = -self.command_yaw_rate
-                self._last_yaw_key_at = now_s
+                self._last_d_key_at = now_s
             elif key in {"up", "e"}:
                 self._height_direction = 1.0
                 self._last_height_key_at = now_s
+                self._last_up_key_at = now_s
             elif key in {"down", "c"}:
                 self._height_direction = -1.0
                 self._last_height_key_at = now_s
+                self._last_down_key_at = now_s
             elif key == "h":
                 self._command_height = self.default_command_height
                 self._height_direction = 0.0
                 self._last_height_key_at = -math.inf
+                self._last_up_key_at = -math.inf
+                self._last_down_key_at = -math.inf
+                self._clear_held_height_keys()
             elif key in {" ", "x"}:
-                self._lin_vel_x = 0.0
-                self._yaw_rate = 0.0
-                self._last_vx_key_at = -math.inf
-                self._last_yaw_key_at = -math.inf
+                clear_motion = True
             elif key in {"q", "\x1b", "\x03"}:
                 quit_requested = True
 
-        if now_s - self._last_vx_key_at > self.hold_s:
+        if clear_motion:
             self._lin_vel_x = 0.0
-        if now_s - self._last_yaw_key_at > self.hold_s:
             self._yaw_rate = 0.0
-        if now_s - self._last_height_key_at > self.hold_s:
-            self._height_direction = 0.0
-        if self._height_direction != 0.0:
-            dt = max(0.0, now_s - self._last_height_update_at)
+            self._last_w_key_at = -math.inf
+            self._last_s_key_at = -math.inf
+            self._last_a_key_at = -math.inf
+            self._last_d_key_at = -math.inf
+            self._clear_held_motion_keys()
+        else:
+            self._update_motion_targets(now_s, motion_dt)
+        self._last_motion_update_at = now_s
+
+        height_direction = self._height_input_direction(now_s)
+        if height_direction != 0.0:
+            height_dt = max(0.0, now_s - self._last_height_update_at)
             self._command_height = self._clamp_height(
-                self._command_height + self._height_direction * self.command_height_rate * dt
+                self._command_height + height_direction * self.command_height_rate * height_dt
             )
+        self._height_direction = height_direction
         self._last_height_update_at = now_s
 
         return CommandInputUpdate(
@@ -238,6 +310,54 @@ class KeyboardTeleopSource:
             keys = list(self._queued_keys)
             self._queued_keys.clear()
         return keys
+
+    def _clear_held_motion_keys(self) -> None:
+        with self._queued_keys_lock:
+            self._held_keys.difference_update({"w", "s", "a", "d"})
+
+    def _clear_held_height_keys(self) -> None:
+        with self._queued_keys_lock:
+            self._held_keys.difference_update({"up", "down", "e", "c"})
+
+    def _key_active(self, key: str, last_seen_at: float, now_s: float) -> bool:
+        with self._queued_keys_lock:
+            held = key in self._held_keys
+        return held or now_s - last_seen_at <= self.hold_s
+
+    def _update_motion_targets(self, now_s: float, dt: float) -> None:
+        vx_direction = float(self._key_active("w", self._last_w_key_at, now_s)) - float(
+            self._key_active("s", self._last_s_key_at, now_s)
+        )
+        yaw_direction = float(self._key_active("a", self._last_a_key_at, now_s)) - float(
+            self._key_active("d", self._last_d_key_at, now_s)
+        )
+
+        if vx_direction != 0.0:
+            self._lin_vel_x = np_clip(
+                self._lin_vel_x + vx_direction * self.command_lin_accel_x * dt,
+                -self.command_lin_vel_x,
+                self.command_lin_vel_x,
+            )
+        elif self.command_lin_decay_x > 0.0:
+            self._lin_vel_x = _approach_zero(self._lin_vel_x, self.command_lin_decay_x * dt)
+
+        if yaw_direction != 0.0:
+            self._yaw_rate = np_clip(
+                self._yaw_rate + yaw_direction * self.command_yaw_accel * dt,
+                -self.command_yaw_rate,
+                self.command_yaw_rate,
+            )
+        elif self.command_yaw_decay > 0.0:
+            self._yaw_rate = _approach_zero(self._yaw_rate, self.command_yaw_decay * dt)
+
+    def _height_input_direction(self, now_s: float) -> float:
+        up = self._key_active("up", self._last_up_key_at, now_s) or self._key_active(
+            "e", self._last_up_key_at, now_s
+        )
+        down = self._key_active("down", self._last_down_key_at, now_s) or self._key_active(
+            "c", self._last_down_key_at, now_s
+        )
+        return float(up) - float(down)
 
     def _read_windows_keys(self) -> list[str]:
         if self._msvcrt is None:
@@ -298,6 +418,21 @@ def _finite_positive(value: float, name: str) -> float:
     if parsed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
     return parsed
+
+
+def _finite_non_negative(value: float, name: str) -> float:
+    parsed = _finite(value, name)
+    if parsed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return parsed
+
+
+def _approach_zero(value: float, max_delta: float) -> float:
+    if value > 0.0:
+        return max(0.0, value - max(0.0, max_delta))
+    if value < 0.0:
+        return min(0.0, value + max(0.0, max_delta))
+    return 0.0
 
 
 def np_clip(value: float, lower: float, upper: float) -> float:
