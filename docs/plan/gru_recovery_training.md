@@ -321,7 +321,7 @@ uv run se3-sim2sim --checkpoint <ckpt> --viewer rerun --max-steps 1000 --initial
 uv run se3-sim2sim --checkpoint <ckpt> --viewer rerun --max-steps 1000 --initial-pitch-deg -90 --initial-base-height 0.16
 ```
 
-`--model-variant closedchain` 会绕过默认解析四连杆等效开树，直接加载真实闭链 OBB 模型做 sim2sim A/B 验证；需要完全自定义 MJCF 时仍可用 `--model <path>` 覆盖。
+sim2sim 默认直接加载真实闭链 OBB 模型做验证；需要快速对照解析四连杆等效开树时用 `--model-variant fourbar-surrogate`，需要完全自定义 MJCF 时仍可用 `--model <path>` 覆盖。
 
 注意：sim2sim 参数里的 roll/pitch/yaw 只是复现具体初始姿态的坐标表达；通过率统计仍只能按 `init_tilt_bin` 汇总，不能拆成 pitch 轴和 roll 轴指标。
 

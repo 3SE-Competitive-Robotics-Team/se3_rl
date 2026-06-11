@@ -10,12 +10,16 @@ from pathlib import Path
 from .cli import build_parser as build_sim2sim_parser
 from .cli import config_from_args
 from .course import CourseType
-from .teleop_input import KeyboardTeleopSource
+from .teleop_input import DEFAULT_COMMAND_LIN_VEL_X, DEFAULT_COMMAND_YAW_RATE, KeyboardTeleopSource
 from .workflow import run_sim2sim
 
 DEFAULT_TELEOP_CHECKPOINT = Path("assets/base_model/model_5999_gru.pt")
 DEFAULT_MIN_COMMAND_HEIGHT = 0.195
 DEFAULT_MAX_COMMAND_HEIGHT = 0.390
+DEFAULT_COMMAND_LIN_ACCEL = 0.8
+DEFAULT_COMMAND_YAW_ACCEL = 1.6
+DEFAULT_COMMAND_LIN_DECAY = 0.4
+DEFAULT_COMMAND_YAW_DECAY = 2.4
 DEFAULT_COMMAND_HEIGHT_RATE = 0.12
 
 
@@ -29,10 +33,20 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be a number, got {value!r}") from exc
+    if not math.isfinite(parsed) or parsed < 0.0:
+        raise argparse.ArgumentTypeError(f"must be a non-negative finite number, got {value!r}")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = build_sim2sim_parser()
     parser.prog = "se3-sim2sim-teleop"
-    parser.description = "SE3 MuJoCo sim2sim keyboard teleop workflow"
+    parser.description = "SE3 MuJoCo sim2sim keyboard teleop workflow with ramped speed targets"
     parser.set_defaults(
         course=CourseType.NONE.value,
         yaw_pid=False,
@@ -49,13 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--teleop-vx",
         type=_positive_float,
-        default=0.5,
+        default=DEFAULT_COMMAND_LIN_VEL_X,
         help="W/S 按键对应的前后速度 command，单位 m/s。",
     )
     parser.add_argument(
         "--teleop-yaw-rate",
         type=_positive_float,
-        default=0.8,
+        default=DEFAULT_COMMAND_YAW_RATE,
         help="A/D 按键对应的 yaw rate command，单位 rad/s。",
     )
     parser.add_argument(
@@ -63,6 +77,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_float,
         default=0.25,
         help="按键停止重复后保持 command 的时间，单位秒。",
+    )
+    parser.add_argument(
+        "--teleop-vx-accel",
+        type=_positive_float,
+        default=DEFAULT_COMMAND_LIN_ACCEL,
+        help="按住 W/S 时速度目标变化率，单位 m/s^2。",
+    )
+    parser.add_argument(
+        "--teleop-yaw-accel",
+        type=_positive_float,
+        default=DEFAULT_COMMAND_YAW_ACCEL,
+        help="按住 A/D 时 yaw rate 目标变化率，单位 rad/s^2。",
+    )
+    parser.add_argument(
+        "--teleop-vx-decay",
+        type=_non_negative_float,
+        default=DEFAULT_COMMAND_LIN_DECAY,
+        help="松开 W/S 后速度目标向 0 回落的变化率，单位 m/s^2；0 表示保持当前目标。",
+    )
+    parser.add_argument(
+        "--teleop-yaw-decay",
+        type=_non_negative_float,
+        default=DEFAULT_COMMAND_YAW_DECAY,
+        help="松开 A/D 后 yaw rate 目标向 0 回落的变化率，单位 rad/s^2；0 表示保持当前目标。",
     )
     parser.add_argument(
         "--teleop-height-rate",
@@ -139,6 +177,10 @@ def main() -> int:
         default_command_height=float(cfg.robot.command[4]),
         command_lin_vel_x=float(args.teleop_vx),
         command_yaw_rate=float(args.teleop_yaw_rate),
+        command_lin_accel_x=float(args.teleop_vx_accel),
+        command_yaw_accel=float(args.teleop_yaw_accel),
+        command_lin_decay_x=float(args.teleop_vx_decay),
+        command_yaw_decay=float(args.teleop_yaw_decay),
         command_height_rate=float(args.teleop_height_rate),
         min_command_height=float(args.teleop_min_height),
         max_command_height=float(args.teleop_max_height),

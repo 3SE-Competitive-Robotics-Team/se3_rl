@@ -131,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-variant",
         choices=SIM_MODEL_VARIANT_CHOICES,
         default=DEFAULT_SIM_MODEL_VARIANT,
-        help="选择内置 MJCF 模型变体：fourbar-surrogate 为训练默认等效开树，closedchain 为真实闭链 OBB 对照，openchain 为旧开链模型。",
+        help="选择内置 MJCF 模型变体：closedchain 为 sim2sim 默认真实闭链 OBB 模型，fourbar-surrogate 为等效开树模型，openchain 为旧开链模型。",
     )
     parser.add_argument(
         "--model",
@@ -175,10 +175,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
     parser.add_argument(
+        "--geom-view",
         "--rerun-geom-view",
+        dest="rerun_geom_view",
         choices=("visual", "collision", "both"),
         default=ViewerConfig().geom_view,
-        help="Rerun 3D 场景显示的 MJCF 几何。visual 显示外观模型，collision 显示接触几何，both 同时显示。",
+        help="3D viewer 显示的 MJCF 几何。visual 显示外观模型，collision 显示接触几何，both 同时显示。",
     )
     parser.add_argument(
         "--rerun-memory-limit",

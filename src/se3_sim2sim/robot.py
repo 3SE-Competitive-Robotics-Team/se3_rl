@@ -30,6 +30,7 @@ from .yaw_pid import YawPidController
 _SHARED_ROBOT = SharedRobotConfig()
 _RESET_FLOOR_CLEARANCE_M = 0.01
 _BASE_CONTACT_PENETRATION_M = 0.001
+_GROUND_GEOM_GROUP = 2
 
 
 def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
@@ -714,7 +715,21 @@ class WheelLeggedRobot:
             act.ctrllimited = False
             act.inheritrange = 0.0
 
-        return spec.compile()
+        model = spec.compile()
+        WheelLeggedRobot._assign_ground_geom_group(model)
+        return model
+
+    @staticmethod
+    def _assign_ground_geom_group(model: mujoco.MjModel) -> None:
+        for geom_id in range(model.ngeom):
+            name = (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or "").lower()
+            geom_type = int(model.geom_type[geom_id])
+            if (
+                geom_type in (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
+                or "floor" in name
+                or "ground" in name
+            ):
+                model.geom_group[geom_id] = _GROUND_GEOM_GROUP
 
     def _apply_default_joint_positions(self) -> None:
         """把闭链被动输出和 policy 关节一起写到默认站姿。"""

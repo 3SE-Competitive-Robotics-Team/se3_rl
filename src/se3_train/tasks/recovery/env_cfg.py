@@ -26,6 +26,7 @@ _RECOVERY_COMMAND_WHEEL_RADIUS = 0.060
 _RECOVERY_COMMAND_HALF_TRACK = 0.200725
 _RECOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.90
 _RECOVERY_COMMAND_LIN_VEL_X_MAX = 2.4
+_RECOVERY_WHEEL_JOINT_VEL_RANGE = (-10.0, 10.0)
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
 
@@ -123,6 +124,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "joint_offset_range": 0.0,
             "joint_vel_range": (-0.8, 0.8),
+            "wheel_joint_vel_range": _RECOVERY_WHEEL_JOINT_VEL_RANGE,
             "joint_randomization_prob": 0.25,
             "full_joint_randomization": True,
             "full_front_joint_offset_range": math.pi,

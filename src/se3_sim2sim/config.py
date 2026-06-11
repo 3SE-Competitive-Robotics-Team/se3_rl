@@ -22,7 +22,7 @@ _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
 _MJCF_DIR = Path("assets/robots/serialleg/mjcf")
 
-DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "fourbar-surrogate"
+DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "closedchain"
 SIM_MODEL_VARIANT_CHOICES: tuple[SimModelVariant, ...] = (
     "fourbar-surrogate",
     "closedchain",
@@ -34,7 +34,7 @@ SIM_MODEL_VARIANT_PATHS: dict[SimModelVariant, Path] = {
     "openchain": _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml",
 }
 _SIM_MODEL_VARIANT_ALIASES: dict[str, SimModelVariant] = {
-    "default": "fourbar-surrogate",
+    "default": "closedchain",
     "fourbar": "fourbar-surrogate",
     "fourbar-surrogate": "fourbar-surrogate",
     "fourbar_surrogate": "fourbar-surrogate",
@@ -262,7 +262,7 @@ class ViewerConfig(BaseModel):
     log_every: int = 1
     follow_body: str = "base_link"
     geom_view: RerunGeomView = "visual"
-    """Rerun 3D 场景显示的 MJCF 几何：visual 默认用于复查外观，collision 用于接触诊断。"""
+    """3D viewer 显示的 MJCF 几何：visual 用于复查外观，collision 用于接触诊断。"""
 
 
 class RunConfig(BaseModel):

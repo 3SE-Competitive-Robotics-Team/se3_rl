@@ -58,7 +58,7 @@
 
 ## 动作空间和关节契约
 
-默认训练和 sim2sim 使用解析四连杆等效开树模型；policy contract 仍保持主动杆语义：
+训练默认使用解析四连杆等效开树模型，sim2sim 默认使用真实闭链 OBB 模型；policy contract 仍保持主动杆语义：
 
 ```text
 [LF, LB, RF, RB, l_wheel, r_wheel]
