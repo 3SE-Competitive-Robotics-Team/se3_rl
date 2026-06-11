@@ -389,7 +389,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "force_threshold": 1.0,
             "velocity_scale": 1.0,
             "max_penalty": 10000.0,
-            "recovery_active_only": True,
+            "recovery_active_only": False,
             "asset_cfg": SceneEntityCfg("robot"),
             "log_prefix": "Recovery",
         },
