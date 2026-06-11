@@ -21,6 +21,7 @@ _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _RECOVERY_WHEEL_KD = 0.08
+_RECOVERY_WHEEL_JOINT_VEL_RANGE = (-10.0, 10.0)
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
 
@@ -111,6 +112,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
             "joint_offset_range": 0.0,
             "joint_vel_range": (-0.8, 0.8),
+            "wheel_joint_vel_range": _RECOVERY_WHEEL_JOINT_VEL_RANGE,
             "joint_randomization_prob": 0.25,
             "full_joint_randomization": True,
             "full_front_joint_offset_range": math.pi,

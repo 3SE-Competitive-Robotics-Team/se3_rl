@@ -1658,6 +1658,8 @@ def reset_joints(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     joint_offset_range: float = 0.0,
     joint_vel_range: tuple[float, float] = (0.0, 0.0),
+    wheel_joint_vel_range: tuple[float, float] = (0.0, 0.0),
+    wheel_joint_randomization_prob: float | None = None,
     hip_joint_offset_range: float | tuple[float, float] | None = None,
     knee_joint_offset_range: float | tuple[float, float] | None = None,
     joint_randomization_prob: float = 1.0,
@@ -1691,6 +1693,12 @@ def reset_joints(
     )
     joint_offset_range = _stage_value(stage, "joint_offset_range", joint_offset_range)
     joint_vel_range = _stage_value(stage, "joint_vel_range", joint_vel_range)
+    wheel_joint_vel_range = _stage_value(stage, "wheel_joint_vel_range", wheel_joint_vel_range)
+    wheel_joint_randomization_prob = _stage_value(
+        stage,
+        "wheel_joint_randomization_prob",
+        wheel_joint_randomization_prob,
+    )
     hip_joint_offset_range = _stage_value(stage, "hip_joint_offset_range", hip_joint_offset_range)
     knee_joint_offset_range = _stage_value(
         stage, "knee_joint_offset_range", knee_joint_offset_range
@@ -1708,6 +1716,10 @@ def reset_joints(
         _stage_value(stage, "joint_randomization_prob", joint_randomization_prob)
     )
     joint_randomization_prob = min(max(joint_randomization_prob, 0.0), 1.0)
+    if wheel_joint_randomization_prob is None:
+        wheel_joint_randomization_prob = joint_randomization_prob
+    else:
+        wheel_joint_randomization_prob = min(max(float(wheel_joint_randomization_prob), 0.0), 1.0)
 
     asset: Entity = env.scene[asset_cfg.name]
 
@@ -1716,6 +1728,23 @@ def reset_joints(
 
     wheel_ids = tensor_ids(wheel_joint_ids(asset), device=env.device)
     joint_pos[:, wheel_ids] = 0.0
+    wheel_vel_randomization_enabled = (
+        abs(float(wheel_joint_vel_range[0])) > 0.0 or abs(float(wheel_joint_vel_range[1])) > 0.0
+    )
+    if wheel_vel_randomization_enabled:
+        wheel_randomize_mask = (
+            torch.rand(len(env_ids), device=env.device) < wheel_joint_randomization_prob
+        )
+        if wheel_randomize_mask.any():
+            wheel_rows = wheel_randomize_mask.nonzero().flatten()
+            joint_vel[wheel_rows[:, None], wheel_ids] = sample_uniform(
+                torch.tensor(float(wheel_joint_vel_range[0]), device=env.device),
+                torch.tensor(float(wheel_joint_vel_range[1]), device=env.device),
+                (int(wheel_rows.numel()), len(wheel_ids)),
+                env.device,
+            )
+    else:
+        wheel_randomize_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
 
     leg_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
     if height_conditioned_default and hasattr(env, "command_manager"):
@@ -1850,6 +1879,10 @@ def reset_joints(
         log["Reset/joint_randomization_prob"] = float(joint_randomization_prob)
         log["Reset/joint_randomization_ratio"] = randomize_mask.float().mean().item()
         log["Reset/full_joint_randomization"] = float(full_joint_randomization)
+        log["Reset/wheel_joint_vel_randomization_prob"] = float(wheel_joint_randomization_prob)
+        log["Reset/wheel_joint_vel_randomization_ratio"] = (
+            wheel_randomize_mask.float().mean().item()
+        )
 
     recovery_mask = getattr(env, "_recovery_reset_mask", None)
     if (
