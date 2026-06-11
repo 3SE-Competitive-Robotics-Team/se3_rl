@@ -383,7 +383,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["wheel_air_velocity"] = RewardTermCfg(
         func=rewards.wheel_air_velocity_penalty,
-        weight=-5.0e-4,
+        weight=-1.0e-3,
         params={
             "sensor_name": "wheel_sensor",
             "force_threshold": 1.0,
