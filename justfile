@@ -143,6 +143,15 @@ sim:
 sim-ckpt checkpoint:
     uv run se3-sim2sim --checkpoint {{checkpoint}} --max-steps 3000 --course walk-sweep
 
+# sim2sim 键盘遥控验证（R 切换输出，W/S 前后，A/D 旋转，自动保存 Rerun .rrd）
+sim-teleop:
+    uv run se3-sim2sim-teleop
+
+# sim2sim 指定 checkpoint 键盘遥控验证（自动保存 Rerun .rrd）
+# 用法: just sim-teleop-ckpt logs/.../model_4999.pt
+sim-teleop-ckpt checkpoint:
+    uv run se3-sim2sim-teleop --checkpoint {{checkpoint}}
+
 # sim2sim 无 GUI 快速验证（自动选最新 checkpoint）
 sim-headless:
     uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep

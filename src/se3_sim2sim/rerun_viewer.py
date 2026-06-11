@@ -189,6 +189,7 @@ class RerunViewer:
         self._log_scalar("/plots/rc/target_mode_policy", target_mode)
         self._log_scalar("/plots/command/lin_vel_x", telemetry.get("command_lin_vel_x", 0.0))
         self._log_scalar("/plots/command/yaw_rate", telemetry.get("command_yaw_rate", 0.0))
+        self._log_scalar("/plots/command/height", telemetry.get("command_height", 0.0))
         self._log_scalar("/plots/velocity/base_lin_vel_x", telemetry.get("base_lin_vel_x", 0.0))
         self._log_scalar("/plots/velocity/wheel_lin_vel", telemetry.get("wheel_lin_vel", 0.0))
         self._log_scalar("/plots/contact/wheel_any", telemetry.get("wheel_contact", 0.0))

@@ -13,14 +13,16 @@ from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_J
 from .config import RunConfig
 from .course import CourseType, create_course
 from .diagnostics import rollout_diagnostics
+from .mujoco_viewer import CompositeViewer, MujocoViewer
 from .policy import PolicyRuntime
 from .rerun_viewer import RerunViewer
 from .robot import WheelLeggedRobot
 from .runtime_spec import RuntimeSpec
+from .teleop_input import CommandInputSource
 
 
 class Sim2SimWorkflow:
-    def __init__(self, cfg: RunConfig) -> None:
+    def __init__(self, cfg: RunConfig, *, command_source: CommandInputSource | None = None) -> None:
         self.cfg = cfg.resolved()
         self.runtime = RuntimeSpec(task=self.cfg.robot.task)
         self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
@@ -31,9 +33,10 @@ class Sim2SimWorkflow:
             device=self.cfg.policy.device,
             runtime=self.runtime,
         )
-        self.viewer = self._make_viewer()
         control_dt = self.cfg.robot.sim_dt * self.cfg.robot.control_decimation
         self._course = create_course(self.cfg.course, control_dt)
+        self.command_source = command_source
+        self.viewer = self._make_viewer()
 
     def run(self) -> dict[str, object]:
         obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
@@ -140,6 +143,8 @@ class Sim2SimWorkflow:
         try:
             for step in step_iter:
                 sim_time_s = (step - 1) * control_dt
+                if self.command_source is not None:
+                    self.command_source.pace(sim_time_s)
                 # --- jump_phase 更新（对齐训练端参考轨迹）---
                 if _jump_active:
                     self.robot.command[5] = 1.0
@@ -221,6 +226,19 @@ class Sim2SimWorkflow:
                     _next_rc_event += 1
                     rc_switch_event = 1.0
 
+                if self.command_source is not None:
+                    command_update = self.command_source.poll(sim_time_s)
+                    if command_update.quit_requested:
+                        done_reason = "user_quit"
+                        break
+                    self.robot.command[0] = float(command_update.lin_vel_x)
+                    self.robot.command[1] = float(command_update.yaw_rate)
+                    self.robot.command[4] = float(command_update.command_height)
+                    if command_update.toggle_output:
+                        _rc_output_enabled = not _rc_output_enabled
+                        rc_switch_event = 1.0
+                    obs = self.robot.observation()
+
                 rc_policy_reset = 0.0
                 if _rc_output_enabled:
                     action = self.policy.act(obs)
@@ -283,6 +301,7 @@ class Sim2SimWorkflow:
                     "reward": float(reward),
                     "command_lin_vel_x": float(info.get("command_lin_vel_x", 0.0)),
                     "command_yaw_rate": float(info.get("command_yaw_rate", 0.0)),
+                    "command_height": float(info.get("command_height", 0.0)),
                     "base_lin_vel_x": float(info["base_lin_vel_x"]),
                     "wheel_lin_vel": float(info["wheel_lin_vel"]),
                     "action_delta_l2": float(np.linalg.norm(action_delta)),
@@ -320,7 +339,11 @@ class Sim2SimWorkflow:
                                 f" course_yaw={float(report.get('yaw', 0.0)):+.2f}"
                             )
                     rc_info = ""
-                    if rc_events or not bool(rc_sched.initial_output_enabled):
+                    if (
+                        self.command_source is not None
+                        or rc_events
+                        or not bool(rc_sched.initial_output_enabled)
+                    ):
                         rc_info = (
                             f" rc={'on' if _rc_output_enabled else 'off'}"
                             f" mode={info.get('target_mode', 'policy')}"
@@ -330,6 +353,7 @@ class Sim2SimWorkflow:
                         f"step={step:05d} time={float(info['time']):.3f}"
                         f"{course_info}"
                         f"{rc_info}"
+                        f" cmd_h={float(info.get('command_height', 0.0)):.3f}"
                         f" base_h={float(info['height']):.3f} "
                         f"wheel_clr={float(info.get('wheel_clearance', 0.0)):.3f} "
                         f"tilt={float(info['tilt_deg']):.2f} "
@@ -376,7 +400,11 @@ class Sim2SimWorkflow:
         }
         if script_events:
             summary["jump_events"] = self._jump_event_diagnostics(samples, script_events)
-        if rc_events or not bool(rc_sched.initial_output_enabled):
+        if (
+            self.command_source is not None
+            or rc_events
+            or not bool(rc_sched.initial_output_enabled)
+        ):
             summary["rc_switch"] = self._rc_switch_diagnostics(
                 samples,
                 rc_events,
@@ -398,9 +426,36 @@ class Sim2SimWorkflow:
             self.viewer.close()
         return summary
 
-    def _make_viewer(self) -> RerunViewer | None:
+    def _make_viewer(self) -> RerunViewer | MujocoViewer | CompositeViewer | None:
         if self.cfg.viewer.mode == "none":
             return None
+        if self.cfg.viewer.mode == "mujoco":
+            key_callback = getattr(self.command_source, "key_callback", None)
+            if not callable(key_callback):
+                key_callback = None
+            viewers: list[object] = []
+            if self.cfg.viewer.record_to_rrd is not None:
+                viewers.append(
+                    RerunViewer(
+                        app_id=self.cfg.viewer.app_id,
+                        spawn=False,
+                        address=self.cfg.viewer.address,
+                        record_to_rrd=self.cfg.viewer.record_to_rrd,
+                        memory_limit=self.cfg.viewer.memory_limit,
+                        follow_body=self.cfg.viewer.follow_body,
+                        geom_view=self.cfg.viewer.geom_view,
+                    )
+                )
+            viewers.append(
+                MujocoViewer(
+                    model=self.robot.model,
+                    data=self.robot.data,
+                    key_callback=key_callback,
+                    pose_joint_names=self.robot.policy_joint_names[:4],
+                    follow_body=self.cfg.viewer.follow_body,
+                )
+            )
+            return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
         return RerunViewer(
             app_id=self.cfg.viewer.app_id,
             spawn=bool(self.cfg.viewer.spawn),
@@ -735,5 +790,9 @@ class Sim2SimWorkflow:
         return int(data["base_pos"].shape[0])
 
 
-def run_sim2sim(cfg: RunConfig) -> dict[str, object]:
-    return Sim2SimWorkflow(cfg).run()
+def run_sim2sim(
+    cfg: RunConfig,
+    *,
+    command_source: CommandInputSource | None = None,
+) -> dict[str, object]:
+    return Sim2SimWorkflow(cfg, command_source=command_source).run()

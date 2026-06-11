@@ -13,7 +13,7 @@ from se3_shared import ActionDelayConfig, Termination
 
 from .course import CourseConfig
 
-ViewerMode = Literal["rerun", "none"]
+ViewerMode = Literal["rerun", "mujoco", "none"]
 RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
@@ -215,7 +215,8 @@ class RobotConfig(BaseModel):
     """判定 base_link 已接地需要连续满足的 MuJoCo step 数。"""
     action_scale: tuple[float, ...] = _shared_robot.action_scale
     action_clip: float | None = _shared_robot.action_clip
-    height_conditioned_action_default: bool = False
+    height_conditioned_action_default: bool = True
+    """让腿部 action=0 对应当前 command height 下的默认腿型。"""
     active_rod_target_lower_preload_margin: Annotated[float, Field(ge=0.0)] = (
         _shared_robot.active_rod_lower_target_overdrive
     )

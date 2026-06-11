@@ -458,6 +458,7 @@ class WheelLeggedRobot:
             "command": self.command.copy().tolist(),
             "command_lin_vel_x": float(self.command[0]),
             "command_yaw_rate": float(self.command[1]),
+            "command_height": float(self.command[4]),
             "base_lin_vel_x": float(self.base_lin_vel_body[0]),
             "wheel_lin_vel": wheel_lin_vel,
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),

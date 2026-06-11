@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=robot_defaults.control_decimation,
         help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
     )
-    parser.add_argument("--viewer", choices=["rerun", "none"], default="rerun")
+    parser.add_argument("--viewer", choices=["rerun", "mujoco", "none"], default="rerun")
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
@@ -277,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="height_conditioned_action_default",
         action="store_true",
         default=None,
-        help="让腿部 action=0 对应当前 command height 下的默认腿型；不传时 recovery deploy npz 自动启用。",
+        help="让腿部 action=0 对应当前 command height 下的默认腿型；sim2sim 默认已启用。",
     )
     parser.add_argument(
         "--no-height-conditioned-action-default",
@@ -443,7 +443,7 @@ def _yaw_pid_enabled_from_args(args: argparse.Namespace) -> bool:
 
 
 def _height_conditioned_action_default_from_args(args: argparse.Namespace) -> bool:
-    """解析 sim2sim action 默认腿型语义，deploy recovery npz 默认对齐真机。"""
+    """解析 sim2sim action 默认腿型语义，默认启用以跟随 command height。"""
     explicit = getattr(args, "height_conditioned_action_default", None)
     if explicit is not None:
         return bool(explicit)
@@ -584,6 +584,10 @@ def main() -> int:
     print("Final summary:")
     print(f"  done_reason={summary['done_reason']}")
     print(f"  checkpoint={summary['policy']['checkpoint']}")
+    viewer_cfg = summary["config"].get("viewer", {})
+    rerun_record = viewer_cfg.get("record_to_rrd") if isinstance(viewer_cfg, dict) else None
+    if rerun_record:
+        print(f"  Rerun saved to: {rerun_record}")
     print(f"  model_issues={len(summary['model_diagnostics']['issues'])}")
     print(
         f"  sim_dt={sim_dt:.4f}s control_dt={sim_dt * control_decimation:.4f}s "
