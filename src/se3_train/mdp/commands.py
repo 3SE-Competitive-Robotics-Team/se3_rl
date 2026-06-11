@@ -33,6 +33,12 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
     height_resample_on_reset_only: bool = False
     """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
+    constrain_diff_drive_commands: bool = False
+    """是否按双轮差速轮速预算约束 vx/yaw 指令组合。"""
+    diff_drive_wheel_radius: float = 0.06
+    diff_drive_half_track: float = 0.20
+    diff_drive_max_wheel_speed: float = 45.0
+    diff_drive_wheel_speed_fraction: float = 1.0
 
     def build(self, env: ManagerBasedRlEnv) -> VelocityHeightCommandTerm:
         return VelocityHeightCommandTerm(self, env)
@@ -129,10 +135,11 @@ class VelocityHeightCommandTerm(CommandTerm):
             getattr(self, "_resampling_for_reset", False)
         )
 
-        # 确定哪些环境处于站立状态。
-        standing_count = int(n * self.cfg.standing_ratio)
-        standing_ids = env_ids[:standing_count]
-        moving_ids = env_ids[standing_count:]
+        # 用概率采样静站样本，避免单 env 重采样时 int(n * ratio) 被截断为 0。
+        standing_prob = min(max(float(self.cfg.standing_ratio), 0.0), 1.0)
+        standing_mask = torch.rand(n, device=self.device) < standing_prob
+        standing_ids = env_ids[standing_mask]
+        moving_ids = env_ids[~standing_mask]
 
         self._standing_mask[standing_ids] = True
         self._standing_mask[moving_ids] = False
@@ -162,6 +169,7 @@ class VelocityHeightCommandTerm(CommandTerm):
                 * (self.cfg.ang_vel_yaw_range[1] - self.cfg.ang_vel_yaw_range[0])
                 + self.cfg.ang_vel_yaw_range[0]
             )
+            lin_vel, yaw_vel = self._constrain_diff_drive_command(lin_vel, yaw_vel)
             pitch = (
                 torch.rand(len(moving_ids), device=self.device)
                 * (self.cfg.pitch_range[1] - self.cfg.pitch_range[0])
@@ -191,6 +199,39 @@ class VelocityHeightCommandTerm(CommandTerm):
                 env_ids=env_ids,
                 command=self._command,
             )
+
+    def _constrain_diff_drive_command(
+        self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """按双轮差速轮速预算约束 vx/yaw，避免同时吃满直行和转向。"""
+        if not self.cfg.constrain_diff_drive_commands:
+            return lin_vel, yaw_vel
+
+        wheel_radius = max(float(self.cfg.diff_drive_wheel_radius), 1.0e-6)
+        half_track = max(float(self.cfg.diff_drive_half_track), 1.0e-6)
+        wheel_speed_budget = (
+            wheel_radius
+            * max(float(self.cfg.diff_drive_max_wheel_speed), 1.0e-6)
+            * max(float(self.cfg.diff_drive_wheel_speed_fraction), 1.0e-6)
+        )
+
+        lin_vel = torch.clamp(lin_vel, min=-wheel_speed_budget, max=wheel_speed_budget)
+        yaw_low_cfg, yaw_high_cfg = self.cfg.ang_vel_yaw_range
+        lower_from_left = (-wheel_speed_budget - lin_vel) / half_track
+        upper_from_left = (wheel_speed_budget - lin_vel) / half_track
+        lower_from_right = (lin_vel - wheel_speed_budget) / half_track
+        upper_from_right = (lin_vel + wheel_speed_budget) / half_track
+        yaw_low = torch.maximum(
+            torch.full_like(lin_vel, float(yaw_low_cfg)),
+            torch.maximum(lower_from_left, lower_from_right),
+        )
+        yaw_high = torch.minimum(
+            torch.full_like(lin_vel, float(yaw_high_cfg)),
+            torch.minimum(upper_from_left, upper_from_right),
+        )
+        yaw_span = torch.clamp(yaw_high - yaw_low, min=0.0)
+        yaw_vel = yaw_low + torch.rand_like(yaw_vel) * yaw_span
+        return lin_vel, yaw_vel
 
     def _update_command(self) -> None:
         """对速度指令施加死区。"""

@@ -10,6 +10,7 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
@@ -21,6 +22,10 @@ _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _RECOVERY_WHEEL_KD = 0.08
+_RECOVERY_COMMAND_WHEEL_RADIUS = 0.060
+_RECOVERY_COMMAND_HALF_TRACK = 0.200725
+_RECOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.90
+_RECOVERY_COMMAND_LIN_VEL_X_MAX = 2.4
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
 
@@ -46,6 +51,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.standing_height_range = initial_height_range
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.02
+    command_cfg.constrain_diff_drive_commands = True
+    command_cfg.diff_drive_wheel_radius = _RECOVERY_COMMAND_WHEEL_RADIUS
+    command_cfg.diff_drive_half_track = _RECOVERY_COMMAND_HALF_TRACK
+    command_cfg.diff_drive_max_wheel_speed = _ROBOT_DEFAULTS.action_scale[
+        JointGroup.WHEEL_ACTUATORS[0]
+    ]
+    command_cfg.diff_drive_wheel_speed_fraction = _RECOVERY_COMMAND_WHEEL_SPEED_FRACTION
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
     command_cfg.enable_jump_metrics = False
@@ -171,12 +183,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "iteration": 3000,
-                            "lin_vel_x_range": (-3.0, 3.0),
+                            "lin_vel_x_range": (
+                                -_RECOVERY_COMMAND_LIN_VEL_X_MAX,
+                                _RECOVERY_COMMAND_LIN_VEL_X_MAX,
+                            ),
                             "ang_vel_yaw_range": (-9.0, 9.0),
                         },
                         {
                             "iteration": 4500,
-                            "lin_vel_x_range": (-3.0, 3.0),
+                            "lin_vel_x_range": (
+                                -_RECOVERY_COMMAND_LIN_VEL_X_MAX,
+                                _RECOVERY_COMMAND_LIN_VEL_X_MAX,
+                            ),
                             "ang_vel_yaw_range": (-9.0, 9.0),
                         },
                     ],
