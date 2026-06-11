@@ -23,7 +23,7 @@ from mjlab.sensor import (
 )
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
-    BoxInvertedPyramidStairsTerrainCfg,
+    BoxPyramidStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
 )
@@ -47,10 +47,10 @@ from se3_train.training_runtime import TRAINING_STATUS_FILENAME
 
 _REFERENCE_CTBC_WHEEL_SCALE = 45.0
 _REFERENCE_CTBC_WHEEL_AMP = 1.5
-_STAIR_REWARD_TERRAIN_TYPES = ("stage_stairs", "inv_pyramid_stairs")
+_STAIR_REWARD_TERRAIN_TYPES = ("stage_stairs", "pyramid_stairs")
 _TERRAIN_CURRICULUM_TYPES = (
     "stage_stairs",
-    "inv_pyramid_stairs",
+    "pyramid_stairs",
     "ramp_43deg_400mm",
     "ramp_17deg_350mm",
 )
@@ -201,7 +201,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 proportion=0.25,
                 size=(8.0, 8.0),
             ),
-            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+            "pyramid_stairs": BoxPyramidStairsTerrainCfg(
                 proportion=0.25,
                 size=(8.0, 8.0),
                 step_height_range=(0.04, 0.20),
@@ -229,7 +229,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 proportion=0.25,
                 size=(8.0, 8.0),
             ),
-            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+            "pyramid_stairs": BoxPyramidStairsTerrainCfg(
                 proportion=0.25,
                 size=(8.0, 8.0),
                 step_height_range=(0.04, 0.20),
@@ -425,7 +425,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "riser_sensor_name": "wheel_riser_sensor",
             "riser_normal_z_max": 0.5,
             "num_steps_per_env": 64,
-            "stair_terrain_type_names": ("stage_stairs", "inv_pyramid_stairs"),
+            "stair_terrain_type_names": ("stage_stairs", "pyramid_stairs"),
             "disable_during_recovery": True,
         },
     )
