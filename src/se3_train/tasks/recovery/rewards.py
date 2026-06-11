@@ -1,0 +1,34 @@
+"""本任务使用的奖励函数。"""
+
+from __future__ import annotations
+
+from se3_train.mdp.rewards import (
+    action_smoothness,
+    joint_pos_penalty,
+    lin_vel_z,
+    recovery_diagnostics,
+    recovery_upright_orientation_l2,
+    upright_leg_contact_penalty,
+    upright_wheel_contact_penalty,
+    upright_wheel_slip_penalty,
+    upward,
+    upward_progress,
+    wheel_air_velocity_penalty,
+)
+from se3_train.tasks.flat.rewards import *  # noqa: F403
+from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
+
+__all__ = [
+    *_FLAT_REWARD_ALL,
+    "action_smoothness",
+    "joint_pos_penalty",
+    "lin_vel_z",
+    "recovery_diagnostics",
+    "recovery_upright_orientation_l2",
+    "upward",
+    "upward_progress",
+    "upright_leg_contact_penalty",
+    "upright_wheel_contact_penalty",
+    "upright_wheel_slip_penalty",
+    "wheel_air_velocity_penalty",
+]

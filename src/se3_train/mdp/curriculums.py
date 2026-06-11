@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 
 _FLOW_MATCH_GRU_STEPS_PER_ENV = 64
+_DEFAULT_STEPS_PER_POLICY_ITER = 64
 
 
 def _lerp(
@@ -37,6 +38,22 @@ def _stage_progress(stage: dict) -> int:
     return int(stage["step"])
 
 
+def _curriculum_progress(
+    env: ManagerBasedRlEnv,
+    *,
+    use_iterations: bool,
+    steps_per_policy_iter: int,
+    offset_iter: int = 0,
+) -> int:
+    """返回课程进度；recovery 任务使用 PPO iter，普通任务沿用 policy step。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    if not use_iterations:
+        return step
+
+    steps_per_iter = max(1, int(steps_per_policy_iter))
+    return max(0, step // steps_per_iter - int(offset_iter))
+
+
 def _set_reward_weight(env: ManagerBasedRlEnv, term_name: str, weight: float) -> float | None:
     """运行期更新 RewardManager 中指定项权重；缺项时跳过。"""
     reward_manager = getattr(env, "reward_manager", None)
@@ -51,22 +68,74 @@ def commands_vel(
     env_ids: torch.Tensor,
     command_name: str,
     velocity_stages: list[dict],
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
+    offset_iter: int = 0,
 ) -> dict[str, torch.Tensor]:
-    """按训练步数阶梯式扩大速度指令范围。"""
+    """按课程进度阶梯式扩大速度指令范围。"""
     del env_ids
     term = env.command_manager.get_term(command_name)
     cfg: VelocityHeightCommandCfg = term.cfg  # type: ignore[assignment]
-    step = env.common_step_counter
+    step = int(getattr(env, "common_step_counter", 0))
+    progress = _curriculum_progress(
+        env,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    threshold_key = "iteration" if use_iterations else "step"
     for stage in velocity_stages:
-        if step >= stage["step"]:
+        threshold = int(stage.get(threshold_key, stage.get("step", 0)))
+        if progress >= threshold:
             if "lin_vel_x_range" in stage:
                 cfg.lin_vel_x_range = stage["lin_vel_x_range"]
             if "ang_vel_yaw_range" in stage:
                 cfg.ang_vel_yaw_range = stage["ang_vel_yaw_range"]
     return {
         "step_counter": torch.tensor(float(step)),
+        "progress": torch.tensor(float(progress)),
         "lin_vel_x_max": torch.tensor(cfg.lin_vel_x_range[1]),
         "ang_vel_yaw_max": torch.tensor(cfg.ang_vel_yaw_range[1]),
+    }
+
+
+def commands_height(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    height_stages: list[dict],
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
+    offset_iter: int = 0,
+) -> dict[str, torch.Tensor]:
+    """按课程进度逐步放开高度指令范围。"""
+    del env_ids
+    term = env.command_manager.get_term(command_name)
+    cfg: VelocityHeightCommandCfg = term.cfg  # type: ignore[assignment]
+    step = int(getattr(env, "common_step_counter", 0))
+    progress = _curriculum_progress(
+        env,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    threshold_key = "iteration" if use_iterations else "step"
+    for stage in height_stages:
+        threshold = int(stage.get(threshold_key, stage.get("step", 0)))
+        if progress >= threshold:
+            if "height_range" in stage:
+                cfg.height_range = stage["height_range"]
+            if "standing_height_range" in stage:
+                cfg.standing_height_range = stage["standing_height_range"]
+            elif "height_range" in stage:
+                cfg.standing_height_range = stage["height_range"]
+    return {
+        "step_counter": torch.tensor(float(step)),
+        "progress": torch.tensor(float(progress)),
+        "height_min": torch.tensor(cfg.height_range[0]),
+        "height_max": torch.tensor(cfg.height_range[1]),
+        "standing_height_min": torch.tensor(cfg.standing_height_range[0]),
+        "standing_height_max": torch.tensor(cfg.standing_height_range[1]),
     }
 
 

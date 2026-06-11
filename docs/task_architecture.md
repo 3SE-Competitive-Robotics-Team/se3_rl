@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
+| `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，复用平地任务结构并使用全角度 recovery reset |
 | `flow_match/wheel/` | `SE3-WheelLegged-FlowMatch-Wheel-GRU` | FlowMatch `WHEEL=0` 单标签平地轮式能力任务 |
 | `flow_match/gait_stage1/` | `SE3-WheelLegged-FlowMatch-Gait-Stage1-GRU` | FlowMatch `GAIT=1` 平地 `0-1.05m/s` 基础步态任务 |
 | `flow_match/gait_stage2/` | `SE3-WheelLegged-FlowMatch-Gait-Stage2-GRU` | FlowMatch `GAIT=1` 低矮随机地形和最高 `8cm` 台阶任务 |
@@ -20,7 +21,7 @@
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
-阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
+阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。Recovery 目前只有 `Recovery-GRU` 一个正式入口，不注册 recovery-stand 或 stair/NX 实验入口。
 
 FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 使用 Stage1/Stage2/Stage3 三段正式课程，阶段交接通过 CLI 显式传 `--agent.resume True --agent.load-run <上一阶段run> --agent.load-checkpoint <checkpoint>`，不在配置里写死 checkpoint。
 
@@ -125,7 +126,7 @@ git diff --check
 
 ```bash
 uv run python - <<'PY'
-from se3_train.tasks import flat, jump_finetune, jump_pretrain, rough
+from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, rough
 from se3_train.tasks.flow_match import (
     gait_stage1,
     gait_stage2,
@@ -146,6 +147,7 @@ for module in (
     wheel_leg,
     gait_wheel,
     jump,
+    recovery,
     jump_pretrain,
     jump_finetune,
 ):
