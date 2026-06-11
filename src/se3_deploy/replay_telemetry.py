@@ -37,7 +37,9 @@ POLICY_JOINT_NAMES = (
     "l_wheel_Joint",
     "r_wheel_Joint",
 )
-DEFAULT_RERUN_MODEL = Path("assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml")
+DEFAULT_RERUN_MODEL = Path(
+    "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
+)
 
 
 class PolicyRuntimeLike(Protocol):
@@ -386,8 +388,9 @@ class _RerunSink:
         self._array("/imu/projected_gravity", row.get("projected_gravity"), XYZ_LABELS)
         if self.log_3d:
             if self.robot_logger is not None:
-                self.robot_logger.log_sample(row)
-            self._log_3d_vectors(row)
+                self.robot_logger.log_sample(row, relative_time_s=relative_time_s)
+            else:
+                self._log_3d_vectors(row)
 
     def close(self) -> None:
         if self.rr is None:
@@ -436,12 +439,10 @@ class _RobotKinematicsLogger:
     def __init__(self, *, rr: Any, model_path: Path, app_id: str) -> None:
         import mujoco
 
-        from se3_sim2sim.math_utils import quat_wxyz_to_xyzw
         from se3_sim2sim.rerun_viewer import RerunViewer
 
         self.rr = rr
         self.mujoco = mujoco
-        self.quat_wxyz_to_xyzw = quat_wxyz_to_xyzw
         self.model_path = model_path
         self.model = mujoco.MjModel.from_xml_path(str(model_path))
         self.data = mujoco.MjData(self.model)
@@ -472,8 +473,10 @@ class _RobotKinematicsLogger:
             rr.log("/warnings/replay_robot_disabled", rr.TextLog(str(exc)))
             return None
 
-    def log_sample(self, row: dict[str, object]) -> None:
+    def log_sample(self, row: dict[str, object], *, relative_time_s: float) -> None:
         self.data.qpos[:] = self.default_qpos
+        self.data.qvel[:] = 0.0
+        self.data.time = float(relative_time_s)
         if self.free_qpos_adr is not None:
             qadr = self.free_qpos_adr
             self.data.qpos[qadr : qadr + 3] = np.asarray([0.0, 0.0, self.base_height])
@@ -490,16 +493,12 @@ class _RobotKinematicsLogger:
                 self.data.qpos[qadr] = float(value)
 
         self.mujoco.mj_forward(self.model, self.data)
-        for body_id, path in enumerate(self.viewer.body_paths):
-            self.rr.log(
-                path,
-                self.rr.Transform3D(
-                    translation=np.asarray(self.data.xpos[body_id], dtype=np.float32),
-                    quaternion=self.quat_wxyz_to_xyzw(
-                        np.asarray(self.data.xquat[body_id], dtype=np.float32)
-                    ),
-                ),
-            )
+        self.viewer.log_state(
+            self.model,
+            self.data,
+            step=int(row.get("step", 0)),
+            telemetry=_sim2sim_telemetry_from_row(row, base_height=self.base_height),
+        )
 
     def _free_joint_qpos_adr(self) -> int | None:
         for joint_id in range(self.model.njnt):
@@ -514,6 +513,66 @@ class _RobotKinematicsLogger:
             if joint_id >= 0:
                 result[name] = int(self.model.jnt_qposadr[joint_id])
         return result
+
+
+def _sim2sim_telemetry_from_row(row: dict[str, object], *, base_height: float) -> dict[str, object]:
+    joint_pos = _row_vector(row, "joint_pos", 4)
+    joint_vel = _row_vector(row, "joint_vel", 4)
+    wheel_pos = _row_vector(row, "wheel_pos", 2)
+    wheel_vel = _row_vector(row, "wheel_vel", 2)
+    action = _row_vector(row, "action", 6)
+    clipped_action = _row_vector(row, "clipped_action", 6)
+    hip_torque = _row_vector(row, "hip_torque", 4)
+    wheel_torque = _row_vector(row, "wheel_motor_torque", 2)
+    base_ang_vel_body = _row_vector(row, "base_ang_vel_body", 3)
+    projected_gravity = _row_vector(row, "projected_gravity", 3, default=(0.0, 0.0, -1.0))
+    roll, pitch = _roll_pitch_from_projected_gravity(projected_gravity)
+    command = _row_vector(
+        row, "command", 8, default=(0.0, 0.0, 0.0, 0.0, base_height, 0.0, 0.0, 0.0)
+    )
+    tilt_deg = math.degrees(math.acos(float(np.clip(-projected_gravity[2], -1.0, 1.0))))
+    wheel_lin_vel = float(np.mean(wheel_vel)) if wheel_vel.size else 0.0
+    return {
+        "height": float(base_height),
+        "wheel_clearance": 0.0,
+        "wheel_clearance_left": 0.0,
+        "wheel_clearance_right": 0.0,
+        "leg_clearance": 0.0,
+        "base_clearance": 0.0,
+        "wheel_contact": 0.0,
+        "wheel_full_contact": 0.0,
+        "wheel_contact_left": 0.0,
+        "wheel_contact_right": 0.0,
+        "leg_contact": 0.0,
+        "leg_contact_left": 0.0,
+        "leg_contact_right": 0.0,
+        "base_contact": 0.0,
+        "nonwheel_contact": 0.0,
+        "tilt_deg": float(tilt_deg),
+        "fail_tilt_deg": 80.0,
+        "reward": 0.0,
+        "last_ctrl": np.concatenate([hip_torque, wheel_torque]).astype(np.float64, copy=False),
+        "target_mode": row.get("target_mode", "policy"),
+        "rc_switch_r": float(row.get("rc_switch_r", 0.0)),
+        "output_enabled": float(row.get("output_enabled", 0.0)),
+        "rc_switch_event": 0.0,
+        "rc_policy_reset": 0.0,
+        "command_lin_vel_x": float(command[0]),
+        "command_yaw_rate": float(command[1]),
+        "command_height": float(command[4]),
+        "base_lin_vel_x": 0.0,
+        "wheel_lin_vel": wheel_lin_vel,
+        "base_ang_vel_body": base_ang_vel_body,
+        "base_ang_vel_world": base_ang_vel_body,
+        "roll_deg": math.degrees(roll),
+        "pitch_deg": math.degrees(pitch),
+        "yaw_deg": 0.0,
+        "dof_pos": np.concatenate([joint_pos, wheel_pos]).astype(np.float64, copy=False),
+        "dof_vel": np.concatenate([joint_vel, wheel_vel]).astype(np.float64, copy=False),
+        "policy_action_raw": action,
+        "policy_action_clipped": clipped_action,
+        "last_action": clipped_action,
+    }
 
 
 def _iter_jsonl(path: Path) -> Iterator[tuple[int, dict[str, object]]]:
@@ -600,6 +659,20 @@ def _array(row: dict[str, object], key: str, size: int) -> np.ndarray:
     return arr
 
 
+def _row_vector(
+    row: dict[str, object],
+    key: str,
+    size: int,
+    *,
+    default: tuple[float, ...] | None = None,
+) -> np.ndarray:
+    fallback = (0.0,) * int(size) if default is None else default
+    arr = np.asarray(row.get(key, fallback), dtype=np.float64).reshape(-1)
+    if arr.shape != (int(size),) or not np.isfinite(arr).all():
+        return np.asarray(fallback, dtype=np.float64).reshape(int(size))
+    return arr
+
+
 def _row_time_s(row: dict[str, object]) -> float:
     for key in ("monotonic_time_s", "wall_time_s"):
         value = _optional_float(row.get(key))
@@ -624,6 +697,18 @@ def _quat_from_projected_gravity(values: object) -> np.ndarray:
     roll = math.asin(float(np.clip(-gravity[1], -1.0, 1.0)))
     pitch = math.asin(float(np.clip(gravity[0], -1.0, 1.0)))
     return _euler_xyz_to_quat_wxyz(roll, pitch, 0.0)
+
+
+def _roll_pitch_from_projected_gravity(values: object) -> tuple[float, float]:
+    gravity = _row_vector(
+        {"projected_gravity": values}, "projected_gravity", 3, default=(0.0, 0.0, -1.0)
+    )
+    norm = float(np.linalg.norm(gravity))
+    if norm > 1.0e-6:
+        gravity = gravity / norm
+    roll = math.asin(float(np.clip(-gravity[1], -1.0, 1.0)))
+    pitch = math.asin(float(np.clip(gravity[0], -1.0, 1.0)))
+    return roll, pitch
 
 
 def _euler_xyz_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> np.ndarray:
