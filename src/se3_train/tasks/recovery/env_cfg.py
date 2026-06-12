@@ -24,9 +24,11 @@ _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _RECOVERY_WHEEL_KD = 0.08
 _RECOVERY_COMMAND_WHEEL_RADIUS = 0.060
 _RECOVERY_COMMAND_HALF_TRACK = 0.200725
-_RECOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.90
-_RECOVERY_COMMAND_LIN_VEL_X_MAX = 2.4
+_RECOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.70
+_RECOVERY_COMMAND_LIN_VEL_X_MAX = 1.5
+_RECOVERY_COMMAND_ANG_VEL_YAW_MAX = 1.0
 _RECOVERY_WHEEL_JOINT_VEL_RANGE = (-10.0, 10.0)
+_RECOVERY_STANDING_RATIO = 0.05
 _TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
 
 
@@ -41,8 +43,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.resampling_time_range = (10.0, 10.0)
-    command_cfg.lin_vel_x_range = (-1.0, 1.0)
-    command_cfg.ang_vel_yaw_range = (-3.0, 3.0)
+    command_cfg.lin_vel_x_range = (0.0, 0.0)
+    command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
     initial_height_range = (
@@ -51,7 +53,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.height_range = initial_height_range
     command_cfg.standing_height_range = initial_height_range
     command_cfg.height_resample_on_reset_only = True
-    command_cfg.standing_ratio = 0.02
+    command_cfg.standing_ratio = _RECOVERY_STANDING_RATIO
     command_cfg.constrain_diff_drive_commands = True
     command_cfg.diff_drive_wheel_radius = _RECOVERY_COMMAND_WHEEL_RADIUS
     command_cfg.diff_drive_half_track = _RECOVERY_COMMAND_HALF_TRACK
@@ -186,29 +188,42 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "velocity_stages": [
                         {
                             "iteration": 0,
+                            "lin_vel_x_range": (0.0, 0.0),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
+                            "iteration": 300,
+                            "lin_vel_x_range": (-0.3, 0.3),
+                            "ang_vel_yaw_range": (-0.3, 0.3),
+                        },
+                        {
+                            "iteration": 650,
+                            "lin_vel_x_range": (-0.5, 0.5),
+                            "ang_vel_yaw_range": (-0.5, 0.5),
+                        },
+                        {
+                            "iteration": 1000,
                             "lin_vel_x_range": (-1.0, 1.0),
-                            "ang_vel_yaw_range": (-3.0, 3.0),
+                            "ang_vel_yaw_range": (-0.5, 0.5),
                         },
                         {
                             "iteration": 1500,
-                            "lin_vel_x_range": (-2.0, 2.0),
-                            "ang_vel_yaw_range": (-6.0, 6.0),
-                        },
-                        {
-                            "iteration": 3000,
                             "lin_vel_x_range": (
                                 -_RECOVERY_COMMAND_LIN_VEL_X_MAX,
                                 _RECOVERY_COMMAND_LIN_VEL_X_MAX,
                             ),
-                            "ang_vel_yaw_range": (-9.0, 9.0),
+                            "ang_vel_yaw_range": (-0.75, 0.75),
                         },
                         {
-                            "iteration": 4500,
+                            "iteration": 2200,
                             "lin_vel_x_range": (
                                 -_RECOVERY_COMMAND_LIN_VEL_X_MAX,
                                 _RECOVERY_COMMAND_LIN_VEL_X_MAX,
                             ),
-                            "ang_vel_yaw_range": (-9.0, 9.0),
+                            "ang_vel_yaw_range": (
+                                -_RECOVERY_COMMAND_ANG_VEL_YAW_MAX,
+                                _RECOVERY_COMMAND_ANG_VEL_YAW_MAX,
+                            ),
                         },
                     ],
                 },
@@ -301,7 +316,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 自起训练中 upward 是主目标；高度奖励提供全姿态抬升梯度，动作平滑只保留很轻的正则。
+    # 自起训练中 upward 是主目标；高度奖励提供全姿态抬升梯度，动作正则负责压住饱和翻身。
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=2.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
@@ -319,21 +334,36 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "max_penalty": 6.0,
         },
     )
+    cfg.rewards["upright_zero_velocity"] = RewardTermCfg(
+        func=rewards.recovery_upright_zero_velocity_penalty,
+        weight=-0.25,
+        params={
+            "command_name": "velocity_height",
+            "command_threshold": 0.1,
+            "gate_start_deg": 45.0,
+            "gate_full_deg": 15.0,
+            "base_speed_scale": 0.15,
+            "wheel_speed_scale": 0.12,
+            "base_ang_vel_scale": 0.6,
+            "max_penalty": 8.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
     cfg.rewards.pop("action_rate", None)
     cfg.rewards["leg_action_rate"] = RewardTermCfg(
         func=rewards.leg_action_rate,
-        weight=-0.02,
+        weight=-0.05,
     )
     cfg.rewards["wheel_action_rate"] = RewardTermCfg(
         func=rewards.wheel_action_rate,
-        weight=-0.10,
+        weight=-0.20,
     )
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
-        weight=-0.01,
+        weight=-0.03,
         params={
             "command_name": "velocity_height",
-            "gate_start_deg": 60.0,
+            "gate_start_deg": 90.0,
             "gate_full_deg": 30.0,
             "max_penalty": 80.0,
             "leg_scale": 1.0,
@@ -342,7 +372,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
-        weight=-2.5e-5,
+        weight=-5.0e-5,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["leg_dof_acc"] = RewardTermCfg(
@@ -352,7 +382,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["leg_power"] = RewardTermCfg(
         func=rewards.leg_power,
-        weight=-2.0e-5,
+        weight=-5.0e-5,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["wheel_torques"] = RewardTermCfg(

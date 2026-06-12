@@ -1129,6 +1129,74 @@ def joint_pos_penalty(
     return penalty
 
 
+def recovery_upright_zero_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    wheel_radius: float = _FOURBAR_WHEEL_RADIUS_M,
+    gate_start_deg: float = 45.0,
+    gate_full_deg: float = 15.0,
+    base_speed_scale: float = 0.15,
+    wheel_speed_scale: float = 0.12,
+    base_ang_vel_scale: float = 0.6,
+    max_penalty: float = 8.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """近直立且零指令时惩罚机身漂移、角速度和轮子空转。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    standing = command_norm <= float(command_threshold)
+
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+    active = standing & (near_upright_gate > 0.0)
+
+    base_vxy = robot.data.root_link_lin_vel_b[:, :2]
+    base_speed_sq = torch.sum(base_vxy**2, dim=1)
+    base_ang_vel_sq = torch.sum(robot.data.root_link_ang_vel_b**2, dim=1)
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
+
+    penalty = (
+        base_speed_sq / (float(base_speed_scale) ** 2)
+        + wheel_speed_sq / (float(wheel_speed_scale) ** 2)
+        + base_ang_vel_sq / (float(base_ang_vel_scale) ** 2)
+    )
+    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * standing.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Recovery/upright_zero_velocity_penalty": _masked_mean(result, active),
+                "Recovery/diag_zero_velocity_gate": (near_upright_gate * standing.float())
+                .mean()
+                .item(),
+                "Recovery/diag_zero_velocity_gate_ratio": active.float().mean().item(),
+                "Recovery/diag_standing_near_upright_vxy_speed": _masked_mean(
+                    torch.sqrt(base_speed_sq), active
+                ),
+                "Recovery/diag_standing_near_upright_base_ang_vel_norm": _masked_mean(
+                    torch.sqrt(base_ang_vel_sq), active
+                ),
+                "Recovery/diag_standing_near_upright_wheel_speed": _masked_mean(
+                    torch.sqrt(wheel_speed_sq), active
+                ),
+            }
+        )
+
+    return result
+
+
 def recovery_diagnostics(
     env: ManagerBasedRlEnv,
     command_name: str,
