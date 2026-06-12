@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import mujoco
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -58,6 +59,14 @@ _FULL_ANGLE_RESET_BBOX_MIN = (-0.278, -0.242, -0.323)
 _FULL_ANGLE_RESET_BBOX_MAX = (0.278, 0.242, 0.111)
 _FOURBAR_WHEEL_RADIUS_M = 0.060
 _DEFAULT_RESET_WHEEL_CLEARANCE_M = 0.001
+_GEOM_PLANE = int(mujoco.mjtGeom.mjGEOM_PLANE)
+_GEOM_HFIELD = int(mujoco.mjtGeom.mjGEOM_HFIELD)
+_GEOM_SPHERE = int(mujoco.mjtGeom.mjGEOM_SPHERE)
+_GEOM_CAPSULE = int(mujoco.mjtGeom.mjGEOM_CAPSULE)
+_GEOM_ELLIPSOID = int(mujoco.mjtGeom.mjGEOM_ELLIPSOID)
+_GEOM_CYLINDER = int(mujoco.mjtGeom.mjGEOM_CYLINDER)
+_GEOM_BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
+_GEOM_MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
 
 
 def _stage_value(stage: dict, key: str, default):
@@ -1617,6 +1626,235 @@ def _wheel_center_clearance_from_terrain_sensors(
     if not clearances:
         return None
     return torch.stack(clearances, dim=1).min(dim=1).values
+
+
+def _entity_model_field(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    field_name: str,
+    env_ids: torch.Tensor,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """读取 entity geom 对应的 MuJoCo model 字段，兼容逐 env 和全局字段。"""
+    geom_ids = asset.indexing.geom_ids.to(device=env.device, dtype=torch.long)
+    value = torch.as_tensor(getattr(env.sim.model, field_name), device=env.device)
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    if value.ndim >= 2 and value.shape[0] == env.num_envs:
+        return value[env_ids][:, geom_ids]
+    selected = value[geom_ids]
+    return selected.unsqueeze(0).expand(len(env_ids), *selected.shape)
+
+
+def _entity_model_field_one_env(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    field_name: str,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """读取单个 env 的 entity geom model 字段，用于类型和碰撞属性。"""
+    geom_ids = asset.indexing.geom_ids.to(device=env.device, dtype=torch.long)
+    value = torch.as_tensor(getattr(env.sim.model, field_name), device=env.device)
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    if value.ndim >= 2 and value.shape[0] == env.num_envs:
+        return value[0, geom_ids]
+    return value[geom_ids]
+
+
+def _entity_data_geom_field(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    field_name: str,
+    env_ids: torch.Tensor,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """读取 entity geom 对应的 MuJoCo data 字段。"""
+    geom_ids = asset.indexing.geom_ids.to(device=env.device, dtype=torch.long)
+    value = torch.as_tensor(getattr(asset.data.data, field_name), device=env.device)
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    return value[env_ids][:, geom_ids]
+
+
+def _entity_collision_geom_local_mask(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+) -> torch.Tensor:
+    """返回 entity 内可碰撞、非地形 geom 的 local mask。"""
+    geom_type = _entity_model_field_one_env(env, asset, "geom_type", dtype=torch.long)
+    contype = _entity_model_field_one_env(env, asset, "geom_contype", dtype=torch.long)
+    conaffinity = _entity_model_field_one_env(env, asset, "geom_conaffinity", dtype=torch.long)
+    finite_geom = (geom_type != _GEOM_PLANE) & (geom_type != _GEOM_HFIELD)
+    collidable = (contype != 0) | (conaffinity != 0)
+    return finite_geom & collidable
+
+
+def _mesh_geom_min_z(
+    env: ManagerBasedRlEnv,
+    geom_pos: torch.Tensor,
+    geom_xmat: torch.Tensor,
+    geom_dataid: torch.Tensor,
+    local_geom_index: int,
+) -> torch.Tensor:
+    """计算 mesh geom 的最低世界 z；默认训练模型主要使用 primitive collision。"""
+    mesh_id = int(geom_dataid[local_geom_index].item())
+    mesh_vertadr = torch.as_tensor(env.sim.model.mesh_vertadr, device=env.device)
+    mesh_vertnum = torch.as_tensor(env.sim.model.mesh_vertnum, device=env.device)
+    vert_adr = int(mesh_vertadr[mesh_id].item())
+    vert_num = int(mesh_vertnum[mesh_id].item())
+    vertices = torch.as_tensor(
+        env.sim.model.mesh_vert,
+        device=env.device,
+        dtype=geom_pos.dtype,
+    )[vert_adr : vert_adr + vert_num]
+    row_z = geom_xmat[:, local_geom_index, 2, :]
+    return geom_pos[:, local_geom_index, 2] + torch.matmul(vertices, row_z.T).amin(dim=0)
+
+
+def _collision_geom_min_z(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    env_ids: torch.Tensor,
+) -> tuple[torch.Tensor, int]:
+    """计算 entity 所有可碰撞 geom 的最低世界 z。"""
+    env.sim.forward()
+    mask = _entity_collision_geom_local_mask(env, asset)
+    if not torch.any(mask):
+        return torch.zeros(len(env_ids), device=env.device), 0
+
+    geom_pos = _entity_data_geom_field(env, asset, "geom_xpos", env_ids, dtype=torch.float32)
+    geom_xmat = _entity_data_geom_field(env, asset, "geom_xmat", env_ids, dtype=torch.float32)
+    if geom_xmat.shape[-1] == 9:
+        geom_xmat = geom_xmat.reshape(*geom_xmat.shape[:-1], 3, 3)
+    geom_size = _entity_model_field(
+        env,
+        asset,
+        "geom_size",
+        env_ids,
+        dtype=geom_pos.dtype,
+    )
+    geom_type = _entity_model_field_one_env(env, asset, "geom_type", dtype=torch.long)
+    geom_dataid = _entity_model_field_one_env(env, asset, "geom_dataid", dtype=torch.long)
+
+    geom_pos = geom_pos[:, mask]
+    geom_xmat = geom_xmat[:, mask]
+    geom_size = geom_size[:, mask]
+    geom_type = geom_type[mask]
+    geom_dataid = geom_dataid[mask]
+
+    min_z = geom_pos[:, :, 2].clone()
+
+    is_sphere = geom_type == _GEOM_SPHERE
+    min_z = torch.where(is_sphere.unsqueeze(0), geom_pos[:, :, 2] - geom_size[:, :, 0], min_z)
+
+    is_capsule = geom_type == _GEOM_CAPSULE
+    is_cylinder = geom_type == _GEOM_CYLINDER
+    is_axial_round = is_capsule | is_cylinder
+    if torch.any(is_axial_round):
+        axis_z = torch.abs(geom_xmat[:, :, 2, 2])
+        radial_z = torch.sqrt(torch.clamp(1.0 - axis_z * axis_z, min=0.0))
+        half_length = geom_size[:, :, 1]
+        half_length = torch.where(
+            is_capsule.unsqueeze(0), half_length + geom_size[:, :, 0], half_length
+        )
+        extent = half_length * axis_z + geom_size[:, :, 0] * radial_z
+        min_z = torch.where(is_axial_round.unsqueeze(0), geom_pos[:, :, 2] - extent, min_z)
+
+    is_box = geom_type == _GEOM_BOX
+    if torch.any(is_box):
+        extent = torch.sum(torch.abs(geom_xmat[:, :, 2, :]) * geom_size[:, :, :3], dim=-1)
+        min_z = torch.where(is_box.unsqueeze(0), geom_pos[:, :, 2] - extent, min_z)
+
+    is_ellipsoid = geom_type == _GEOM_ELLIPSOID
+    if torch.any(is_ellipsoid):
+        extent = torch.linalg.norm(geom_xmat[:, :, 2, :] * geom_size[:, :, :3], dim=-1)
+        min_z = torch.where(is_ellipsoid.unsqueeze(0), geom_pos[:, :, 2] - extent, min_z)
+
+    mesh_indices = torch.nonzero(geom_type == _GEOM_MESH, as_tuple=False).flatten()
+    for mesh_index in mesh_indices.tolist():
+        min_z[:, mesh_index] = _mesh_geom_min_z(
+            env,
+            geom_pos,
+            geom_xmat,
+            geom_dataid,
+            int(mesh_index),
+        )
+
+    return min_z.amin(dim=1), int(mask.sum().item())
+
+
+def snap_root_to_collision_clearance(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    clearance_range: tuple[float, float] = (0.001, 0.005),
+    max_downward_adjustment: float = 0.5,
+    max_upward_adjustment: float = 0.05,
+    command_name: str = "velocity_height",
+) -> None:
+    """把 reset 后机器人整体平移到最低碰撞体接近地面的小间隙。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+    if len(env_ids) == 0:
+        return
+
+    active_local = _non_jump_reset_mask(env, env_ids, command_name)
+    if not active_local.any():
+        return
+    active_env_ids = env_ids[active_local]
+
+    asset: Entity = env.scene[asset_cfg.name]
+    before_min_z, geom_count = _collision_geom_min_z(env, asset, active_env_ids)
+    if geom_count <= 0:
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {})["Reset/collision_snap_missing_geom"] = 1.0
+        return
+
+    target_clearance = sample_uniform(
+        torch.tensor(float(clearance_range[0]), device=env.device),
+        torch.tensor(float(clearance_range[1]), device=env.device),
+        (len(active_env_ids),),
+        env.device,
+    )
+    target_min_z = env.scene.env_origins[active_env_ids, 2] + target_clearance
+    adjustment = torch.clamp(
+        target_min_z - before_min_z,
+        min=-float(max_downward_adjustment),
+        max=float(max_upward_adjustment),
+    )
+
+    if adjustment.any():
+        pos = asset.data.root_link_pos_w[active_env_ids].clone()
+        quat = asset.data.root_link_quat_w[active_env_ids].clone()
+        pos[:, 2] += adjustment
+        asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
+        env.sim.forward()
+
+    after_min_z, _ = _collision_geom_min_z(env, asset, active_env_ids)
+    before_clearance = before_min_z - env.scene.env_origins[active_env_ids, 2]
+    after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log["Reset/collision_snap_geom_count"] = float(geom_count)
+        log["Reset/collision_snap_target_clearance_mean_m"] = float(target_clearance.mean().item())
+        log["Reset/collision_snap_before_min_m"] = float(before_clearance.min().item())
+        log["Reset/collision_snap_before_mean_m"] = float(before_clearance.mean().item())
+        log["Reset/collision_snap_after_min_m"] = float(after_clearance.min().item())
+        log["Reset/collision_snap_after_mean_m"] = float(after_clearance.mean().item())
+        log["Reset/collision_snap_adjustment_min_m"] = float(adjustment.min().item())
+        log["Reset/collision_snap_adjustment_max_m"] = float(adjustment.max().item())
+        log["Reset/collision_snap_adjustment_mean_m"] = float(adjustment.mean().item())
+        log["Reset/collision_snap_adjustment_abs_mean_m"] = float(
+            torch.abs(adjustment).mean().item()
+        )
+        log["Reset/collision_snap_adjustment_ratio"] = float(
+            (torch.abs(adjustment) > 1.0e-6).float().mean().item()
+        )
 
 
 def _clamp_policy_leg_pose(

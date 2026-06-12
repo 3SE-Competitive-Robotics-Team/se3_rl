@@ -69,13 +69,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "pos_xy_range": (-0.5, 0.5),
-            "height_offset_range": (0.0, 0.2),
+            "height_offset_range": (0.0, 0.02),
             "roll_range": (-3.141592653589793, 3.141592653589793),
             "pitch_range": (-3.141592653589793, 3.141592653589793),
             "yaw_range": (-3.141592653589793, 3.141592653589793),
-            "lin_vel_range": (-0.5, 0.5),
-            "ang_vel_range": (-0.5, 0.5),
-            "clearance_range": (0.0, 0.05),
+            "lin_vel_range": (-0.15, 0.15),
+            "ang_vel_range": (-0.6, 0.6),
+            "clearance_range": (0.0, 0.01),
             "curriculum_stages": [
                 {
                     "iteration": 0,
@@ -154,6 +154,17 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ],
             "use_iterations": True,
             "steps_per_policy_iter": 64,
+        },
+    )
+    cfg.events["snap_root_to_collision_clearance"] = EventTermCfg(
+        func=events.snap_root_to_collision_clearance,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "clearance_range": (0.001, 0.005),
+            "max_downward_adjustment": 0.5,
+            "max_upward_adjustment": 0.05,
+            "command_name": "velocity_height",
         },
     )
 
