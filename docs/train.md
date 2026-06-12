@@ -132,16 +132,7 @@ uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids all --en
 uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids 0 --env.scene.num-envs 8192
 ```
 
-A800 四卡倒地自起训练当前推荐使用每卡 `4096` 个环境。2026-06-01 benchmark 显示 `4096 env/rank` 约 `215.5k steps/s`，全局约 `16384` 个环境，显存峰值仍远低于 80GB；详细历史数据见 `docs/perf.md`。如果需要 smoke 或短 benchmark，再显式降低 `--env.scene.num-envs`。
-
-```bash
-# A800 四卡倒地自起推荐长训档位
-SE3_LOGGER=tensorboard ./.venv/bin/se3-train \
-  SE3-WheelLegged-Recovery-Stand-GRU \
-  --gpu-ids all \
-  --env.scene.num-envs 4096 \
-  --agent.max-iterations 1500
-```
+A800 四卡倒地自起训练当前推荐从每卡 `4096` 个环境开始；如果需要 smoke 或短 benchmark，再显式降低 `--env.scene.num-envs`。
 
 如果训练容器使用 CUDA Forward Compatibility，启动训练前确认 Warp 报 `Driver 12.6`，且没有 `CUDA Graphs disabled`。容器默认 `LD_LIBRARY_PATH=/usr/local/nvidia/lib64` 可能覆盖 ldconfig 中的 compat `libcuda`，必要时在训练 shell 中 `unset LD_LIBRARY_PATH`。
 
@@ -230,7 +221,7 @@ remote_artifacts/jump_height_ab_20260603/rrd/pretrain/SE3-WheelLegged-Jump-PreTr
 
 ### `xyh` 分支训练值守规范
 
-`xyh` 个人分支当前只值守两个任务：`SE3-WheelLegged-Recovery-GRU`（含本轮明确指定的 `SE3-WheelLegged-Recovery-Stand-GRU` 变体）和 `SE3-WheelLegged-Flat-GRU` 平地基模。其他任务出现的 bug 先记录但不展开修复，除非它直接阻塞这两个任务的训练、checkpoint 保存或 Rerun 录制。
+`xyh` 个人分支当前只值守两个任务：`SE3-WheelLegged-Recovery-GRU` 和 `SE3-WheelLegged-Flat-GRU` 平地基模。其他任务出现的 bug 先记录但不展开修复，除非它直接阻塞这两个任务的训练、checkpoint 保存或 Rerun 录制。
 
 Recovery 任务每个 checkpoint 必须录制两类倒地自启 Rerun：`roll90` 和 `pitch-flip`。`roll90` 使用 `--initial-roll-deg 90`；`pitch-flip` 使用 `--initial-pitch-deg 180` 表示 pitch 轴反转。文件名中的 `case` 分别写成 `roll90`、`pitch-flip`。
 

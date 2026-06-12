@@ -4,7 +4,7 @@
 
 ## 当前目标
 
-- 阶段一只在 NX 上部署 `SE3-WheelLegged-Recovery-Stand-GRU` 自起到站立 policy。
+- 阶段一只在 NX 上部署 `SE3-WheelLegged-Recovery-GRU` 倒地自启 policy。
 - NX 只负责 policy 推理和上层状态机，通过 USB CDC 以 50 Hz 给 STM32 发送 6 维 raw policy action。
 - STM32 继续负责 CAN、电机闭环、急停、限幅、限速、通信超时和底层安全。
 - 阶段一不做 policy 切换；runtime 只运行 recovery 网络。
@@ -16,14 +16,12 @@
 
 | 项目 | 值 |
 |---|---|
-| 任务 | `SE3-WheelLegged-Recovery-Stand-GRU` |
-| 本地权重文件 | `logs/rsl_rl/se3_wheel_leg/2026-05-31_14-08-23/model_2999.pt` |
-| checkpoint iter | `2999` |
+| 任务 | `SE3-WheelLegged-Recovery-GRU` |
+| 本地权重文件 | `logs/rsl_rl/se3_wheel_leg/<run>/model_<step>.pt` |
+| checkpoint iter | `<step>` |
 | checkpoint 内容 | `actor_state_dict`、`critic_state_dict`、`optimizer_state_dict`、`infos` |
-| 用户给出的验证目录 | `replays/a800_recovery_stand_377_20260531_135045/model_2999` |
-| 验证包 | `replays/a800_recovery_stand_377_20260531_135045/model_2999.tar` |
 
-注意：`replays/.../model_2999` 是 sim2sim 验证结果目录，只包含 `json` 和 Rerun 回放，不是部署时加载的 policy checkpoint。部署到 NX 时应传 `logs/.../model_2999.pt`。
+注意：`replays/.../model_<step>` 是 sim2sim 验证结果目录，只包含 `json` 和 Rerun 回放，不是部署时加载的 policy checkpoint。部署到 NX 时应传 `logs/.../model_<step>.pt`。
 
 Recovery runtime 的 command 固定为：
 
@@ -52,11 +50,11 @@ STM32 按共享常量把 raw action 转换为物理目标并限幅：腿部为 `
 
 ```bash
 uv run se3-export-nx-policy \
-  --checkpoint logs/rsl_rl/se3_wheel_leg/2026-05-31_14-08-23/model_2999.pt \
-  --output logs/deploy/model_2999_recovery_stand_gru.npz
+  --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_<step>.pt \
+  --output logs/deploy/model_recovery_gru.npz
 
 uv run se3-nx-recovery \
-  --checkpoint logs/deploy/model_2999_recovery_stand_gru.npz \
+  --checkpoint logs/deploy/model_recovery_gru.npz \
   --port /dev/ttyUSB0 \
   --rate-hz 50
 ```
@@ -76,7 +74,7 @@ just nx-recovery-dry-run
 - `src/se3_deploy/numpy_policy.py`：不依赖 torch 的 GRU actor NumPy 推理后端。
 - `src/se3_deploy/recovery_runtime.py`：50 Hz recovery policy 主循环。
 
-当前 NX 环境检查结果：JetPack R36.4.3，系统 Python 3.10.12，已在用户目录安装 `uv` 和 Python 3.11.15。由于 PyTorch cu128 wheel 对 NX 阶段一过重，当前实测路线为本地导出 `logs/deploy/model_2999_recovery_stand_gru.npz`，NX 上只安装 `numpy` / `pydantic` 并用 NumPy 后端推理。NX 测试目录：
+当前 NX 环境检查结果：JetPack R36.4.3，系统 Python 3.10.12，已在用户目录安装 `uv` 和 Python 3.11.15。由于 PyTorch cu128 wheel 对 NX 阶段一过重，当前实测路线为本地导出 `logs/deploy/model_recovery_gru.npz`，NX 上只安装 `numpy` / `pydantic` 并用 NumPy 后端推理。NX 测试目录：
 
 ```bash
 ~/project/se3_wheel_leg_nx_runtime

@@ -15,7 +15,7 @@
 
 所有 SE3 MJLab 任务现在都会使用 SE3 runner：
 
-- 普通 flat/rough/recovery-stand 任务：`Se3ProfiledOnPolicyRunner`
+- 普通 flat/rough 任务：`Se3ProfiledOnPolicyRunner`
 - recovery/jump warm-start 任务：`Se3WarmStartRunner`，继承同一套 profile 能力
 
 新增日志字段：

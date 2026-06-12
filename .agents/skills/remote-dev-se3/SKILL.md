@@ -148,7 +148,6 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 | `SE3-WheelLegged-Flat-GRU` | GRU 行走基模（优先训练，作为跳跃 pretrain 的起点） |
 | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练（依赖 GRU 行走基模） |
 | `SE3-WheelLegged-Jump-GRU` | 跳跃精细训练（依赖 PreTrain checkpoint） |
-| `SE3-WheelLegged-Flat` | MLP 行走（已有基模 `*_mlp.pt`，一般不需要重新训） |
 
 ### 启动训练（标准流程）
 
@@ -265,7 +264,6 @@ git push
 
 | 文件名规范 | 说明 |
 |---|---|
-| `model_*_mlp.pt` | MLP 行走基模 |
 | `model_*_gru.pt` | GRU 行走基模（跳跃训练的起点） |
 
 ---

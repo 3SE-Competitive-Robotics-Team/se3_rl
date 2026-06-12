@@ -98,7 +98,7 @@ just sim-headless                 # 无 GUI，快速验证
 ```bash
 just nx-export-policy
 just nx-recovery-dry-run
-uv run se3-nx-recovery --checkpoint logs/deploy/model_2999_recovery_stand_gru.npz --port /dev/ttyUSB0
+uv run se3-nx-recovery --checkpoint logs/deploy/model_recovery_gru.npz --port /dev/ttyUSB0
 ```
 
 ### 代码质量
