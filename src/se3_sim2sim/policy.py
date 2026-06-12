@@ -135,6 +135,7 @@ class PolicyRuntime:
         self.device = torch.device(device)
         self.runtime = runtime
         self._numpy_policy = None
+        self._onnx_policy = None
         if self.checkpoint_path.suffix == ".npz":
             from se3_deploy.numpy_policy import NumpyPolicyRuntime
 
@@ -148,6 +149,23 @@ class PolicyRuntime:
                 rnn_type=self._numpy_policy.rnn_type,
                 rnn_hidden_dim=int(self._numpy_policy.rnn_hidden_dim),
                 rnn_num_layers=int(self._numpy_policy.rnn_num_layers),
+            )
+            self._validate_runtime(self.spec)
+            self.model = None
+            return
+        if self.checkpoint_path.suffix == ".onnx":
+            from se3_deploy.onnx_policy import OnnxPolicyRuntime
+
+            self._onnx_policy = OnnxPolicyRuntime(self.checkpoint_path)
+            self.iteration = self._onnx_policy.iteration
+            self.spec = replace(
+                self.runtime.policy,
+                num_obs=int(self._onnx_policy.num_obs),
+                num_actions=int(self._onnx_policy.num_actions),
+                activation=self._onnx_policy.activation,
+                rnn_type=self._onnx_policy.rnn_type,
+                rnn_hidden_dim=int(self._onnx_policy.rnn_hidden_dim),
+                rnn_num_layers=int(self._onnx_policy.rnn_num_layers),
             )
             self._validate_runtime(self.spec)
             self.model = None
@@ -177,6 +195,8 @@ class PolicyRuntime:
     def policy_type(self) -> str:
         if self._numpy_policy is not None:
             return self._numpy_policy.policy_type
+        if self._onnx_policy is not None:
+            return self._onnx_policy.policy_type
         if self.spec.is_recurrent:
             return f"gru(hidden={self.spec.rnn_hidden_dim}, layers={self.spec.rnn_num_layers})"
         return "mlp"
@@ -185,12 +205,17 @@ class PolicyRuntime:
         if self._numpy_policy is not None:
             self._numpy_policy.reset()
             return
+        if self._onnx_policy is not None:
+            self._onnx_policy.reset()
+            return
         if isinstance(self.model, _DeterministicGRUActor):
             self.model.reset_hidden(self.device)
 
     def act(self, obs: np.ndarray) -> np.ndarray:
         if self._numpy_policy is not None:
             return self._numpy_policy.act(obs)
+        if self._onnx_policy is not None:
+            return self._onnx_policy.act(obs)
         obs = np.asarray(obs, dtype=np.float32).reshape(-1)
         if obs.shape != (self.spec.num_obs,):
             raise ValueError(

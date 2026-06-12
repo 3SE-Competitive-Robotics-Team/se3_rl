@@ -20,6 +20,7 @@ from se3_shared import (
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared.motor import DM8009P, M3508_C620_14
 
+from .closed_chain import ClosedChainClosureSolver
 from .config import RobotConfig
 from .diagnostics import model_diagnostics
 from .math_utils import euler_xyz_to_quat_wxyz, extract_yaw, rotate, rotate_inverse, wrap_angle
@@ -186,6 +187,8 @@ class WheelLeggedRobot:
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
         self.reset_floor_lift_m = 0.0
+        self.closed_chain_reset_position_residual_m = 0.0
+        self.closed_chain_reset_velocity_residual = 0.0
         # 线速度缓存，_refresh_state 更新
         self.base_lin_vel_world = np.zeros(3, dtype=np.float64)
         self.base_lin_vel_body = np.zeros(3, dtype=np.float64)
@@ -216,7 +219,12 @@ class WheelLeggedRobot:
         self.data.qvel[0:6] = 0.0
         self.data.qvel[3:6] = np.asarray(self.cfg.initial_ang_vel_rad_s, dtype=np.float64)
         self._apply_default_joint_positions()
-        self.data.qvel[self.joint_qvel] = 0.0
+        self._apply_initial_wheel_joint_positions()
+        closure_solver = self._close_initial_chain_positions()
+        self.data.qvel[:] = 0.0
+        self.data.qvel[3:6] = np.asarray(self.cfg.initial_ang_vel_rad_s, dtype=np.float64)
+        self._apply_initial_dof_vel()
+        self._close_initial_chain_velocities(closure_solver)
         if (not fixed) or randomize_root:
             roll_offset, pitch_offset, yaw_offset = self.rng.uniform(-0.25, 0.25, size=3)
             roll += float(roll_offset)
@@ -233,6 +241,7 @@ class WheelLeggedRobot:
         self.action_fifo.fill(0.0)
         self.action_delay_steps = self._sample_action_delay_steps()
         self.last_ctrl.fill(0.0)
+        self._apply_initial_policy_io_state()
         yaw_rate_cmd = self.yaw_pid.reset(self.base_yaw)
         if self.cfg.yaw_pid.enabled:
             self.command[1] = yaw_rate_cmd
@@ -374,6 +383,25 @@ class WheelLeggedRobot:
         info["target_mode"] = "hold_current"
         return obs, reward, done, info
 
+    def step_no_torque(self) -> tuple[np.ndarray, float, bool, dict[str, object]]:
+        """按真机 output disabled 语义推进一步：电机失能，不输出力矩。"""
+        self.reset_policy_io_state()
+        self._refresh_state()
+        for _ in range(self.decimation):
+            self.data.ctrl[self.motor_ctrl_ids] = 0.0
+            self.last_ctrl.fill(0.0)
+            mujoco.mj_step(self.model, self.data)
+        self._refresh_state()
+        self.step_count += 1
+        obs = self.observation()
+        reward = -abs(float(self.projected_gravity[2]) + 1.0)
+        done, done_reason, fall_detected = self._termination_status()
+        info = self.telemetry(reward=reward)
+        info["done_reason"] = done_reason
+        info["fall_detected"] = fall_detected
+        info["target_mode"] = "no_torque"
+        return obs, reward, done, info
+
     def observation(self) -> np.ndarray:
         self._refresh_state()
         return self.obs.build(
@@ -481,6 +509,12 @@ class WheelLeggedRobot:
             ),
             "action_delay_config": self.action_delay_cfg.model_dump(),
             "fail_tilt_deg": float(self.termination.fail_tilt_deg),
+            "closed_chain_reset_position_residual_m": float(
+                self.closed_chain_reset_position_residual_m
+            ),
+            "closed_chain_reset_velocity_residual": float(
+                self.closed_chain_reset_velocity_residual
+            ),
         }
         if self.cfg.yaw_pid.enabled:
             yaw_pid = self.yaw_pid.telemetry()
@@ -760,6 +794,64 @@ class WheelLeggedRobot:
                 raise ValueError(f"missing leg joint in MJCF: {joint_name}")
             self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
 
+    def _apply_initial_wheel_joint_positions(self) -> None:
+        """覆写 deploy telemetry 中记录的轮子连续关节位置。"""
+        if self.cfg.initial_wheel_joint_pos is None:
+            return
+        wheel_pos = np.asarray(self.cfg.initial_wheel_joint_pos, dtype=np.float64).reshape(-1)
+        if wheel_pos.shape != (2,) or not np.isfinite(wheel_pos).all():
+            raise ValueError("initial_wheel_joint_pos must contain 2 finite values")
+        for joint_name, value in zip(JointGroup.WHEEL_NAMES, wheel_pos, strict=True):
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                raise ValueError(f"missing wheel joint in MJCF: {joint_name}")
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
+
+    def _apply_initial_dof_vel(self) -> None:
+        """覆写 deploy telemetry 中记录的 6 维 policy-order 关节速度。"""
+        self.data.qvel[self.joint_qvel] = 0.0
+        if self.cfg.initial_dof_vel is None:
+            return
+        dof_vel = np.asarray(self.cfg.initial_dof_vel, dtype=np.float64).reshape(-1)
+        if dof_vel.shape != (6,) or not np.isfinite(dof_vel).all():
+            raise ValueError("initial_dof_vel must contain 6 finite policy-order values")
+        self.data.qvel[self.joint_qvel] = dof_vel
+
+    def _apply_initial_policy_io_state(self) -> None:
+        """覆写 reset 后的 last_action/action FIFO，使初始 obs 与 deploy obs 对齐。"""
+        if self.cfg.initial_last_action is None:
+            return
+        last_action = np.asarray(self.cfg.initial_last_action, dtype=np.float64).reshape(-1)
+        expected = self.runtime.policy.num_actions
+        if last_action.shape != (expected,) or not np.isfinite(last_action).all():
+            raise ValueError(f"initial_last_action must contain {expected} finite values")
+        self.last_action[:] = last_action
+        self.last_applied_action[:] = last_action
+        self.last_policy_action[:] = last_action
+        self.last_clipped_policy_action[:] = last_action
+        self.action_fifo[:] = last_action
+
+    def _close_initial_chain_positions(self) -> ClosedChainClosureSolver | None:
+        """让 deploy 初始主动关节对应的闭链被动关节落在同一机构分支上。"""
+        self.closed_chain_reset_position_residual_m = 0.0
+        if self.cfg.initial_leg_joint_pos is None:
+            return None
+        solver = ClosedChainClosureSolver.try_create(model=self.model, data=self.data)
+        if solver is None:
+            return None
+        self.closed_chain_reset_position_residual_m = solver.solve_positions()
+        return solver
+
+    def _close_initial_chain_velocities(
+        self,
+        solver: ClosedChainClosureSolver | None,
+    ) -> None:
+        """根据主动关节速度反解闭链被动关节速度。"""
+        self.closed_chain_reset_velocity_residual = 0.0
+        if solver is None or self.cfg.initial_dof_vel is None:
+            return
+        self.closed_chain_reset_velocity_residual = solver.solve_velocities()
+
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
         self.base_lin_vel_world = self.data.qvel[0:3].copy()
@@ -778,20 +870,35 @@ class WheelLeggedRobot:
         """
         action = np.asarray(action, dtype=np.float64)
 
-        dof_pos = self.dof_pos
-        dof_vel = self.dof_vel
-
-        output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
-        output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
         decoded_action = self.action_decoder.decode(
             action,
             command_height=float(self.command[4]),
             fallback_default=self.default_dof_pos[JointGroup.CTRL_LEGS],
         )
+        return self._compute_decoded_target_torques(
+            leg_target=decoded_action.leg_target,
+            wheel_vel_target=decoded_action.wheel_vel_target,
+        )
+
+    def _compute_decoded_target_torques(
+        self,
+        *,
+        leg_target: np.ndarray,
+        wheel_vel_target: np.ndarray,
+    ) -> np.ndarray:
+        """从部署物理目标计算电机力矩。"""
+        leg_target = np.asarray(leg_target, dtype=np.float64).reshape(4)
+        wheel_vel_target = np.asarray(wheel_vel_target, dtype=np.float64).reshape(2)
+
+        dof_pos = self.dof_pos
+        dof_vel = self.dof_vel
+
+        output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
+        output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
         if self.fourbar_surrogate:
             policy_pos = output_to_policy_pos_np(output_leg_pos)
             policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
-            policy_target = decoded_action.leg_target
+            policy_target = leg_target
             policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
             policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
             policy_torque = _tn_clip(
@@ -804,7 +911,6 @@ class WheelLeggedRobot:
             leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
             leg_vel = policy_vel
         else:
-            leg_target = decoded_action.leg_target
             leg_pos_err = leg_target - output_leg_pos
             leg_vel = output_leg_vel
             leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
@@ -817,7 +923,6 @@ class WheelLeggedRobot:
                 DM8009P.rated_torque,
             )
 
-        wheel_vel_target = decoded_action.wheel_vel_target
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
         wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)

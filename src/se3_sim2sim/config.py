@@ -16,6 +16,7 @@ from .course import CourseConfig
 ViewerMode = Literal["rerun", "mujoco", "none"]
 RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
+RcOffMode = Literal["no-torque", "hold-current"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
 
 _shared_robot = se3_shared.RobotConfig()
@@ -159,6 +160,9 @@ class RcSwitchScheduleConfig(BaseModel):
     initial_output_enabled: bool = True
     """仿真开始时是否允许 policy 输出。"""
 
+    off_mode: RcOffMode = "no-torque"
+    """output disabled 时的物理语义；真机当前为 no-torque。"""
+
     events: tuple[RcSwitchEventConfig, ...] = ()
     """按绝对时间切换 output enable 的事件列表。"""
 
@@ -207,6 +211,12 @@ class RobotConfig(BaseModel):
     default_dof_pos: tuple[float, ...] = _shared_robot.default_dof_pos
     initial_leg_joint_pos: tuple[float, ...] | None = None
     """reset 时覆写腿部初始关节位置；2 个值表示左右同型，4 个值表示 policy 腿部顺序。"""
+    initial_wheel_joint_pos: tuple[float, float] | None = None
+    """reset 时覆写轮子连续关节位置；主要用于从 deploy telemetry 起跑。"""
+    initial_dof_vel: tuple[float, ...] | None = None
+    """reset 时覆写 6 维 policy-order 关节速度：[4 腿, 2 轮]。"""
+    initial_last_action: tuple[float, ...] | None = None
+    """reset 时覆写 observation 中的 last_action；用于从 deploy obs 精确起跑。"""
     settle_base_before_policy: bool = False
     """policy 推理前先用零控制等待 base_link 接地。"""
     pre_policy_settle_max_s: Annotated[float, Field(ge=0.0)] = 0.0
@@ -236,7 +246,7 @@ class RobotConfig(BaseModel):
     jump_schedule: JumpScheduleConfig = Field(default_factory=JumpScheduleConfig)
     """定时跳跃调度配置。"""
     rc_switch: RcSwitchScheduleConfig = Field(default_factory=RcSwitchScheduleConfig)
-    """sim2sim 中的遥控器输出使能脚本；关闭时按 deploy runtime 重置 GRU 并保持当前目标。"""
+    """sim2sim 中的遥控器输出使能脚本；关闭时按硬件 off 语义处理。"""
 
 
 class PolicyConfig(BaseModel):
@@ -288,6 +298,8 @@ class RunConfig(BaseModel):
     terminate_on_fall: bool = False
     fail_tilt_deg: float = 80.0
     fail_height_m: float = 0.12
+    deploy_telemetry_init: dict[str, object] | None = None
+    deploy_telemetry_reference_obs: tuple[float, ...] | None = Field(default=None, exclude=True)
 
     def resolved(self, root: Path | None = None) -> RunConfig:
         """原地解析所有路径，返回 self（供链式调用）。"""

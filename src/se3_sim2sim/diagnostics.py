@@ -114,6 +114,7 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "output_enabled",
         "rc_switch_event",
         "rc_policy_reset",
+        "rc_off_mode_no_torque",
     ):
         if key in samples[0]:
             values = np.asarray([s[key] for s in samples], dtype=np.float64)

@@ -25,6 +25,7 @@ from .config import (
     model_path_for_variant,
 )
 from .course import CourseConfig, CourseType
+from .deploy_telemetry import DeployTelemetryInitMode, load_deploy_telemetry_initial_state
 
 
 def _yaw_max_rate(value: str) -> float:
@@ -395,6 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 定时跳跃调度
     sched_defaults = JumpScheduleConfig()
+    rc_defaults = RcSwitchScheduleConfig()
     parser.add_argument(
         "--jump-interval-s",
         type=float,
@@ -423,13 +425,52 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TIME:STATE[,TIME:STATE...]",
         help=(
             "模拟遥控器输出使能切换，例：'1s:off,2s:on'。"
-            "off 时按 deploy runtime 重置 GRU hidden、清零 last_action，并保持当前关节目标。"
+            "off 时按 --rc-off-mode 处理，并重置 GRU hidden、清零 last_action。"
         ),
     )
     parser.add_argument(
         "--rc-start-off",
         action="store_true",
         help="仿真开始时遥控器输出关闭，直到 --rc-switch-script 切到 on。",
+    )
+    parser.add_argument(
+        "--rc-off-mode",
+        choices=("no-torque", "hold-current"),
+        default=rc_defaults.off_mode,
+        help="output disabled 的物理语义。no-torque 匹配当前真机电机失能；hold-current 保留旧 sim2sim 对照。",
+    )
+    parser.add_argument(
+        "--deploy-telemetry-init",
+        type=Path,
+        default=None,
+        help="从 NX recovery telemetry JSONL 选帧初始化 sim2sim 姿态/关节/速度/last_action。",
+    )
+    parser.add_argument(
+        "--deploy-telemetry-init-mode",
+        choices=("enable-transition", "first-policy", "sample"),
+        default="enable-transition",
+        help=(
+            "deploy telemetry 初始化模式。enable-transition 从第一帧 policy 前若干帧启动并自动生成 RC on 事件；"
+            "first-policy 直接从第一帧 policy 启动；sample 使用 --deploy-telemetry-init-sample-index。"
+        ),
+    )
+    parser.add_argument(
+        "--deploy-telemetry-init-sample-index",
+        type=int,
+        default=None,
+        help="按 0-based sample 行索引从 telemetry 初始化；设置后模式自动视为 sample。",
+    )
+    parser.add_argument(
+        "--deploy-telemetry-init-pre-policy-rows",
+        type=int,
+        default=3,
+        help="enable-transition 模式下，从第一帧 policy 往前取多少个 sample 作为 no-torque 起点。",
+    )
+    parser.add_argument(
+        "--deploy-telemetry-init-base-height",
+        type=float,
+        default=None,
+        help="telemetry 不含真实 base 高度；需要时手动指定 reset root z，默认使用日志 command height。",
     )
     return parser
 
@@ -469,6 +510,55 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     model_path = (
         args.model if args.model is not None else model_path_for_variant(str(args.model_variant))
     )
+    initial_roll_rad = math.radians(float(args.initial_roll_deg))
+    initial_pitch_rad = math.radians(float(args.initial_pitch_deg))
+    initial_yaw_rad = math.radians(float(args.initial_yaw_deg))
+    initial_ang_vel_rad_s = tuple(math.radians(float(v)) for v in args.initial_ang_vel_deg_s)
+    initial_base_height = (
+        None if args.initial_base_height is None else float(args.initial_base_height)
+    )
+    initial_leg_joint_pos = _initial_leg_joint_pos_from_args(args.initial_leg_joint_pos)
+    initial_wheel_joint_pos = None
+    initial_dof_vel = None
+    initial_last_action = None
+    command = tuple(float(v) for v in args.command)
+    rc_initial_output_enabled = not bool(args.rc_start_off)
+    rc_events = tuple(args.rc_switch_script)
+    deploy_init_summary = None
+    deploy_init_reference_obs = None
+    checkpoint = args.checkpoint
+
+    if args.deploy_telemetry_init is not None:
+        init_mode: DeployTelemetryInitMode = str(args.deploy_telemetry_init_mode)  # type: ignore[assignment]
+        if args.deploy_telemetry_init_sample_index is not None:
+            init_mode = "sample"
+        base_height_override = args.deploy_telemetry_init_base_height
+        if base_height_override is None and args.initial_base_height is not None:
+            base_height_override = float(args.initial_base_height)
+        deploy_init = load_deploy_telemetry_initial_state(
+            args.deploy_telemetry_init,
+            mode=init_mode,
+            sample_index=args.deploy_telemetry_init_sample_index,
+            pre_policy_rows=int(args.deploy_telemetry_init_pre_policy_rows),
+            base_height_override=base_height_override,
+        )
+        initial_roll_rad = deploy_init.initial_roll_rad
+        initial_pitch_rad = deploy_init.initial_pitch_rad
+        initial_yaw_rad = deploy_init.initial_yaw_rad
+        initial_ang_vel_rad_s = deploy_init.initial_ang_vel_rad_s
+        initial_base_height = deploy_init.initial_base_height
+        initial_leg_joint_pos = deploy_init.initial_leg_joint_pos
+        initial_wheel_joint_pos = deploy_init.initial_wheel_joint_pos
+        initial_dof_vel = deploy_init.initial_dof_vel
+        initial_last_action = deploy_init.initial_last_action
+        command = deploy_init.command
+        rc_initial_output_enabled = deploy_init.rc_initial_output_enabled
+        rc_events = deploy_init.rc_events
+        deploy_init_summary = deploy_init.summary()
+        deploy_init_reference_obs = deploy_init.reference_obs
+        if checkpoint is None and deploy_init.checkpoint_hint is not None:
+            checkpoint = deploy_init.checkpoint_hint
+
     return RunConfig(
         robot=RobotConfig(
             model_path=model_path,
@@ -476,18 +566,19 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             seed=int(args.seed),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
-            initial_roll_rad=math.radians(float(args.initial_roll_deg)),
-            initial_pitch_rad=math.radians(float(args.initial_pitch_deg)),
-            initial_yaw_rad=math.radians(float(args.initial_yaw_deg)),
-            initial_ang_vel_rad_s=tuple(math.radians(float(v)) for v in args.initial_ang_vel_deg_s),
-            initial_base_height=(
-                None if args.initial_base_height is None else float(args.initial_base_height)
-            ),
-            initial_leg_joint_pos=_initial_leg_joint_pos_from_args(args.initial_leg_joint_pos),
+            initial_roll_rad=initial_roll_rad,
+            initial_pitch_rad=initial_pitch_rad,
+            initial_yaw_rad=initial_yaw_rad,
+            initial_ang_vel_rad_s=initial_ang_vel_rad_s,
+            initial_base_height=initial_base_height,
+            initial_leg_joint_pos=initial_leg_joint_pos,
+            initial_wheel_joint_pos=initial_wheel_joint_pos,
+            initial_dof_vel=initial_dof_vel,
+            initial_last_action=initial_last_action,
             settle_base_before_policy=bool(args.settle_base_before_policy),
             pre_policy_settle_max_s=float(args.pre_policy_settle_max_s),
             pre_policy_settle_contact_steps=max(1, int(args.pre_policy_settle_contact_steps)),
-            command=tuple(float(v) for v in args.command),
+            command=command,
             yaw_pid=YawPidConfig(
                 enabled=_yaw_pid_enabled_from_args(args),
                 target_yaw_rad=math.radians(float(args.yaw_target_deg)),
@@ -516,12 +607,13 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 events=tuple(args.jump_script),
             ),
             rc_switch=RcSwitchScheduleConfig(
-                initial_output_enabled=not bool(args.rc_start_off),
-                events=tuple(args.rc_switch_script),
+                initial_output_enabled=rc_initial_output_enabled,
+                off_mode=str(args.rc_off_mode),
+                events=rc_events,
             ),
         ),
         policy=PolicyConfig(
-            checkpoint=args.checkpoint,
+            checkpoint=checkpoint,
             device=str(args.device),
         ),
         viewer=ViewerConfig(
@@ -544,6 +636,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         terminate_on_fall=bool(args.terminate_on_fall),
         fail_tilt_deg=float(args.fail_tilt_deg),
         fail_height_m=float(args.fail_height_m),
+        deploy_telemetry_init=deploy_init_summary,
+        deploy_telemetry_reference_obs=deploy_init_reference_obs,
     )
 
 

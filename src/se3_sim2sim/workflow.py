@@ -40,6 +40,14 @@ class Sim2SimWorkflow:
 
     def run(self) -> dict[str, object]:
         obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
+        deploy_init_obs_check = self._deploy_telemetry_initial_obs_check(obs)
+        if deploy_init_obs_check.get("enabled"):
+            print(
+                "[deploy telemetry init] "
+                f"mode={deploy_init_obs_check.get('mode', '')} "
+                f"sample={deploy_init_obs_check.get('selected_sample_index', '')} "
+                f"max_obs_err={float(deploy_init_obs_check['max_abs_error']):.3e}"
+            )
         pre_policy_settle = {"enabled": False}
         if self.cfg.robot.settle_base_before_policy:
             pre_policy_settle = self.robot.settle_base_before_policy(
@@ -252,11 +260,15 @@ class Sim2SimWorkflow:
                         obs = self.robot.observation()
                         _policy_memory_clean = True
                         rc_policy_reset = 1.0
-                    obs, reward, done, info = self.robot.step_hold_current()
+                    if rc_sched.off_mode == "hold-current":
+                        obs, reward, done, info = self.robot.step_hold_current()
+                    else:
+                        obs, reward, done, info = self.robot.step_no_torque()
                 info["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
                 info["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
                 info["rc_switch_event"] = rc_switch_event
                 info["rc_policy_reset"] = rc_policy_reset
+                info["rc_off_mode"] = str(rc_sched.off_mode)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
                 action_delta = (
@@ -316,6 +328,15 @@ class Sim2SimWorkflow:
                     "output_enabled": float(info.get("output_enabled", 1.0)),
                     "rc_switch_event": float(info.get("rc_switch_event", 0.0)),
                     "rc_policy_reset": float(info.get("rc_policy_reset", 0.0)),
+                    "rc_off_mode_no_torque": 1.0
+                    if str(info.get("rc_off_mode", "hold-current")) == "no-torque"
+                    else 0.0,
+                    "closed_chain_reset_position_residual_m": float(
+                        info.get("closed_chain_reset_position_residual_m", 0.0)
+                    ),
+                    "closed_chain_reset_velocity_residual": float(
+                        info.get("closed_chain_reset_velocity_residual", 0.0)
+                    ),
                 }
                 samples.append(sample)
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
@@ -395,6 +416,7 @@ class Sim2SimWorkflow:
             },
             "model_diagnostics": model_diag,
             "pre_policy_settle": pre_policy_settle,
+            "deploy_telemetry_init_obs_check": deploy_init_obs_check,
             "rollout": rollout_diagnostics(samples),
             "done_reason": done_reason,
         }
@@ -472,6 +494,42 @@ class Sim2SimWorkflow:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+    def _deploy_telemetry_initial_obs_check(self, obs: np.ndarray) -> dict[str, object]:
+        """对比 reset obs 和选中的 deploy telemetry 行。"""
+        reference = self.cfg.deploy_telemetry_reference_obs
+        init_summary = self.cfg.deploy_telemetry_init
+        if reference is None:
+            return {"enabled": False}
+        ref = np.asarray(reference, dtype=np.float64).reshape(-1)
+        got = np.asarray(obs, dtype=np.float64).reshape(-1)
+        if ref.shape != got.shape:
+            return {
+                "enabled": True,
+                "shape_mismatch": True,
+                "reference_shape": list(ref.shape),
+                "obs_shape": list(got.shape),
+            }
+        diff = got - ref
+        slices = self.runtime.observation_slices
+        by_term = {
+            name: float(np.max(np.abs(diff[sl]))) if diff[sl].size else 0.0
+            for name, sl in slices.items()
+        }
+        return {
+            "enabled": True,
+            "shape_mismatch": False,
+            "max_abs_error": float(np.max(np.abs(diff))),
+            "mean_abs_error": float(np.mean(np.abs(diff))),
+            "by_term_max_abs_error": by_term,
+            "mode": "" if init_summary is None else str(init_summary.get("mode", "")),
+            "selected_sample_index": (
+                None if init_summary is None else init_summary.get("selected_sample_index")
+            ),
+            "selected_line_no": None
+            if init_summary is None
+            else init_summary.get("selected_line_no"),
+        }
 
     @staticmethod
     def _fmt(values: object) -> str:
