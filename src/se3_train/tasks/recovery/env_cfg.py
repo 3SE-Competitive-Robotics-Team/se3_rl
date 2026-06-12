@@ -372,7 +372,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
-        weight=-5.0e-5,
+        weight=-2.0e-4,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["leg_dof_acc"] = RewardTermCfg(
@@ -382,7 +382,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["leg_power"] = RewardTermCfg(
         func=rewards.leg_power,
-        weight=-5.0e-5,
+        weight=-1.0e-4,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["wheel_torques"] = RewardTermCfg(
