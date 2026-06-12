@@ -37,6 +37,8 @@ from se3_train.tasks.wheel_dog.robot_cfg import (
 from . import commands, curriculums, events, observations, rewards, terminations
 
 _COMMAND_NAME = "base_velocity"
+_MAX_LIN_VEL_X = 4.0
+_MAX_LIN_VEL_Y = 1.5
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -152,8 +154,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.commands = {
         _COMMAND_NAME: commands.DogVelocityCommandCfg(
             resampling_time_range=(5.0, 5.0),
-            lin_vel_x_range=(-2.0, 2.0) if play else (0.0, 0.0),
-            lin_vel_y_range=(-0.6, 0.6) if play else (0.0, 0.0),
+            lin_vel_x_range=(-_MAX_LIN_VEL_X, _MAX_LIN_VEL_X) if play else (0.0, 0.0),
+            lin_vel_y_range=(-_MAX_LIN_VEL_Y, _MAX_LIN_VEL_Y) if play else (0.0, 0.0),
             ang_vel_yaw_range=(0.0, 0.0),
             standing_ratio=0.08,
         ),
@@ -340,26 +342,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "step": 500,
-                            "lin_vel_x_range": (-0.5, 0.5),
+                            "lin_vel_x_range": (-0.75, 0.75),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 1500,
-                            "lin_vel_x_range": (-1.0, 1.0),
-                            "lin_vel_y_range": (-0.3, 0.3),
+                            "lin_vel_x_range": (-1.5, 1.5),
+                            "lin_vel_y_range": (-0.5, 0.5),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 2500,
-                            "lin_vel_x_range": (-1.5, 1.5),
-                            "lin_vel_y_range": (-0.45, 0.45),
+                            "lin_vel_x_range": (-2.5, 2.5),
+                            "lin_vel_y_range": (-0.9, 0.9),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 3500,
-                            "lin_vel_x_range": (-2.0, 2.0),
-                            "lin_vel_y_range": (-0.6, 0.6),
+                            "lin_vel_x_range": (-_MAX_LIN_VEL_X, _MAX_LIN_VEL_X),
+                            "lin_vel_y_range": (-_MAX_LIN_VEL_Y, _MAX_LIN_VEL_Y),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                     ],

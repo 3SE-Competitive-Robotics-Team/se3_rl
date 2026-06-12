@@ -13,6 +13,7 @@
     <material name="hip_mat" rgba="0.42 0.46 0.50 1" />
     <material name="leg_mat" rgba="0.70 0.72 0.74 1" />
     <material name="wheel_mat" rgba="0.03 0.03 0.035 1" />
+    <material name="wheel_stripe_mat" rgba="0.85 0.92 0.96 1" />
     <material name="floor_mat" rgba="0.18 0.22 0.24 1" />
   </asset>
 
@@ -45,6 +46,8 @@
                 <joint name="fl_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="fl_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
+                <geom name="fl_wheel_stripe_outer" type="box" pos="0.025 0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
+                <geom name="fl_wheel_stripe_inner" type="box" pos="0.025 -0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
               </body>
             </body>
           </body>
@@ -70,6 +73,8 @@
                 <joint name="fr_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="fr_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
+                <geom name="fr_wheel_stripe_outer" type="box" pos="0.025 -0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
+                <geom name="fr_wheel_stripe_inner" type="box" pos="0.025 0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
               </body>
             </body>
           </body>
@@ -95,6 +100,8 @@
                 <joint name="hl_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="hl_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
+                <geom name="hl_wheel_stripe_outer" type="box" pos="0.025 0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
+                <geom name="hl_wheel_stripe_inner" type="box" pos="0.025 -0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
               </body>
             </body>
           </body>
@@ -120,6 +127,8 @@
                 <joint name="hr_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="hr_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
+                <geom name="hr_wheel_stripe_outer" type="box" pos="0.025 -0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
+                <geom name="hr_wheel_stripe_inner" type="box" pos="0.025 0.024 0" size="0.071 0.002 0.006" material="wheel_stripe_mat" contype="0" conaffinity="0" />
               </body>
             </body>
           </body>
