@@ -11,8 +11,8 @@ from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 _RESOURCES = Path(__file__).resolve().parents[4] / "assets"
 _MJCF_PATH = _RESOURCES / "robots" / "minidog" / "mjcf" / "minidog_16dof_16kg.xml"
 
-DOG_BASE_HEIGHT = 0.44
-"""默认 base_link 高度，略低于四腿伸直时的 0.472m。"""
+DOG_BASE_HEIGHT = 0.40
+"""默认 base_link 高度，对应 M20 风格前后反向屈膝的低姿态。"""
 
 DOG_JOINT_NAMES: tuple[str, ...] = (
     "fl_abad_joint",
@@ -56,23 +56,23 @@ DOG_WHEEL_BODY_NAMES: tuple[str, ...] = (
 
 DOG_DEFAULT_JOINT_POS: tuple[float, ...] = (
     0.0,
-    -0.4,
-    0.8,
+    -0.7,
+    1.2,
     0.0,
     0.0,
-    -0.4,
-    0.8,
+    -0.7,
+    1.2,
     0.0,
     0.0,
-    -0.4,
-    0.8,
+    0.7,
+    -1.2,
     0.0,
     0.0,
-    -0.4,
-    0.8,
+    0.7,
+    -1.2,
     0.0,
 )
-"""四轮触地的微屈默认姿态，对应 base_link 高度约 0.44m。"""
+"""M20 风格默认姿态：前后膝盖都向机身内侧折，四轮贴地。"""
 
 
 def _load_wheel_dog_spec() -> mujoco.MjSpec:

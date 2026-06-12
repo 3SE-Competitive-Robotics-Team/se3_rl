@@ -152,19 +152,21 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.commands = {
         _COMMAND_NAME: commands.DogVelocityCommandCfg(
             resampling_time_range=(5.0, 5.0),
-            lin_vel_x_range=(-1.0, 1.0) if play else (0.0, 0.0),
-            lin_vel_y_range=(-0.3, 0.3) if play else (0.0, 0.0),
+            lin_vel_x_range=(-2.0, 2.0) if play else (0.0, 0.0),
+            lin_vel_y_range=(-0.6, 0.6) if play else (0.0, 0.0),
             ang_vel_yaw_range=(0.0, 0.0),
             standing_ratio=0.08,
         ),
     }
+    if play:
+        cfg.commands[_COMMAND_NAME].debug_vis = True
 
     leg_joint_ids = DOG_ABAD_JOINT_IDS + DOG_HIP_JOINT_IDS + DOG_KNEE_JOINT_IDS
     cfg.rewards = {
         "tracking_lin_vel_xy": RewardTermCfg(
             func=rewards.tracking_lin_vel_xy,
             weight=2.0,
-            params={"command_name": _COMMAND_NAME, "std": 0.5},
+            params={"command_name": _COMMAND_NAME, "std": 0.7071},
         ),
         "tracking_ang_vel_z": RewardTermCfg(
             func=rewards.tracking_ang_vel_z,
@@ -260,7 +262,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "low_base_height": TerminationTermCfg(
             func=terminations.low_base_height_delayed,
             time_out=False,
-            params={"sensor_name": "base_height_sensor", "min_height": 0.24, "max_steps": 30},
+            params={"sensor_name": "base_height_sensor", "min_height": 0.20, "max_steps": 30},
         ),
         "body_contact": TerminationTermCfg(
             func=terminations.body_contact,
@@ -338,20 +340,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "step": 500,
-                            "lin_vel_x_range": (-0.3, 0.3),
+                            "lin_vel_x_range": (-0.5, 0.5),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 1500,
-                            "lin_vel_x_range": (-0.6, 0.6),
-                            "lin_vel_y_range": (-0.15, 0.15),
+                            "lin_vel_x_range": (-1.0, 1.0),
+                            "lin_vel_y_range": (-0.3, 0.3),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 2500,
-                            "lin_vel_x_range": (-1.0, 1.0),
-                            "lin_vel_y_range": (-0.3, 0.3),
+                            "lin_vel_x_range": (-1.5, 1.5),
+                            "lin_vel_y_range": (-0.45, 0.45),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
+                            "step": 3500,
+                            "lin_vel_x_range": (-2.0, 2.0),
+                            "lin_vel_y_range": (-0.6, 0.6),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                     ],
@@ -368,7 +376,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "step": 4000,
-                            "velocity_range": {"x": (-0.4, 0.4), "y": (-0.3, 0.3)},
+                            "velocity_range": {"x": (-0.6, 0.6), "y": (-0.45, 0.45)},
                         },
                     ],
                 },

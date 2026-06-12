@@ -35,13 +35,13 @@
           <geom name="fl_hip_collision" type="box" size="0.045 0.032 0.036" material="hip_mat" />
           <body name="fl_thigh_link">
             <joint name="fl_hip_joint" type="hinge" axis="0 -1 0" range="-2.30 2.60" actuatorfrcrange="-50 50" />
-            <inertial pos="0 0.02250 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
-            <geom name="fl_thigh_collision" type="capsule" fromto="0 0 0 0 0.04500 -0.20000" size="0.021" material="leg_mat" />
-            <body name="fl_shank_link" pos="0 0.04500 -0.20000">
+            <inertial pos="0 0 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
+            <geom name="fl_thigh_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.021" material="leg_mat" />
+            <body name="fl_shank_link" pos="0 0 -0.20000">
               <joint name="fl_knee_joint" type="hinge" axis="0 -1 0" range="-2.80 2.80" actuatorfrcrange="-50 50" />
-              <inertial pos="0 0.01300 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
-              <geom name="fl_shank_collision" type="capsule" fromto="0 0 0 0 0.02600 -0.20000" size="0.018" material="leg_mat" />
-              <body name="fl_wheel_link" pos="0 0.02600 -0.20000">
+              <inertial pos="0 0 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
+              <geom name="fl_shank_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.018" material="leg_mat" />
+              <body name="fl_wheel_link" pos="0 0 -0.20000">
                 <joint name="fl_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="fl_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
@@ -60,13 +60,13 @@
           <geom name="fr_hip_collision" type="box" size="0.045 0.032 0.036" material="hip_mat" />
           <body name="fr_thigh_link">
             <joint name="fr_hip_joint" type="hinge" axis="0 -1 0" range="-2.30 2.60" actuatorfrcrange="-50 50" />
-            <inertial pos="0 -0.02250 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
-            <geom name="fr_thigh_collision" type="capsule" fromto="0 0 0 0 -0.04500 -0.20000" size="0.021" material="leg_mat" />
-            <body name="fr_shank_link" pos="0 -0.04500 -0.20000">
+            <inertial pos="0 0 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
+            <geom name="fr_thigh_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.021" material="leg_mat" />
+            <body name="fr_shank_link" pos="0 0 -0.20000">
               <joint name="fr_knee_joint" type="hinge" axis="0 -1 0" range="-2.80 2.80" actuatorfrcrange="-50 50" />
-              <inertial pos="0 -0.01300 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
-              <geom name="fr_shank_collision" type="capsule" fromto="0 0 0 0 -0.02600 -0.20000" size="0.018" material="leg_mat" />
-              <body name="fr_wheel_link" pos="0 -0.02600 -0.20000">
+              <inertial pos="0 0 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
+              <geom name="fr_shank_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.018" material="leg_mat" />
+              <body name="fr_wheel_link" pos="0 0 -0.20000">
                 <joint name="fr_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="fr_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
@@ -85,13 +85,13 @@
           <geom name="hl_hip_collision" type="box" size="0.045 0.032 0.036" material="hip_mat" />
           <body name="hl_thigh_link">
             <joint name="hl_hip_joint" type="hinge" axis="0 -1 0" range="-2.60 2.30" actuatorfrcrange="-50 50" />
-            <inertial pos="0 0.02250 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
-            <geom name="hl_thigh_collision" type="capsule" fromto="0 0 0 0 0.04500 -0.20000" size="0.021" material="leg_mat" />
-            <body name="hl_shank_link" pos="0 0.04500 -0.20000">
+            <inertial pos="0 0 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
+            <geom name="hl_thigh_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.021" material="leg_mat" />
+            <body name="hl_shank_link" pos="0 0 -0.20000">
               <joint name="hl_knee_joint" type="hinge" axis="0 -1 0" range="-2.80 2.80" actuatorfrcrange="-50 50" />
-              <inertial pos="0 0.01300 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
-              <geom name="hl_shank_collision" type="capsule" fromto="0 0 0 0 0.02600 -0.20000" size="0.018" material="leg_mat" />
-              <body name="hl_wheel_link" pos="0 0.02600 -0.20000">
+              <inertial pos="0 0 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
+              <geom name="hl_shank_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.018" material="leg_mat" />
+              <body name="hl_wheel_link" pos="0 0 -0.20000">
                 <joint name="hl_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="hl_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />
@@ -110,13 +110,13 @@
           <geom name="hr_hip_collision" type="box" size="0.045 0.032 0.036" material="hip_mat" />
           <body name="hr_thigh_link">
             <joint name="hr_hip_joint" type="hinge" axis="0 -1 0" range="-2.60 2.30" actuatorfrcrange="-50 50" />
-            <inertial pos="0 -0.02250 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
-            <geom name="hr_thigh_collision" type="capsule" fromto="0 0 0 0 -0.04500 -0.20000" size="0.021" material="leg_mat" />
-            <body name="hr_shank_link" pos="0 -0.04500 -0.20000">
+            <inertial pos="0 0 -0.10000" mass="0.913236" diaginertia="0.003350 0.003250 0.000340" />
+            <geom name="hr_thigh_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.021" material="leg_mat" />
+            <body name="hr_shank_link" pos="0 0 -0.20000">
               <joint name="hr_knee_joint" type="hinge" axis="0 -1 0" range="-2.80 2.80" actuatorfrcrange="-50 50" />
-              <inertial pos="0 -0.01300 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
-              <geom name="hr_shank_collision" type="capsule" fromto="0 0 0 0 -0.02600 -0.20000" size="0.018" material="leg_mat" />
-              <body name="hr_wheel_link" pos="0 -0.02600 -0.20000">
+              <inertial pos="0 0 -0.10000" mass="0.530617" diaginertia="0.001850 0.001800 0.000200" />
+              <geom name="hr_shank_collision" type="capsule" fromto="0 0 0 0 0 -0.20000" size="0.018" material="leg_mat" />
+              <body name="hr_wheel_link" pos="0 0 -0.20000">
                 <joint name="hr_wheel_joint" type="hinge" axis="0 -1 0" damping="0.02" armature="0.002" actuatorfrcrange="-12 12" />
                 <inertial pos="0 0 0" mass="0.295662" diaginertia="0.000791 0.001533 0.000791" />
                 <geom name="hr_wheel_collision" type="cylinder" size="0.072 0.022" euler="1.57079632679 0 0" material="wheel_mat" friction="1.0 0.01 0.001" />

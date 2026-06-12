@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
+from mjlab.utils.lab_api.math import matrix_from_quat
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+    from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 
 def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
@@ -26,12 +29,24 @@ class DogVelocityCommandCfg(CommandTermCfg):
     指令维度: [lin_vel_x, lin_vel_y, ang_vel_yaw]。
     """
 
-    lin_vel_x_range: tuple[float, float] = (-1.0, 1.0)
-    lin_vel_y_range: tuple[float, float] = (-0.3, 0.3)
+    lin_vel_x_range: tuple[float, float] = (-2.0, 2.0)
+    lin_vel_y_range: tuple[float, float] = (-0.6, 0.6)
     ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0)
     lin_vel_deadband: float = 0.08
     yaw_deadband: float = 0.08
     standing_ratio: float = 0.08
+
+    @dataclass
+    class VizCfg:
+        """速度跟踪调试可视化参数。"""
+
+        z_offset: float = 0.25
+        scale: float = 0.8
+        command_color: tuple[float, float, float, float] = (0.2, 0.2, 0.6, 0.65)
+        actual_color: tuple[float, float, float, float] = (0.0, 0.6, 1.0, 0.75)
+        width: float = 0.015
+
+    viz: VizCfg = field(default_factory=VizCfg)
 
     def build(self, env: ManagerBasedRlEnv) -> DogVelocityCommandTerm:
         return DogVelocityCommandTerm(self, env)
@@ -130,6 +145,47 @@ class DogVelocityCommandTerm(CommandTerm):
         """在闭区间内均匀采样。"""
         lo, hi = value_range
         return torch.rand(count, device=self.device) * (hi - lo) + lo
+
+    def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
+        """绘制期望平移速度和实际平移速度箭头。"""
+        env_indices = visualizer.get_env_indices(self.num_envs)
+        if not env_indices:
+            return
+
+        commands = self.command.cpu().numpy()
+        base_pos_ws = self._robot.data.root_link_pos_w.cpu().numpy()
+        base_mat_ws = matrix_from_quat(self._robot.data.root_link_quat_w).cpu().numpy()
+        lin_vel_bs = self._robot.data.root_link_lin_vel_b.cpu().numpy()
+
+        local_offset = np.array([0.0, 0.0, self.cfg.viz.z_offset])
+        for env_idx in env_indices:
+            base_pos_w = base_pos_ws[env_idx]
+            if np.linalg.norm(base_pos_w) < 1e-6:
+                continue
+
+            base_mat_w = base_mat_ws[env_idx]
+            start = base_pos_w + base_mat_w @ local_offset
+            command_vec_b = np.array([commands[env_idx, 0], commands[env_idx, 1], 0.0])
+            actual_vec_b = np.array([lin_vel_bs[env_idx, 0], lin_vel_bs[env_idx, 1], 0.0])
+            command_vec_b *= self.cfg.viz.scale
+            actual_vec_b *= self.cfg.viz.scale
+
+            if np.linalg.norm(command_vec_b) > 1e-4:
+                visualizer.add_arrow(
+                    start,
+                    start + base_mat_w @ command_vec_b,
+                    color=self.cfg.viz.command_color,
+                    width=self.cfg.viz.width,
+                    label="期望速度",
+                )
+            if np.linalg.norm(actual_vec_b) > 1e-4:
+                visualizer.add_arrow(
+                    start,
+                    start + base_mat_w @ actual_vec_b,
+                    color=self.cfg.viz.actual_color,
+                    width=self.cfg.viz.width,
+                    label="实际速度",
+                )
 
 
 __all__ = ["DogVelocityCommandCfg", "DogVelocityCommandTerm"]
