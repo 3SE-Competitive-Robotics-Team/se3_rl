@@ -262,7 +262,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "low_base_height": TerminationTermCfg(
             func=terminations.low_base_height_delayed,
             time_out=False,
-            params={"sensor_name": "base_height_sensor", "min_height": 0.20, "max_steps": 30},
+            params={"sensor_name": "base_height_sensor", "min_height": 0.16, "max_steps": 30},
         ),
         "body_contact": TerminationTermCfg(
             func=terminations.body_contact,

@@ -1,4 +1,4 @@
-<mujoco model="minidog_16dof_16kg">
+<mujoco model="minidog_16dof_20kg">
   <compiler angle="radian" autolimits="true" />
   <size njmax="256" nconmax="128" />
   <option timestep="0.005" iterations="80" solver="Newton" cone="pyramidal" />
@@ -22,11 +22,11 @@
 
     <body name="base_link" pos="0 0 0.48">
       <freejoint name="floating_base" />
-      <inertial pos="0 0 0" mass="7.360048" diaginertia="0.021219 0.186264 0.192647" />
-      <geom name="base_collision" type="box" size="0.27 0.075 0.055" material="body_mat" />
+      <inertial pos="0 0 0" mass="11.360048" diaginertia="0.045630 0.194730 0.217450" />
+      <geom name="base_collision" type="box" size="0.22 0.095 0.055" material="body_mat" />
       <site name="base_site" pos="0 0 0" size="0.005" rgba="1 0 0 1" />
 
-      <body name="fl_abad_link" pos="0.25128 0.05500 0">
+      <body name="fl_abad_link" pos="0.20128 0.07500 0">
         <joint name="fl_abad_joint" type="hinge" axis="-1 0 0" range="-0.60 0.60" actuatorfrcrange="-50 50" />
         <inertial pos="0 0.02750 0" mass="0.120473" diaginertia="0.000050 0.000050 0.000050" />
         <geom name="fl_abad_collision" type="capsule" fromto="0 0 0 0 0.05500 0" size="0.024" material="hip_mat" />
@@ -51,7 +51,7 @@
         </body>
       </body>
 
-      <body name="fr_abad_link" pos="0.25128 -0.05500 0">
+      <body name="fr_abad_link" pos="0.20128 -0.07500 0">
         <joint name="fr_abad_joint" type="hinge" axis="-1 0 0" range="-0.60 0.60" actuatorfrcrange="-50 50" />
         <inertial pos="0 -0.02750 0" mass="0.120473" diaginertia="0.000050 0.000050 0.000050" />
         <geom name="fr_abad_collision" type="capsule" fromto="0 0 0 0 -0.05500 0" size="0.024" material="hip_mat" />
@@ -76,7 +76,7 @@
         </body>
       </body>
 
-      <body name="hl_abad_link" pos="-0.25128 0.05500 0">
+      <body name="hl_abad_link" pos="-0.20128 0.07500 0">
         <joint name="hl_abad_joint" type="hinge" axis="-1 0 0" range="-0.60 0.60" actuatorfrcrange="-50 50" />
         <inertial pos="0 0.02750 0" mass="0.120473" diaginertia="0.000050 0.000050 0.000050" />
         <geom name="hl_abad_collision" type="capsule" fromto="0 0 0 0 0.05500 0" size="0.024" material="hip_mat" />
@@ -101,7 +101,7 @@
         </body>
       </body>
 
-      <body name="hr_abad_link" pos="-0.25128 -0.05500 0">
+      <body name="hr_abad_link" pos="-0.20128 -0.07500 0">
         <joint name="hr_abad_joint" type="hinge" axis="-1 0 0" range="-0.60 0.60" actuatorfrcrange="-50 50" />
         <inertial pos="0 -0.02750 0" mass="0.120473" diaginertia="0.000050 0.000050 0.000050" />
         <geom name="hr_abad_collision" type="capsule" fromto="0 0 0 0 -0.05500 0" size="0.024" material="hip_mat" />

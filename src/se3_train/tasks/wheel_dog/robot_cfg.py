@@ -9,10 +9,10 @@ from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 _RESOURCES = Path(__file__).resolve().parents[4] / "assets"
-_MJCF_PATH = _RESOURCES / "robots" / "minidog" / "mjcf" / "minidog_16dof_16kg.xml"
+_MJCF_PATH = _RESOURCES / "robots" / "minidog" / "mjcf" / "minidog_16dof_20kg.xml"
 
-DOG_BASE_HEIGHT = 0.40
-"""默认 base_link 高度，对应 M20 风格前后反向屈膝的低姿态。"""
+DOG_BASE_HEIGHT = 0.32
+"""默认 base_link 高度，对应 M20 风格前后反向屈膝的深蹲姿态。"""
 
 DOG_JOINT_NAMES: tuple[str, ...] = (
     "fl_abad_joint",
@@ -56,20 +56,20 @@ DOG_WHEEL_BODY_NAMES: tuple[str, ...] = (
 
 DOG_DEFAULT_JOINT_POS: tuple[float, ...] = (
     0.0,
-    -0.7,
-    1.2,
+    -0.97,
+    1.8,
     0.0,
     0.0,
-    -0.7,
-    1.2,
+    -0.97,
+    1.8,
     0.0,
     0.0,
-    0.7,
-    -1.2,
+    0.97,
+    -1.8,
     0.0,
     0.0,
-    0.7,
-    -1.2,
+    0.97,
+    -1.8,
     0.0,
 )
 """M20 风格默认姿态：前后膝盖都向机身内侧折，四轮贴地。"""

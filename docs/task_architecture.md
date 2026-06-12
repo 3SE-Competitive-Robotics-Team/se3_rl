@@ -22,7 +22,7 @@
 | `flow_match/jump/` | `SE3-WheelLegged-FlowMatch-Jump-GRU` | FlowMatch `JUMP=4` 单标签能力任务 |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
-| `wheel_dog/flat/` | `SE3-WheelDog-Flat-GRU` | 16DOF 四足轮腿 WheelDog 平地速度跟随任务，M20 风格前后反向屈膝，目标 base_link 高度 `0.40m`，速度课程最终到前后 `±2.0m/s`、左右 `±0.6m/s` |
+| `wheel_dog/flat/` | `SE3-WheelDog-Flat-GRU` | 20kg、16DOF 四足轮腿 WheelDog 平地速度跟随任务，M20 风格前后反向屈膝，目标 base_link 高度 `0.32m`，速度课程最终到前后 `±2.0m/s`、左右 `±0.6m/s` |
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。Recovery 目前只有 `Recovery-GRU` 一个正式入口，不注册 recovery-stand 或 stair/NX 实验入口。
 
