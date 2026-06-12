@@ -72,6 +72,16 @@ class RuntimeStats:
     last_state_hip_torque: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
     last_state_wheel_torque: tuple[float, ...] = (0.0, 0.0)
     last_state_wheel_motor_torque: tuple[float, ...] = (0.0, 0.0)
+    last_command: tuple[float, ...] = (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.22,
+        0.0,
+        0.0,
+        0.0,
+    )
     policy_inference_frames: int = 0
     last_policy_inference_ms: float = 0.0
     total_policy_inference_ms: float = 0.0
@@ -102,8 +112,11 @@ class RecoveryActionTargetDecoder:
             dtype=np.float32,
         )
 
-    def decode(self, action: np.ndarray) -> DecodedPolicyTarget:
-        decoded = self.decoder.decode(action, command_height=self.command_height)
+    def decode(
+        self, action: np.ndarray, *, command_height: float | None = None
+    ) -> DecodedPolicyTarget:
+        height = self.command_height if command_height is None else float(command_height)
+        decoded = self.decoder.decode(action, command_height=height)
         return DecodedPolicyTarget(
             joint_pos=tuple(float(v) for v in decoded.leg_target),
             wheel_vel=tuple(float(v) for v in decoded.wheel_vel_target),
@@ -198,7 +211,7 @@ class RecoveryRuntime:
         self.policy.reset()
         self.obs_builder = RecoveryObservationBuilder()
         self.target_decoder = RecoveryActionTargetDecoder(
-            command_height=float(self.obs_builder.command[4])
+            command_height=float(self.obs_builder.default_command[4])
         )
         self.stats = RuntimeStats()
         self._last_action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
@@ -235,7 +248,7 @@ class RecoveryRuntime:
             self.stats.state_frames += 1
             action, flags, obs, policy_inference_ms = self._act_from_state(state)
             flags |= ACTION_FLAG_DRY_RUN
-            self._decode_target(action)
+            self._decode_target(action, state)
             self._record_action(state, action, flags, policy_inference_ms)
             self._write_telemetry(state, obs, action, flags, policy_inference_ms)
             self._maybe_print()
@@ -289,7 +302,7 @@ class RecoveryRuntime:
                     packet = self._make_hold_target_packet(latest_state)
                 else:
                     action, flags, obs, policy_inference_ms = self._act_from_state(latest_state)
-                    packet = self._make_target_packet(action)
+                    packet = self._make_target_packet(action, latest_state)
 
                 serial.write_all(packet, timeout_s=self.cfg.write_timeout_s)
                 self._record_action(latest_state, action, flags, policy_inference_ms)
@@ -354,8 +367,8 @@ class RecoveryRuntime:
         self._last_action = np.zeros(self.obs_cfg.num_actions, dtype=np.float32)
         self._policy_memory_clean = True
 
-    def _make_target_packet(self, action: np.ndarray) -> bytes:
-        target = self._decode_target(action)
+    def _make_target_packet(self, action: np.ndarray, state: PolicyStateFrame) -> bytes:
+        target = self._decode_target(action, state)
         frame = PolicyTargetFrame(
             seq=self._action_seq,
             joint_pos=target.joint_pos,
@@ -379,8 +392,13 @@ class RecoveryRuntime:
         self._action_seq = (self._action_seq + 1) & 0xFFFFFFFF
         return pack_policy_target(frame)
 
-    def _decode_target(self, action: np.ndarray) -> DecodedPolicyTarget:
-        target = self.target_decoder.decode(action)
+    def _decode_target(
+        self, action: np.ndarray, state: PolicyStateFrame | None = None
+    ) -> DecodedPolicyTarget:
+        command_height = (
+            None if state is None else float(self.obs_builder.command_from_state(state)[4])
+        )
+        target = self.target_decoder.decode(action, command_height=command_height)
         self.stats.last_target_joint_pos = tuple(float(v) for v in target.joint_pos)
         self.stats.last_target_wheel_vel = tuple(float(v) for v in target.wheel_vel)
         return target
@@ -405,6 +423,9 @@ class RecoveryRuntime:
         self.stats.last_state_hip_torque = tuple(float(v) for v in state.hip_torque)
         self.stats.last_state_wheel_torque = tuple(float(v) for v in state.wheel_torque)
         self.stats.last_state_wheel_motor_torque = tuple(float(v) for v in state.wheel_motor_torque)
+        self.stats.last_command = tuple(
+            float(v) for v in self.obs_builder.command_from_state(state)
+        )
         if flags & ACTION_FLAG_TIMEOUT:
             self.stats.timeout_frames += 1
 
@@ -446,6 +467,7 @@ class RecoveryRuntime:
             "obs": _float_list(obs),
             "action": _float_list(action),
             "clipped_action": _float_list(self._last_action),
+            "command": _float_list(self.obs_builder.command_from_state(state)),
             "nx_target_joint_pos": _float_list(nx_target),
             "nx_target_active": _policy_active_angles(nx_target),
             "nx_target_wheel_vel": _float_list(self.stats.last_target_wheel_vel),
@@ -490,6 +512,7 @@ class RecoveryRuntime:
             else "policy"
         )
         action = _fmt_values(self.stats.last_action[:4])
+        command = _fmt_values(self.stats.last_command[:5])
         target = _fmt_values(self.stats.last_target_joint_pos)
         stm_target = _fmt_values(self.stats.last_state_target_joint_pos)
         joint = _fmt_values(self.stats.last_state_joint_pos)
@@ -512,7 +535,8 @@ class RecoveryRuntime:
             f"{self._avg_policy_inference_ms():.3f}/"
             f"{self.stats.max_policy_inference_ms:.3f} "
             f"policy_n={self.stats.policy_inference_frames} "
-            f"action4=[{action}] target4=[{target}] stm_target4=[{stm_target}] "
+            f"cmd5=[{command}] action4=[{action}] "
+            f"target4=[{target}] stm_target4=[{stm_target}] "
             f"joint4=[{joint}] err4=[{error}] torque4=[{torque}] "
             f"wheel_motor_torque=[{wheel_torque}]"
         )

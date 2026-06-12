@@ -10,7 +10,7 @@ import numpy as np
 
 SOF = b"\xa5\x5a"
 VERSION = 1
-MAX_PAYLOAD_SIZE = 160
+MAX_PAYLOAD_SIZE = 192
 
 MSG_STATE = 0x01
 MSG_TARGET = 0x02
@@ -24,9 +24,11 @@ CRC_STRUCT = struct.Struct("<H")
 
 POLICY_STATE_STRUCT_V1 = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f")
 POLICY_STATE_STRUCT_V2 = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f")
-POLICY_STATE_STRUCT = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f2f2f")
+POLICY_STATE_STRUCT_V3 = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f2f2f")
+POLICY_STATE_STRUCT = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f2f2f5f")
 POLICY_TARGET_STRUCT = struct.Struct("<I4f2f")
 POLICY_LATENCY_STRUCT = struct.Struct("<IIB3x")
+DEFAULT_POLICY_COMMAND = (0.0, 0.0, 0.0, 0.0, 0.22)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,7 @@ class PolicyStateFrame:
     hip_torque: tuple[float, float, float, float]
     wheel_torque: tuple[float, float]
     wheel_motor_torque: tuple[float, float]
+    command: tuple[float, float, float, float, float] = DEFAULT_POLICY_COMMAND
 
     payload_struct: ClassVar[struct.Struct] = POLICY_STATE_STRUCT
 
@@ -64,6 +67,10 @@ class PolicyStateFrame:
     @property
     def dof_vel(self) -> tuple[float, float, float, float, float, float]:
         return (*self.joint_vel, *self.wheel_vel)
+
+    @property
+    def policy_command(self) -> tuple[float, ...]:
+        return (*self.command, 0.0, 0.0, 0.0)
 
     def pack_payload(self) -> bytes:
         values = (
@@ -84,6 +91,7 @@ class PolicyStateFrame:
             *finite_floats(self.hip_torque, 4, "hip_torque"),
             *finite_floats(self.wheel_torque, 2, "wheel_torque"),
             *finite_floats(self.wheel_motor_torque, 2, "wheel_motor_torque"),
+            *finite_floats(self.command, 5, "command"),
         )
         return self.payload_struct.pack(*values)
 
@@ -131,6 +139,27 @@ class PolicyStateFrame:
                 wheel_torque=(0.0, 0.0),
                 wheel_motor_torque=(0.0, 0.0),
             )
+        if len(payload) == POLICY_STATE_STRUCT_V3.size:
+            values = POLICY_STATE_STRUCT_V3.unpack(payload)
+            return cls(
+                tick_ms=int(values[0]),
+                seq=int(values[1]),
+                target_seq=int(values[2]),
+                target_age_ms=int(values[3]),
+                target_valid=int(values[4]),
+                rc_switch_r=int(values[5]),
+                output_enabled=int(values[6]),
+                base_ang_vel_body=tuple(float(v) for v in values[7:10]),
+                projected_gravity=tuple(float(v) for v in values[10:13]),
+                joint_pos=tuple(float(v) for v in values[13:17]),
+                joint_vel=tuple(float(v) for v in values[17:21]),
+                wheel_pos=tuple(float(v) for v in values[21:23]),
+                wheel_vel=tuple(float(v) for v in values[23:25]),
+                target_joint_pos=tuple(float(v) for v in values[25:29]),
+                hip_torque=tuple(float(v) for v in values[29:33]),
+                wheel_torque=tuple(float(v) for v in values[33:35]),
+                wheel_motor_torque=tuple(float(v) for v in values[35:37]),
+            )
         if len(payload) != cls.payload_struct.size:
             raise ValueError(f"state payload size mismatch: {len(payload)}")
         values = cls.payload_struct.unpack(payload)
@@ -152,6 +181,7 @@ class PolicyStateFrame:
             hip_torque=tuple(float(v) for v in values[29:33]),
             wheel_torque=tuple(float(v) for v in values[33:35]),
             wheel_motor_torque=tuple(float(v) for v in values[35:37]),
+            command=tuple(float(v) for v in values[37:42]),
         )
 
 

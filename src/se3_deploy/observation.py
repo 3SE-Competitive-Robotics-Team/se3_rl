@@ -15,6 +15,10 @@ from .protocol import PolicyStateFrame
 
 _OBS_CFG = ObservationConfig()
 _ROBOT_CFG = RobotConfig()
+_COMMAND_VX_LIMIT_MPS = 1.50
+_COMMAND_YAW_RATE_LIMIT_RAD_S = 6.00
+_COMMAND_HEIGHT_MIN_M = 0.15
+_COMMAND_HEIGHT_MAX_M = 0.33
 
 
 class RecoveryObservationBuilder:
@@ -23,7 +27,7 @@ class RecoveryObservationBuilder:
     def __init__(self) -> None:
         self.default_dof_pos = np.asarray(_ROBOT_CFG.default_dof_pos, dtype=np.float32)
         self.command_scale = np.asarray(_OBS_CFG.command_scale, dtype=np.float32)
-        self.command = np.asarray(
+        self.default_command = np.asarray(
             [
                 0.0,
                 0.0,
@@ -36,6 +40,7 @@ class RecoveryObservationBuilder:
             ],
             dtype=np.float32,
         )
+        self.command = self.default_command
 
     def build(self, state: PolicyStateFrame, last_action: np.ndarray) -> PolicyObservationResult:
         return build_policy_observation_np(
@@ -43,7 +48,7 @@ class RecoveryObservationBuilder:
             projected_gravity=np.asarray(state.projected_gravity, dtype=np.float32),
             dof_pos=np.asarray(state.dof_pos, dtype=np.float32),
             dof_vel=np.asarray(state.dof_vel, dtype=np.float32),
-            command=self.command,
+            command=self.command_from_state(state),
             action_obs=np.asarray(last_action, dtype=np.float32),
             default_dof_pos=self.default_dof_pos,
             command_scale=self.command_scale,
@@ -51,6 +56,20 @@ class RecoveryObservationBuilder:
             clip_value=_OBS_CFG.clip_value,
             normalize_projected_gravity=True,
         )
+
+    def command_from_state(self, state: PolicyStateFrame) -> np.ndarray:
+        command = np.asarray(state.policy_command, dtype=np.float32)
+        if command.shape != self.default_command.shape or not np.isfinite(command).all():
+            return self.default_command
+        command = command.copy()
+        command[0] = np.clip(command[0], -_COMMAND_VX_LIMIT_MPS, _COMMAND_VX_LIMIT_MPS)
+        command[1] = np.clip(
+            command[1],
+            -_COMMAND_YAW_RATE_LIMIT_RAD_S,
+            _COMMAND_YAW_RATE_LIMIT_RAD_S,
+        )
+        command[4] = np.clip(command[4], _COMMAND_HEIGHT_MIN_M, _COMMAND_HEIGHT_MAX_M)
+        return command
 
 
 def synthetic_recovery_state(seq: int = 0) -> PolicyStateFrame:
@@ -75,4 +94,11 @@ def synthetic_recovery_state(seq: int = 0) -> PolicyStateFrame:
         hip_torque=(0.0, 0.0, 0.0, 0.0),
         wheel_torque=(0.0, 0.0),
         wheel_motor_torque=(0.0, 0.0),
+        command=(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            float(_ROBOT_CFG.default_base_height),
+        ),
     )
