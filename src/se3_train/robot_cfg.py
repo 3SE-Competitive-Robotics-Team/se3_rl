@@ -14,6 +14,9 @@ _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
 _CLOSEDCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 _FOURBAR_SURROGATE_MJCF_PATH = _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml"
+_FOURBAR_SURROGATE_STAIR_MJCF_PATH = (
+    _MJCF_DIR / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
+)
 _MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
 _MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
 
@@ -44,13 +47,23 @@ def _resolve_mjcf_path() -> Path:
         "equivalent-openchain",
     }:
         return _FOURBAR_SURROGATE_MJCF_PATH
+    if variant in {
+        "stair",
+        "stair-surrogate",
+        "stair_surrogate",
+        "fourbar-surrogate-stair",
+        "fourbar_surrogate_stair",
+        "stair-visualbase",
+        "stair_visualbase",
+    }:
+        return _FOURBAR_SURROGATE_STAIR_MJCF_PATH
     if variant in {"closedchain", "closedchain-obb", "closedchain_obb", "no-spring", "no_spring"}:
         return _CLOSEDCHAIN_MJCF_PATH
     if variant in {"openchain"}:
         return _OPENCHAIN_MJCF_PATH
     raise ValueError(
         f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 fourbar-surrogate/closedchain/openchain，"
-        f"或用 {_MJCF_ENV_VAR} 指定 MJCF 路径。"
+        f"stair-surrogate 或用 {_MJCF_ENV_VAR} 指定 MJCF 路径。"
     )
 
 
@@ -59,6 +72,7 @@ def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
     if mjcf_path.name in {
         _OPENCHAIN_MJCF_PATH.name,
         _FOURBAR_SURROGATE_MJCF_PATH.name,
+        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
     }:
         return JointGroup.OPENCHAIN_LEG_NAMES
     return JointGroup.POLICY_LEG_NAMES
@@ -66,7 +80,10 @@ def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
 
 def _is_fourbar_surrogate_path(mjcf_path: Path) -> bool:
     """判断当前 MJCF 是否属于解析四连杆等效开树模型。"""
-    return mjcf_path.name == _FOURBAR_SURROGATE_MJCF_PATH.name
+    return mjcf_path.name in {
+        _FOURBAR_SURROGATE_MJCF_PATH.name,
+        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
+    }
 
 
 def get_serialleg_cfg(
