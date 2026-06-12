@@ -132,11 +132,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             terms=actor_terms,
             concatenate_terms=True,
             enable_corruption=not play,
+            nan_policy="sanitize",
         ),
         "critic": ObservationGroupCfg(
             terms=critic_terms,
             concatenate_terms=True,
             enable_corruption=False,
+            nan_policy="sanitize",
         ),
     }
 
@@ -277,6 +279,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=terminations.low_base_height_delayed,
             time_out=False,
             params={"sensor_name": "base_height_sensor", "min_height": 0.16, "max_steps": 30},
+        ),
+        "nonfinite_state": TerminationTermCfg(
+            func=terminations.nonfinite_state,
+            time_out=False,
         ),
         "body_contact": TerminationTermCfg(
             func=terminations.body_contact,

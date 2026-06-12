@@ -88,6 +88,20 @@ def body_contact(
     return torch.max(force, dim=1).values > float(force_threshold)
 
 
+def nonfinite_state(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """机器人核心状态出现非有限值时终止。"""
+    robot = env.scene["robot"]
+    finite = (
+        torch.isfinite(robot.data.root_link_pos_w).all(dim=1)
+        & torch.isfinite(robot.data.root_link_lin_vel_b).all(dim=1)
+        & torch.isfinite(robot.data.root_link_ang_vel_b).all(dim=1)
+        & torch.isfinite(robot.data.projected_gravity_b).all(dim=1)
+        & torch.isfinite(robot.data.joint_pos).all(dim=1)
+        & torch.isfinite(robot.data.joint_vel).all(dim=1)
+    )
+    return ~finite
+
+
 bad_orientation_delayed = BadOrientationDelayed()
 low_base_height_delayed = LowBaseHeightDelayed()
 
@@ -96,5 +110,6 @@ __all__ = [
     "bad_orientation_delayed",
     "body_contact",
     "low_base_height_delayed",
+    "nonfinite_state",
     "time_out",
 ]
