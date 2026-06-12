@@ -4,27 +4,6 @@
 """
 
 from .action_delay import ActionDelayConfig, delay_seconds_to_steps
-
-try:
-    from .ctbc_feedforward import (
-        REFERENCE_CTBC_CONTACT_WINDOW,
-        REFERENCE_CTBC_FF_AMPLITUDE,
-        REFERENCE_CTBC_FF_PERIOD_S,
-        REFERENCE_CTBC_FORCE_THRESHOLD_N,
-        REFERENCE_CTBC_HIP_RATIO,
-        REFERENCE_CTBC_KNEE_RATIO,
-        REFERENCE_CTBC_LEG_LENGTH_AMPLITUDE_M,
-        REFERENCE_CTBC_LEG_SCALE,
-        REFERENCE_CTBC_SWING_ANGLE_AMPLITUDE_RAD,
-        current_leg_action_scales_np,
-        leg_length_ctbc_bias_to_current_action_np,
-        leg_length_ctbc_bias_to_current_action_torch,
-        reference_ctbc_bias_to_current_action_np,
-        reference_ctbc_bias_to_current_action_torch,
-    )
-except ModuleNotFoundError as exc:
-    if exc.name != f"{__name__}.ctbc_feedforward":
-        raise
 from .fourbar import (
     FOURBAR_SURROGATE_MARKER,
     is_fourbar_surrogate_name_set,
@@ -54,15 +33,6 @@ __all__ = [
     "FOURBAR_SURROGATE_MARKER",
     "M3508_C620_14",
     "M3508_HEXROLL",
-    "REFERENCE_CTBC_CONTACT_WINDOW",
-    "REFERENCE_CTBC_FF_AMPLITUDE",
-    "REFERENCE_CTBC_FF_PERIOD_S",
-    "REFERENCE_CTBC_FORCE_THRESHOLD_N",
-    "REFERENCE_CTBC_HIP_RATIO",
-    "REFERENCE_CTBC_KNEE_RATIO",
-    "REFERENCE_CTBC_LEG_LENGTH_AMPLITUDE_M",
-    "REFERENCE_CTBC_LEG_SCALE",
-    "REFERENCE_CTBC_SWING_ANGLE_AMPLITUDE_RAD",
     "ActionDelayConfig",
     "DecodedPolicyAction",
     "Joint",
@@ -74,11 +44,8 @@ __all__ = [
     "RobotConfig",
     "Termination",
     "build_policy_observation_np",
-    "current_leg_action_scales_np",
     "delay_seconds_to_steps",
     "is_fourbar_surrogate_name_set",
-    "leg_length_ctbc_bias_to_current_action_np",
-    "leg_length_ctbc_bias_to_current_action_torch",
     "output_to_policy_pos_np",
     "output_to_policy_pos_torch",
     "output_to_policy_vel_np",
@@ -90,6 +57,4 @@ __all__ = [
     "policy_to_output_torque_np",
     "policy_to_output_torque_torch",
     "policy_to_output_vel_torch",
-    "reference_ctbc_bias_to_current_action_np",
-    "reference_ctbc_bias_to_current_action_torch",
 ]

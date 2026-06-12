@@ -9,8 +9,7 @@
 - Source commit: `e8029484`
 - SHA256: `93449475a5b103925f9d2cdd0e43f172de9e74ecff3984096c4b4805280757ad`
 
-This checkpoint is the current recovery GRU base model for downstream warm-start
-tasks such as `SE3-WheelLegged-Stair-CTBC-GRU`.
+This checkpoint is the current recovery GRU base model.
 
 It was selected over `model_4999_gru.pt` after A/B validation on 2026-06-09:
 MJLab fixed-height probes favored it on 7/8 command heights, and MuJoCo sim2sim
@@ -35,19 +34,3 @@ because the desktop checkpoint was trained without the near-upright
 `orientation_l2` penalty. A/B sim2sim validation on 2026-06-08 showed that the
 `acttgnoq` checkpoint has better post-recovery attitude stability, especially in
 `pitch180_h022`, `vx2_yaw6_h030`, and `vx3_yaw9_h030`.
-
-For stair training, link this directory into the stair experiment log root before
-launching a formal run:
-
-```bash
-mkdir -p logs/rsl_rl/se3_wheel_leg_stair_ctbc
-ln -sfn "$(pwd)/assets/base_model" logs/rsl_rl/se3_wheel_leg_stair_ctbc/base_model
-```
-
-On Windows, create an equivalent junction:
-
-```powershell
-New-Item -ItemType Junction `
-  -Path logs\rsl_rl\se3_wheel_leg_stair_ctbc\base_model `
-  -Target (Resolve-Path assets\base_model).Path
-```

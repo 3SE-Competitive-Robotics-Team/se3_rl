@@ -14,17 +14,12 @@ _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
 _CLOSEDCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 _FOURBAR_SURROGATE_MJCF_PATH = _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml"
-_FOURBAR_SURROGATE_STAIR_MJCF_PATH = (
-    _MJCF_DIR / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
-)
 _MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
 _MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
 
 _ROBOT_CFG = SharedRobotConfig()
 
 _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
-
-STAIR_FOURBAR_SURROGATE_MJCF_PATH = _FOURBAR_SURROGATE_STAIR_MJCF_PATH
 
 
 def _resolve_mjcf_path() -> Path:
@@ -64,7 +59,6 @@ def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
     if mjcf_path.name in {
         _OPENCHAIN_MJCF_PATH.name,
         _FOURBAR_SURROGATE_MJCF_PATH.name,
-        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
     }:
         return JointGroup.OPENCHAIN_LEG_NAMES
     return JointGroup.POLICY_LEG_NAMES
@@ -72,10 +66,7 @@ def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
 
 def _is_fourbar_surrogate_path(mjcf_path: Path) -> bool:
     """判断当前 MJCF 是否属于解析四连杆等效开树模型。"""
-    return mjcf_path.name in {
-        _FOURBAR_SURROGATE_MJCF_PATH.name,
-        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
-    }
+    return mjcf_path.name == _FOURBAR_SURROGATE_MJCF_PATH.name
 
 
 def get_serialleg_cfg(

@@ -12,8 +12,6 @@ from . import (
     jump_pretrain,
     recovery,
     rough,
-    stair_ctbc,
-    universal_stair_teacher,
 )
 
 
@@ -24,8 +22,6 @@ def register_all_tasks() -> None:
     recovery.register()
     jump_pretrain.register()
     jump_finetune.register()
-    stair_ctbc.register()
-    universal_stair_teacher.register()
 
 
 __all__ = ["register_all_tasks"]
