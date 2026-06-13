@@ -16,6 +16,7 @@ from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared import (
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    policy_leg_position_error_torch,
 )
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
@@ -157,6 +158,17 @@ def _policy_leg_pos_and_height_default(
     return joint_pos, height_default
 
 
+def _policy_leg_position_delta(
+    robot,
+    joint_pos: torch.Tensor,
+    default_pos: torch.Tensor,
+) -> torch.Tensor:
+    """返回 current-default 语义的腿部误差；整周转前杆使用最近等价相位。"""
+    if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot):
+        return policy_leg_position_error_torch(joint_pos, default_pos)
+    return joint_pos - default_pos
+
+
 def _active_rod_angles(robot) -> torch.Tensor:
     """返回左右主动杆夹角。"""
     if is_fourbar_surrogate_model(robot):
@@ -286,7 +298,18 @@ def _policy_leg_mirror_diffs(robot) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的左右腿镜像误差。"""
     joint_pos, _ = _policy_leg_pos_and_default(robot)
     if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot):
-        return joint_pos[:, 0] + joint_pos[:, 2], joint_pos[:, 1] + joint_pos[:, 3]
+        front_diff = torch.atan2(
+            torch.sin(joint_pos[:, 0] + joint_pos[:, 2]),
+            torch.cos(joint_pos[:, 0] + joint_pos[:, 2]),
+        )
+        active_angles = []
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+            active_angles.append(
+                front_coef * joint_pos[:, front_idx] + back_coef * joint_pos[:, back_idx]
+            )
+        active_angle = torch.stack(active_angles, dim=1)
+        return front_diff, active_angle[:, 0] - active_angle[:, 1]
     return joint_pos[:, 0] - joint_pos[:, 2], joint_pos[:, 1] - joint_pos[:, 3]
 
 
@@ -1166,7 +1189,7 @@ def stand_still(
 
     _ = default_height, height_tolerance
     joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
-    diff = joint_pos - default_pos
+    diff = _policy_leg_position_delta(robot, joint_pos, default_pos)
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
@@ -1193,7 +1216,9 @@ def joint_pos_penalty(
     gate = _upright_factor(pg_z)
 
     joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
-    joint_error = torch.linalg.norm(joint_pos - default_pos, dim=1)
+    joint_error = torch.linalg.norm(
+        _policy_leg_position_delta(robot, joint_pos, default_pos), dim=1
+    )
     command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
     body_vel = torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2], dim=1)
     moving = (command_norm > float(command_threshold)) | (body_vel > float(velocity_threshold))
@@ -1478,8 +1503,11 @@ def recovery_diagnostics(
 
     joint_pos, fixed_default_pos = _policy_leg_pos_and_default(robot)
     _, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
-    fixed_joint_error_norm = torch.linalg.norm(joint_pos - fixed_default_pos, dim=1)
-    joint_error = joint_pos - default_pos
+    fixed_joint_error_norm = torch.linalg.norm(
+        _policy_leg_position_delta(robot, joint_pos, fixed_default_pos),
+        dim=1,
+    )
+    joint_error = _policy_leg_position_delta(robot, joint_pos, default_pos)
     joint_error_norm = torch.linalg.norm(joint_error, dim=1)
     default_active_angles = []
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):

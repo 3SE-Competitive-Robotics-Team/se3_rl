@@ -15,6 +15,7 @@ from se3_shared import (
     JointGroup,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    policy_leg_position_error_torch,
     policy_to_output_torque_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -217,7 +218,12 @@ class SerialLegDelayedAction(ActionTerm):
             output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
             policy_pos = output_to_policy_pos_torch(output_pos)
             policy_vel = output_to_policy_vel_torch(output_pos, output_vel)
-            policy_torque = self._leg_kp * (policy_target - policy_pos)
+            policy_error = policy_leg_position_error_torch(
+                policy_target,
+                policy_pos,
+                self._active_rod_angle_coeffs,
+            )
+            policy_torque = self._leg_kp * policy_error
             policy_torque -= self._leg_kd * policy_vel
             policy_torque = self._clip_active_motor_torque(policy_torque, policy_vel)
             self._policy_leg_torque[:] = policy_torque
@@ -230,8 +236,18 @@ class SerialLegDelayedAction(ActionTerm):
                 self._current_leg_action_defaults(),
             )
             self._policy_leg_target[:] = leg_target
-            leg_target = leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
-            self._entity.set_joint_position_target(leg_target, joint_ids=self._leg_joint_ids)
+            servo_leg_target = leg_target
+            if self._closedchain:
+                current_leg_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
+                servo_leg_target = current_leg_pos + policy_leg_position_error_torch(
+                    leg_target,
+                    current_leg_pos,
+                    self._active_rod_angle_coeffs,
+                )
+            servo_leg_target = (
+                servo_leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
+            )
+            self._entity.set_joint_position_target(servo_leg_target, joint_ids=self._leg_joint_ids)
             if self._leg_actuator_ids is None:
                 raise RuntimeError("非 fourbar 模型缺少腿部 actuator 索引")
             self._policy_leg_torque[:] = self._entity.data.actuator_force[:, self._leg_actuator_ids]

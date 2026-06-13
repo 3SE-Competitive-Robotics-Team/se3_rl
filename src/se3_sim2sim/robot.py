@@ -15,6 +15,7 @@ from se3_shared import (
     Termination,
     output_to_policy_pos_np,
     output_to_policy_vel_np,
+    policy_leg_position_error_np,
     policy_to_output_torque_np,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -899,7 +900,8 @@ class WheelLeggedRobot:
             policy_pos = output_to_policy_pos_np(output_leg_pos)
             policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
             policy_target = leg_target
-            policy_torque = _SHARED_ROBOT.leg_kp * (policy_target - policy_pos)
+            policy_error = policy_leg_position_error_np(policy_target, policy_pos)
+            policy_torque = _SHARED_ROBOT.leg_kp * policy_error
             policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
             policy_torque = _tn_clip(
                 policy_torque,
@@ -911,7 +913,10 @@ class WheelLeggedRobot:
             leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
             leg_vel = policy_vel
         else:
-            leg_pos_err = leg_target - output_leg_pos
+            if self.active_rod_action_semantics:
+                leg_pos_err = policy_leg_position_error_np(leg_target, output_leg_pos)
+            else:
+                leg_pos_err = leg_target - output_leg_pos
             leg_vel = output_leg_vel
             leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
         if not self.fourbar_surrogate:

@@ -22,7 +22,7 @@ _COMMAND_HEIGHT_MAX_M = 0.33
 
 
 class RecoveryObservationBuilder:
-    """按训练端 32 维 actor contract 拼装 recovery-only 观测。"""
+    """按训练端 34 维 actor contract 拼装 recovery-only 观测。"""
 
     def __init__(self) -> None:
         self.default_dof_pos = np.asarray(_ROBOT_CFG.default_dof_pos, dtype=np.float32)

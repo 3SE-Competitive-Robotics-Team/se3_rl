@@ -59,7 +59,7 @@ uv run se3-nx-recovery \
   --rate-hz 50
 ```
 
-不接 STM32 时先跑 dry-run，确认 checkpoint、GRU hidden 和 32 维观测拼装能正常推理：
+不接 STM32 时先跑 dry-run，确认 checkpoint、GRU hidden 和 34 维观测拼装能正常推理：
 
 ```bash
 just nx-recovery-dry-run
@@ -69,7 +69,7 @@ just nx-recovery-dry-run
 
 - `src/se3_deploy/protocol.py`：USB CDC 帧格式、CRC32、流解析。
 - `src/se3_deploy/cdc.py`：Linux `/dev/ttyUSB*` / `/dev/ttyACM*` 非阻塞读写，不依赖 pyserial。
-- `src/se3_deploy/observation.py`：真机 recovery-only 32 维 actor 观测拼装。
+- `src/se3_deploy/observation.py`：真机 recovery-only 34 维 actor 观测拼装。
 - `src/se3_deploy/export_npz.py`：把 PyTorch checkpoint 导出为 NX 轻量 NumPy 权重。
 - `src/se3_deploy/numpy_policy.py`：不依赖 torch 的 GRU actor NumPy 推理后端。
 - `src/se3_deploy/recovery_runtime.py`：50 Hz recovery policy 主循环。
