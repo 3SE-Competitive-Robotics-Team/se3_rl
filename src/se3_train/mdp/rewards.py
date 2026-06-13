@@ -756,6 +756,14 @@ def tracking_height(
     min_upright_gate: float = 0.0,
     use_pose_end_gate: bool = False,
     use_inverted_free_upright_height_gate: bool = False,
+    use_hard_inverted_height_gate: bool = False,
+    hard_inverted_release_deg: float = 130.0,
+    hard_inverted_full_deg: float = 170.0,
+    hard_inverted_min_gate: float = 0.05,
+    hard_inverted_wheel_sensor_name: str | None = None,
+    hard_inverted_force_threshold: float = 1.0,
+    hard_inverted_wheel_contact_min_count: int = 1,
+    hard_inverted_height_tolerance: float = 0.02,
     upright_gate_angle_deg: float = 30.0,
     inverted_gate_angle_deg: float = 150.0,
 ) -> torch.Tensor:
@@ -774,7 +782,12 @@ def tracking_height(
         raise ValueError(f"未知高度跟踪核函数: {kernel}")
 
     robot = None
-    if use_upright_gate or use_pose_end_gate or use_inverted_free_upright_height_gate:
+    if (
+        use_upright_gate
+        or use_pose_end_gate
+        or use_inverted_free_upright_height_gate
+        or use_hard_inverted_height_gate
+    ):
         robot = env.scene["robot"]
 
     if use_upright_gate and robot is not None:
@@ -825,6 +838,58 @@ def tracking_height(
                     "Locomotion/height_inverted_free_gate": inverted_free_gate.mean().item(),
                     "Locomotion/height_upright_projection_gate": upright_projection_gate.mean().item(),
                     "Locomotion/height_recovery_pose_gate": gate.mean().item(),
+                }
+            )
+    if use_hard_inverted_height_gate and robot is not None:
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+        gate_span = max(float(hard_inverted_full_deg) - float(hard_inverted_release_deg), 1.0e-6)
+        hard_ratio = torch.clamp(
+            (tilt_deg - float(hard_inverted_release_deg)) / gate_span,
+            0.0,
+            1.0,
+        )
+        hard_ratio = _smoothstep01(hard_ratio)
+        min_gate = min(max(float(hard_inverted_min_gate), 0.0), 1.0)
+        gate = 1.0 - hard_ratio * (1.0 - min_gate)
+        hard_inverted = tilt_deg > float(hard_inverted_release_deg)
+        wheel_contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        wheel_contact_count = torch.zeros(env.num_envs, device=env.device)
+        if hard_inverted_wheel_sensor_name is not None:
+            wheel_sensor: ContactSensor = env.scene[hard_inverted_wheel_sensor_name]
+            if wheel_sensor.data.force is not None:
+                force_mag = finite_contact_force_norm(wheel_sensor.data.force)
+                wheel_contact_count = (
+                    (force_mag > float(hard_inverted_force_threshold)).float().sum(dim=1)
+                )
+                wheel_contact = wheel_contact_count >= float(
+                    max(1, int(hard_inverted_wheel_contact_min_count))
+                )
+        gate = torch.where(hard_inverted & wheel_contact, torch.ones_like(gate), gate)
+        reward = reward * gate
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
+            high_enough = height >= target_height - float(hard_inverted_height_tolerance)
+            bad_high_pose = hard_inverted & high_enough & (~wheel_contact)
+            env.extras["log"].update(
+                {
+                    "Locomotion/height_hard_inverted_gate": gate.mean().item(),
+                    "Locomotion/height_hard_inverted_ratio": hard_inverted.float().mean().item(),
+                    "Locomotion/height_hard_inverted_wheel_contact_count": _masked_mean(
+                        wheel_contact_count, hard_inverted
+                    ),
+                    "Locomotion/height_hard_inverted_wheel_release_rate": (
+                        hard_inverted & wheel_contact
+                    )
+                    .float()
+                    .mean()
+                    .item(),
+                    "Locomotion/height_hard_inverted_high_bad_pose_rate": _masked_mean(
+                        bad_high_pose.float(), hard_inverted
+                    ),
                 }
             )
     if ignore_recovery:
@@ -2136,6 +2201,9 @@ def recovery_progress(
     upright_delta_scale: float = 0.05,
     height_delta_scale: float = 0.03,
     max_reward: float = 4.0,
+    height_gate_start_deg: float | None = None,
+    height_gate_full_deg: float = 130.0,
+    min_height_gate: float = 0.0,
 ) -> torch.Tensor:
     """奖励恢复过程中直立程度和高度的单步正向进展。"""
     active = _recovery_reset_mask(env)
@@ -2159,6 +2227,18 @@ def recovery_progress(
     height_gain = torch.clamp(height - prev_height, min=0.0) / max(
         float(height_delta_scale), 1.0e-6
     )
+    height_gate = torch.ones_like(height_gain)
+    if height_gate_start_deg is not None:
+        tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+        gate_span = max(float(height_gate_full_deg) - float(height_gate_start_deg), 1.0e-6)
+        height_gate = _smoothstep01(
+            torch.clamp((tilt_deg - float(height_gate_start_deg)) / gate_span, 0.0, 1.0)
+        )
+        height_gate = torch.clamp(
+            height_gate,
+            min=min(max(float(min_height_gate), 0.0), 1.0),
+        )
+        height_gain = height_gain * height_gate
     reward = torch.clamp(upright_gain + height_gain, max=float(max_reward)) * active.float()
 
     prev_upright[active] = upright[active].detach()
@@ -2172,6 +2252,9 @@ def recovery_progress(
                 if active.any()
                 else 0.0,
                 "Recovery/height_gain": height_gain[active].mean().item() if active.any() else 0.0,
+                "Recovery/height_progress_gate": height_gate[active].mean().item()
+                if active.any()
+                else 0.0,
             }
         )
     return reward
