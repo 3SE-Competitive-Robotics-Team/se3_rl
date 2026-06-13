@@ -755,6 +755,7 @@ def tracking_height(
     use_upright_gate: bool = False,
     min_upright_gate: float = 0.0,
     use_pose_end_gate: bool = False,
+    use_inverted_free_upright_height_gate: bool = False,
     upright_gate_angle_deg: float = 30.0,
     inverted_gate_angle_deg: float = 150.0,
 ) -> torch.Tensor:
@@ -773,7 +774,7 @@ def tracking_height(
         raise ValueError(f"未知高度跟踪核函数: {kernel}")
 
     robot = None
-    if use_upright_gate or use_pose_end_gate:
+    if use_upright_gate or use_pose_end_gate or use_inverted_free_upright_height_gate:
         robot = env.scene["robot"]
 
     if use_upright_gate and robot is not None:
@@ -802,6 +803,28 @@ def tracking_height(
                     "Locomotion/height_pose_end_gate": gate.mean().item(),
                     "Locomotion/height_upright_end_gate": upright_gate.mean().item(),
                     "Locomotion/height_inverted_end_gate": inverted_gate.mean().item(),
+                }
+            )
+    if use_inverted_free_upright_height_gate and robot is not None:
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        upright_projection_gate = torch.clamp(-pg_z, 0.0, 1.0)
+        inverted_free_gate = (pg_z > 0.0).float()
+        gate = torch.where(
+            pg_z > 0.0,
+            torch.ones_like(upright_projection_gate),
+            upright_projection_gate,
+        )
+        reward = reward * gate
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
+            env.extras["log"].update(
+                {
+                    "Locomotion/height_inverted_free_gate": inverted_free_gate.mean().item(),
+                    "Locomotion/height_upright_projection_gate": upright_projection_gate.mean().item(),
+                    "Locomotion/height_recovery_pose_gate": gate.mean().item(),
                 }
             )
     if ignore_recovery:

@@ -11,6 +11,8 @@ from . import (
     jump_finetune,
     jump_pretrain,
     recovery,
+    recovery_discovery,
+    recovery_finetune,
     rough,
     stair,
 )
@@ -21,6 +23,8 @@ def register_all_tasks() -> None:
     rough.register()
     flat.register()
     recovery.register()
+    recovery_discovery.register()
+    recovery_finetune.register()
     stair.register()
     jump_pretrain.register()
     jump_finetune.register()

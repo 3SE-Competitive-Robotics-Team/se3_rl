@@ -369,7 +369,9 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         recovery_mask = recovery_state.recovery_active_mask(self._env).to(device=self.device)
         if not recovery_mask.any():
             return
-        self._command[recovery_mask, 0:4] = 0.0
+        if bool(getattr(self._env, "_recovery_zero_velocity_command", True)):
+            self._command[recovery_mask, 0:2] = 0.0
+        self._command[recovery_mask, 2:4] = 0.0
         command_height_buf = getattr(self._env, "_recovery_command_height_buf", None)
         if (
             isinstance(command_height_buf, torch.Tensor)

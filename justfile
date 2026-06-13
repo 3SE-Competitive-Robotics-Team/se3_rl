@@ -67,6 +67,18 @@ smoke-gpu:
 smoke-recovery:
     SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 8 --gpu-ids None
 
+# 倒地自启 Discovery CPU smoke 验证（5 轮，不上传 W&B）
+smoke-recovery-discovery:
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --env.scene.num-envs 8 --gpu-ids None
+
+# 倒地自启 Stage II FineTune CPU smoke 验证（5 轮，不上传 W&B）
+smoke-recovery-finetune:
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-FineTune-GRU --env.scene.num-envs 8 --gpu-ids None
+
+# 倒地自启 Stage II FineTune 零策略 Viser reset 检查
+play-recovery-finetune-zero:
+    uv run se3-play SE3-WheelLegged-Recovery-FineTune-GRU --agent zero --viewer viser --num-envs 1
+
 # 平地地形训练（需要 GPU + .env）
 train:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
