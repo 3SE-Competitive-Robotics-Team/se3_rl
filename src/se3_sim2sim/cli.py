@@ -163,13 +163,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--sim-dt",
         type=float,
         default=robot_defaults.sim_dt,
-        help="MuJoCo world timestep in seconds. Default is 0.005 for 200 Hz.",
+        help="MuJoCo world timestep in seconds. Default is 0.002 for 500 Hz.",
     )
     parser.add_argument(
         "--control-decimation",
         type=int,
         default=robot_defaults.control_decimation,
-        help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
+        help="Number of MuJoCo steps per policy action. Default 5 gives 100 Hz control at 0.002s sim_dt.",
     )
     parser.add_argument("--viewer", choices=["rerun", "mujoco", "none"], default="rerun")
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")

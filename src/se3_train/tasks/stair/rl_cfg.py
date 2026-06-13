@@ -7,6 +7,7 @@ import os
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 _BASE_MODEL_DIR = "base_model"
+_NUM_STEPS_PER_ENV = 128
 
 
 def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
@@ -16,12 +17,14 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
         resume = False
     else:
-        max_iterations = 2200
+        # 前 400 轮平地行走；100Hz 下用 128 steps 保持约 1.28s rollout。
+        # CTBC 在 600->1200 轮退火，之后保留约 2200 轮适应期。
+        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3400"))
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
 
     learning_rate = float(os.environ.get("SE3_STAIR_LEARNING_RATE", "6.5e-4"))
-    init_std = float(os.environ.get("SE3_STAIR_INIT_STD", "0.5"))
+    init_std = float(os.environ.get("SE3_STAIR_INIT_STD", "0.25"))
     entropy_coef = float(os.environ.get("SE3_STAIR_ENTROPY_COEF", "0.00516"))
 
     return RslRlOnPolicyRunnerCfg(
@@ -64,7 +67,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         ),
         experiment_name="se3_wheel_leg",
         save_interval=100,
-        num_steps_per_env=64,
+        num_steps_per_env=_NUM_STEPS_PER_ENV,
         max_iterations=max_iterations,
         logger=logger,
         wandb_project="se3_wheel_leg",

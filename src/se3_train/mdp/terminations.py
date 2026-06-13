@@ -360,3 +360,55 @@ def leg_contact(
     if terminate:
         return terminate_contact
     return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+
+class LegContactDelayed:
+    """腿部 link 持续重接触超过 max_steps 步才终止，供台阶任务使用。"""
+
+    def __init__(self) -> None:
+        self._fail_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        force_threshold: float = 80.0,
+        max_steps: int = 50,
+    ) -> torch.Tensor:
+        if (
+            self._fail_count is None
+            or self._fail_count.shape[0] != env.num_envs
+            or self._fail_count.device != env.device
+        ):
+            self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        sensor: ContactSensor = env.scene[sensor_name]
+        data = sensor.data
+        if data.force is None:
+            return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+        force_mag = finite_contact_force_norm(data.force)
+        has_contact = force_mag.max(dim=1).values > float(force_threshold)
+
+        self._fail_count[has_contact] += 1
+        self._fail_count[~has_contact] = 0
+        self._fail_count[env.episode_length_buf <= 1] = 0
+        terminated = self._fail_count > int(max_steps)
+
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Stair/diag_leg_heavy_contact_rate": has_contact.float().mean().item(),
+                    "Stair/diag_leg_contact_delayed_termination_rate": (
+                        terminated.float().mean().item()
+                    ),
+                }
+            )
+        return terminated
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._fail_count is not None and env_ids is not None:
+            self._fail_count[env_ids] = 0
+
+
+leg_contact_delayed = LegContactDelayed()

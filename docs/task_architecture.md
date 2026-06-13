@@ -13,6 +13,7 @@
 | `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，从平地 GRU checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
+| `stair/` | `SE3-WheelLegged-Stair-GRU` | 倒金字塔台阶 CTBC fine-tune；前 400 轮平地走路，之后进入台阶课程 |
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
@@ -109,9 +110,9 @@ git diff --check
 
 ```bash
 uv run python - <<'PY'
-from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, rough
+from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, rough, stair
 
-for module in (rough, flat, recovery, jump_pretrain, jump_finetune):
+for module in (rough, flat, recovery, jump_pretrain, jump_finetune, stair):
     cfg = module.env_cfg(play=True)
     rl = module.rl_cfg(smoke=True)
     print(module.TASK_ID, len(cfg.observations["actor"].terms), rl.max_iterations)

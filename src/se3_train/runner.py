@@ -178,6 +178,9 @@ class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
         map_location: str | None = None,
     ) -> dict:
         """只加载策略和价值网络权重，不恢复 optimizer、iter 和 env_state。"""
+        if _env_flag("SE3_FULL_RESUME", False):
+            return super().load(path, load_cfg=load_cfg, strict=strict, map_location=map_location)
+
         warm_start_cfg = {
             "actor": True,
             "critic": True,

@@ -202,7 +202,7 @@ class TelemetryLogger:
 
 
 class RecoveryRuntime:
-    """只运行 recovery 网络的 50 Hz 真机 runtime。"""
+    """只运行 recovery 网络的 100 Hz 真机 runtime。"""
 
     def __init__(self, cfg: RecoveryRuntimeConfig) -> None:
         self.cfg = cfg
@@ -612,7 +612,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device", default="cpu", help="Torch device, usually cpu on NX first pass."
     )
-    parser.add_argument("--rate-hz", type=float, default=50.0, help="Policy send rate.")
+    parser.add_argument("--rate-hz", type=float, default=100.0, help="Policy send rate.")
     parser.add_argument(
         "--state-timeout-s", type=float, default=0.10, help="State freshness timeout."
     )

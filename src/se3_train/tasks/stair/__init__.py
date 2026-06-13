@@ -10,6 +10,7 @@ from .env_cfg import env_cfg
 from .rl_cfg import rl_cfg
 
 TASK_ID = "SE3-WheelLegged-Stair-GRU"
+TRAIN_VIEW_TASK_ID = f"{TASK_ID}-TrainView"
 
 
 def register() -> None:
@@ -21,6 +22,13 @@ def register() -> None:
         rl_cfg=rl_cfg(),
         runner_cls=Se3WarmStartRunner,
     )
+    register_mjlab_task(
+        task_id=TRAIN_VIEW_TASK_ID,
+        env_cfg=env_cfg(),
+        play_env_cfg=env_cfg(),
+        rl_cfg=rl_cfg(),
+        runner_cls=Se3WarmStartRunner,
+    )
 
 
-__all__ = ["TASK_ID", "env_cfg", "register", "rl_cfg"]
+__all__ = ["TASK_ID", "TRAIN_VIEW_TASK_ID", "env_cfg", "register", "rl_cfg"]

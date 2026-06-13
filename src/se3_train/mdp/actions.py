@@ -15,6 +15,7 @@ from se3_shared import (
     JointGroup,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    policy_to_output_pos_torch,
     policy_to_output_torque_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
 
 _SHARED_ROBOT = SharedRobotConfig()
 _DEFAULT_DELAY = _SHARED_ROBOT.action_delay
+_CTBC_SOURCE_OUTPUT_LEG_SCALE = 0.25
+_CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN = (-1.0, -1.0, 1.0, 1.0)
 
 
 @dataclass(kw_only=True)
@@ -200,6 +203,12 @@ class SerialLegDelayedAction(ActionTerm):
         else:
             clip = float(self.cfg.action_clip)
             self._raw_actions[:] = torch.clamp(incoming_actions, -clip, clip)
+        state = getattr(self._env, "stair_climb_state", None)
+        if state is not None:
+            self._raw_actions[:, :4] += self._ctbc_output_bias_to_action_delta(
+                self._raw_actions[:, :4],
+                state.ff_bias()[:, :4],
+            )
 
     def apply_actions(self) -> None:
         if self._max_delay_steps > 0:
@@ -265,6 +274,8 @@ class SerialLegDelayedAction(ActionTerm):
         self,
         leg_action: torch.Tensor,
         policy_default: torch.Tensor,
+        *,
+        update_active_targets: bool = True,
     ) -> torch.Tensor:
         """把腿部 action 解释为前杆角和主动杆夹角目标。"""
         if not (self._closedchain or self._fourbar_surrogate):
@@ -296,9 +307,62 @@ class SerialLegDelayedAction(ActionTerm):
             target[:, back_idx] = (active_target - front_coef * front_target) / back_coef
             active_targets.append(active_target)
             active_clamped.append(active_target != active_raw)
-        self._active_rod_angle_target[:] = torch.stack(active_targets, dim=1)
-        self._active_rod_angle_target_clamped[:] = torch.stack(active_clamped, dim=1)
+        if update_active_targets:
+            self._active_rod_angle_target[:] = torch.stack(active_targets, dim=1)
+            self._active_rod_angle_target_clamped[:] = torch.stack(active_clamped, dim=1)
         return target
+
+    def _ctbc_output_bias_to_action_delta(
+        self,
+        leg_action: torch.Tensor,
+        output_action_bias: torch.Tensor,
+    ) -> torch.Tensor:
+        """把旧输出关节 CTBC bias 等效换算成当前 action 语义。
+
+        源 stair 任务的 CTBC 状态机输出的是旧 4 维开链腿部 action bias，
+        乘以旧 leg_scale=0.25 后表示 [lf0, lf1, rf0, rf1] 输出关节角增量。
+        源模型左右腿关节轴均为 -Y，目标模型左腿轴改为 +Y，因此左腿两维
+        需要取反，右腿保持不变。
+        源任务是在裁剪后的 policy action 上叠加该 bias；这里先求当前 action
+        对应的输出关节目标，再加旧语义增量并反解回 [front, active_angle] action。
+        """
+        output_action_bias = output_action_bias.to(self.device)
+        source_to_target_sign = output_action_bias.new_tensor(_CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN)
+        output_delta = output_action_bias * source_to_target_sign * _CTBC_SOURCE_OUTPUT_LEG_SCALE
+        if not (self._closedchain or self._fourbar_surrogate):
+            return output_delta / self._leg_action_scales
+
+        policy_default = self._current_leg_action_defaults()
+        current_policy = self._leg_action_to_policy_target(
+            leg_action,
+            policy_default,
+            update_active_targets=False,
+        )
+        current_output = policy_to_output_pos_torch(current_policy)
+        desired_output = current_output + output_delta
+        desired_policy = output_to_policy_pos_torch(desired_output)
+
+        desired_action = torch.zeros_like(leg_action)
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
+            if self.cfg.height_conditioned_action_default:
+                active_default = (
+                    front_coef * policy_default[:, front_idx]
+                    + back_coef * policy_default[:, back_idx]
+                )
+            else:
+                active_default = self._active_rod_angle_mid
+            active_desired = (
+                front_coef * desired_policy[:, front_idx] + back_coef * desired_policy[:, back_idx]
+            )
+            desired_action[:, front_idx] = (
+                desired_policy[:, front_idx] - policy_default[:, front_idx]
+            ) / self._leg_action_scales[front_idx]
+            desired_action[:, back_idx] = (active_desired - active_default) / (
+                self._leg_action_scales[back_idx]
+            )
+        action_delta = desired_action - leg_action
+        return torch.nan_to_num(action_delta, nan=0.0, posinf=0.0, neginf=0.0)
 
     def set_leg_pd_gain_scale(
         self,

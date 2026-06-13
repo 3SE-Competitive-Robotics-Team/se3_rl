@@ -86,6 +86,21 @@ def _is_fourbar_surrogate_path(mjcf_path: Path) -> bool:
     }
 
 
+def _serialleg_spec_for_training(mjcf_path: Path) -> mujoco.MjSpec:
+    """Load SerialLeg MJCF without its standalone world floor.
+
+    MJLab scenes provide terrain separately. Keeping the MJCF's global plane
+    covers generated stair pits at z=0 and makes robots collide with a flat
+    barrier instead of the stair terrain.
+    """
+    spec = mujoco.MjSpec.from_file(str(mjcf_path))
+    for geom in list(spec.worldbody.geoms):
+        if geom.name == "floor":
+            spec.delete(geom)
+            break
+    return spec
+
+
 def get_serialleg_cfg(
     *, mjcf_path: Path | None = None, wheel_kd_override: float | None = None
 ) -> EntityCfg:
@@ -111,7 +126,7 @@ def get_serialleg_cfg(
         )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
     return EntityCfg(
-        spec_fn=lambda: mujoco.MjSpec.from_file(str(mjcf_path)),
+        spec_fn=lambda: _serialleg_spec_for_training(mjcf_path),
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,

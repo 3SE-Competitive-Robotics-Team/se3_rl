@@ -39,6 +39,17 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     diff_drive_half_track: float = 0.20
     diff_drive_max_wheel_speed: float = 45.0
     diff_drive_wheel_speed_fraction: float = 1.0
+    terrain_aware_height: bool = True
+    """是否按当前 env 的地形台阶高度抬高 body height 指令下限。"""
+    terrain_height_clearance: float = 0.0
+    """机体碰撞盒下边缘相对单级台阶顶部的最小安全余量(m)。"""
+    body_collision_bottom_offset: float = 0.0
+    """机体碰撞盒下边缘相对 base_link frame 的 z 偏移(m)。"""
+    terrain_step_height_type_names: tuple[str, ...] = (
+        "inv_pyramid_stairs",
+        "random_stairs",
+    )
+    """需要按单级台阶高度抬高 body height 的 terrain type 名称。"""
 
     def build(self, env: ManagerBasedRlEnv) -> VelocityHeightCommandTerm:
         return VelocityHeightCommandTerm(self, env)
@@ -155,7 +166,10 @@ class VelocityHeightCommandTerm(CommandTerm):
                 * (self.cfg.standing_height_range[1] - self.cfg.standing_height_range[0])
                 + self.cfg.standing_height_range[0]
             )
-            self._command[standing_ids, 4] = standing_height
+            self._command[standing_ids, 4] = self._apply_terrain_aware_height(
+                standing_ids,
+                standing_height,
+            )
 
         # 运动环境:随机速度 + 随机姿态 + 随机高度。
         if len(moving_ids) > 0:
@@ -185,12 +199,7 @@ class VelocityHeightCommandTerm(CommandTerm):
             self._command[moving_ids, 2] = pitch
             self._command[moving_ids, 3] = roll
             if resample_height:
-                height = (
-                    torch.rand(len(moving_ids), device=self.device)
-                    * (self.cfg.height_range[1] - self.cfg.height_range[0])
-                    + self.cfg.height_range[0]
-                )
-                self._command[moving_ids, 4] = height
+                self._command[moving_ids, 4] = self._sample_terrain_aware_height(moving_ids)
 
         if resample_height:
             update_policy_default_from_height_cache(
@@ -199,6 +208,97 @@ class VelocityHeightCommandTerm(CommandTerm):
                 env_ids=env_ids,
                 command=self._command,
             )
+
+    def _apply_terrain_aware_height(
+        self,
+        env_ids: torch.Tensor,
+        sampled_height: torch.Tensor,
+    ) -> torch.Tensor:
+        """按当前地形单级高度抬高采样高度下限。"""
+        if (
+            not self.cfg.terrain_aware_height
+            or len(env_ids) == 0
+            or self.cfg.terrain_height_clearance <= 0.0
+        ):
+            return sampled_height
+
+        min_height = self._terrain_aware_min_height(env_ids, sampled_height)
+        max_height = torch.full_like(sampled_height, self.cfg.height_range[1])
+        min_height = torch.minimum(min_height, max_height)
+        return torch.maximum(sampled_height, min_height)
+
+    def _sample_terrain_aware_height(self, env_ids: torch.Tensor) -> torch.Tensor:
+        """在地形感知后的有效高度区间内均匀采样。"""
+        count = len(env_ids)
+        height_min = torch.full((count,), self.cfg.height_range[0], device=self.device)
+        height_max = torch.full((count,), self.cfg.height_range[1], device=self.device)
+        if self.cfg.terrain_aware_height and count > 0 and self.cfg.terrain_height_clearance > 0.0:
+            height_min = self._terrain_aware_min_height(env_ids, height_min)
+            height_min = torch.minimum(height_min, height_max)
+        return torch.rand(count, device=self.device) * (height_max - height_min) + height_min
+
+    def _terrain_aware_min_height(
+        self,
+        env_ids: torch.Tensor,
+        reference: torch.Tensor,
+    ) -> torch.Tensor:
+        """由 terrain level/type 估算当前台阶需要的最低 body height。"""
+        base_min = torch.full_like(reference, self.cfg.height_range[0])
+        terrain = getattr(self._env.scene, "terrain", None)
+        if terrain is None:
+            return base_min
+
+        terrain_levels = getattr(terrain, "terrain_levels", None)
+        terrain_types = getattr(terrain, "terrain_types", None)
+        terrain_origins = getattr(terrain, "terrain_origins", None)
+        terrain_cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+        if (
+            terrain_levels is None
+            or terrain_types is None
+            or terrain_origins is None
+            or terrain_cfg is None
+            or not getattr(terrain_cfg, "sub_terrains", None)
+        ):
+            return base_min
+
+        num_rows = int(terrain_origins.shape[0])
+        if num_rows <= 0:
+            return base_min
+
+        selected_names = set(self.cfg.terrain_step_height_type_names)
+        sub_terrains = tuple(terrain_cfg.sub_terrains.items())
+        levels = terrain_levels[env_ids].long()
+        types = terrain_types[env_ids].long()
+        lower, upper = terrain_cfg.difficulty_range
+        difficulty_hi = (levels.float() + 1.0) / float(num_rows)
+        difficulty_hi = float(lower) + (float(upper) - float(lower)) * difficulty_hi
+        difficulty_hi = torch.clamp(difficulty_hi, float(lower), float(upper))
+
+        step_height = torch.zeros_like(reference)
+        for terrain_index, (terrain_name, sub_cfg) in enumerate(sub_terrains):
+            if terrain_name not in selected_names:
+                continue
+            step_height_range = getattr(sub_cfg, "step_height_range", None)
+            if step_height_range is None:
+                continue
+            terrain_mask = types == terrain_index
+            if not torch.any(terrain_mask):
+                continue
+
+            step_low = float(step_height_range[0])
+            step_high = float(step_height_range[1])
+            difficulty = difficulty_hi[terrain_mask]
+            if terrain_name == "random_stairs":
+                step_height[terrain_mask] = step_high * (0.5 + 0.5 * difficulty)
+            else:
+                step_height[terrain_mask] = step_low + difficulty * (step_high - step_low)
+
+        required = (
+            step_height
+            + float(self.cfg.terrain_height_clearance)
+            - float(self.cfg.body_collision_bottom_offset)
+        )
+        return torch.maximum(base_min, required)
 
     def _constrain_diff_drive_command(
         self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor

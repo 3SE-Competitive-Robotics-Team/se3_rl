@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import torch
@@ -75,6 +76,7 @@ def commands_height(
     use_iterations: bool = False,
     steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
     offset_iter: int = 0,
+    interpolate: bool = False,
 ) -> dict[str, torch.Tensor]:
     """按课程进度逐步放开高度指令范围。"""
     del env_ids
@@ -87,15 +89,18 @@ def commands_height(
         offset_iter=offset_iter,
     )
     threshold_key = "iteration" if use_iterations else "step"
-    for stage in height_stages:
-        threshold = int(stage.get(threshold_key, stage.get("step", 0)))
-        if progress >= threshold:
-            if "height_range" in stage:
-                cfg.height_range = stage["height_range"]
-            if "standing_height_range" in stage:
-                cfg.standing_height_range = stage["standing_height_range"]
-            elif "height_range" in stage:
-                cfg.standing_height_range = stage["height_range"]
+    if interpolate:
+        _apply_interpolated_height_stage(cfg, height_stages, progress, threshold_key)
+    else:
+        for stage in height_stages:
+            threshold = int(stage.get(threshold_key, stage.get("step", 0)))
+            if progress >= threshold:
+                if "height_range" in stage:
+                    cfg.height_range = stage["height_range"]
+                if "standing_height_range" in stage:
+                    cfg.standing_height_range = stage["standing_height_range"]
+                elif "height_range" in stage:
+                    cfg.standing_height_range = stage["height_range"]
     return {
         "step_counter": torch.tensor(float(getattr(env, "common_step_counter", 0))),
         "progress": torch.tensor(float(progress)),
@@ -104,6 +109,74 @@ def commands_height(
         "standing_height_min": torch.tensor(cfg.standing_height_range[0]),
         "standing_height_max": torch.tensor(cfg.standing_height_range[1]),
     }
+
+
+def _apply_interpolated_height_stage(
+    cfg: VelocityHeightCommandCfg,
+    height_stages: list[dict],
+    progress: int,
+    threshold_key: str,
+) -> None:
+    stages = sorted(
+        height_stages,
+        key=lambda stage: int(stage.get(threshold_key, stage.get("step", 0))),
+    )
+    if not stages:
+        return
+
+    if progress <= int(stages[0].get(threshold_key, stages[0].get("step", 0))):
+        _apply_height_stage(cfg, stages[0])
+        return
+
+    for lower, upper in pairwise(stages):
+        lower_threshold = int(lower.get(threshold_key, lower.get("step", 0)))
+        upper_threshold = int(upper.get(threshold_key, upper.get("step", 0)))
+        if progress > upper_threshold:
+            continue
+        span = max(1, upper_threshold - lower_threshold)
+        ratio = min(max((progress - lower_threshold) / span, 0.0), 1.0)
+        cfg.height_range = _lerp_range(
+            _height_range_for_stage(lower),
+            _height_range_for_stage(upper),
+            ratio,
+        )
+        cfg.standing_height_range = _lerp_range(
+            _standing_height_range_for_stage(lower),
+            _standing_height_range_for_stage(upper),
+            ratio,
+        )
+        return
+
+    _apply_height_stage(cfg, stages[-1])
+
+
+def _apply_height_stage(cfg: VelocityHeightCommandCfg, stage: dict) -> None:
+    if "height_range" in stage:
+        cfg.height_range = stage["height_range"]
+    if "standing_height_range" in stage:
+        cfg.standing_height_range = stage["standing_height_range"]
+    elif "height_range" in stage:
+        cfg.standing_height_range = stage["height_range"]
+
+
+def _height_range_for_stage(stage: dict) -> tuple[float, float]:
+    return tuple(float(value) for value in stage["height_range"])  # type: ignore[return-value]
+
+
+def _standing_height_range_for_stage(stage: dict) -> tuple[float, float]:
+    source = stage.get("standing_height_range", stage["height_range"])
+    return tuple(float(value) for value in source)  # type: ignore[return-value]
+
+
+def _lerp_range(
+    lower: tuple[float, float],
+    upper: tuple[float, float],
+    ratio: float,
+) -> tuple[float, float]:
+    return (
+        lower[0] + (upper[0] - lower[0]) * ratio,
+        lower[1] + (upper[1] - lower[1]) * ratio,
+    )
 
 
 def push_disturbance(
