@@ -45,6 +45,81 @@ def tracking_lin_vel_xy(
     return torch.exp(-err / (float(std) ** 2)) * gate
 
 
+def forward_velocity(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    max_velocity: float = 1.8,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """按指令方向奖励世界系前向速度，避免零速局部最优。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    cmd_x = cmd[:, 0]
+    direction = torch.where(cmd_x < 0.0, -torch.ones_like(cmd_x), torch.ones_like(cmd_x))
+    speed_along_cmd = robot.data.root_link_lin_vel_w[:, 0] * direction
+    speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    return torch.clamp(speed_along_cmd, min=0.0, max=float(max_velocity)) * active.float() * gate
+
+
+def progress_forward(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    success_distance: float = 1.8,
+    max_progress_ratio: float = 1.2,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """奖励 episode 内沿设施方向取得的相对进度。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    progress_x = robot.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    normalized = progress_x / max(float(success_distance), 1.0e-6)
+    return torch.clamp(normalized, min=0.0, max=float(max_progress_ratio)) * active.float() * gate
+
+
+def success_progress(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    success_distance: float = 1.8,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """到达右侧安全区域后的稀疏完成奖励。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    progress_x = robot.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    return (progress_x > float(success_distance)).float() * active.float() * gate
+
+
+def run_stuck(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    min_speed: float = 0.25,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """移动指令下惩罚长期低于最小前向速度。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    cmd_x = cmd[:, 0]
+    direction = torch.where(cmd_x < 0.0, -torch.ones_like(cmd_x), torch.ones_like(cmd_x))
+    speed_along_cmd = robot.data.root_link_lin_vel_w[:, 0] * direction
+    speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    deficit = (float(min_speed) - speed_along_cmd) / max(float(min_speed), 1.0e-6)
+    return torch.clamp(deficit, min=0.0, max=1.0) * active.float() * gate
+
+
 def tracking_ang_vel_z(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -277,13 +352,17 @@ __all__ = [
     "dof_pos_limits",
     "feet_contact_without_cmd",
     "flat_orientation_l2",
+    "forward_velocity",
     "is_alive",
     "joint_acc_l2",
     "joint_pos_penalty",
     "joint_power",
     "joint_torques_l2",
     "lin_vel_z_l2",
+    "progress_forward",
+    "run_stuck",
     "stand_still",
+    "success_progress",
     "tracking_ang_vel_z",
     "tracking_lin_vel_xy",
     "undesired_contacts",

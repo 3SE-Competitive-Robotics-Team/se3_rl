@@ -69,12 +69,15 @@ def terrain_levels(
     robot = env.scene["robot"]
     origin = env.scene.env_origins[env_ids]
     progress_x = robot.data.root_link_pos_w[env_ids, 0] - origin[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
     cmd = env.command_manager.get_command(command_name)[env_ids]
     cmd_speed = torch.linalg.norm(cmd[:, :2], dim=1)
-    target_progress = torch.clamp(
-        cmd_speed * float(env.max_episode_length_s) * float(min_progress_ratio),
-        min=0.20,
+    episode_target = cmd_speed * float(env.max_episode_length_s) * float(min_progress_ratio)
+    facility_target = torch.full_like(
+        episode_target,
+        float(success_distance) * float(min_progress_ratio),
     )
+    target_progress = torch.clamp(torch.minimum(episode_target, facility_target), min=0.20)
     move_up = progress_x > float(success_distance)
     move_down = (progress_x < target_progress) & ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
@@ -88,6 +91,9 @@ def terrain_levels(
         "terrain_level": terrain.terrain_levels[env_ids].float().mean(),
         "terrain_type": terrain.terrain_types[env_ids].float().mean(),
         "progress_x": progress_x.mean(),
+        "target_progress_x": target_progress.mean(),
+        "move_up_ratio": move_up.float().mean(),
+        "move_down_ratio": move_down.float().mean(),
     }
 
 

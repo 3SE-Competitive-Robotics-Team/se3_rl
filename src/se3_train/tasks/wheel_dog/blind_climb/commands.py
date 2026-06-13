@@ -121,8 +121,15 @@ class DogVelocityCommandTerm(CommandTerm):
         vx_err = lin_vel_b[:, 0] - cmd[:, 0]
         vy_err = lin_vel_b[:, 1] - cmd[:, 1]
         yaw_err = ang_vel_b[:, 2] - cmd[:, 2]
+        vx_w = torch.nan_to_num(
+            self._robot.data.root_link_lin_vel_w[:, 0],
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
         height = self._robot.data.root_link_pos_w[:, 2]
         progress_x = self._robot.data.root_link_pos_w[:, 0] - self._env.scene.env_origins[:, 0]
+        progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
         terrain = getattr(self._env.scene, "terrain", None)
         terrain_levels = getattr(terrain, "terrain_levels", None)
         if isinstance(terrain_levels, torch.Tensor) and terrain_levels.numel() >= self.num_envs:
@@ -138,6 +145,9 @@ class DogVelocityCommandTerm(CommandTerm):
                 "WheelDog/diag_cmd_vy_abs": float(torch.abs(cmd[:, 1]).mean().item()),
                 "WheelDog/diag_actual_vx": float(lin_vel_b[:, 0].mean().item()),
                 "WheelDog/diag_actual_vy": float(lin_vel_b[:, 1].mean().item()),
+                "WheelDog/diag_forward_moving_ratio": float(
+                    ((vx_w > 0.25) & active).float().mean().item()
+                ),
                 "WheelDog/diag_vx_error_abs": float(torch.abs(vx_err).mean().item()),
                 "WheelDog/diag_vy_error_abs": float(torch.abs(vy_err).mean().item()),
                 "WheelDog/diag_vx_error_abs_active": _mean_on_mask(torch.abs(vx_err), active),

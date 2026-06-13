@@ -168,7 +168,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.commands = {
         _COMMAND_NAME: commands.DogVelocityCommandCfg(
             resampling_time_range=(6.0, 6.0),
-            lin_vel_x_range=(0.35, 1.6) if play else (0.35, 0.70),
+            lin_vel_x_range=(0.35, 1.6) if play else (0.50, 1.10),
             lin_vel_y_range=(0.0, 0.0),
             ang_vel_yaw_range=(0.0, 0.0),
             standing_ratio=0.0,
@@ -182,7 +182,27 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "tracking_lin_vel_xy": RewardTermCfg(
             func=rewards.tracking_lin_vel_xy,
             weight=2.0,
-            params={"command_name": _COMMAND_NAME, "std": 0.7071},
+            params={"command_name": _COMMAND_NAME, "std": 0.5},
+        ),
+        "forward_velocity": RewardTermCfg(
+            func=rewards.forward_velocity,
+            weight=1.2,
+            params={"command_name": _COMMAND_NAME, "max_velocity": 1.8},
+        ),
+        "progress_forward": RewardTermCfg(
+            func=rewards.progress_forward,
+            weight=1.0,
+            params={"command_name": _COMMAND_NAME, "success_distance": 1.8},
+        ),
+        "success_progress": RewardTermCfg(
+            func=rewards.success_progress,
+            weight=3.0,
+            params={"command_name": _COMMAND_NAME, "success_distance": 1.8},
+        ),
+        "run_stuck": RewardTermCfg(
+            func=rewards.run_stuck,
+            weight=-0.8,
+            params={"command_name": _COMMAND_NAME, "min_speed": 0.25},
         ),
         "tracking_ang_vel_z": RewardTermCfg(
             func=rewards.tracking_ang_vel_z,
@@ -265,7 +285,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"sensor_name": "wheel_sensor", "threshold": 200.0},
         ),
         "upward": RewardTermCfg(func=rewards.upward, weight=0.05),
-        "is_alive": RewardTermCfg(func=rewards.is_alive, weight=1.0),
+        "is_alive": RewardTermCfg(func=rewards.is_alive, weight=0.5),
     }
 
     cfg.terminations = {
@@ -366,7 +386,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={
                     "command_name": _COMMAND_NAME,
                     "success_distance": 1.8,
-                    "min_progress_ratio": 0.25,
+                    "min_progress_ratio": 0.50,
                 },
             ),
             "command_vel": CurriculumTermCfg(
@@ -376,25 +396,25 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "velocity_stages": [
                         {
                             "step": 0,
-                            "lin_vel_x_range": (0.35, 0.70),
+                            "lin_vel_x_range": (0.50, 1.10),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 20000,
-                            "lin_vel_x_range": (0.45, 1.00),
-                            "lin_vel_y_range": (0.0, 0.0),
-                            "ang_vel_yaw_range": (0.0, 0.0),
-                        },
-                        {
-                            "step": 60000,
                             "lin_vel_x_range": (0.55, 1.20),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
+                            "step": 60000,
+                            "lin_vel_x_range": (0.60, 1.35),
+                            "lin_vel_y_range": (0.0, 0.0),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
                             "step": 120000,
-                            "lin_vel_x_range": (0.60, 1.50),
+                            "lin_vel_x_range": (0.70, 1.60),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
