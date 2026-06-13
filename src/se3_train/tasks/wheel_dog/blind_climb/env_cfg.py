@@ -304,11 +304,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=terminations.nonfinite_state,
             time_out=False,
         ),
-        "body_contact": TerminationTermCfg(
-            func=terminations.body_contact,
-            time_out=False,
-            params={"sensor_name": "body_contact_sensor", "force_threshold": 1.0},
-        ),
     }
 
     cfg.events = {
