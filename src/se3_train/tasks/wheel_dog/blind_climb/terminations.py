@@ -88,6 +88,38 @@ def body_contact(
     return torch.max(force, dim=1).values > float(force_threshold)
 
 
+class BodyContactDelayed:
+    """非轮子 body 连续触地一段时间后终止。"""
+
+    def __init__(self) -> None:
+        self._fail_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        force_threshold: float = 1.0,
+        max_steps: int = 20,
+        ignore_initial_steps: int = 2,
+    ) -> torch.Tensor:
+        if self._fail_count is None or self._fail_count.shape[0] != env.num_envs:
+            self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        sensor: ContactSensor = env.scene[sensor_name]
+        if sensor.data.force is None:
+            return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        force = finite_contact_force_norm(sensor.data.force)
+        contact = torch.max(force, dim=1).values > float(force_threshold)
+        self._fail_count[contact] += 1
+        self._fail_count[~contact] = 0
+        self._fail_count[env.episode_length_buf <= int(ignore_initial_steps)] = 0
+        return self._fail_count > int(max_steps)
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        """重置指定环境的计数器。"""
+        if self._fail_count is not None and env_ids is not None:
+            self._fail_count[env_ids] = 0
+
+
 def nonfinite_state(env: ManagerBasedRlEnv) -> torch.Tensor:
     """机器人核心状态出现非有限值时终止。"""
     robot = env.scene["robot"]
@@ -103,12 +135,14 @@ def nonfinite_state(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 bad_orientation_delayed = BadOrientationDelayed()
+body_contact_delayed = BodyContactDelayed()
 low_base_height_delayed = LowBaseHeightDelayed()
 
 
 __all__ = [
     "bad_orientation_delayed",
     "body_contact",
+    "body_contact_delayed",
     "low_base_height_delayed",
     "nonfinite_state",
     "time_out",
