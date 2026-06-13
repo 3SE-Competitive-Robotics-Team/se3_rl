@@ -49,10 +49,11 @@ def forward_velocity(
     env: ManagerBasedRlEnv,
     command_name: str,
     max_velocity: float = 1.8,
+    max_backward_velocity: float = 1.0,
     command_threshold: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """按指令方向奖励世界系前向速度，避免零速局部最优。"""
+    """按指令方向奖励世界系速度，反向运动会得到负值。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
     cmd_x = cmd[:, 0]
@@ -61,7 +62,15 @@ def forward_velocity(
     speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
     active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
-    return torch.clamp(speed_along_cmd, min=0.0, max=float(max_velocity)) * active.float() * gate
+    return (
+        torch.clamp(
+            speed_along_cmd,
+            min=-float(max_backward_velocity),
+            max=float(max_velocity),
+        )
+        * active.float()
+        * gate
+    )
 
 
 def progress_forward(

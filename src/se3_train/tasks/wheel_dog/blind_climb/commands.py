@@ -145,8 +145,12 @@ class DogVelocityCommandTerm(CommandTerm):
                 "WheelDog/diag_cmd_vy_abs": float(torch.abs(cmd[:, 1]).mean().item()),
                 "WheelDog/diag_actual_vx": float(lin_vel_b[:, 0].mean().item()),
                 "WheelDog/diag_actual_vy": float(lin_vel_b[:, 1].mean().item()),
+                "WheelDog/diag_world_vx": float(vx_w.mean().item()),
                 "WheelDog/diag_forward_moving_ratio": float(
                     ((vx_w > 0.25) & active).float().mean().item()
+                ),
+                "WheelDog/diag_backward_moving_ratio": float(
+                    ((vx_w < -0.25) & active).float().mean().item()
                 ),
                 "WheelDog/diag_vx_error_abs": float(torch.abs(vx_err).mean().item()),
                 "WheelDog/diag_vy_error_abs": float(torch.abs(vy_err).mean().item()),

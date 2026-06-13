@@ -186,12 +186,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "forward_velocity": RewardTermCfg(
             func=rewards.forward_velocity,
-            weight=1.2,
+            weight=2.0,
             params={"command_name": _COMMAND_NAME, "max_velocity": 1.8},
         ),
         "progress_forward": RewardTermCfg(
             func=rewards.progress_forward,
-            weight=1.0,
+            weight=3.0,
             params={"command_name": _COMMAND_NAME, "success_distance": 1.8},
         ),
         "success_progress": RewardTermCfg(
@@ -201,7 +201,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "run_stuck": RewardTermCfg(
             func=rewards.run_stuck,
-            weight=-0.8,
+            weight=-1.2,
             params={"command_name": _COMMAND_NAME, "min_speed": 0.25},
         ),
         "tracking_ang_vel_z": RewardTermCfg(
@@ -285,7 +285,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"sensor_name": "wheel_sensor", "threshold": 200.0},
         ),
         "upward": RewardTermCfg(func=rewards.upward, weight=0.05),
-        "is_alive": RewardTermCfg(func=rewards.is_alive, weight=0.5),
+        "is_alive": RewardTermCfg(func=rewards.is_alive, weight=0.3),
     }
 
     cfg.terminations = {
@@ -427,11 +427,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "push_stages": [
                         {"step": 0, "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)}},
                         {
-                            "step": 2000,
+                            "step": 120000,
                             "velocity_range": {"x": (-0.15, 0.15), "y": (-0.15, 0.15)},
                         },
                         {
-                            "step": 80000,
+                            "step": 240000,
                             "velocity_range": {"x": (-0.5, 0.5), "y": (-0.35, 0.35)},
                         },
                     ],
