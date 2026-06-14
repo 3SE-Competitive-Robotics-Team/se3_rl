@@ -33,22 +33,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "velocity_stages": [
                     {
                         "step": 0,
-                        "lin_vel_x_range": (0.05, 0.25),
+                        "lin_vel_x_range": (-0.25, 0.25),
                         "ang_vel_yaw_range": (-0.2, 0.2),
                     },
                     {
                         "step": 800,
-                        "lin_vel_x_range": (0.05, 0.45),
+                        "lin_vel_x_range": (-0.45, 0.45),
                         "ang_vel_yaw_range": (-0.4, 0.4),
                     },
                     {
                         "step": 1800,
-                        "lin_vel_x_range": (0.05, 0.8),
+                        "lin_vel_x_range": (-0.8, 0.8),
                         "ang_vel_yaw_range": (-0.8, 0.8),
                     },
                     {
                         "step": 3200,
-                        "lin_vel_x_range": (0.05, 1.2),
+                        "lin_vel_x_range": (-1.2, 1.2),
                         "ang_vel_yaw_range": (-1.2, 1.2),
                     },
                 ],
