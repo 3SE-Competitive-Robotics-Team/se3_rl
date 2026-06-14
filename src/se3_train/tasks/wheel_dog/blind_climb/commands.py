@@ -36,6 +36,7 @@ class DogVelocityCommandCfg(CommandTermCfg):
     yaw_deadband: float = 0.08
     standing_ratio: float = 0.0
     success_distance: float = 1.8
+    obstacle_progress_window: tuple[float, float] = (0.25, 0.85)
 
     @dataclass
     class VizCfg:
@@ -127,9 +128,19 @@ class DogVelocityCommandTerm(CommandTerm):
             posinf=0.0,
             neginf=0.0,
         )
+        vz_w = torch.nan_to_num(
+            self._robot.data.root_link_lin_vel_w[:, 2],
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
         height = self._robot.data.root_link_pos_w[:, 2]
         progress_x = self._robot.data.root_link_pos_w[:, 0] - self._env.scene.env_origins[:, 0]
         progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+        obstacle_start, obstacle_end = self.cfg.obstacle_progress_window
+        obstacle_window = (
+            active & (progress_x > float(obstacle_start)) & (progress_x < float(obstacle_end))
+        )
         terrain = getattr(self._env.scene, "terrain", None)
         terrain_levels = getattr(terrain, "terrain_levels", None)
         if isinstance(terrain_levels, torch.Tensor) and terrain_levels.numel() >= self.num_envs:
@@ -161,6 +172,12 @@ class DogVelocityCommandTerm(CommandTerm):
                 "WheelDog/diag_blind_climb_progress_x": float(progress_x.mean().item()),
                 "WheelDog/diag_blind_climb_success_ratio": float(
                     (progress_x > self.cfg.success_distance).float().mean().item()
+                ),
+                "WheelDog/diag_obstacle_window_ratio": float(obstacle_window.float().mean().item()),
+                "WheelDog/diag_obstacle_window_vz": _mean_on_mask(vz_w, obstacle_window),
+                "WheelDog/diag_obstacle_window_positive_vz": _mean_on_mask(
+                    torch.clamp(vz_w, min=0.0),
+                    obstacle_window,
                 ),
                 "WheelDog/diag_terrain_level": terrain_level,
                 "WheelDog/diag_cmd_x_limit": float(abs(self.cfg.lin_vel_x_range[1])),

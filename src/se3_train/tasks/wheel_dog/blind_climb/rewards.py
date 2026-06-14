@@ -92,6 +92,37 @@ def progress_forward(
     return torch.clamp(normalized, min=0.0, max=float(max_progress_ratio)) * active.float() * gate
 
 
+def obstacle_lift(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    start_progress: float = 0.25,
+    end_progress: float = 0.85,
+    max_vertical_velocity: float = 0.7,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """坑边窗口内奖励向上的 base 速度，帮助跨越反坡高边。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    progress_x = robot.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+    vz = torch.nan_to_num(
+        robot.data.root_link_lin_vel_w[:, 2],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    in_window = (progress_x > float(start_progress)) & (progress_x < float(end_progress))
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    return (
+        torch.clamp(vz, min=0.0, max=float(max_vertical_velocity))
+        * active.float()
+        * in_window.float()
+        * gate
+    )
+
+
 def success_progress(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -368,6 +399,7 @@ __all__ = [
     "joint_power",
     "joint_torques_l2",
     "lin_vel_z_l2",
+    "obstacle_lift",
     "progress_forward",
     "run_stuck",
     "stand_still",

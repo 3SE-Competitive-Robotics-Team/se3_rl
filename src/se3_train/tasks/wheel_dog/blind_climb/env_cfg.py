@@ -194,6 +194,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=3.0,
             params={"command_name": _COMMAND_NAME, "success_distance": 1.8},
         ),
+        "obstacle_lift": RewardTermCfg(
+            func=rewards.obstacle_lift,
+            weight=1.5,
+            params={
+                "command_name": _COMMAND_NAME,
+                "start_progress": 0.25,
+                "end_progress": 0.85,
+                "max_vertical_velocity": 0.7,
+            },
+        ),
         "success_progress": RewardTermCfg(
             func=rewards.success_progress,
             weight=3.0,
@@ -264,12 +274,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "hipy_joint_pos_penalty": RewardTermCfg(
             func=rewards.joint_pos_penalty,
-            weight=-0.1,
+            weight=-0.05,
             params={"command_name": _COMMAND_NAME, "joint_ids": DOG_HIP_JOINT_IDS},
         ),
         "knee_joint_pos_penalty": RewardTermCfg(
             func=rewards.joint_pos_penalty,
-            weight=-0.1,
+            weight=-0.05,
             params={"command_name": _COMMAND_NAME, "joint_ids": DOG_KNEE_JOINT_IDS},
         ),
         "action_rate_l2": RewardTermCfg(func=rewards.action_rate_l2, weight=-0.01),
