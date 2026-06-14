@@ -76,12 +76,8 @@ DOG_DEFAULT_JOINT_POS: tuple[float, ...] = (
 
 
 def _load_wheel_dog_spec() -> mujoco.MjSpec:
-    """加载最简 WheelDog MJCF，并移除训练场景不需要的 floor/XML actuator。"""
+    """加载最简 WheelDog MJCF，并移除 XML actuator。"""
     spec = mujoco.MjSpec.from_file(str(_MJCF_PATH))
-    for geom in list(spec.worldbody.geoms):
-        if geom.name == "floor":
-            spec.delete(geom)
-            break
     for actuator in list(spec.actuators):
         spec.delete(actuator)
     return spec
