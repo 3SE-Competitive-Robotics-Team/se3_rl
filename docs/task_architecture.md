@@ -52,6 +52,8 @@ tasks/<task_name>/
 
 `observations.py`、`rewards.py`、`commands.py`、`curriculums.py`、`terminations.py` 和 `events.py` 可以转发共享实现，也可以放本任务独有实现。原则是从 task 目录能看出该任务实际依赖了哪些 MDP 代码。
 
+需要自定义 runner 时，应继承 `Se3OnPolicyRunner` 或 `Se3WarmStartRunner`，保留 W&B 失败时降级 TensorBoard 并继续保存 checkpoint 的保护。
+
 ## 注册流程
 
 `src/se3_train/__init__.py` 调用 `se3_train.tasks.register_all_tasks()`。`tasks/__init__.py` 只负责导入并注册当前正式任务。

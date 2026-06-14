@@ -251,7 +251,7 @@ class Se3OnPolicyRunner(MjlabOnPolicyRunner):
         )
 
 
-class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
+class Se3ProfiledOnPolicyRunner(Se3OnPolicyRunner):
     """带 SE3 运行时画像的 MJLab on-policy runner。"""
 
     def __init__(self, *args, **kwargs) -> None:
