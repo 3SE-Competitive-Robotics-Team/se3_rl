@@ -290,8 +290,8 @@ def gap_ramp_facility_terrain_cfg() -> TerrainGeneratorCfg:
     return TerrainGeneratorCfg(
         curriculum=False,
         size=spec.terrain_size,
-        border_width=0.25,
-        border_height=0.40,
+        border_width=0.0,
+        border_height=0.0,
         num_rows=1,
         num_cols=1,
         color_scheme="height",
@@ -311,8 +311,8 @@ def gap_ramp_blind_climb_terrain_cfg(
     return TerrainGeneratorCfg(
         curriculum=True,
         size=spec.terrain_size,
-        border_width=0.25,
-        border_height=0.40,
+        border_width=0.0,
+        border_height=0.0,
         num_rows=num_rows,
         num_cols=1,
         color_scheme="height",

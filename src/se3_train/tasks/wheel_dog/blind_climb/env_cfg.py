@@ -186,9 +186,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             standing_ratio=0.0,
         ),
     }
-    if play:
-        cfg.commands[_COMMAND_NAME].debug_vis = True
-
     leg_joint_ids = DOG_ABAD_JOINT_IDS + DOG_HIP_JOINT_IDS + DOG_KNEE_JOINT_IDS
     cfg.rewards = {
         "tracking_lin_vel_xy": RewardTermCfg(
