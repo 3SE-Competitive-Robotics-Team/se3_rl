@@ -311,6 +311,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             time_out=False,
             params={"sensor_name": "base_height_sensor", "min_height": 0.16, "max_steps": 30},
         ),
+        "root_height_bounds": TerminationTermCfg(
+            func=terminations.root_height_bounds,
+            time_out=False,
+            params={"min_relative_height": -0.08, "max_relative_height": 2.0},
+        ),
         "nonfinite_state": TerminationTermCfg(
             func=terminations.nonfinite_state,
             time_out=False,
@@ -411,24 +416,24 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "velocity_stages": [
                         {
                             "step": 0,
-                            "lin_vel_x_range": (0.50, 1.10),
-                            "lin_vel_y_range": (0.0, 0.0),
-                            "ang_vel_yaw_range": (0.0, 0.0),
-                        },
-                        {
-                            "step": 20000,
-                            "lin_vel_x_range": (0.55, 1.20),
+                            "lin_vel_x_range": (0.35, 0.80),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
                             "step": 60000,
-                            "lin_vel_x_range": (0.60, 1.35),
+                            "lin_vel_x_range": (0.45, 1.00),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),
                         },
                         {
-                            "step": 120000,
+                            "step": 160000,
+                            "lin_vel_x_range": (0.55, 1.20),
+                            "lin_vel_y_range": (0.0, 0.0),
+                            "ang_vel_yaw_range": (0.0, 0.0),
+                        },
+                        {
+                            "step": 320000,
                             "lin_vel_x_range": (0.70, 1.60),
                             "lin_vel_y_range": (0.0, 0.0),
                             "ang_vel_yaw_range": (0.0, 0.0),

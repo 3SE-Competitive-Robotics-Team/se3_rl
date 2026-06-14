@@ -88,6 +88,17 @@ def body_contact(
     return torch.max(force, dim=1).values > float(force_threshold)
 
 
+def root_height_bounds(
+    env: ManagerBasedRlEnv,
+    min_relative_height: float = -0.08,
+    max_relative_height: float = 2.0,
+) -> torch.Tensor:
+    """root 高度明显越界时终止，避免掉入坑底后的异常轨迹污染训练。"""
+    robot = env.scene["robot"]
+    rel_height = robot.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    return (rel_height < float(min_relative_height)) | (rel_height > float(max_relative_height))
+
+
 class BodyContactDelayed:
     """非轮子 body 连续触地一段时间后终止。"""
 
@@ -145,5 +156,6 @@ __all__ = [
     "body_contact_delayed",
     "low_base_height_delayed",
     "nonfinite_state",
+    "root_height_bounds",
     "time_out",
 ]

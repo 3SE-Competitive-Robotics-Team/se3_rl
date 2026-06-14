@@ -42,6 +42,8 @@ def terrain_levels(
     command_name: str,
     success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE,
     min_progress_ratio: float = 0.25,
+    healthy_height_margin: float = -0.02,
+    healthy_tilt_limit_deg: float = 35.0,
 ) -> dict[str, torch.Tensor]:
     """按盲爬完成度推进地形难度。"""
     terrain = env.scene.terrain
@@ -82,7 +84,13 @@ def terrain_levels(
     )
     facility_target = current_success * float(min_progress_ratio)
     target_progress = torch.clamp(torch.minimum(episode_target, facility_target), min=0.15)
-    move_up = progress_x > current_success
+    robot = env.scene["robot"]
+    rel_height = robot.data.root_link_pos_w[env_ids, 2] - env.scene.env_origins[env_ids, 2]
+    tilt = torch.acos(torch.clamp(-robot.data.projected_gravity_b[env_ids, 2], -1.0, 1.0))
+    healthy = (rel_height > float(healthy_height_margin)) & (
+        tilt < torch.deg2rad(torch.tensor(float(healthy_tilt_limit_deg), device=env.device))
+    )
+    move_up = (progress_x > current_success) & healthy
     move_down = (progress_x < target_progress) & ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
 
@@ -101,6 +109,7 @@ def terrain_levels(
         "progress_x": progress_x.mean(),
         "success_progress_x": current_success.mean(),
         "target_progress_x": target_progress.mean(),
+        "healthy_ratio": healthy.float().mean(),
         "move_up_ratio": move_up.float().mean(),
         "move_down_ratio": move_down.float().mean(),
     }
