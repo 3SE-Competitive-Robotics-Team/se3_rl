@@ -1,4 +1,4 @@
-"""固定姿态批量评估 Discovery recovery checkpoint。"""
+"""固定姿态批量评估 recovery checkpoint。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from mjlab.utils.torch import configure_torch_backends
 import se3_train  # noqa: F401
 from se3_train.mdp.rewards import _contact_diagnostic_stats
 
-TASK_NAME = "SE3-WheelLegged-Recovery-Discovery-GRU"
+DEFAULT_TASK_NAME = "SE3-WheelLegged-Recovery-FineTune-GRU"
 POSE_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
     "standing": (1.0, 0.0, 0.0, 0.0, 0.0),
     "left_side": (0.0, 1.0, 0.0, 0.0, 0.0),
@@ -29,6 +29,7 @@ POSE_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
 
 @dataclass(frozen=True)
 class PoseResult:
+    task: str
     checkpoint: str
     pose: str
     episodes: int
@@ -46,8 +47,14 @@ def _set_if_present(params: dict, key: str, value) -> None:
         params[key] = value
 
 
-def _build_env_cfg(pose: str, num_envs: int, episode_s: float, command_height: float):
-    cfg = load_env_cfg(TASK_NAME, play=True)
+def _build_env_cfg(
+    task_name: str,
+    pose: str,
+    num_envs: int,
+    episode_s: float,
+    command_height: float,
+):
+    cfg = load_env_cfg(task_name, play=True)
     cfg.scene.num_envs = int(num_envs)
     cfg.episode_length_s = float(episode_s)
     cfg.auto_reset = False
@@ -94,9 +101,9 @@ def _build_env_cfg(pose: str, num_envs: int, episode_s: float, command_height: f
     return cfg
 
 
-def _load_policy(env: RslRlVecEnvWrapper, checkpoint: Path, device: str):
-    agent_cfg = load_rl_cfg(TASK_NAME)
-    runner_cls = load_runner_cls(TASK_NAME) or MjlabOnPolicyRunner
+def _load_policy(env: RslRlVecEnvWrapper, checkpoint: Path, device: str, task_name: str):
+    agent_cfg = load_rl_cfg(task_name)
+    runner_cls = load_runner_cls(task_name) or MjlabOnPolicyRunner
     runner = runner_cls(env, asdict(agent_cfg), device=device)
     runner.load(
         str(checkpoint),
@@ -113,6 +120,7 @@ def _load_policy(env: RslRlVecEnvWrapper, checkpoint: Path, device: str):
 
 def _evaluate_pose(
     checkpoint: Path,
+    task_name: str,
     pose: str,
     num_envs: int,
     episode_s: float,
@@ -123,10 +131,10 @@ def _evaluate_pose(
     action_saturation_threshold: float,
     device: str,
 ) -> PoseResult:
-    env_cfg = _build_env_cfg(pose, num_envs, episode_s, command_height)
+    env_cfg = _build_env_cfg(task_name, pose, num_envs, episode_s, command_height)
     base_env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=None)
     env = RslRlVecEnvWrapper(base_env)
-    policy = _load_policy(env, checkpoint, device)
+    policy = _load_policy(env, checkpoint, device, task_name)
     env.reset()
     reset_fn = getattr(policy, "reset", None)
     if reset_fn is not None:
@@ -206,6 +214,7 @@ def _evaluate_pose(
     )
     early_done = done & (sample_count < max_steps)
     result = PoseResult(
+        task=task_name,
         checkpoint=checkpoint.name,
         pose=pose,
         episodes=base_env.num_envs,
@@ -223,14 +232,15 @@ def _evaluate_pose(
 
 def _format_result_table(results: list[PoseResult]) -> str:
     lines = [
-        "| checkpoint | pose | success | standup_time_s | height_err_m | action_sat | leg_contact | early_done | final_tilt_deg |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| task | checkpoint | pose | success | standup_time_s | height_err_m | action_sat | leg_contact | early_done | final_tilt_deg |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in results:
         time_text = "n/a" if item.mean_standup_time_s is None else f"{item.mean_standup_time_s:.3f}"
         lines.append(
             "| "
-            f"{item.checkpoint} | {item.pose} | {item.success_rate:.3f} | {time_text} | "
+            f"{item.task} | {item.checkpoint} | {item.pose} | "
+            f"{item.success_rate:.3f} | {time_text} | "
             f"{item.final_height_error_m:.4f} | {item.action_saturation_rate:.3f} | "
             f"{item.leg_contact_rate:.3f} | {item.early_done_rate:.3f} | "
             f"{item.final_tilt_deg:.2f} |"
@@ -241,6 +251,11 @@ def _format_result_table(results: list[PoseResult]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", action="append", required=True)
+    parser.add_argument(
+        "--task",
+        default=DEFAULT_TASK_NAME,
+        help="用于构造 eval env/runner 的 recovery task，默认 FineTune。",
+    )
     parser.add_argument("--num-envs", type=int, default=512)
     parser.add_argument("--episode-s", type=float, default=5.0)
     parser.add_argument("--command-height", type=float, default=0.26)
@@ -266,6 +281,7 @@ def main() -> None:
             results.append(
                 _evaluate_pose(
                     checkpoint=checkpoint,
+                    task_name=str(args.task),
                     pose=pose,
                     num_envs=args.num_envs,
                     episode_s=args.episode_s,

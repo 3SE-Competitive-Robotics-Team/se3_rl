@@ -205,7 +205,7 @@ def _decode_state_fields(
     roll, pitch = _roll_pitch_from_projected_gravity(projected_gravity)
     obs = _optional_row_vector(row, "obs", obs_cfg.num_obs)
     if obs is not None:
-        action_slice = runtime.observation_slices["actions"]
+        action_slice = runtime.observation_slices["last_actions"]
         initial_last_action = obs[action_slice]
     else:
         initial_last_action = _row_vector(row, "clipped_action", obs_cfg.num_actions)

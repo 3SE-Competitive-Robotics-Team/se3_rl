@@ -7,15 +7,17 @@ import math
 from datetime import datetime
 from pathlib import Path
 
+from se3_shared import RECOVERY_COMMAND_HEIGHT_RANGE_M
+
 from .cli import build_parser as build_sim2sim_parser
 from .cli import config_from_args
 from .course import CourseType
 from .teleop_input import DEFAULT_COMMAND_LIN_VEL_X, DEFAULT_COMMAND_YAW_RATE, KeyboardTeleopSource
 from .workflow import run_sim2sim
 
-DEFAULT_TELEOP_CHECKPOINT = Path("assets/base_model/model_5999_gru.pt")
-DEFAULT_MIN_COMMAND_HEIGHT = 0.195
-DEFAULT_MAX_COMMAND_HEIGHT = 0.390
+DEFAULT_TELEOP_CHECKPOINT: Path | None = None
+DEFAULT_MIN_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[0]
+DEFAULT_MAX_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[1]
 DEFAULT_COMMAND_LIN_ACCEL = 0.8
 DEFAULT_COMMAND_YAW_ACCEL = 1.6
 DEFAULT_COMMAND_LIN_DECAY = 0.4
@@ -58,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _set_checkpoint_help(
         parser,
-        f"Policy checkpoint. Defaults to the current repository base model: {DEFAULT_TELEOP_CHECKPOINT}.",
+        "Policy checkpoint. Defaults to the latest logs/rsl_rl/se3_wheel_leg/*/model_*.pt.",
     )
     parser.add_argument(
         "--teleop-vx",

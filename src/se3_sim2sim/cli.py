@@ -12,6 +12,9 @@ from se3_shared import ActionDelayConfig
 from .config import (
     DEFAULT_SIM_MODEL_VARIANT,
     MAX_YAW_RATE_RAD_S,
+    RECOVERY_COMMAND_HEIGHT_M,
+    RECOVERY_POSE_CHOICES,
+    RECOVERY_POSE_RP_RAD,
     SIM_MODEL_VARIANT_CHOICES,
     JumpEventConfig,
     JumpScheduleConfig,
@@ -226,6 +229,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Reset 初始 base 高度（米）。默认使用共享站立高度。",
+    )
+    parser.add_argument(
+        "--recovery-pose",
+        choices=RECOVERY_POSE_CHOICES,
+        default=None,
+        help="使用训练端标准 recovery 固定姿态预设，覆盖初始 roll/pitch。",
+    )
+    parser.add_argument(
+        "--recovery-command-height",
+        type=float,
+        default=RECOVERY_COMMAND_HEIGHT_M,
+        help="配合 --recovery-pose 使用的 recovery command height，默认 0.26m。",
     )
     parser.add_argument(
         "--initial-leg-joint-pos",
@@ -482,6 +497,9 @@ def _yaw_pid_enabled_from_args(args: argparse.Namespace) -> bool:
     initial_tilt_requested = (
         abs(float(args.initial_roll_deg)) > 1.0e-6 or abs(float(args.initial_pitch_deg)) > 1.0e-6
     )
+    recovery_pose = getattr(args, "recovery_pose", None)
+    if recovery_pose is not None and recovery_pose != "standing":
+        initial_tilt_requested = True
     return bool(RobotConfig().yaw_pid.enabled and not initial_tilt_requested)
 
 
@@ -521,12 +539,23 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     initial_wheel_joint_pos = None
     initial_dof_vel = None
     initial_last_action = None
-    command = tuple(float(v) for v in args.command)
+    command = [float(v) for v in args.command]
     rc_initial_output_enabled = not bool(args.rc_start_off)
     rc_events = tuple(args.rc_switch_script)
     deploy_init_summary = None
     deploy_init_reference_obs = None
     checkpoint = args.checkpoint
+
+    if args.recovery_pose is not None:
+        if args.deploy_telemetry_init is not None:
+            raise ValueError("--recovery-pose 不能与 --deploy-telemetry-init 同时使用")
+        initial_roll_rad, initial_pitch_rad = RECOVERY_POSE_RP_RAD[str(args.recovery_pose)]
+        command[0:4] = [0.0, 0.0, 0.0, 0.0]
+        command[4] = float(args.recovery_command_height)
+        command[5] = 0.0
+        command[7] = 0.0
+        if args.initial_base_height is None:
+            initial_base_height = float(command[4]) if args.recovery_pose == "standing" else 0.16
 
     if args.deploy_telemetry_init is not None:
         init_mode: DeployTelemetryInitMode = str(args.deploy_telemetry_init_mode)  # type: ignore[assignment]
@@ -551,7 +580,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         initial_wheel_joint_pos = deploy_init.initial_wheel_joint_pos
         initial_dof_vel = deploy_init.initial_dof_vel
         initial_last_action = deploy_init.initial_last_action
-        command = deploy_init.command
+        command = list(deploy_init.command)
         rc_initial_output_enabled = deploy_init.rc_initial_output_enabled
         rc_events = deploy_init.rc_events
         deploy_init_summary = deploy_init.summary()
@@ -578,7 +607,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             settle_base_before_policy=bool(args.settle_base_before_policy),
             pre_policy_settle_max_s=float(args.pre_policy_settle_max_s),
             pre_policy_settle_contact_steps=max(1, int(args.pre_policy_settle_contact_steps)),
-            command=command,
+            command=tuple(command),
             yaw_pid=YawPidConfig(
                 enabled=_yaw_pid_enabled_from_args(args),
                 target_yaw_rad=math.radians(float(args.yaw_target_deg)),

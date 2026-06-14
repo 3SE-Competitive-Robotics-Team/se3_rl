@@ -163,6 +163,9 @@ class WheelLeggedRobot:
             active_rod_target_upper_preload_margin=cfg.active_rod_target_upper_preload_margin,
             dtype=np.float64,
         )
+        self.leg_kp = float(cfg.leg_kp)
+        self.leg_kd = float(cfg.leg_kd)
+        self.wheel_kd = float(cfg.wheel_kd)
         self.torque_limits = as_float64(cfg.torque_limits)
         self.motor_actuator_names = tuple(f"{name}_motor" for name in self.policy_joint_names)
         self.motor_ctrl_ids = np.asarray(
@@ -489,6 +492,9 @@ class WheelLeggedRobot:
             "command_lin_vel_x": float(self.command[0]),
             "command_yaw_rate": float(self.command[1]),
             "command_height": float(self.command[4]),
+            "leg_kp": float(self.leg_kp),
+            "leg_kd": float(self.leg_kd),
+            "wheel_kd": float(self.wheel_kd),
             "base_lin_vel_x": float(self.base_lin_vel_body[0]),
             "wheel_lin_vel": wheel_lin_vel,
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),
@@ -901,8 +907,8 @@ class WheelLeggedRobot:
             policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
             policy_target = leg_target
             policy_error = policy_leg_position_error_np(policy_target, policy_pos)
-            policy_torque = _SHARED_ROBOT.leg_kp * policy_error
-            policy_torque -= _SHARED_ROBOT.leg_kd * policy_vel
+            policy_torque = self.leg_kp * policy_error
+            policy_torque -= self.leg_kd * policy_vel
             policy_torque = _tn_clip(
                 policy_torque,
                 policy_vel,
@@ -918,7 +924,7 @@ class WheelLeggedRobot:
             else:
                 leg_pos_err = leg_target - output_leg_pos
             leg_vel = output_leg_vel
-            leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
+            leg_torque = self.leg_kp * leg_pos_err - self.leg_kd * leg_vel
         if not self.fourbar_surrogate:
             leg_torque = _tn_clip(
                 leg_torque,
@@ -929,7 +935,7 @@ class WheelLeggedRobot:
             )
 
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
-        wheel_torque = _SHARED_ROBOT.wheel_kd * (wheel_vel_target - wheel_vel)
+        wheel_torque = self.wheel_kd * (wheel_vel_target - wheel_vel)
         wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)
 
         # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。
@@ -944,8 +950,8 @@ class WheelLeggedRobot:
         leg_target = np.asarray(leg_hold_target, dtype=np.float64).reshape(4)
         leg_pos = dof_pos[JointGroup.CTRL_LEGS]
         leg_vel = dof_vel[JointGroup.CTRL_LEGS]
-        leg_torque = _SHARED_ROBOT.leg_kp * (leg_target - leg_pos)
-        leg_torque -= _SHARED_ROBOT.leg_kd * leg_vel
+        leg_torque = self.leg_kp * (leg_target - leg_pos)
+        leg_torque -= self.leg_kd * leg_vel
         leg_torque = _tn_clip(
             leg_torque,
             leg_vel,
@@ -955,7 +961,7 @@ class WheelLeggedRobot:
         )
 
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
-        wheel_torque = _SHARED_ROBOT.wheel_kd * (0.0 - wheel_vel)
+        wheel_torque = self.wheel_kd * (0.0 - wheel_vel)
         wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)
 
         ctrl = np.concatenate([leg_torque, wheel_torque])

@@ -10,7 +10,7 @@ import numpy as np
 from se3_deploy.numpy_policy import NumpyPolicyRuntime
 from se3_deploy.observation import RecoveryObservationBuilder, synthetic_recovery_state
 from se3_deploy.recovery_runtime import RecoveryActionTargetDecoder
-from se3_shared import JointGroup, PolicyActionDecoder
+from se3_shared import RECOVERY_COMMAND_HEIGHT_M, JointGroup, PolicyActionDecoder
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_sim2sim.cli import build_parser as build_sim2sim_parser
 from se3_sim2sim.cli import config_from_args as sim2sim_config_from_args
@@ -20,7 +20,7 @@ from se3_sim2sim.policy import PolicyRuntime
 from se3_sim2sim.robot import WheelLeggedRobot
 from se3_sim2sim.runtime_spec import RuntimeSpec
 
-DEFAULT_CHECKPOINT = Path("logs/deploy/model_5999_recovery_gru.npz")
+DEFAULT_CHECKPOINT = Path("logs/deploy/model_4999_recovery_obs34_gru.npz")
 DEFAULT_MODEL_VARIANT = "closedchain"
 
 
@@ -154,7 +154,7 @@ def _decoded_targets(
     shared_cfg: SharedRobotConfig, action: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """比较 deploy target decoder 与 sim2sim 共享 action decoder 的物理目标。"""
-    command_height = float(shared_cfg.default_base_height)
+    command_height = float(RECOVERY_COMMAND_HEIGHT_M)
     deploy = RecoveryActionTargetDecoder(command_height=command_height, robot_cfg=shared_cfg)
     deploy_target = deploy.decode(action)
     sim = PolicyActionDecoder(

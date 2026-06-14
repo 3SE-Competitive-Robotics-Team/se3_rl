@@ -32,6 +32,14 @@ from .policy_io import (
     PolicyObservationResult,
     build_policy_observation_np,
 )
+from .recovery import (
+    RECOVERY_COMMAND_HEIGHT_M,
+    RECOVERY_COMMAND_HEIGHT_RANGE_M,
+    RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS,
+    RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S,
+    RECOVERY_DEFAULT_COMMAND_8D,
+    RECOVERY_DEFAULT_STM_COMMAND_5D,
+)
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
@@ -39,6 +47,12 @@ __all__ = [
     "FOURBAR_SURROGATE_MARKER",
     "M3508_C620_14",
     "M3508_HEXROLL",
+    "RECOVERY_COMMAND_HEIGHT_M",
+    "RECOVERY_COMMAND_HEIGHT_RANGE_M",
+    "RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS",
+    "RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S",
+    "RECOVERY_DEFAULT_COMMAND_8D",
+    "RECOVERY_DEFAULT_STM_COMMAND_5D",
     "ActionDelayConfig",
     "DecodedPolicyAction",
     "Joint",

@@ -13,9 +13,11 @@ from pathlib import Path
 import numpy as np
 
 from se3_shared import (
+    RECOVERY_COMMAND_HEIGHT_M,
     ObservationConfig,
     PolicyActionDecoder,
     RobotConfig,
+    policy_leg_position_error_np,
 )
 
 from .cdc import CdcSerial
@@ -31,12 +33,14 @@ from .protocol import (
     pack_policy_target,
 )
 
-DEFAULT_RECOVERY_CHECKPOINT = Path("assets/base_model/model_5999_gru_actor_only.npz")
+DEFAULT_RECOVERY_CHECKPOINT = Path("logs/deploy/model_4999_recovery_obs34_gru.npz")
 DEFAULT_CDC_PORT = "auto"
 ACTION_FLAG_DRY_RUN = 1 << 0
 ACTION_FLAG_TIMEOUT = 1 << 1
 ACTION_FLAG_NONFINITE = 1 << 2
 ACTION_FLAG_OUTPUT_DISABLED_HOLD = 1 << 3
+OBS_CONTRACT = "se3_recovery_actor_obs34_front_sincos_active_last_actions_v1"
+_ROBOT_CFG = RobotConfig()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +81,7 @@ class RuntimeStats:
         0.0,
         0.0,
         0.0,
-        0.22,
+        RECOVERY_COMMAND_HEIGHT_M,
         0.0,
         0.0,
         0.0,
@@ -126,10 +130,6 @@ class RecoveryActionTargetDecoder:
         return self.decoder.clip_action(action)
 
 
-def _wrap_angle_np(angle: np.ndarray) -> np.ndarray:
-    return np.remainder(np.asarray(angle, dtype=np.float32) + np.pi, 2.0 * np.pi) - np.pi
-
-
 def _fmt_values(values: object) -> str:
     arr = np.asarray(values, dtype=np.float32).reshape(-1)
     return " ".join(f"{float(v):+.3f}" for v in arr)
@@ -143,8 +143,24 @@ def _float_list(values: object) -> list[float]:
 
 def _policy_active_angles(values: object) -> list[float]:
     q = np.asarray(values, dtype=np.float32).reshape(4)
-    active = np.asarray([q[0] - q[1], q[3] - q[2]], dtype=np.float32)
-    return _float_list(_wrap_angle_np(active))
+    coeffs = np.asarray(_ROBOT_CFG.active_rod_angle_coeffs, dtype=np.float32).reshape(2, 2)
+    active = np.asarray(
+        [
+            coeffs[0, 0] * q[0] + coeffs[0, 1] * q[1],
+            coeffs[1, 0] * q[2] + coeffs[1, 1] * q[3],
+        ],
+        dtype=np.float32,
+    )
+    return _float_list(active)
+
+
+def _policy_leg_error(target: object, current: object) -> np.ndarray:
+    """按训练端 PD 语义计算腿部误差：前杆走最短角，主动杆不 wrap。"""
+    return policy_leg_position_error_np(
+        np.asarray(target, dtype=np.float32).reshape(4),
+        np.asarray(current, dtype=np.float32).reshape(4),
+        robot_cfg=_ROBOT_CFG,
+    ).astype(np.float32, copy=False)
 
 
 def _action_flag_names(flags: int) -> list[str]:
@@ -230,7 +246,8 @@ class RecoveryRuntime:
         print(
             "NX recovery runtime: "
             f"checkpoint={self.cfg.checkpoint} iter={self.policy.iteration} "
-            f"type={self.policy.policy_type} device={self.cfg.device}"
+            f"type={self.policy.policy_type} device={self.cfg.device} "
+            f"obs={self.obs_cfg.num_obs} contract={OBS_CONTRACT}"
         )
         try:
             if self.cfg.dry_run:
@@ -399,9 +416,16 @@ class RecoveryRuntime:
             None if state is None else float(self.obs_builder.command_from_state(state)[4])
         )
         target = self.target_decoder.decode(action, command_height=command_height)
-        self.stats.last_target_joint_pos = tuple(float(v) for v in target.joint_pos)
+        joint_pos = np.asarray(target.joint_pos, dtype=np.float32).reshape(4)
+        if state is not None:
+            current_joint_pos = np.asarray(state.joint_pos, dtype=np.float32).reshape(4)
+            joint_pos = current_joint_pos + _policy_leg_error(joint_pos, current_joint_pos)
+        self.stats.last_target_joint_pos = tuple(float(v) for v in joint_pos)
         self.stats.last_target_wheel_vel = tuple(float(v) for v in target.wheel_vel)
-        return target
+        return DecodedPolicyTarget(
+            joint_pos=self.stats.last_target_joint_pos,
+            wheel_vel=target.wheel_vel,
+        )
 
     def _record_action(
         self,
@@ -442,6 +466,9 @@ class RecoveryRuntime:
         nx_target = np.asarray(self.stats.last_target_joint_pos, dtype=np.float32)
         record: dict[str, object] = {
             "schema": "se3_nx_recovery_telemetry_v1",
+            "obs_contract": OBS_CONTRACT,
+            "num_obs": int(self.obs_cfg.num_obs),
+            "num_actions": int(self.obs_cfg.num_actions),
             "wall_time_s": time.time(),
             "monotonic_time_s": time.monotonic(),
             "step": int(self.stats.steps),
@@ -476,8 +503,16 @@ class RecoveryRuntime:
             "joint_pos": _float_list(joint_pos),
             "joint_vel": _float_list(state.joint_vel),
             "joint_active": _policy_active_angles(joint_pos),
-            "joint_pos_error_nx_target": _float_list(_wrap_angle_np(nx_target - joint_pos)),
-            "joint_pos_error_stm_target": _float_list(_wrap_angle_np(stm_target - joint_pos)),
+            "joint_pos_error_nx_target": _float_list(_policy_leg_error(nx_target, joint_pos)),
+            "joint_pos_error_stm_target": _float_list(_policy_leg_error(stm_target, joint_pos)),
+            "active_error_nx_target": _float_list(
+                np.asarray(_policy_active_angles(nx_target), dtype=np.float32)
+                - np.asarray(_policy_active_angles(joint_pos), dtype=np.float32)
+            ),
+            "active_error_stm_target": _float_list(
+                np.asarray(_policy_active_angles(stm_target), dtype=np.float32)
+                - np.asarray(_policy_active_angles(joint_pos), dtype=np.float32)
+            ),
             "wheel_pos": _float_list(state.wheel_pos),
             "wheel_vel": _float_list(state.wheel_vel),
             "hip_torque": _float_list(state.hip_torque),
@@ -517,9 +552,9 @@ class RecoveryRuntime:
         stm_target = _fmt_values(self.stats.last_state_target_joint_pos)
         joint = _fmt_values(self.stats.last_state_joint_pos)
         error = _fmt_values(
-            _wrap_angle_np(
-                np.asarray(self.stats.last_state_target_joint_pos, dtype=np.float32)
-                - np.asarray(self.stats.last_state_joint_pos, dtype=np.float32)
+            _policy_leg_error(
+                np.asarray(self.stats.last_state_target_joint_pos, dtype=np.float32),
+                np.asarray(self.stats.last_state_joint_pos, dtype=np.float32),
             )
         )
         torque = _fmt_values(self.stats.last_state_hip_torque)

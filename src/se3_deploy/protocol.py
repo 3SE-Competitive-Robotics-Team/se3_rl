@@ -8,6 +8,8 @@ from typing import ClassVar
 
 import numpy as np
 
+from se3_shared import RECOVERY_DEFAULT_STM_COMMAND_5D
+
 SOF = b"\xa5\x5a"
 VERSION = 1
 MAX_PAYLOAD_SIZE = 192
@@ -28,7 +30,7 @@ POLICY_STATE_STRUCT_V3 = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f2f2f")
 POLICY_STATE_STRUCT = struct.Struct("<IIIHBBB3x3f3f4f4f2f2f4f4f2f2f5f")
 POLICY_TARGET_STRUCT = struct.Struct("<I4f2f")
 POLICY_LATENCY_STRUCT = struct.Struct("<IIB3x")
-DEFAULT_POLICY_COMMAND = (0.0, 0.0, 0.0, 0.0, 0.22)
+DEFAULT_POLICY_COMMAND = RECOVERY_DEFAULT_STM_COMMAND_5D
 
 
 @dataclass(frozen=True, slots=True)

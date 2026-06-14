@@ -13,7 +13,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from se3_shared import ObservationConfig, PolicyActionDecoder, RobotConfig
+from se3_shared import (
+    RECOVERY_COMMAND_HEIGHT_M,
+    ObservationConfig,
+    PolicyActionDecoder,
+    RobotConfig,
+)
 
 from .numpy_policy import NumpyPolicyRuntime
 from .onnx_policy import OnnxPolicyRuntime
@@ -78,6 +83,9 @@ LEG_CLOSURE_SPECS = (
 
 
 class PolicyRuntimeLike(Protocol):
+    num_obs: int
+    num_actions: int
+
     def reset(self) -> None: ...
 
     def act(self, obs: np.ndarray) -> np.ndarray: ...
@@ -238,6 +246,8 @@ def replay_rows(
     print_every: int,
 ) -> tuple[ReplayStats, float]:
     obs_cfg = ObservationConfig()
+    num_obs = int(getattr(policy, "num_obs", obs_cfg.num_obs))
+    num_actions = int(getattr(policy, "num_actions", obs_cfg.num_actions))
     stats = ReplayStats()
     first_time_s: float | None = None
     last_time_s: float | None = None
@@ -286,8 +296,8 @@ def replay_rows(
             _policy_reset(policy)
             stats.reset_count += 1
 
-        obs = _array(row, "obs", obs_cfg.num_obs)
-        logged_action = _array(row, "action", obs_cfg.num_actions)
+        obs = _array(row, "obs", num_obs)
+        logged_action = _array(row, "action", num_actions)
         replay_action: np.ndarray | None = None
         replay_joint_target: np.ndarray | None = None
         replay_wheel_target: np.ndarray | None = None
@@ -296,7 +306,8 @@ def replay_rows(
             replay_action = _policy_act(policy, obs)
             action_error = replay_action - logged_action
             stats.action_row_max_abs_errors.append(float(np.max(np.abs(action_error))))
-            decoded = decoder.decode(replay_action, command_height=command_height)
+            row_command_height = _row_command_height(row, default=command_height)
+            decoded = decoder.decode(replay_action, command_height=row_command_height)
             replay_joint_target = np.asarray(decoded.leg_target, dtype=np.float32).reshape(4)
             replay_wheel_target = np.asarray(decoded.wheel_vel_target, dtype=np.float32).reshape(2)
             if "nx_target_joint_pos" in row:
@@ -893,14 +904,24 @@ def _policy_reset(policy: PolicyRuntimeLike) -> None:
 
 def _policy_act(policy: PolicyRuntimeLike, obs: np.ndarray) -> np.ndarray:
     action = policy.act(obs)
-    return np.asarray(action, dtype=np.float32).reshape(ObservationConfig().num_actions)
+    num_actions = int(getattr(policy, "num_actions", ObservationConfig().num_actions))
+    return np.asarray(action, dtype=np.float32).reshape(num_actions)
 
 
 def _command_height(meta: dict[str, object]) -> float:
     command = meta.get("command") if isinstance(meta, dict) else None
     if isinstance(command, list) and len(command) >= 5:
         return float(command[4])
-    return float(RobotConfig().default_base_height)
+    return float(RECOVERY_COMMAND_HEIGHT_M)
+
+
+def _row_command_height(row: dict[str, object], *, default: float) -> float:
+    command = row.get("command")
+    if isinstance(command, list) and len(command) >= 5:
+        parsed = _optional_float(command[4])
+        if parsed is not None and parsed > 0.0:
+            return float(parsed)
+    return float(default)
 
 
 def _array(row: dict[str, object], key: str, size: int) -> np.ndarray:
