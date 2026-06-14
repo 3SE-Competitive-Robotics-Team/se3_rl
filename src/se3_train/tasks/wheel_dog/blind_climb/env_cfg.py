@@ -36,6 +36,7 @@ from se3_train.tasks.wheel_dog.robot_cfg import (
 from se3_train.terrains import gap_ramp_blind_climb_entity_cfg
 
 from . import commands, curriculums, events, observations, rewards, terminations
+from .terrain_progress import FINAL_SUCCESS_DISTANCE
 
 _COMMAND_NAME = "base_velocity"
 
@@ -192,22 +193,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "progress_forward": RewardTermCfg(
             func=rewards.progress_forward,
             weight=3.0,
-            params={"command_name": _COMMAND_NAME, "success_distance": 1.8},
+            params={"command_name": _COMMAND_NAME, "success_distance": FINAL_SUCCESS_DISTANCE},
         ),
         "obstacle_lift": RewardTermCfg(
             func=rewards.obstacle_lift,
             weight=1.5,
             params={
                 "command_name": _COMMAND_NAME,
-                "start_progress": 0.25,
-                "end_progress": 0.85,
+                "before_high_edge": 0.25,
+                "after_high_edge": 0.35,
                 "max_vertical_velocity": 0.7,
             },
         ),
         "success_progress": RewardTermCfg(
             func=rewards.success_progress,
             weight=3.0,
-            params={"command_name": _COMMAND_NAME, "success_distance": 1.8},
+            params={"command_name": _COMMAND_NAME, "success_distance": FINAL_SUCCESS_DISTANCE},
         ),
         "run_stuck": RewardTermCfg(
             func=rewards.run_stuck,
@@ -399,7 +400,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 func=curriculums.terrain_levels,
                 params={
                     "command_name": _COMMAND_NAME,
-                    "success_distance": 1.8,
+                    "success_distance": FINAL_SUCCESS_DISTANCE,
                     "min_progress_ratio": 0.50,
                 },
             ),

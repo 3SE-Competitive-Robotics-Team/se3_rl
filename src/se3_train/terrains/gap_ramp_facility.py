@@ -24,6 +24,10 @@ _TERRAIN_COLOR_LEFT = (0.45, 0.56, 0.40, 1.0)
 _TERRAIN_COLOR_RAMP = (0.38, 0.45, 0.55, 1.0)
 _TERRAIN_COLOR_TOP = (0.72, 0.68, 0.60, 1.0)
 _FACILITY_INSTANCE_COUNTER = count()
+BLIND_CLIMB_NUM_ROWS = 40
+BLIND_CLIMB_PIT_LENGTH_RANGE = (0.05, 0.65)
+BLIND_CLIMB_RAMP_HEIGHT_RANGE = (0.03, 0.35)
+BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG = (8.0, 17.0)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -129,13 +133,13 @@ class GapRampFacilityTerrainCfg(SubTerrainCfg):
     use_difficulty: bool = False
     """是否用 difficulty 从简化设施插值到完整设施。"""
 
-    pit_length_range: tuple[float, float] = (0.30, 0.65)
+    pit_length_range: tuple[float, float] = BLIND_CLIMB_PIT_LENGTH_RANGE
     """课程坑宽范围。"""
 
-    ramp_height_range: tuple[float, float] = (0.12, 0.35)
+    ramp_height_range: tuple[float, float] = BLIND_CLIMB_RAMP_HEIGHT_RANGE
     """课程坡顶高差范围。"""
 
-    ramp_angle_range_deg: tuple[float, float] = (12.0, 17.0)
+    ramp_angle_range_deg: tuple[float, float] = BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG
     """课程坡面角度范围。"""
 
     def function(
@@ -299,7 +303,9 @@ def gap_ramp_facility_terrain_cfg() -> TerrainGeneratorCfg:
     )
 
 
-def gap_ramp_blind_climb_terrain_cfg(num_rows: int = 8) -> TerrainGeneratorCfg:
+def gap_ramp_blind_climb_terrain_cfg(
+    num_rows: int = BLIND_CLIMB_NUM_ROWS,
+) -> TerrainGeneratorCfg:
     """返回盲爬训练用的课程化坑坡设施生成器。"""
     spec = GapRampFacilitySpec()
     return TerrainGeneratorCfg(
@@ -337,7 +343,7 @@ def gap_ramp_blind_climb_entity_cfg(num_envs: int = 1024) -> TerrainEntityCfg:
     return TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=gap_ramp_blind_climb_terrain_cfg(),
-        max_init_terrain_level=1,
+        max_init_terrain_level=0,
         num_envs=num_envs,
     )
 

@@ -20,6 +20,8 @@ from se3_train.tasks.wheel_dog.robot_cfg import (
     DOG_WHEEL_JOINT_IDS,
 )
 
+from . import terrain_progress
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -76,7 +78,7 @@ def forward_velocity(
 def progress_forward(
     env: ManagerBasedRlEnv,
     command_name: str,
-    success_distance: float = 1.8,
+    success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE,
     max_progress_ratio: float = 1.2,
     command_threshold: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -88,15 +90,19 @@ def progress_forward(
     progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
     active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
-    normalized = progress_x / max(float(success_distance), 1.0e-6)
+    target_progress = terrain_progress.current_success_distance(
+        env,
+        final_success_distance=success_distance,
+    )
+    normalized = progress_x / torch.clamp(target_progress, min=1.0e-6)
     return torch.clamp(normalized, min=0.0, max=float(max_progress_ratio)) * active.float() * gate
 
 
 def obstacle_lift(
     env: ManagerBasedRlEnv,
     command_name: str,
-    start_progress: float = 0.25,
-    end_progress: float = 0.85,
+    before_high_edge: float = 0.25,
+    after_high_edge: float = 0.35,
     max_vertical_velocity: float = 0.7,
     command_threshold: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -113,7 +119,12 @@ def obstacle_lift(
         neginf=0.0,
     )
     active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
-    in_window = (progress_x > float(start_progress)) & (progress_x < float(end_progress))
+    start_progress, end_progress = terrain_progress.obstacle_window(
+        env,
+        before_high_edge=before_high_edge,
+        after_high_edge=after_high_edge,
+    )
+    in_window = (progress_x > start_progress) & (progress_x < end_progress)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
     return (
         torch.clamp(vz, min=0.0, max=float(max_vertical_velocity))
@@ -126,7 +137,7 @@ def obstacle_lift(
 def success_progress(
     env: ManagerBasedRlEnv,
     command_name: str,
-    success_distance: float = 1.8,
+    success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE,
     command_threshold: float = 0.1,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
@@ -137,7 +148,11 @@ def success_progress(
     progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
     active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
-    return (progress_x > float(success_distance)).float() * active.float() * gate
+    target_progress = terrain_progress.current_success_distance(
+        env,
+        final_success_distance=success_distance,
+    )
+    return (progress_x > target_progress).float() * active.float() * gate
 
 
 def run_stuck(

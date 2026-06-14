@@ -10,6 +10,8 @@ import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import matrix_from_quat
 
+from . import terrain_progress
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
     from mjlab.viewer.debug_visualizer import DebugVisualizer
@@ -35,8 +37,9 @@ class DogVelocityCommandCfg(CommandTermCfg):
     lin_vel_deadband: float = 0.08
     yaw_deadband: float = 0.08
     standing_ratio: float = 0.0
-    success_distance: float = 1.8
-    obstacle_progress_window: tuple[float, float] = (0.25, 0.85)
+    success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE
+    obstacle_window_before_high_edge: float = 0.25
+    obstacle_window_after_high_edge: float = 0.35
 
     @dataclass
     class VizCfg:
@@ -137,10 +140,19 @@ class DogVelocityCommandTerm(CommandTerm):
         height = self._robot.data.root_link_pos_w[:, 2]
         progress_x = self._robot.data.root_link_pos_w[:, 0] - self._env.scene.env_origins[:, 0]
         progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
-        obstacle_start, obstacle_end = self.cfg.obstacle_progress_window
-        obstacle_window = (
-            active & (progress_x > float(obstacle_start)) & (progress_x < float(obstacle_end))
+        target_progress = terrain_progress.current_success_distance(
+            self._env,
+            final_success_distance=self.cfg.success_distance,
         )
+        obstacle_start, obstacle_end = terrain_progress.obstacle_window(
+            self._env,
+            before_high_edge=self.cfg.obstacle_window_before_high_edge,
+            after_high_edge=self.cfg.obstacle_window_after_high_edge,
+        )
+        ramp_high_x = terrain_progress.ramp_high_progress(self._env)
+        ramp_low_x = terrain_progress.ramp_low_progress(self._env)
+        difficulty = terrain_progress.current_difficulty(self._env)
+        obstacle_window = active & (progress_x > obstacle_start) & (progress_x < obstacle_end)
         terrain = getattr(self._env.scene, "terrain", None)
         terrain_levels = getattr(terrain, "terrain_levels", None)
         if isinstance(terrain_levels, torch.Tensor) and terrain_levels.numel() >= self.num_envs:
@@ -171,8 +183,12 @@ class DogVelocityCommandTerm(CommandTerm):
                 "WheelDog/diag_base_height": float(height.mean().item()),
                 "WheelDog/diag_blind_climb_progress_x": float(progress_x.mean().item()),
                 "WheelDog/diag_blind_climb_success_ratio": float(
-                    (progress_x > self.cfg.success_distance).float().mean().item()
+                    (progress_x > target_progress).float().mean().item()
                 ),
+                "WheelDog/diag_current_success_distance": float(target_progress.mean().item()),
+                "WheelDog/diag_ramp_high_progress_x": float(ramp_high_x.mean().item()),
+                "WheelDog/diag_ramp_low_progress_x": float(ramp_low_x.mean().item()),
+                "WheelDog/diag_terrain_difficulty": float(difficulty.mean().item()),
                 "WheelDog/diag_obstacle_window_ratio": float(obstacle_window.float().mean().item()),
                 "WheelDog/diag_obstacle_window_vz": _mean_on_mask(vz_w, obstacle_window),
                 "WheelDog/diag_obstacle_window_positive_vz": _mean_on_mask(

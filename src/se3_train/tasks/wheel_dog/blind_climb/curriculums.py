@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from . import terrain_progress
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -38,7 +40,7 @@ def terrain_levels(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | slice,
     command_name: str,
-    success_distance: float = 1.8,
+    success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE,
     min_progress_ratio: float = 0.25,
 ) -> dict[str, torch.Tensor]:
     """按盲爬完成度推进地形难度。"""
@@ -73,24 +75,31 @@ def terrain_levels(
     cmd = env.command_manager.get_command(command_name)[env_ids]
     cmd_speed = torch.linalg.norm(cmd[:, :2], dim=1)
     episode_target = cmd_speed * float(env.max_episode_length_s) * float(min_progress_ratio)
-    facility_target = torch.full_like(
-        episode_target,
-        float(success_distance) * float(min_progress_ratio),
+    current_success = terrain_progress.current_success_distance(
+        env,
+        final_success_distance=success_distance,
+        env_ids=env_ids,
     )
-    target_progress = torch.clamp(torch.minimum(episode_target, facility_target), min=0.20)
-    move_up = progress_x > float(success_distance)
+    facility_target = current_success * float(min_progress_ratio)
+    target_progress = torch.clamp(torch.minimum(episode_target, facility_target), min=0.15)
+    move_up = progress_x > current_success
     move_down = (progress_x < target_progress) & ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
 
+    new_levels, num_rows = terrain_progress.current_terrain_levels(env, env_ids=env_ids)
+    difficulty = terrain_progress.current_difficulty(env, env_ids=env_ids)
     return {
         "step_counter": torch.tensor(float(env.common_step_counter), device=env.device),
         "progress": torch.tensor(
             min(1.0, max(0.0, float(env.common_step_counter) / max(env.max_episode_length, 1))),
             device=env.device,
         ),
-        "terrain_level": terrain.terrain_levels[env_ids].float().mean(),
+        "terrain_level": new_levels.float().mean(),
         "terrain_type": terrain.terrain_types[env_ids].float().mean(),
+        "terrain_difficulty": difficulty.mean(),
+        "max_terrain_level": torch.tensor(float(num_rows - 1), device=env.device),
         "progress_x": progress_x.mean(),
+        "success_progress_x": current_success.mean(),
         "target_progress_x": target_progress.mean(),
         "move_up_ratio": move_up.float().mean(),
         "move_down_ratio": move_down.float().mean(),
