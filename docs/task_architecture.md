@@ -23,7 +23,7 @@
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 | `wheel_dog/flat/` | `SE3-WheelDog-Flat-GRU` | 20kg、16DOF 四足轮腿 WheelDog 平地速度跟随任务，M20 风格前后反向屈膝，目标 base_link 高度 `0.32m`，速度课程最终到前后 `±4.0m/s`、左右 `±1.5m/s` |
-| `wheel_dog/blind_climb/` | `SE3-WheelDog-BlindClimb-GRU` | 20kg、16DOF 四足轮腿 WheelDog 盲爬坑坡任务，actor 不看地形高度，critic 额外看高度网格，课程按坑坡难度和前向进度推进 |
+| `wheel_dog/blind_climb/` | `SE3-WheelDog-BlindClimb-GRU` | 20kg、16DOF 四足轮腿 WheelDog 盲爬坑坡任务，使用长起跑平台、坑、反飞坡竖直面和长落地平台构成完整路线；actor 不看地形高度，critic 额外看高度网格，课程按坑坡难度和前向进度推进 |
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。Recovery 目前只有 `Recovery-GRU` 一个正式入口，不注册 recovery-stand 或 stair/NX 实验入口。
 

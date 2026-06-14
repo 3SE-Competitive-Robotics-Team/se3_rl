@@ -17,13 +17,22 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _SPEC = GapRampFacilitySpec()
-FINAL_SUCCESS_DISTANCE = 2.25
+POST_RAMP_RUNOUT = 1.0
+"""到达坡底后仍需继续前进的距离。"""
+
+FINAL_SUCCESS_DISTANCE = (
+    _SPEC.left_platform_length * 0.5
+    + BLIND_CLIMB_PIT_LENGTH_RANGE[1]
+    + _SPEC.ramp_horizontal_run
+    + POST_RAMP_RUNOUT
+)
+"""最高难度下的完整路线目标距离：起跑、越坑上坡、落地后继续前进。"""
 
 
 def current_success_distance(
     env: ManagerBasedRlEnv,
     final_success_distance: float = FINAL_SUCCESS_DISTANCE,
-    post_ramp_margin: float = 0.12,
+    post_ramp_margin: float = POST_RAMP_RUNOUT,
     env_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """按当前地形等级计算通过目标距离。"""

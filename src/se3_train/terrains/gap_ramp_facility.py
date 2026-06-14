@@ -1,9 +1,9 @@
 """左平台-坑-反飞坡固定设施地形。
 
 这个地形面向反向跳跃训练：
-- 初始化在左侧绿色平台
+- 初始化在左侧长平台，先向前行驶一段
 - 越过中间坑和反向三角坡高边
-- 沿坡面落到右侧等高平台
+- 沿坡面落到右侧等高长平台，并继续向前行驶
 
 尺寸来源于用户给出的毫米级草图。代码内统一换算成米。
 """
@@ -37,8 +37,8 @@ class GapRampFacilitySpec:
     left_platform_height: float = 200 * _MM
     """左侧平台顶面高度。"""
 
-    left_platform_length: float = 650 * _MM
-    """左侧平台的站立长度。"""
+    left_platform_length: float = 1800 * _MM
+    """左侧起跑平台长度。"""
 
     pit_length: float = 650 * _MM
     """左侧平台到反飞坡高边之间的坑宽。"""
@@ -55,10 +55,10 @@ class GapRampFacilitySpec:
     ramp_top_lip_length: float = 151 * _MM
     """坡顶短平台长度。"""
 
-    right_platform_length: float = 650 * _MM
-    """右侧平台的站立长度。"""
+    right_platform_length: float = 1800 * _MM
+    """右侧落地后继续行驶的平台长度。"""
 
-    track_width: float = 1.20
+    track_width: float = 2.00
     """设施横向宽度。"""
 
     platform_thickness: float = 0.20

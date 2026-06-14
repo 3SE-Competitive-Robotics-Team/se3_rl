@@ -58,7 +58,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         terrain=gap_ramp_blind_climb_entity_cfg(num_envs=1024),
         entities={"robot": get_wheel_dog_cfg()},
         num_envs=1024,
-        env_spacing=3.0,
+        env_spacing=6.0,
     )
 
     cfg = ManagerBasedRlEnvCfg(decimation=4, scene=scene)
