@@ -14,6 +14,7 @@ from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import matrix_from_quat
 
 from se3_shared import TaskMode
+from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -68,6 +69,8 @@ class BasicCommandCfg(CommandTermCfg):
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
+    height_resample_on_reset_only: bool = False
+    """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
 
     @dataclass
     class VizCfg:
@@ -99,14 +102,27 @@ class BasicCommandTerm(CommandTerm):
         self._command = torch.zeros(self.num_envs, 5, device=self.device)
         self._standing_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self._robot = env.scene["robot"]
+        self._resampling_for_reset = False
 
     @property
     def command(self) -> torch.Tensor:
         return self._command
 
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
+        """重置指令项，并标记本次重采样来自 reset。"""
+        previous_resampling_for_reset = self._resampling_for_reset
+        self._resampling_for_reset = True
+        try:
+            return super().reset(env_ids)
+        finally:
+            self._resampling_for_reset = previous_resampling_for_reset
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         """为指定环境重新采样指令。"""
         n = len(env_ids)
+        resample_height = not self.cfg.height_resample_on_reset_only or bool(
+            getattr(self, "_resampling_for_reset", False)
+        )
 
         # 确定哪些环境处于站立状态。
         standing_count = int(n * self.cfg.standing_ratio)
@@ -121,7 +137,7 @@ class BasicCommandTerm(CommandTerm):
         self._command[standing_ids, 1] = 0.0
         self._command[standing_ids, 2] = 0.0  # pitch = 0
         self._command[standing_ids, 3] = 0.0  # roll = 0
-        if len(standing_ids) > 0:
+        if len(standing_ids) > 0 and resample_height:
             standing_height = (
                 torch.rand(len(standing_ids), device=self.device)
                 * (self.cfg.standing_height_range[1] - self.cfg.standing_height_range[0])
@@ -151,17 +167,26 @@ class BasicCommandTerm(CommandTerm):
                 * (self.cfg.roll_range[1] - self.cfg.roll_range[0])
                 + self.cfg.roll_range[0]
             )
-            height = (
-                torch.rand(len(moving_ids), device=self.device)
-                * (self.cfg.height_range[1] - self.cfg.height_range[0])
-                + self.cfg.height_range[0]
-            )
 
             self._command[moving_ids, 0] = lin_vel
             self._command[moving_ids, 1] = yaw_vel
             self._command[moving_ids, 2] = pitch
             self._command[moving_ids, 3] = roll
-            self._command[moving_ids, 4] = height
+            if resample_height:
+                height = (
+                    torch.rand(len(moving_ids), device=self.device)
+                    * (self.cfg.height_range[1] - self.cfg.height_range[0])
+                    + self.cfg.height_range[0]
+                )
+                self._command[moving_ids, 4] = height
+
+        if resample_height:
+            update_policy_default_from_height_cache(
+                self._env,
+                "velocity_height",
+                env_ids=env_ids,
+                command=self._command,
+            )
 
     def _update_command(self) -> None:
         """对速度指令施加死区。"""

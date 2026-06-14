@@ -12,7 +12,9 @@ from . import jump_commands as jump_commands
 from . import jump_curriculums as jump_curriculums
 from . import jump_rewards as jump_rewards
 from . import jump_terminations as jump_terminations
+from . import leg_alignment as leg_alignment
 from . import observations as observations
+from . import recovery_state as recovery_state
 from . import rewards as rewards
 from . import task_mode_commands as task_mode_commands
 from . import task_mode_rewards as task_mode_rewards
@@ -28,7 +30,9 @@ __all__ = [
     "jump_curriculums",
     "jump_rewards",
     "jump_terminations",
+    "leg_alignment",
     "observations",
+    "recovery_state",
     "rewards",
     "task_mode_commands",
     "task_mode_rewards",

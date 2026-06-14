@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared import output_to_policy_pos_torch, output_to_policy_vel_torch
+from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.joint_indices import is_fourbar_surrogate_model, policy_leg_joint_ids
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -46,6 +49,145 @@ class BadOrientationDelayed:
 
 
 bad_orientation_delayed = BadOrientationDelayed()
+
+
+class RecoveryStagnation:
+    """恢复样本长时间没有变好时终止，避免躺平刷低惩罚。"""
+
+    def __init__(self) -> None:
+        self._best_score: torch.Tensor | None = None
+        self._stagnation_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        max_steps: int = 256,
+        min_delta: float = 0.02,
+    ) -> torch.Tensor:
+        active = recovery_state.recovery_active_mask(env)
+        robot = env.scene["robot"]
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        score = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
+
+        if (
+            self._best_score is None
+            or self._best_score.shape[0] != env.num_envs
+            or self._best_score.device != env.device
+        ):
+            self._best_score = score.detach().clone()
+            self._stagnation_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        assert self._stagnation_count is not None
+        first_step = env.episode_length_buf <= 1
+        reset_mask = first_step | ~active
+        self._best_score[reset_mask] = score[reset_mask]
+        self._stagnation_count[reset_mask] = 0
+
+        improved = active & (score > self._best_score + float(min_delta))
+        self._best_score = torch.maximum(self._best_score, score.detach())
+        self._stagnation_count[active & ~improved] += 1
+        self._stagnation_count[improved] = 0
+
+        terminated = active & (self._stagnation_count >= int(max_steps))
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Recovery/stagnation_steps": self._stagnation_count[active]
+                    .float()
+                    .mean()
+                    .item()
+                    if active.any()
+                    else 0.0,
+                    "Recovery/stagnation_termination_rate": terminated[active].float().mean().item()
+                    if active.any()
+                    else 0.0,
+                }
+            )
+        return terminated
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._stagnation_count is not None and env_ids is not None:
+            self._stagnation_count[env_ids] = 0
+
+
+recovery_stagnation = RecoveryStagnation()
+
+
+def catastrophic_state(
+    env: ManagerBasedRlEnv,
+    max_leg_pos_error: float | None = 3.0,
+    max_leg_vel: float = 120.0,
+    max_root_lin_vel: float = 80.0,
+    max_root_ang_vel: float = 500.0,
+    min_base_height: float = -0.5,
+    max_base_height: float = 3.0,
+) -> torch.Tensor:
+    """物理状态已经发散时立即终止，防止 NaN 观测进入 PPO。"""
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_vel = robot.data.joint_vel
+    root_pos = robot.data.root_link_pos_w
+    root_lin_vel = robot.data.root_link_lin_vel_w
+    root_ang_vel = robot.data.root_link_ang_vel_b
+    projected_gravity = robot.data.projected_gravity_b
+
+    finite = (
+        torch.isfinite(joint_pos).all(dim=1)
+        & torch.isfinite(joint_vel).all(dim=1)
+        & torch.isfinite(root_pos).all(dim=1)
+        & torch.isfinite(root_lin_vel).all(dim=1)
+        & torch.isfinite(root_ang_vel).all(dim=1)
+        & torch.isfinite(projected_gravity).all(dim=1)
+    )
+
+    leg_pos, leg_default, leg_vel = _policy_leg_state_and_default(robot)
+    base_height = root_pos[:, 2] - env.scene.env_origins[:, 2]
+
+    if max_leg_pos_error is None:
+        leg_pos_bad = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    else:
+        leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)
+    leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
+    root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
+    root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)
+    height_bad = (base_height < float(min_base_height)) | (base_height > float(max_base_height))
+
+    terminated = ~finite | leg_pos_bad | leg_vel_bad | root_lin_bad | root_ang_bad | height_bad
+    if hasattr(env, "extras") and _should_log_step(env):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Episode_Termination/catastrophic_state": terminated.float().mean().item(),
+                "Debug/catastrophic_nonfinite": (~finite).float().mean().item(),
+                "Debug/catastrophic_leg_pos": leg_pos_bad.float().mean().item(),
+                "Debug/catastrophic_leg_vel": leg_vel_bad.float().mean().item(),
+                "Debug/catastrophic_root_vel": (root_lin_bad | root_ang_bad).float().mean().item(),
+                "Debug/catastrophic_height": height_bad.float().mean().item(),
+            }
+        )
+    return terminated
+
+
+def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回 policy 腿部坐标下的位置、默认位置和速度。"""
+    leg_ids = policy_leg_joint_ids(robot)
+    leg_pos = robot.data.joint_pos[:, leg_ids]
+    leg_default = robot.data.default_joint_pos[:, leg_ids]
+    leg_vel = robot.data.joint_vel[:, leg_ids]
+    if is_fourbar_surrogate_model(robot):
+        leg_pos_policy = output_to_policy_pos_torch(leg_pos)
+        return (
+            leg_pos_policy,
+            output_to_policy_pos_torch(leg_default),
+            output_to_policy_vel_torch(leg_pos, leg_vel),
+        )
+    return leg_pos, leg_default, leg_vel
+
+
+def _should_log_step(env: ManagerBasedRlEnv, interval: int = 64) -> bool:
+    """按 policy step 降频写 host 标量日志。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(1, int(interval))
+    return interval <= 1 or (step - 1) % interval == 0
 
 
 class LowBaseHeightDelayed:

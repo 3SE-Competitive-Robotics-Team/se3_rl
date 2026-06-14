@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from math import pi, radians
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
 from .action_delay import ActionDelayConfig
-from .motor import DM8009P, M3508_HEXROLL
+from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL
+
+_ACTIVE_ROD_ANGLE_RANGE_DEG: float = 129.95 - 43.46
+_ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (
+    0.0,
+    radians(_ACTIVE_ROD_ANGLE_RANGE_DEG),
+)
+_ACTIVE_ROD_ACTION_SCALE: float = 0.5 * (_ACTIVE_ROD_ANGLE_LIMITS[1] - _ACTIVE_ROD_ANGLE_LIMITS[0])
 
 
 class Joint(IntEnum):
@@ -75,6 +83,43 @@ class JointGroup:
         Joint.RF1,
         Joint.R_WHEEL,
     ]
+    POLICY_JOINT_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "l_drive_bar_Joint",
+        "rf0_Joint",
+        "r_drive_bar_Joint",
+        "l_wheel_Joint",
+        "r_wheel_Joint",
+    )
+    POLICY_LEG_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "l_drive_bar_Joint",
+        "rf0_Joint",
+        "r_drive_bar_Joint",
+    )
+    OPENCHAIN_LEG_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "lf1_Joint",
+        "rf0_Joint",
+        "rf1_Joint",
+    )
+    WHEEL_NAMES: ClassVar[tuple[str, ...]] = ("l_wheel_Joint", "r_wheel_Joint")
+    OUTPUT_LEG_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf0_Joint",
+        "lf1_Joint",
+        "rf0_Joint",
+        "rf1_Joint",
+    )
+    OUTPUT_KNEE_NAMES: ClassVar[tuple[str, ...]] = ("lf1_Joint", "rf1_Joint")
+    CLOSEDCHAIN_PASSIVE_JOINT_NAMES: ClassVar[tuple[str, ...]] = (
+        "lf1_Joint",
+        "l_coupler_Joint",
+        "rf1_Joint",
+        "r_coupler_Joint",
+    )
+    POLICY_MOTOR_ACTUATOR_NAMES: ClassVar[tuple[str, ...]] = tuple(
+        f"{name}_motor" for name in POLICY_JOINT_NAMES
+    )
 
     @staticmethod
     def joint_names() -> tuple[str, ...]:
@@ -112,3 +157,78 @@ class RobotConfig(BaseModel):
     @property
     def control_dt(self) -> float:
         return self.sim_dt * self.control_decimation
+
+
+class FourbarRobotConfig(RobotConfig):
+    """四连杆/闭链 recovery 专用机器人参数。"""
+
+    leg_kp: float = 60.0
+    leg_kd: float = 3.0
+    wheel_kd: float = 0.08
+    torque_limits: tuple[float, ...] = (
+        DM8009P.stall_torque,
+        DM8009P.stall_torque,
+        DM8009P.stall_torque,
+        DM8009P.stall_torque,
+        M3508_C620_14.rated_torque,
+        M3508_C620_14.rated_torque,
+    )
+    default_dof_pos: tuple[float, ...] = (
+        -0.275422946189,
+        -1.592100148957,
+        0.275422946189,
+        1.592100148957,
+        0.0,
+        0.0,
+    )
+    default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
+    default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
+    active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
+    active_rod_lower_target_overdrive: float = 0.20
+    active_rod_soft_limit_factor: float = 1.0
+    active_rod_angle_coeffs: tuple[tuple[float, float], tuple[float, float]] = (
+        (1.0, -1.0),
+        (-1.0, 1.0),
+    )
+    action_scale: tuple[float, ...] = (
+        pi,
+        _ACTIVE_ROD_ACTION_SCALE,
+        pi,
+        _ACTIVE_ROD_ACTION_SCALE,
+        45.0,
+        45.0,
+    )
+    action_clip: float | None = 1.0
+
+    @property
+    def default_active_rod_angles(self) -> tuple[float, float]:
+        """返回左右腿当前装配分支下的两主动杆夹角。"""
+        left_front, left_back = self.active_rod_angle_coeffs[0]
+        right_front, right_back = self.active_rod_angle_coeffs[1]
+        return (
+            left_front * self.default_dof_pos[0] + left_back * self.default_dof_pos[1],
+            right_front * self.default_dof_pos[2] + right_back * self.default_dof_pos[3],
+        )
+
+    @property
+    def active_rod_soft_angle_limits(self) -> tuple[float, float]:
+        """返回主动杆夹角软限位，按硬限位中心收缩。"""
+        lower, upper = self.active_rod_angle_limits
+        factor = min(max(float(self.active_rod_soft_limit_factor), 0.0), 1.0)
+        center = 0.5 * (float(lower) + float(upper))
+        half_range = 0.5 * (float(upper) - float(lower)) * factor
+        return center - half_range, center + half_range
+
+    @property
+    def default_model_joint_pos(self) -> dict[str, float]:
+        """返回闭链/开链 MJCF 都可使用的默认关节角映射。"""
+        policy = dict(zip(JointGroup.POLICY_JOINT_NAMES, self.default_dof_pos, strict=True))
+        policy.update(
+            {
+                "lf1_Joint": self.default_output_knee_pos[0],
+                "rf1_Joint": self.default_output_knee_pos[1],
+                "l_coupler_Joint": self.default_coupler_pos[0],
+                "r_coupler_Joint": self.default_coupler_pos[1],
+            }
+        )
+        return policy

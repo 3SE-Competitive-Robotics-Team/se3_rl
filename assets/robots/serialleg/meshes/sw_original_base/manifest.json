@@ -1,0 +1,85 @@
+{
+  "source": "D:\\robomaster\\sw_urdf_work\\serialleg\\meshes\\base_link.STL",
+  "source_faces": 2172719,
+  "max_faces_per_chunk": 180000,
+  "chunks": [
+    {
+      "file": "base_link_chunk_00.stl",
+      "start_face": 0,
+      "end_face": 180000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_01.stl",
+      "start_face": 180000,
+      "end_face": 360000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_02.stl",
+      "start_face": 360000,
+      "end_face": 540000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_03.stl",
+      "start_face": 540000,
+      "end_face": 720000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_04.stl",
+      "start_face": 720000,
+      "end_face": 900000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_05.stl",
+      "start_face": 900000,
+      "end_face": 1080000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_06.stl",
+      "start_face": 1080000,
+      "end_face": 1260000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_07.stl",
+      "start_face": 1260000,
+      "end_face": 1440000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_08.stl",
+      "start_face": 1440000,
+      "end_face": 1620000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_09.stl",
+      "start_face": 1620000,
+      "end_face": 1800000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_10.stl",
+      "start_face": 1800000,
+      "end_face": 1980000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_11.stl",
+      "start_face": 1980000,
+      "end_face": 2160000,
+      "faces": 180000
+    },
+    {
+      "file": "base_link_chunk_12.stl",
+      "start_face": 2160000,
+      "end_face": 2172719,
+      "faces": 12719
+    }
+  ]
+}

@@ -16,7 +16,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import JointGroup
-from se3_train.mdp.commands import BasicCommandCfg, BasicCommandTerm
+from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp import recovery_state
+from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
+from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
     DEFAULT_JUMP_TRAJ_PATHS,
@@ -28,6 +31,7 @@ if TYPE_CHECKING:
 
 # 重力加速度（仿真用标准值）
 _G = 9.81
+_DEFAULT_STANDING_HEIGHT = SharedRobotConfig().default_base_height
 
 # 成功起跳阈值：vz > 1.0 m/s，对应约 5cm 以上跳跃。
 _VZ_SUCCESS_THRESHOLD = 1.0
@@ -57,8 +61,14 @@ def _ema_value(previous: float | None, value: float, alpha: float = 0.05) -> flo
 
 
 @dataclass
-class JumpCommandCfg(BasicCommandCfg):
+class JumpCommandCfg(VelocityHeightCommandCfg):
     """跳跃指令配置，继承速度/姿态/高度指令并扩展跳跃维度。"""
+
+    enable_jump_lifecycle: bool = True
+    """是否在每步维护跳跃窗口、参考轨迹相位和起跳诊断。"""
+
+    enable_jump_metrics: bool = True
+    """是否写入 Jump/* 诊断日志。"""
 
     jump_prob: float = 0.0
     """每个 policy step 启动一次跳跃窗口的概率 (由课程调度器动态修改)。"""
@@ -95,7 +105,7 @@ class JumpCommandCfg(BasicCommandCfg):
         return JumpCommandTerm(self, env)
 
 
-class JumpCommandTerm(BasicCommandTerm):
+class JumpCommandTerm(VelocityHeightCommandTerm):
     """跳跃指令项，在速度/姿态/高度之外维护参考相位。
 
     指令维度：[vx, ωz, pitch, roll, h, jump_flag, jump_target_height, jump_phase]（8 维）
@@ -251,6 +261,10 @@ class JumpCommandTerm(BasicCommandTerm):
         # 先由父类采样 vx/ωz/pitch/roll/h（写入 self._command[:, 0:5]）
         super()._resample_command(env_ids)
 
+        if not self.cfg.enable_jump_lifecycle:
+            self._command[env_ids, 5:8] = 0.0
+            return
+
         active_jump = self._command[env_ids, 5] > 0.5
         if active_jump.any():
             self._zero_locomotion_command(env_ids[active_jump])
@@ -277,6 +291,12 @@ class JumpCommandTerm(BasicCommandTerm):
             return
         self._command[env_ids, 0:4] = 0.0
         self._command[env_ids, 4] = (self.cfg.height_range[0] + self.cfg.height_range[1]) / 2.0
+        update_policy_default_from_height_cache(
+            self._env,
+            "velocity_height",
+            env_ids=env_ids,
+            command=self._command,
+        )
 
     def _reset_jump_lifecycle(
         self, env_ids: torch.Tensor, sample_initial_jump: bool = False
@@ -331,8 +351,33 @@ class JumpCommandTerm(BasicCommandTerm):
     def _update_command(self) -> None:
         """更新速度死区，按 step-level 概率启动跳跃，并推进参考轨迹计步器。"""
         super()._update_command()
+        self._apply_recovery_command()
+        if not self.cfg.enable_jump_lifecycle:
+            return
         self._start_new_jumps()
         self._advance_traj_step()
+
+    def _apply_recovery_command(self) -> None:
+        """恢复 episode 固定为原地站立指令，避免重采样切回行走命令。"""
+        recovery_mask = recovery_state.recovery_active_mask(self._env).to(device=self.device)
+        if not recovery_mask.any():
+            return
+        self._command[recovery_mask, 0:4] = 0.0
+        command_height_buf = getattr(self._env, "_recovery_command_height_buf", None)
+        if (
+            isinstance(command_height_buf, torch.Tensor)
+            and command_height_buf.shape[0] == self.num_envs
+        ):
+            self._command[recovery_mask, 4] = command_height_buf.to(device=self.device)[
+                recovery_mask
+            ]
+        else:
+            command_height = float(
+                getattr(self._env, "_recovery_command_height", _DEFAULT_STANDING_HEIGHT)
+            )
+            self._command[recovery_mask, 4] = command_height
+        self._command[recovery_mask, 5] = 0.0
+        self._command[recovery_mask, 7] = 0.0
 
     def _advance_traj_step(self) -> None:
         """按参考轨迹时间推进计步器。
@@ -570,6 +615,8 @@ class JumpCommandTerm(BasicCommandTerm):
         - Jump/diag_jump_wheel_yaw_drive_sq：跳跃期同号轮速扭腰驱动，越小越少 yaw 扭转
         - Jump/diag_jump_yaw_rate_abs：跳跃期 yaw 角速度绝对值
         """
+        if not self.cfg.enable_jump_metrics:
+            return
         jump_flag = self._command[:, 5] > 0.5
 
         ref_grounded_ratio = (self._jump_stage == 0).float().mean().item()

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from . import flat, flow_match, jump_finetune, jump_pretrain, rough
+from . import flat, flow_match, jump_finetune, jump_pretrain, recovery, rough
 
 
 def register_all_tasks() -> None:
@@ -14,6 +14,7 @@ def register_all_tasks() -> None:
     rough.register()
     flat.register()
     flow_match.register()
+    recovery.register()
     jump_pretrain.register()
     jump_finetune.register()
 
