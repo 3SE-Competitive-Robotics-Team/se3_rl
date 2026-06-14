@@ -297,6 +297,11 @@ def action_rate_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
     )
 
 
+def action_l2(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """原始动作平方惩罚，抑制策略输出远超控制契约的目标。"""
+    return torch.sum(torch.square(env.action_manager.action), dim=1)
+
+
 def joint_pos_penalty(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -399,6 +404,7 @@ __all__ = [
     "DOG_KNEE_JOINT_IDS",
     "DOG_LEG_JOINT_IDS",
     "DOG_WHEEL_JOINT_IDS",
+    "action_l2",
     "action_rate_l2",
     "ang_vel_xy_l2",
     "bad_tilt",

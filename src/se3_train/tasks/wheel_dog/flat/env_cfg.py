@@ -40,6 +40,17 @@ _COMMAND_NAME = "base_velocity"
 _MAX_LIN_VEL_X = 4.0
 _MAX_LIN_VEL_Y = 1.5
 
+_DOG_LEG_TARGET_CLIP = {
+    ".*_abad_joint": (-0.55, 0.55),
+    "fl_hip_joint|fr_hip_joint": (-2.20, 2.45),
+    "hl_hip_joint|hr_hip_joint": (-2.45, 2.20),
+    ".*_knee_joint": (-2.60, 2.60),
+}
+"""腿部位置目标限幅，给 MuJoCo 关节物理限位留出安全余量。"""
+
+_DOG_WHEEL_TARGET_CLIP = {".*": (-15.0, 15.0)}
+"""轮子速度目标限幅，避免策略用无意义的大速度目标顶饱和。"""
+
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """构造 WheelDog 平地速度跟随训练环境。"""
@@ -137,7 +148,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 ".*_hip_joint": 0.25,
                 ".*_knee_joint": 0.25,
             },
-            clip={".*": (-100.0, 100.0)},
+            clip=_DOG_LEG_TARGET_CLIP,
             preserve_order=True,
             use_default_offset=True,
         ),
@@ -145,7 +156,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             entity_name="robot",
             actuator_names=DOG_WHEEL_JOINT_NAMES,
             scale=5.0,
-            clip={".*": (-100.0, 100.0)},
+            clip=_DOG_WHEEL_TARGET_CLIP,
             preserve_order=True,
             use_default_offset=True,
         ),
@@ -234,6 +245,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"command_name": _COMMAND_NAME, "joint_ids": DOG_KNEE_JOINT_IDS},
         ),
         "action_rate_l2": RewardTermCfg(func=rewards.action_rate_l2, weight=-0.01),
+        "action_l2": RewardTermCfg(func=rewards.action_l2, weight=-0.02),
         "dof_pos_limits": RewardTermCfg(func=rewards.dof_pos_limits, weight=-5.0),
         "undesired_contacts": RewardTermCfg(
             func=rewards.undesired_contacts,
