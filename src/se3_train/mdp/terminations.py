@@ -6,10 +6,15 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import output_to_policy_pos_torch, output_to_policy_vel_torch
+from se3_shared import (
+    output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
+    policy_leg_position_error_torch,
+)
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
+    is_closedchain_model,
     is_fourbar_surrogate_model,
     policy_leg_joint_ids,
 )
@@ -226,7 +231,12 @@ def catastrophic_state(
     if max_leg_pos_error is None:
         leg_pos_bad = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
     else:
-        leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)
+        leg_error = (
+            policy_leg_position_error_torch(leg_pos, leg_default)
+            if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot)
+            else leg_pos - leg_default
+        )
+        leg_pos_bad = torch.any(torch.abs(leg_error) > float(max_leg_pos_error), dim=1)
     leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
     root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
     root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)

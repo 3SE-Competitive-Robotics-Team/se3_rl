@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from se3_sim2sim.config import (
+    RECOVERY_COMMAND_HEIGHT_M,
+    RECOVERY_POSE_CHOICES,
+    RECOVERY_POSE_RP_RAD,
     SIM_MODEL_VARIANT_CHOICES,
     PolicyConfig,
     RobotConfig,
@@ -56,6 +59,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-velocity", action="store_true")
     parser.add_argument("--selfright-max-steps", type=int, default=1000)
     parser.add_argument("--velocity-max-steps", type=int, default=3600)
+    parser.add_argument(
+        "--command-height",
+        type=float,
+        default=RECOVERY_COMMAND_HEIGHT_M,
+        help="Recovery command height，默认与当前固定姿态评估一致为 0.26m。",
+    )
+    parser.add_argument(
+        "--selfright-poses",
+        nargs="+",
+        choices=RECOVERY_POSE_CHOICES,
+        default=list(RECOVERY_POSE_CHOICES),
+        help="标准自起评估姿态列表，默认覆盖 standing/left_side/right_side/prone/supine。",
+    )
+    parser.add_argument(
+        "--selfright-yaw-deg",
+        type=float,
+        default=0.0,
+        help="标准自起姿态的初始 yaw，默认 0 度以对齐固定姿态批量评估。",
+    )
     parser.add_argument("--print-every", type=int, default=200)
     parser.add_argument("--viewer-log-every", type=int, default=2)
     parser.add_argument("--rerun-memory-limit", default="512MB")
@@ -84,6 +106,9 @@ def main() -> int:
     result: dict[str, Any] = {
         "checkpoint": str(checkpoint),
         "output_dir": str(output_dir),
+        "model_variant": str(args.model_variant) if args.model is None else "custom",
+        "model": str(_model_path_from_args(args)),
+        "command_height": float(args.command_height),
         "checks": {},
     }
 
@@ -109,28 +134,44 @@ def main() -> int:
 
 
 def _run_selfright(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -> dict[str, Any]:
-    """运行标准全角度自起回放。"""
-    name = f"{checkpoint.stem}_standard_selfright"
-    json_output = output_dir / f"{name}.json"
-    rrd_output = output_dir / f"{name}.rrd" if args.record_rerun else None
-    cfg = _base_cfg(
-        args,
-        checkpoint,
-        json_output=json_output,
-        rrd_output=rrd_output,
-        max_steps=args.selfright_max_steps,
-    )
-    cfg.robot.initial_roll_rad = math.radians(90.0)
-    cfg.robot.initial_pitch_rad = math.radians(90.0)
-    cfg.robot.initial_yaw_rad = math.radians(45.0)
-    cfg.robot.initial_base_height = 0.16
-    cfg.robot.command = (0.0, 0.0, 0.0, 0.0, 0.22, 0.0, 0.2, 0.0)
-    summary = run_sim2sim(cfg)
+    """运行训练端标准姿态自起回放。"""
+    cases: list[dict[str, Any]] = []
+    for pose in args.selfright_poses:
+        pose_name = str(pose)
+        name = f"{checkpoint.stem}_standard_selfright_{pose_name}"
+        json_output = output_dir / f"{name}.json"
+        rrd_output = output_dir / f"{name}.rrd" if args.record_rerun else None
+        cfg = _base_cfg(
+            args,
+            checkpoint,
+            json_output=json_output,
+            rrd_output=rrd_output,
+            max_steps=args.selfright_max_steps,
+        )
+        roll, pitch = RECOVERY_POSE_RP_RAD[pose_name]
+        cfg.robot.initial_roll_rad = float(roll)
+        cfg.robot.initial_pitch_rad = float(pitch)
+        cfg.robot.initial_yaw_rad = math.radians(float(args.selfright_yaw_deg))
+        cfg.robot.initial_base_height = (
+            float(args.command_height) if pose_name == "standing" else 0.16
+        )
+        cfg.robot.command = _recovery_command(float(args.command_height))
+        summary = run_sim2sim(cfg)
+        cases.append(
+            {
+                "pose": pose_name,
+                "json": str(json_output),
+                "rrd": str(rrd_output) if rrd_output is not None else None,
+                "done_reason": summary["done_reason"],
+                "rollout": summary["rollout"],
+                "initial_policy_io": summary.get("initial_policy_io", {}),
+            }
+        )
     return {
-        "json": str(json_output),
-        "rrd": str(rrd_output) if rrd_output is not None else None,
-        "done_reason": summary["done_reason"],
-        "rollout": summary["rollout"],
+        "poses": list(args.selfright_poses),
+        "command_height": float(args.command_height),
+        "done_reason": "standard_pose_sweep",
+        "cases": cases,
     }
 
 
@@ -148,7 +189,8 @@ def _run_velocity_sweep(
         rrd_output=rrd_output,
         max_steps=args.velocity_max_steps,
     )
-    cfg.robot.command = (0.0, 0.0, 0.0, 0.0, 0.22, 0.0, 0.2, 0.0)
+    cfg.robot.initial_base_height = float(args.command_height)
+    cfg.robot.command = _recovery_command(float(args.command_height))
     cfg.course = CourseConfig(mode=CourseType.UPRIGHT_VELOCITY_SWEEP)
     summary = run_sim2sim(cfg)
     return {
@@ -196,8 +238,27 @@ def _model_path_from_args(args: argparse.Namespace) -> Path:
     return model_path_for_variant(str(args.model_variant))
 
 
+def _recovery_command(
+    command_height: float,
+) -> tuple[float, float, float, float, float, float, float, float]:
+    """构造 recovery 策略使用的 8D command。"""
+    return (0.0, 0.0, 0.0, 0.0, float(command_height), 0.0, 0.2, 0.0)
+
+
 def _check_selfright(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:
     """检查标准自起是否达标。"""
+    cases = payload.get("cases")
+    if isinstance(cases, list):
+        case_checks = [_check_selfright_case(args, case) for case in cases]
+        return {
+            "passed": bool(case_checks) and all(case["passed"] for case in case_checks),
+            "cases": case_checks,
+        }
+    return _check_selfright_case(args, payload)
+
+
+def _check_selfright_case(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:
+    """检查单个标准自起姿态是否达标。"""
     rollout = payload["rollout"]
     final = rollout["final"]
     final_tilt = float(final["tilt_deg"])
@@ -208,7 +269,9 @@ def _check_selfright(args: argparse.Namespace, payload: dict[str, Any]) -> dict[
         and final_height >= float(args.selfright_min_height_m)
     )
     return {
+        "pose": str(payload.get("pose", "single")),
         "passed": passed,
+        "done_reason": str(payload["done_reason"]),
         "final_tilt_deg": final_tilt,
         "final_height_m": final_height,
         "max_tilt_deg": float(rollout["tilt_deg"]["max"]),

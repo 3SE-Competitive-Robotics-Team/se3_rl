@@ -1,7 +1,7 @@
 """SE3 轮腿机器人的观测函数。
 
 观测空间:
-- actor: 31D (原 27D + pitch/roll/height cmd 扩展)
+- actor: 34D (腿部前杆使用 sin/cos 相位观测)
 - critic: actor + 特权信息
 """
 
@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import ObservationConfig, output_to_policy_pos_torch, output_to_policy_vel_torch
+from se3_shared import (
+    ObservationConfig,
+    output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
+    policy_leg_phase_active_obs_torch,
+)
 from se3_train.mdp.contact_utils import (
     contact_force_nonfinite_env_mask,
     finite_contact_force_norm,
@@ -62,15 +67,18 @@ def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """腿部主动杆位置（相对默认位姿），4D。"""
+    """腿部主动杆相位和主动杆夹角观测，6D。"""
     robot = env.scene["robot"]
     leg_ids = policy_leg_joint_ids(robot)
     if is_fourbar_surrogate_model(robot):
         pos = output_to_policy_pos_torch(robot.data.joint_pos[:, leg_ids])
         default_pos = output_to_policy_pos_torch(robot.data.default_joint_pos[:, leg_ids])
-        return _finite_clamp(pos - default_pos)
+        return _finite_clamp(policy_leg_phase_active_obs_torch(pos, default_pos))
     return _finite_clamp(
-        robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+        policy_leg_phase_active_obs_torch(
+            robot.data.joint_pos[:, leg_ids],
+            robot.data.default_joint_pos[:, leg_ids],
+        )
     )
 
 

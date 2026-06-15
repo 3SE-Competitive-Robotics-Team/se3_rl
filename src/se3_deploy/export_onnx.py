@@ -12,8 +12,8 @@ from torch import nn
 from se3_sim2sim.policy import PolicyRuntime
 from se3_sim2sim.runtime_spec import RuntimeSpec
 
-DEFAULT_RECOVERY_CHECKPOINT = Path("assets/base_model/model_5999_gru.pt")
-DEFAULT_OUTPUT = Path("logs/deploy/model_5999_recovery_gru.onnx")
+DEFAULT_RECOVERY_CHECKPOINT = Path("logs/rsl_rl/se3_wheel_leg/2026-06-13_21-35-38/model_4999.pt")
+DEFAULT_OUTPUT = Path("logs/deploy/model_4999_recovery_obs34_gru.onnx")
 
 
 class _OnnxGRUActor(nn.Module):

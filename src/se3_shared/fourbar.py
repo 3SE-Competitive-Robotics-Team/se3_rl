@@ -184,9 +184,7 @@ def wheel_xz_to_output_pos_torch(wheel_xz: torch.Tensor) -> torch.Tensor:
     active = _interp_lut(target_length, length_grid, active_by_length)
     canonical_knee = output_knee_from_active_angle_torch(active)
     vec_x, vec_z = _leg_vector_torch(canonical_knee)
-    canonical_front = torch.atan2(vec_x, -vec_z) - torch.atan2(
-        target[..., 0], -target[..., 1]
-    )
+    canonical_front = torch.atan2(vec_x, -vec_z) - torch.atan2(target[..., 0], -target[..., 1])
 
     output = torch.empty((*target.shape[:-2], 4), device=target.device, dtype=target.dtype)
     output[:, 0] = canonical_front[:, 0]
@@ -349,9 +347,7 @@ def wheel_xz_to_output_pos_np(wheel_xz: np.ndarray) -> np.ndarray:
     active = np.interp(target_length, length_grid, active_by_length)
     canonical_knee = output_knee_from_active_angle_np_array(active)
     vec_x, vec_z = _leg_vector_np(canonical_knee)
-    canonical_front = np.arctan2(vec_x, -vec_z) - np.arctan2(
-        target[..., 0], -target[..., 1]
-    )
+    canonical_front = np.arctan2(vec_x, -vec_z) - np.arctan2(target[..., 0], -target[..., 1])
 
     output = np.empty((*target.shape[:-2], 4), dtype=np.float64)
     output[:, 0] = canonical_front[:, 0]

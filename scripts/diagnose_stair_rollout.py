@@ -157,9 +157,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             command_cfg.lin_vel_x_range = (float(args.command_vx), float(args.command_vx))
         if args.command_yaw is not None:
             command_cfg.ang_vel_yaw_range = (float(args.command_yaw), float(args.command_yaw))
-    if (args.command_vx is not None or args.command_yaw is not None) and hasattr(
-        cfg, "curriculum"
-    ):
+    if (args.command_vx is not None or args.command_yaw is not None) and hasattr(cfg, "curriculum"):
         cfg.curriculum.pop("command_vel", None)
     if args.no_terminations:
         cfg.terminations = {}

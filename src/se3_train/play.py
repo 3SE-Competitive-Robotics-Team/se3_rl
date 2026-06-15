@@ -200,17 +200,11 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         target_wheel_xz = [[0.0, 0.0], [0.0, 0.0]]
         action_term = env.action_manager.get_term("delayed_action")
         if hasattr(action_term, "ctbc_output_bias"):
-            output_bias = (
-                action_term.ctbc_output_bias[env_idx, :4].detach().cpu().tolist()
-            )
+            output_bias = action_term.ctbc_output_bias[env_idx, :4].detach().cpu().tolist()
         if hasattr(action_term, "ctbc_action_delta"):
-            action_delta = (
-                action_term.ctbc_action_delta[env_idx, :4].detach().cpu().tolist()
-            )
+            action_delta = action_term.ctbc_action_delta[env_idx, :4].detach().cpu().tolist()
         if hasattr(action_term, "ctbc_wheel_delta_xz"):
-            requested_wheel_delta = (
-                action_term.ctbc_wheel_delta_xz[env_idx].detach().cpu().tolist()
-            )
+            requested_wheel_delta = action_term.ctbc_wheel_delta_xz[env_idx].detach().cpu().tolist()
         if hasattr(action_term, "actual_wheel_xz"):
             actual_wheel_xz = action_term.actual_wheel_xz[env_idx].detach().cpu().tolist()
         if hasattr(action_term, "target_wheel_xz"):
@@ -308,9 +302,7 @@ def _format_ctbc_html(
 
 
 def _format_xz_cm(values: list[list[float]]) -> str:
-    return " / ".join(
-        f"({side[0] * 100.0:+.1f}, {side[1] * 100.0:+.1f})" for side in values
-    )
+    return " / ".join(f"({side[0] * 100.0:+.1f}, {side[1] * 100.0:+.1f})" for side in values)
 
 
 def _round_nested_cm(values: list[list[float]]) -> list[list[float]]:

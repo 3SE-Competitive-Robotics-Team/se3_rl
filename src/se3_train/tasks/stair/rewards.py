@@ -123,12 +123,15 @@ def stair_phase_forward_progress(
     gate = _stair_phase_gate(env, walking_phase_iterations, steps_per_policy_iter)
     if not torch.any(gate):
         return torch.zeros(env.num_envs, device=env.device)
-    return stair_forward_progress(
-        env,
-        command_name=command_name,
-        sigma=sigma,
-        asset_cfg=asset_cfg,
-    ) * gate
+    return (
+        stair_forward_progress(
+            env,
+            command_name=command_name,
+            sigma=sigma,
+            asset_cfg=asset_cfg,
+        )
+        * gate
+    )
 
 
 def flat_phase_wheel_contact_penalty(

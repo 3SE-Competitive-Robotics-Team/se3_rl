@@ -16,8 +16,24 @@ from .course import CourseConfig
 ViewerMode = Literal["rerun", "mujoco", "none"]
 RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
+RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
 RcOffMode = Literal["no-torque", "hold-current"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
+RECOVERY_COMMAND_HEIGHT_M = se3_shared.RECOVERY_COMMAND_HEIGHT_M
+RECOVERY_POSE_CHOICES: tuple[RecoveryPose, ...] = (
+    "standing",
+    "left_side",
+    "right_side",
+    "prone",
+    "supine",
+)
+RECOVERY_POSE_RP_RAD: dict[RecoveryPose, tuple[float, float]] = {
+    "standing": (0.0, 0.0),
+    "left_side": (0.5 * math.pi, 0.0),
+    "right_side": (-0.5 * math.pi, 0.0),
+    "prone": (0.0, math.pi),
+    "supine": (0.0, -math.pi),
+}
 
 _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()

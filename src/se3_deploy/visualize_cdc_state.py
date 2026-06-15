@@ -24,7 +24,7 @@ from urllib.request import urlopen
 
 import numpy as np
 
-from se3_shared import RobotConfig
+from se3_shared import RobotConfig, policy_leg_position_error_np
 from se3_shared.fourbar import policy_to_output_pos_np
 
 from .cdc import CdcSerial
@@ -595,7 +595,13 @@ def state_to_snapshot(
     obs = obs_result.obs
     joint_pos = np.asarray(state.joint_pos, dtype=np.float64)
     target_joint_pos = np.asarray(state.target_joint_pos, dtype=np.float64)
-    joint_pos_error = _wrap_angle_np(target_joint_pos - joint_pos)
+    joint_pos_error = policy_leg_position_error_np(
+        target_joint_pos,
+        joint_pos,
+        robot_cfg=_ROBOT_CFG,
+    )
+    joint_active = _policy_active_angles_np(joint_pos)
+    target_active = _policy_active_angles_np(target_joint_pos)
     return {
         "source": source,
         "connected": True,
@@ -613,8 +619,9 @@ def state_to_snapshot(
         "joint_pos": _finite_list(state.joint_pos),
         "target_joint_pos": _finite_list(state.target_joint_pos),
         "joint_pos_error": _finite_list(joint_pos_error),
-        "joint_active": _finite_list(_policy_active_angles_np(joint_pos)),
-        "target_active": _finite_list(_policy_active_angles_np(target_joint_pos)),
+        "joint_active": _finite_list(joint_active),
+        "target_active": _finite_list(target_active),
+        "active_error": _finite_list(target_active - joint_active),
         "render_joint_pos": _finite_list(joint_pos),
         "joint_vel": _finite_list(state.joint_vel),
         "hip_torque": _finite_list(state.hip_torque),
@@ -626,12 +633,12 @@ def state_to_snapshot(
             "base_ang_vel_scaled": _finite_list(obs[0:3]),
             "projected_gravity": _finite_list(obs[3:6]),
             "commands_scaled": _finite_list(obs[6:11]),
-            "leg_pos_rel": _finite_list(obs[11:15]),
-            "leg_vel_scaled": _finite_list(obs[15:19]),
-            "wheel_pos": _finite_list(obs[19:21]),
-            "wheel_vel_scaled": _finite_list(obs[21:23]),
-            "last_actions": _finite_list(obs[23:29]),
-            "recovery_cmd": _finite_list(obs[29:32]),
+            "leg_phase_active": _finite_list(obs[11:17]),
+            "leg_vel_scaled": _finite_list(obs[17:21]),
+            "wheel_pos": _finite_list(obs[21:23]),
+            "wheel_vel_scaled": _finite_list(obs[23:25]),
+            "last_actions": _finite_list(obs[25:31]),
+            "recovery_cmd": _finite_list(obs[31:34]),
         },
         "obs_had_nonfinite_input": bool(obs_result.had_nonfinite_input),
     }
@@ -647,7 +654,14 @@ def _wrap_angle_scalar(angle: float) -> float:
 
 def _policy_active_angles_np(joint_pos: np.ndarray) -> np.ndarray:
     q = np.asarray(joint_pos, dtype=np.float64).reshape(4)
-    return _wrap_angle_np(np.asarray([q[0] - q[1], q[3] - q[2]], dtype=np.float64))
+    coeffs = np.asarray(_ROBOT_CFG.active_rod_angle_coeffs, dtype=np.float64).reshape(2, 2)
+    return np.asarray(
+        [
+            coeffs[0, 0] * q[0] + coeffs[0, 1] * q[1],
+            coeffs[1, 0] * q[2] + coeffs[1, 1] * q[3],
+        ],
+        dtype=np.float64,
+    )
 
 
 def latency_to_snapshot(latency: PolicyLatencyFrame) -> dict[str, Any]:
@@ -2450,6 +2464,7 @@ function updatePanel(s) {
     ["joint_pos_error", arr(s.joint_pos_error)],
     ["joint_active", arr(s.joint_active)],
     ["target_active", arr(s.target_active)],
+    ["active_error", arr(s.active_error)],
     ["hip_torque", arr(s.hip_torque)],
     ["wheel_torque", arr(s.wheel_torque)],
     ["wheel_motor_torque", arr(s.wheel_motor_torque)],

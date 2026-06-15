@@ -8,6 +8,7 @@ import numpy as np
 
 from .fourbar import output_to_policy_pos_np, output_to_policy_vel_np
 from .height_default import policy_default_from_height_np
+from .leg_policy import policy_leg_phase_active_obs_np
 from .observation import ObservationConfig
 from .robot import JointGroup, RobotConfig
 
@@ -173,7 +174,7 @@ def build_policy_observation_np(
     fourbar_surrogate: bool = False,
     normalize_projected_gravity: bool = False,
 ) -> PolicyObservationResult:
-    """按 32D actor contract 拼装 policy observation。"""
+    """按 34D actor contract 拼装 policy observation。"""
     had_nonfinite = False
     base_ang_vel_body, bad = _finite_array(base_ang_vel_body, 3)
     had_nonfinite = had_nonfinite or bad
@@ -217,7 +218,7 @@ def build_policy_observation_np(
         leg_pos = output_to_policy_pos_np(leg_pos)
         default_leg_pos = output_to_policy_pos_np(default_leg_pos)
         leg_vel = output_to_policy_vel_np(dof_pos[JointGroup.CTRL_LEGS], leg_vel)
-    obs.extend((leg_pos - default_leg_pos).tolist())
+    obs.extend(policy_leg_phase_active_obs_np(leg_pos, default_leg_pos).reshape(-1).tolist())
     obs.extend((leg_vel * _OBS_CFG.leg_vel_scale).tolist())
     # 轮子是连续关节，累计位置会无界增长；保留 2D 槽位以兼容策略输入维度。
     obs.extend((0.0, 0.0))

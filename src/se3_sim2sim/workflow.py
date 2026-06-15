@@ -65,6 +65,7 @@ class Sim2SimWorkflow:
                 f"base_clearance={float(pre_policy_settle['base_clearance']):+.4f}m"
             )
             obs = self.robot.observation()
+        initial_policy_io = self._policy_io_diagnostics(obs)
         samples: list[dict[str, float]] = []
         model_diag = self.robot.diagnostics()
         if self.viewer is not None:
@@ -416,6 +417,7 @@ class Sim2SimWorkflow:
             },
             "model_diagnostics": model_diag,
             "pre_policy_settle": pre_policy_settle,
+            "initial_policy_io": initial_policy_io,
             "deploy_telemetry_init_obs_check": deploy_init_obs_check,
             "rollout": rollout_diagnostics(samples),
             "done_reason": done_reason,
@@ -529,6 +531,30 @@ class Sim2SimWorkflow:
             "selected_line_no": None
             if init_summary is None
             else init_summary.get("selected_line_no"),
+        }
+
+    def _policy_io_diagnostics(self, obs: np.ndarray) -> dict[str, object]:
+        """记录初始 policy 输入的切片统计，便于定位 obs contract 错位。"""
+        arr = np.asarray(obs, dtype=np.float64).reshape(-1)
+        terms: dict[str, object] = {}
+        for name, sl in self.runtime.observation_slices.items():
+            values = arr[sl]
+            term: dict[str, object] = {
+                "start": int(sl.start),
+                "stop": int(sl.stop),
+                "size": int(values.size),
+                "min": float(np.min(values)) if values.size else 0.0,
+                "max": float(np.max(values)) if values.size else 0.0,
+                "max_abs": float(np.max(np.abs(values))) if values.size else 0.0,
+            }
+            if values.size <= 6:
+                term["values"] = values.tolist()
+            terms[name] = term
+        return {
+            "num_obs": int(arr.size),
+            "expected_num_obs": int(self.runtime.policy.num_obs),
+            "finite": bool(np.isfinite(arr).all()),
+            "terms": terms,
         }
 
     @staticmethod

@@ -61,7 +61,7 @@ def _apply_jump_command(
 def _apply_jump_observations(cfg: ManagerBasedRlEnvCfg) -> None:
     """在观测中追加 3 维跳跃指令(jump_flag, jump_target_height, jump_phase)。
 
-    actor 从 31 维扩展到 32 维(+jump_phase);critic 同步扩展。
+    当前共享 actor contract 为 34 维；critic 同步包含同一跳跃指令 term。
     """
     jump_obs_term = ObservationTermCfg(func=observations.jump_commands_obs)
 

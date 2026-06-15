@@ -23,6 +23,12 @@ from .fourbar import (
     wheel_xz_to_output_pos_torch,
 )
 from .height_default import policy_default_from_height_np, policy_default_from_height_torch
+from .leg_policy import (
+    policy_leg_phase_active_obs_np,
+    policy_leg_phase_active_obs_torch,
+    policy_leg_position_error_np,
+    policy_leg_position_error_torch,
+)
 from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
 from .policy_io import (
@@ -31,6 +37,14 @@ from .policy_io import (
     PolicyObservationResult,
     build_policy_observation_np,
 )
+from .recovery import (
+    RECOVERY_COMMAND_HEIGHT_M,
+    RECOVERY_COMMAND_HEIGHT_RANGE_M,
+    RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS,
+    RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S,
+    RECOVERY_DEFAULT_COMMAND_8D,
+    RECOVERY_DEFAULT_STM_COMMAND_5D,
+)
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
@@ -38,6 +52,12 @@ __all__ = [
     "FOURBAR_SURROGATE_MARKER",
     "M3508_C620_14",
     "M3508_HEXROLL",
+    "RECOVERY_COMMAND_HEIGHT_M",
+    "RECOVERY_COMMAND_HEIGHT_RANGE_M",
+    "RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS",
+    "RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S",
+    "RECOVERY_DEFAULT_COMMAND_8D",
+    "RECOVERY_DEFAULT_STM_COMMAND_5D",
     "ActionDelayConfig",
     "DecodedPolicyAction",
     "Joint",
@@ -60,6 +80,10 @@ __all__ = [
     "output_to_policy_vel_torch",
     "policy_default_from_height_np",
     "policy_default_from_height_torch",
+    "policy_leg_phase_active_obs_np",
+    "policy_leg_phase_active_obs_torch",
+    "policy_leg_position_error_np",
+    "policy_leg_position_error_torch",
     "policy_to_output_pos_np",
     "policy_to_output_pos_torch",
     "policy_to_output_torque_np",

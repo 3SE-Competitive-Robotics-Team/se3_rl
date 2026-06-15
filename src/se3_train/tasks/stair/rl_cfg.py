@@ -11,7 +11,7 @@ _NUM_STEPS_PER_ENV = 64
 
 
 def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """台阶 GRU PPO 配置，从当前 32 维 GRU 基模 warm-start。"""
+    """台阶 GRU PPO 配置，从当前 34 维 GRU 基模 warm-start。"""
     if smoke or os.environ.get("SE3_SMOKE", "0") == "1":
         max_iterations = 5
         logger = "tensorboard"
