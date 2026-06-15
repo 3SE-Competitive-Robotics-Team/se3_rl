@@ -68,10 +68,27 @@ class Sim2SimWorkflow:
         initial_policy_io = self._policy_io_diagnostics(obs)
         samples: list[dict[str, float]] = []
         model_diag = self.robot.diagnostics()
+
+        rc_sched = self.cfg.robot.rc_switch
+        rc_events = tuple(rc_sched.events)
+        _next_rc_event = 0
+        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+        _policy_memory_clean = True
+        if not _rc_output_enabled:
+            self.policy.reset()
+            self.robot.reset_policy_io_state()
+            obs = self.robot.observation()
+
         if self.viewer is not None:
             self.viewer.log_model(self.robot.model)
+            initial_telemetry = self.robot.telemetry()
+            initial_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+            initial_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+            initial_telemetry["rc_switch_event"] = 0.0
+            initial_telemetry["rc_policy_reset"] = 0.0
+            initial_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
             self.viewer.log_state(
-                self.robot.model, self.robot.data, step=0, telemetry=self.robot.telemetry()
+                self.robot.model, self.robot.data, step=0, telemetry=initial_telemetry
             )
 
         max_steps = int(self.cfg.max_steps)
@@ -95,15 +112,6 @@ class Sim2SimWorkflow:
         _traj_steps = self._trajectory_steps_for_height(float(self.robot.command[6]))
         _prev_action: np.ndarray | None = None
         _prev_applied_action: np.ndarray | None = None
-        rc_sched = self.cfg.robot.rc_switch
-        rc_events = tuple(rc_sched.events)
-        _next_rc_event = 0
-        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
-        _policy_memory_clean = True
-        if not _rc_output_enabled:
-            self.policy.reset()
-            self.robot.reset_policy_io_state()
-            obs = self.robot.observation()
 
         # 初始化：静态模式下读取用户命令中的 jump_flag；调度模式下初始不跳
         if sched.enabled or script_events:
@@ -151,6 +159,9 @@ class Sim2SimWorkflow:
 
         try:
             for step in step_iter:
+                if self._viewer_is_closed(self.viewer):
+                    done_reason = "viewer_closed"
+                    break
                 sim_time_s = (step - 1) * control_dt
                 if self.command_source is not None:
                     self.command_source.pace(sim_time_s)
@@ -344,6 +355,9 @@ class Sim2SimWorkflow:
                     self.viewer.log_state(
                         self.robot.model, self.robot.data, step=step, telemetry=info
                     )
+                    if self._viewer_is_closed(self.viewer):
+                        done_reason = "viewer_closed"
+                        break
                 if int(self.cfg.print_every) > 0 and step % int(self.cfg.print_every) == 0:
                     course_info = ""
                     if self._course is not None:
@@ -490,6 +504,22 @@ class Sim2SimWorkflow:
             follow_body=self.cfg.viewer.follow_body,
             geom_view=self.cfg.viewer.geom_view,
         )
+
+    @staticmethod
+    def _viewer_is_closed(viewer: object | None) -> bool:
+        """用 duck typing 识别 MuJoCo 窗口关闭状态，兼容 CompositeViewer。"""
+        if viewer is None:
+            return False
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            return any(Sim2SimWorkflow._viewer_is_closed(child) for child in children)
+        is_closed = getattr(viewer, "is_closed", None)
+        if callable(is_closed):
+            return bool(is_closed())
+        closed = getattr(viewer, "closed", None)
+        if closed is not None:
+            return bool(closed)
+        return bool(getattr(viewer, "_closed", False))
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, object]) -> None:

@@ -87,6 +87,13 @@ class ClosedChainClosureSolver:
         residuals = [leg.solve_position() for leg in self.legs]
         return float(max(residuals, default=0.0))
 
+    def seed_passive_position(self, leg_index: int, knee_angle: float) -> None:
+        """用解析膝角给指定腿的闭链求解器播种，避免跳到另一装配分支。"""
+
+        if not (0 <= int(leg_index) < len(self.legs)):
+            return
+        self.legs[int(leg_index)].seed_position(float(knee_angle))
+
     def solve_velocities(self) -> float:
         residuals = [leg.solve_velocity() for leg in self.legs]
         return float(max(residuals, default=0.0))
@@ -198,6 +205,15 @@ class _LegClosureSolver:
         self.passive_guess = np.asarray(best_passive, dtype=np.float64)
         mujoco.mj_forward(self.model, self.data)
         return self._residual_norm()
+
+    def seed_position(self, knee_angle: float) -> None:
+        """设置下一次闭链位置求解优先使用的被动膝角。"""
+
+        self.data.qpos[self.knee_qpos] = float(knee_angle)
+        self.passive_guess = np.asarray(
+            [float(knee_angle), float(self.data.qpos[self.coupler_qpos])],
+            dtype=np.float64,
+        )
 
     def solve_velocity(self) -> float:
         jac_active = self._residual_jacobian((self.front_qpos, self.drive_qpos))
