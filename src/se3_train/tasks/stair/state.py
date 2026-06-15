@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 import os
+import threading
 
 import torch
 
@@ -12,8 +12,8 @@ _KNEE_LEFT = 1
 _HIP_RIGHT = 2
 _KNEE_RIGHT = 3
 
-_HIP_FEEDFORWARD_RATIO: float = 1.5
-_KNEE_FEEDFORWARD_RATIO: float = 1.0
+_DEFAULT_HIP_FEEDFORWARD_RATIO: float = 1.5
+_DEFAULT_KNEE_FEEDFORWARD_RATIO: float = 1.0
 
 
 class StairClimbState:
@@ -30,20 +30,41 @@ class StairClimbState:
         contact_window: int = 3,
         force_threshold_n: float = 30.0,
         ff_amplitude_rad: float = 0.3,
-        ff_period_s: float = 0.6,
+        ff_period_s: float = 0.3,
+        ff_attack_s: float = 0.03,
+        ff_hold_s: float = 0.08,
+        hip_feedforward_ratio: float = _DEFAULT_HIP_FEEDFORWARD_RATIO,
+        knee_feedforward_ratio: float = _DEFAULT_KNEE_FEEDFORWARD_RATIO,
         control_dt: float = 0.01,
         ff_start_iter: int = 0,
-        ann_start_iter: int = 200,
-        ann_end_iter: int = 800,
+        ann_start_iter: int = 100,
+        ann_end_iter: int = 300,
         phantom_trigger_iter: int = 0,
     ) -> None:
         self.num_envs = num_envs
         self.device = device
         self.contact_window = contact_window
         self.force_threshold = force_threshold_n
-        self.ff_amplitude = ff_amplitude_rad
-        self.control_dt = control_dt
-        self.ff_period_steps = max(1, round(ff_period_s / control_dt))
+        self.control_dt = float(control_dt)
+        if self.control_dt <= 0.0:
+            raise ValueError("control_dt must be positive")
+        self._ff_config_lock = threading.RLock()
+        self.ff_amplitude = 0.0
+        self.ff_period_steps = 0
+        self.ff_period_s = 0.0
+        self.ff_attack_s = 0.0
+        self.ff_hold_s = 0.0
+        self.ff_decay_s = 0.0
+        self.hip_feedforward_ratio = _DEFAULT_HIP_FEEDFORWARD_RATIO
+        self.knee_feedforward_ratio = _DEFAULT_KNEE_FEEDFORWARD_RATIO
+        self.configure_feedforward(
+            ff_amplitude_rad=ff_amplitude_rad,
+            ff_period_s=ff_period_s,
+            ff_attack_s=ff_attack_s,
+            ff_hold_s=ff_hold_s,
+            hip_feedforward_ratio=hip_feedforward_ratio,
+            knee_feedforward_ratio=knee_feedforward_ratio,
+        )
         self.ff_start = int(ff_start_iter)
         self.ann_start = max(int(ann_start_iter), self.ff_start)
         self.ann_end = max(int(ann_end_iter), self.ann_start)
@@ -114,7 +135,9 @@ class StairClimbState:
         active = self._ff_phase >= 0
         self._ff_phase[active] += 1
 
-        finished = self._ff_phase >= self.ff_period_steps
+        with self._ff_config_lock:
+            period_steps = self.ff_period_steps
+        finished = self._ff_phase >= period_steps
         self._cooldown[finished] = self._cooldown_steps
         self._ff_phase[finished] = -1
         self._complete_ff_cycle_count[finished.any(dim=-1)] += 1
@@ -125,19 +148,105 @@ class StairClimbState:
         if self._kff == 0.0:
             return bias
 
+        with self._ff_config_lock:
+            ff_amplitude = self.ff_amplitude
+            hip_ratio = self.hip_feedforward_ratio
+            knee_ratio = self.knee_feedforward_ratio
         for side, (hip_idx, knee_idx) in enumerate(
             [(_HIP_LEFT, _KNEE_LEFT), (_HIP_RIGHT, _KNEE_RIGHT)]
         ):
             active_mask = self._ff_phase[:, side] >= 0
             if not active_mask.any():
                 continue
-            phase = self._ff_phase[:, side].float()
-            t = phase / self.ff_period_steps
-            cosine_val = self.ff_amplitude * (1.0 - torch.cos(2.0 * math.pi * t))
-            cosine_val = cosine_val * active_mask.float()
-            bias[:, hip_idx] = -cosine_val * _HIP_FEEDFORWARD_RATIO * self._kff
-            bias[:, knee_idx] = cosine_val * _KNEE_FEEDFORWARD_RATIO * self._kff
+            profile = self._ff_profile(self._ff_phase[:, side])
+            lift = (2.0 * ff_amplitude) * profile * active_mask.float()
+            bias[:, hip_idx] = -lift * hip_ratio * self._kff
+            bias[:, knee_idx] = lift * knee_ratio * self._kff
         return bias
+
+    def _ff_profile(self, phase_steps: torch.Tensor) -> torch.Tensor:
+        """Single-shot CTBC envelope: fast attack, short hold, smooth decay."""
+        with self._ff_config_lock:
+            attack_end = self.ff_attack_s
+            hold_end = self.ff_attack_s + self.ff_hold_s
+            decay_s = self.ff_decay_s
+        elapsed = torch.clamp(phase_steps.float(), min=0.0) * float(self.control_dt)
+
+        attack_ratio = torch.clamp(elapsed / max(attack_end, 1.0e-6), 0.0, 1.0)
+        decay_ratio = torch.clamp((elapsed - hold_end) / max(decay_s, 1.0e-6), 0.0, 1.0)
+        attack_profile = _smoothstep(attack_ratio)
+        decay_profile = 1.0 - _smoothstep(decay_ratio)
+        return torch.where(
+            elapsed < attack_end,
+            attack_profile,
+            torch.where(elapsed < hold_end, torch.ones_like(elapsed), decay_profile),
+        )
+
+    def configure_feedforward(
+        self,
+        *,
+        ff_amplitude_rad: float,
+        ff_period_s: float,
+        ff_attack_s: float,
+        ff_hold_s: float,
+        hip_feedforward_ratio: float | None = None,
+        knee_feedforward_ratio: float | None = None,
+    ) -> dict[str, float | int]:
+        """运行时更新 CTBC 脉冲，并对齐到整数控制步。"""
+        period_steps = max(3, round(float(ff_period_s) / self.control_dt))
+        attack_steps = min(
+            max(1, round(float(ff_attack_s) / self.control_dt)),
+            period_steps - 1,
+        )
+        hold_steps = min(
+            max(0, round(float(ff_hold_s) / self.control_dt)),
+            period_steps - attack_steps - 1,
+        )
+        decay_steps = period_steps - attack_steps - hold_steps
+
+        with self._ff_config_lock:
+            self.ff_amplitude = max(0.0, float(ff_amplitude_rad))
+            self.ff_period_steps = period_steps
+            self.ff_period_s = period_steps * self.control_dt
+            self.ff_attack_s = attack_steps * self.control_dt
+            self.ff_hold_s = hold_steps * self.control_dt
+            self.ff_decay_s = decay_steps * self.control_dt
+            if hip_feedforward_ratio is not None:
+                self.hip_feedforward_ratio = max(0.0, float(hip_feedforward_ratio))
+            if knee_feedforward_ratio is not None:
+                self.knee_feedforward_ratio = max(0.0, float(knee_feedforward_ratio))
+            return self.feedforward_config()
+
+    def feedforward_config(self) -> dict[str, float | int]:
+        """返回当前运行时 CTBC 脉冲配置。"""
+        with self._ff_config_lock:
+            return {
+                "amplitude_rad": self.ff_amplitude,
+                "period_steps": self.ff_period_steps,
+                "period_s": self.ff_period_s,
+                "attack_s": self.ff_attack_s,
+                "hold_s": self.ff_hold_s,
+                "hold_end_s": self.ff_attack_s + self.ff_hold_s,
+                "decay_s": self.ff_decay_s,
+                "hip_ratio": self.hip_feedforward_ratio,
+                "knee_ratio": self.knee_feedforward_ratio,
+            }
+
+    def trigger_feedforward(self, env_idx: int, side: str = "both") -> None:
+        """手动触发指定 viewer env 的左、右或双侧 CTBC 脉冲。"""
+        env_idx = int(env_idx)
+        if not 0 <= env_idx < self.num_envs:
+            raise IndexError(f"env_idx out of range: {env_idx}")
+        side_indices = {
+            "left": (0,),
+            "right": (1,),
+            "both": (0, 1),
+        }
+        if side not in side_indices:
+            raise ValueError(f"unknown CTBC side: {side}")
+        for side_idx in side_indices[side]:
+            self._cooldown[env_idx, side_idx] = 0
+            self._ff_phase[env_idx, side_idx] = 0
 
     def contact_triggered(self) -> torch.Tensor:
         return (self._ff_phase >= 0).any(dim=-1)
@@ -225,6 +334,11 @@ class StairClimbState:
             "Stair/diag_ctbc_kff": self._kff,
             "Stair/diag_ctbc_local_iter": float(self._iter),
         }
+
+
+def _smoothstep(x: torch.Tensor) -> torch.Tensor:
+    x = torch.clamp(x, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
 
 
 __all__ = ["StairClimbState"]

@@ -422,10 +422,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_window": 3,
             "force_threshold_n": 30.0,
             "ff_amplitude_rad": 1.2,
-            "ff_period_s": 0.6,
+            "ff_period_s": 0.3,
+            "ff_attack_s": 0.03,
+            "ff_hold_s": 0.08,
             "ff_start_iter": _WALKING_PHASE_ITERATIONS,
-            "ann_start_iter": _WALKING_PHASE_ITERATIONS + 200,
-            "ann_end_iter": _WALKING_PHASE_ITERATIONS + 800,
+            "ann_start_iter": _WALKING_PHASE_ITERATIONS + 100,
+            "ann_end_iter": _WALKING_PHASE_ITERATIONS + 300,
             "phantom_trigger_iter": 0,
         },
     )
@@ -501,12 +503,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     },
                     {
                         "iteration": 600,
-                        "lin_vel_x_range": (-2.0, 2.0),
+                        "lin_vel_x_range": (-1.8, 1.8),
                         "ang_vel_yaw_range": (-2.5, 2.5),
                     },
                     {
                         "iteration": 700,
-                        "lin_vel_x_range": (-2.5, 2.5),
+                        "lin_vel_x_range": (-1.8, 1.8),
                         "ang_vel_yaw_range": (-3.0, 3.0),
                     },
                     {
@@ -521,12 +523,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 500,
-                        "lin_vel_x_range": (0.6, 2.5),
+                        "lin_vel_x_range": (0.6, 1.8),
                         "ang_vel_yaw_range": (-0.50, 0.50),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 800,
-                        "lin_vel_x_range": (0.6, 2.5),
+                        "lin_vel_x_range": (0.6, 1.8),
                         "ang_vel_yaw_range": (-0.80, 0.80),
                     },
                 ],

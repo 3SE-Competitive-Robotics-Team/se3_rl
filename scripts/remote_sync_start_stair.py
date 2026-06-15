@@ -80,7 +80,27 @@ def build_code_archive(archive: Path, *, exclude_base_model: bool = False) -> No
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sync local code and start remote stair training.")
+    parser = argparse.ArgumentParser(
+        description="Sync local code and start remote stair training.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Resume notes:\n"
+            "  Warm-start is the default: only policy/value weights are loaded and the new run\n"
+            "  starts its runner iteration, optimizer, env common_step_counter, and CTBC local\n"
+            "  iteration from zero.\n\n"
+            "  For full training resume from an in-task checkpoint, pass --full-resume. The\n"
+            "  checkpoint restores optimizer, runner iteration, and env common_step_counter.\n"
+            "  The stair CTBC state object is still recreated on startup, so set\n"
+            "  --stair-local-iter-offset to the checkpoint iteration when resuming from the\n"
+            "  middle of the stair task. Example from model_800.pt:\n"
+            "    --full-resume --load-checkpoint model_800\\.pt --stair-local-iter-offset 800\n"
+            "  This keeps the walking phase skipped and makes CTBC enter local iteration 800\n"
+            "  instead of reopening from local iteration 0.\n\n"
+            "  --iterations is the number of iterations to run in this launch. With\n"
+            "  --full-resume the final iteration is checkpoint_iter + --iterations, so to\n"
+            "  finish a model_800.pt resume at total iteration 3800, pass --iterations 3000."
+        ),
+    )
     parser.add_argument("--entry-host", default="target-via-phone")
     parser.add_argument("--namespace", default="gczx-project06")
     parser.add_argument("--pod", default="gpu-8-b6994457c-kv2rj")
@@ -110,10 +130,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--full-resume",
         action="store_true",
-        help="完整恢复 checkpoint 的 optimizer、iteration 和 env_state；默认仍为 warm-start.",
+        help=(
+            "完整恢复 checkpoint 的 optimizer、runner iteration 和 env common_step_counter；"
+            "从台阶任务中途 checkpoint 续训时通常还要配合 --stair-local-iter-offset。"
+        ),
     )
     parser.add_argument("--envs", type=int, default=8192)
-    parser.add_argument("--iterations", type=int, default=2000)
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=2000,
+        help=(
+            "本次启动继续训练的轮数；full resume 时最终轮数 = checkpoint 轮数 + 该值，"
+            "例如 model_800.pt 训练到总 3800 轮应传 3000。"
+        ),
+    )
     parser.add_argument(
         "--gpu-ids",
         default="all",
@@ -134,7 +165,10 @@ def parse_args() -> argparse.Namespace:
         "--stair-local-iter-offset",
         type=int,
         default=None,
-        help="CTBC 台阶阶段 local iter 偏移; 从中途 checkpoint 续训时用于避免重新打开 CTBC.",
+        help=(
+            "CTBC 台阶阶段 local iter 对齐值；full resume 从 model_N.pt 续训时设为 N，"
+            "例如 model_800.pt 配 800，避免新建 CTBC 状态机后 local iter 从 0 重开。"
+        ),
     )
     parser.add_argument(
         "--run-name",

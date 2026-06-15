@@ -99,17 +99,104 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         self._se3_ctbc_last_log = 0.0
         self._se3_ctbc_checkpoint_iter = None
         self._se3_follow_ctbc = None
+        self._se3_ctbc_total_s = None
+        self._se3_ctbc_peak_s = None
+        self._se3_ctbc_hold_end_s = None
+        self._se3_ctbc_amplitude = None
+        self._se3_ctbc_hip_ratio = None
+        self._se3_ctbc_knee_ratio = None
+        self._se3_ctbc_profile_html = None
+        self._se3_ctbc_control_update = False
+        self._se3_ctbc_default_config = None
 
         if self._se3_train_run_dir is not None:
             with self._server.gui.add_folder("Training"):
                 self._se3_train_iter_html = self._server.gui.add_html("")
-        if getattr(self.env.unwrapped, "stair_climb_state", None) is not None:
+        state = getattr(self.env.unwrapped, "stair_climb_state", None)
+        if state is not None:
+            profile = state.feedforward_config()
+            self._se3_ctbc_default_config = profile
             with self._server.gui.add_folder("CTBC Feedforward"):
                 self._se3_follow_ctbc = self._server.gui.add_checkbox(
                     "Follow active CTBC",
                     initial_value=_bool_env(_VISER_FOLLOW_CTBC_ENV, default=False),
                 )
+                self._se3_ctbc_total_s = self._server.gui.add_slider(
+                    "Total duration (s)",
+                    min=0.05,
+                    max=1.0,
+                    step=0.01,
+                    initial_value=float(profile["period_s"]),
+                )
+                self._se3_ctbc_peak_s = self._server.gui.add_slider(
+                    "Peak time (s)",
+                    min=0.01,
+                    max=0.50,
+                    step=0.01,
+                    initial_value=float(profile["attack_s"]),
+                )
+                self._se3_ctbc_hold_end_s = self._server.gui.add_slider(
+                    "Peak hold end (s)",
+                    min=0.01,
+                    max=0.90,
+                    step=0.01,
+                    initial_value=float(profile["hold_end_s"]),
+                )
+                self._se3_ctbc_amplitude = self._server.gui.add_slider(
+                    "Amplitude (rad)",
+                    min=0.0,
+                    max=2.0,
+                    step=0.05,
+                    initial_value=float(profile["amplitude_rad"]),
+                )
+                self._se3_ctbc_hip_ratio = self._server.gui.add_slider(
+                    "Hip ratio",
+                    min=0.0,
+                    max=3.0,
+                    step=0.05,
+                    initial_value=float(profile["hip_ratio"]),
+                )
+                self._se3_ctbc_knee_ratio = self._server.gui.add_slider(
+                    "Knee ratio",
+                    min=0.0,
+                    max=3.0,
+                    step=0.05,
+                    initial_value=float(profile["knee_ratio"]),
+                )
+                reset_profile = self._server.gui.add_button("Reset pulse")
+                trigger_left = self._server.gui.add_button("Trigger left")
+                trigger_right = self._server.gui.add_button("Trigger right")
+                trigger_both = self._server.gui.add_button("Trigger both")
+                self._se3_ctbc_profile_html = self._server.gui.add_html("")
                 self._se3_ctbc_html = self._server.gui.add_html("")
+
+            for handle in (
+                self._se3_ctbc_total_s,
+                self._se3_ctbc_peak_s,
+                self._se3_ctbc_hold_end_s,
+                self._se3_ctbc_amplitude,
+                self._se3_ctbc_hip_ratio,
+                self._se3_ctbc_knee_ratio,
+            ):
+                handle.on_update(lambda _event: self._apply_ctbc_tuning())
+
+            @reset_profile.on_click
+            def _reset_ctbc_profile(_event) -> None:
+                self._set_ctbc_controls(self._se3_ctbc_default_config)
+
+            @trigger_left.on_click
+            def _trigger_ctbc_left(_event) -> None:
+                self._trigger_ctbc("left")
+
+            @trigger_right.on_click
+            def _trigger_ctbc_right(_event) -> None:
+                self._trigger_ctbc("right")
+
+            @trigger_both.on_click
+            def _trigger_ctbc_both(_event) -> None:
+                self._trigger_ctbc("both")
+
+            self._apply_ctbc_tuning()
 
         self._sync_ctbc_checkpoint_iteration(force=True)
         self._update_training_iter_display(force=True)
@@ -128,6 +215,72 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         speed_index = min(range(len(speeds)), key=lambda index: abs(speeds[index] - speed))
         self._speed_index = speed_index
         self._time_multiplier = speeds[speed_index]
+
+    def _apply_ctbc_tuning(self) -> None:
+        """将 Viser 控件值立即应用到运行中的 CTBC 状态机。"""
+        if self._se3_ctbc_control_update:
+            return
+        handles = (
+            self._se3_ctbc_total_s,
+            self._se3_ctbc_peak_s,
+            self._se3_ctbc_hold_end_s,
+            self._se3_ctbc_amplitude,
+            self._se3_ctbc_hip_ratio,
+            self._se3_ctbc_knee_ratio,
+        )
+        if any(handle is None for handle in handles):
+            return
+        state = getattr(self.env.unwrapped, "stair_climb_state", None)
+        if state is None:
+            return
+
+        total_s = float(self._se3_ctbc_total_s.value)
+        peak_s = min(float(self._se3_ctbc_peak_s.value), total_s - state.control_dt)
+        peak_s = max(state.control_dt, peak_s)
+        hold_end_s = min(
+            max(float(self._se3_ctbc_hold_end_s.value), peak_s),
+            total_s - state.control_dt,
+        )
+        profile = state.configure_feedforward(
+            ff_amplitude_rad=float(self._se3_ctbc_amplitude.value),
+            ff_period_s=total_s,
+            ff_attack_s=peak_s,
+            ff_hold_s=hold_end_s - peak_s,
+            hip_feedforward_ratio=float(self._se3_ctbc_hip_ratio.value),
+            knee_feedforward_ratio=float(self._se3_ctbc_knee_ratio.value),
+        )
+        self._set_ctbc_controls(profile, apply=False)
+
+    def _set_ctbc_controls(
+        self,
+        profile: dict[str, float | int] | None,
+        *,
+        apply: bool = True,
+    ) -> None:
+        """把离散后的实际参数回写到滑块，保持 GUI 与仿真一致。"""
+        if profile is None:
+            return
+        self._se3_ctbc_control_update = True
+        try:
+            self._se3_ctbc_total_s.value = float(profile["period_s"])
+            self._se3_ctbc_peak_s.value = float(profile["attack_s"])
+            self._se3_ctbc_hold_end_s.value = float(profile["hold_end_s"])
+            self._se3_ctbc_amplitude.value = float(profile["amplitude_rad"])
+            self._se3_ctbc_hip_ratio.value = float(profile["hip_ratio"])
+            self._se3_ctbc_knee_ratio.value = float(profile["knee_ratio"])
+            if self._se3_ctbc_profile_html is not None:
+                self._se3_ctbc_profile_html.content = _format_ctbc_profile_html(profile)
+        finally:
+            self._se3_ctbc_control_update = False
+        if apply:
+            self._apply_ctbc_tuning()
+
+    def _trigger_ctbc(self, side: str) -> None:
+        """手动触发当前选中环境的 CTBC 脉冲。"""
+        state = getattr(self.env.unwrapped, "stair_climb_state", None)
+        if state is None:
+            return
+        state.trigger_feedforward(int(self._scene.env_idx), side)
 
     def _update_training_iter_display(self, force: bool = False) -> None:
         """低频读取训练日志，把当前 PPO iter 写入 Viser GUI。"""
@@ -303,6 +456,21 @@ def _format_ctbc_html(
 
 def _format_xz_cm(values: list[list[float]]) -> str:
     return " / ".join(f"({side[0] * 100.0:+.1f}, {side[1] * 100.0:+.1f})" for side in values)
+
+
+def _format_ctbc_profile_html(profile: dict[str, float | int]) -> str:
+    return f"""
+      <div style="font-size:0.85em; line-height:1.35; padding:0 1em 0.5em 1em;">
+        <strong>Pulse:</strong> {float(profile["period_s"]):.2f} s /
+        {int(profile["period_steps"])} steps<br/>
+        <strong>Attack:</strong> {float(profile["attack_s"]):.2f} s<br/>
+        <strong>Hold:</strong> {float(profile["hold_s"]):.2f} s<br/>
+        <strong>Decay:</strong> {float(profile["decay_s"]):.2f} s<br/>
+        <strong>Amplitude:</strong> {float(profile["amplitude_rad"]):.2f} rad<br/>
+        <strong>Hip / knee ratio:</strong>
+        {float(profile["hip_ratio"]):.2f} / {float(profile["knee_ratio"]):.2f}
+      </div>
+    """
 
 
 def _round_nested_cm(values: list[list[float]]) -> list[list[float]]:
