@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -37,14 +36,6 @@ from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from . import curriculums, events, observations, rewards
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
-_RESOURCES = Path(__file__).resolve().parents[4] / "assets"
-_STAIR_MJCF_PATH = (
-    _RESOURCES
-    / "robots"
-    / "serialleg"
-    / "mjcf"
-    / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
-)
 _STAIR_WHEEL_KD = 0.08
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060
 _STAIR_COMMAND_HALF_TRACK = 0.200725
@@ -52,8 +43,11 @@ _STAIR_COMMAND_WHEEL_SPEED_FRACTION = 0.70
 _STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _WALKING_HEIGHT_RANGE = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
-_WALKING_PHASE_ITERATIONS = 400
-_STEPS_PER_POLICY_ITER = 128
+_WALKING_PHASE_ITERATIONS = 800
+_STEPS_PER_POLICY_ITER = 64
+_WATCH_ITER_ENV = "SE3_WATCH_ITER"
+_WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
+_WATCH_COMMAND_HEIGHT_ENV = "SE3_WATCH_COMMAND_HEIGHT"
 _TRAIN_VIEW_ITER_ENV = "SE3_TRAIN_VIEW_ITER"
 _TRAIN_VIEW_TERRAIN_LEVEL_ENV = "SE3_TRAIN_VIEW_TERRAIN_LEVEL"
 _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
@@ -77,6 +71,22 @@ def _float_env(name: str) -> float | None:
         return float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be a float, got {raw!r}") from exc
+
+
+def _first_int_env(*names: str) -> int | None:
+    for name in names:
+        value = _int_env(name)
+        if value is not None:
+            return value
+    return None
+
+
+def _first_float_env(*names: str) -> float | None:
+    for name in names:
+        value = _float_env(name)
+        if value is not None:
+            return value
+    return None
 
 
 def _stair_terrain_cfg() -> TerrainGeneratorCfg:
@@ -135,10 +145,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """构造 CTBC teacher-forcing 的倒金字塔台阶爬升环境。"""
     cfg = flat_env_cfg(play=play)
 
-    cfg.scene.entities["robot"] = get_serialleg_cfg(
-        mjcf_path=_STAIR_MJCF_PATH,
-        wheel_kd_override=_STAIR_WHEEL_KD,
-    )
+    cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_STAIR_WHEEL_KD)
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=_stair_terrain_cfg(),
@@ -179,12 +186,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.resampling_time_range = (5.0, 5.0)
-    command_cfg.lin_vel_x_range = (0.2, 0.6)
+    command_cfg.lin_vel_x_range = (0.0, 0.0)
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
-    command_cfg.height_range = (0.24, 0.37)
-    command_cfg.standing_height_range = (0.24, 0.37)
+    command_cfg.height_range = _WALKING_HEIGHT_RANGE
+    command_cfg.standing_height_range = _WALKING_HEIGHT_RANGE
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.0
     command_cfg.lin_vel_deadband = 0.05
@@ -202,9 +209,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
     command_cfg.enable_jump_metrics = False
-    train_view_command_height = _float_env(_TRAIN_VIEW_COMMAND_HEIGHT_ENV)
-    if play and train_view_command_height is not None:
-        command_height = float(train_view_command_height)
+    watch_command_height = _first_float_env(
+        _WATCH_COMMAND_HEIGHT_ENV,
+        _TRAIN_VIEW_COMMAND_HEIGHT_ENV,
+    )
+    fixed_watch_command_height = watch_command_height is not None
+    if fixed_watch_command_height:
+        command_height = float(watch_command_height)
         command_cfg.height_range = (command_height, command_height)
         command_cfg.standing_height_range = (command_height, command_height)
 
@@ -217,20 +228,47 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         terms["last_actions"] = last_action_term
         cfg.observations[group_name] = replace(group_cfg, terms=terms)
 
-    cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
-        func=rewards.stair_forward_progress,
-        weight=2.73,
-        params={"command_name": "velocity_height", "sigma": 0.25},
+    flat_tracking_lin_vel_cfg = cfg.rewards["tracking_lin_vel"]
+    flat_tracking_lin_vel_params = dict(flat_tracking_lin_vel_cfg.params or {})
+    flat_tracking_lin_vel_params.update(
+        {
+            "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
+            "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+        }
     )
-    cfg.rewards.pop("tracking_lin_yaw_joint", None)
-    cfg.rewards.pop("flat_wheel_contact", None)
-    cfg.rewards.pop("flat_leg_contact", None)
-    cfg.rewards["tracking_orientation_l2"].weight = -6.0
-    cfg.rewards["bad_tilt"].params = {
-        "soft_limit_deg": 20.0,
-        "hard_limit_deg": 40.0,
-        "max_penalty": 4.0,
+    cfg.rewards["flat_tracking_lin_vel"] = replace(
+        flat_tracking_lin_vel_cfg,
+        func=rewards.flat_phase_tracking_lin_vel,
+        params=flat_tracking_lin_vel_params,
+    )
+    cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
+        func=rewards.stair_phase_forward_progress,
+        weight=2.73,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.25,
+            "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
+            "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+        },
+    )
+    flat_contact_rewards = {
+        "flat_wheel_contact": rewards.flat_phase_wheel_contact_penalty,
+        "flat_leg_contact": rewards.flat_phase_leg_contact_penalty,
     }
+    for reward_name, reward_func in flat_contact_rewards.items():
+        if reward_name in cfg.rewards:
+            contact_params = dict(cfg.rewards[reward_name].params or {})
+            contact_params.update(
+                {
+                    "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
+                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+                }
+            )
+            cfg.rewards[reward_name] = replace(
+                cfg.rewards[reward_name],
+                func=reward_func,
+                params=contact_params,
+            )
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques_no_ctbc,
         weight=-2.0e-4,
@@ -406,24 +444,27 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         func=events.reset_stair_climb_state,
         mode="reset",
     )
-    train_view_iter = _int_env(_TRAIN_VIEW_ITER_ENV)
-    if train_view_iter is not None:
+    watch_iter = _first_int_env(_WATCH_ITER_ENV, _TRAIN_VIEW_ITER_ENV)
+    if watch_iter is not None:
         cfg.events["set_train_view_iteration"] = EventTermCfg(
             func=events.set_train_view_iteration,
             mode="startup",
             params={
-                "iteration": train_view_iter,
+                "iteration": watch_iter,
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
             },
         )
 
-    train_view_terrain_level = _int_env(_TRAIN_VIEW_TERRAIN_LEVEL_ENV)
-    if train_view_terrain_level is not None:
+    watch_terrain_level = _first_int_env(_WATCH_TERRAIN_LEVEL_ENV, _TRAIN_VIEW_TERRAIN_LEVEL_ENV)
+    force_watch_stair_terrain = watch_terrain_level is not None and (
+        watch_iter is None or watch_iter >= _WALKING_PHASE_ITERATIONS
+    )
+    if force_watch_stair_terrain:
         cfg.events["set_fixed_stair_terrain"] = EventTermCfg(
             func=events.set_fixed_stair_terrain,
             mode="startup",
             params={
-                "terrain_level": train_view_terrain_level,
+                "terrain_level": watch_terrain_level,
                 "terrain_type_name": _STAIR_TERRAIN_TYPES[0],
             },
         )
@@ -436,25 +477,56 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "command_name": "velocity_height",
                 "use_iterations": True,
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+                "fixed_iteration": watch_iter,
                 "velocity_stages": [
                     {
                         "iteration": 0,
-                        "lin_vel_x_range": (0.2, 0.6),
+                        "lin_vel_x_range": (0.0, 0.0),
+                        "ang_vel_yaw_range": (0.0, 0.0),
+                    },
+                    {
+                        "iteration": 100,
+                        "lin_vel_x_range": (-0.5, 0.5),
+                        "ang_vel_yaw_range": (-0.5, 0.5),
+                    },
+                    {
+                        "iteration": 250,
+                        "lin_vel_x_range": (-1.0, 1.0),
+                        "ang_vel_yaw_range": (-1.0, 1.0),
+                    },
+                    {
+                        "iteration": 400,
+                        "lin_vel_x_range": (-1.5, 1.5),
+                        "ang_vel_yaw_range": (-1.8, 1.8),
+                    },
+                    {
+                        "iteration": 600,
+                        "lin_vel_x_range": (-2.0, 2.0),
+                        "ang_vel_yaw_range": (-2.5, 2.5),
+                    },
+                    {
+                        "iteration": 700,
+                        "lin_vel_x_range": (-2.5, 2.5),
+                        "ang_vel_yaw_range": (-3.0, 3.0),
+                    },
+                    {
+                        "iteration": _WALKING_PHASE_ITERATIONS,
+                        "lin_vel_x_range": (0.6, 1.0),
                         "ang_vel_yaw_range": (0.0, 0.0),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 250,
-                        "lin_vel_x_range": (0.3, 1.0),
+                        "lin_vel_x_range": (0.6, 1.6),
                         "ang_vel_yaw_range": (-0.25, 0.25),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 500,
-                        "lin_vel_x_range": (0.5, 1.6),
+                        "lin_vel_x_range": (0.6, 2.5),
                         "ang_vel_yaw_range": (-0.50, 0.50),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 800,
-                        "lin_vel_x_range": (0.7, 2.5),
+                        "lin_vel_x_range": (0.6, 2.5),
                         "ang_vel_yaw_range": (-0.80, 0.80),
                     },
                 ],
@@ -467,18 +539,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "use_iterations": True,
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
                 "interpolate": True,
+                "fixed_iteration": watch_iter,
                 "height_stages": [
                     {
                         "iteration": 0,
                         "height_range": _WALKING_HEIGHT_RANGE,
                     },
                     {
-                        "iteration": 100,
-                        "height_range": (0.22, 0.27),
+                        "iteration": 150,
+                        "height_range": (0.22, 0.28),
                     },
                     {
-                        "iteration": 250,
+                        "iteration": 350,
                         "height_range": (0.23, 0.32),
+                    },
+                    {
+                        "iteration": 600,
+                        "height_range": (0.24, 0.37),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS,
@@ -499,9 +576,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
                 "flat_terrain_type_name": "flat",
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+                "fixed_iteration": watch_iter,
             },
         )
-        if train_view_terrain_level is not None:
+        if fixed_watch_command_height:
+            cfg.curriculum.pop("command_height", None)
+        if force_watch_stair_terrain:
             cfg.curriculum.pop("terrain_levels", None)
         if "push_disturbance" in cfg.curriculum:
             push_params = dict(cfg.curriculum["push_disturbance"].params or {})
@@ -509,6 +589,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 {
                     "use_iterations": True,
                     "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+                    "fixed_iteration": watch_iter,
                     "push_stages": [
                         {
                             "iteration": 0,

@@ -49,7 +49,7 @@ MJCF_PATH = (
     / "robots"
     / "serialleg"
     / "mjcf"
-    / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
+    / "serialleg_fourbar_surrogate_train.xml"
 )
 
 DEFAULT_FF_AMPLITUDE = 1.2

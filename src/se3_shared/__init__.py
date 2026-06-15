@@ -7,6 +7,9 @@ from .action_delay import ActionDelayConfig, delay_seconds_to_steps
 from .fourbar import (
     FOURBAR_SURROGATE_MARKER,
     is_fourbar_surrogate_name_set,
+    output_leg_length_limits_torch,
+    output_leg_wheel_xz_np,
+    output_leg_wheel_xz_torch,
     output_to_policy_pos_np,
     output_to_policy_pos_torch,
     output_to_policy_vel_np,
@@ -16,6 +19,8 @@ from .fourbar import (
     policy_to_output_torque_np,
     policy_to_output_torque_torch,
     policy_to_output_vel_torch,
+    wheel_xz_to_output_pos_np,
+    wheel_xz_to_output_pos_torch,
 )
 from .height_default import policy_default_from_height_np, policy_default_from_height_torch
 from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
@@ -46,6 +51,9 @@ __all__ = [
     "build_policy_observation_np",
     "delay_seconds_to_steps",
     "is_fourbar_surrogate_name_set",
+    "output_leg_length_limits_torch",
+    "output_leg_wheel_xz_np",
+    "output_leg_wheel_xz_torch",
     "output_to_policy_pos_np",
     "output_to_policy_pos_torch",
     "output_to_policy_vel_np",
@@ -57,4 +65,6 @@ __all__ = [
     "policy_to_output_torque_np",
     "policy_to_output_torque_torch",
     "policy_to_output_vel_torch",
+    "wheel_xz_to_output_pos_np",
+    "wheel_xz_to_output_pos_torch",
 ]

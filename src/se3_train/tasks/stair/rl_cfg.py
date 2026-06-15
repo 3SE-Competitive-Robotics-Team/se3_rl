@@ -7,7 +7,7 @@ import os
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 _BASE_MODEL_DIR = "base_model"
-_NUM_STEPS_PER_ENV = 128
+_NUM_STEPS_PER_ENV = 64
 
 
 def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
@@ -17,9 +17,9 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
         resume = False
     else:
-        # 前 400 轮平地行走；100Hz 下用 128 steps 保持约 1.28s rollout。
-        # CTBC 在 600->1200 轮退火，之后保留约 2200 轮适应期。
-        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3400"))
+        # 前 800 轮使用平地走路课程；保持源仓库 stair GRU 的 64-step rollout。
+        # CTBC 在 800 轮满幅启用，1000->1600 轮退火，之后保留约 2200 轮适应期。
+        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3800"))
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
 

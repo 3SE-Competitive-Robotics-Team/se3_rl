@@ -69,20 +69,47 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._command = torch.zeros(self.num_envs, 5, device=self.device)
         self._standing_mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self._resampling_for_reset = False
+        self._pre_resampled_for_reset = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
 
     @property
     def command(self) -> torch.Tensor:
         return self._command
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        """重置指令项，并把跨 reset 缓存的终止诊断搬入日志。"""
+        """重置指令项，并保留 reset 事件阶段已预采样的指令。"""
         assert isinstance(env_ids, torch.Tensor)
+        extras = {}
+        for metric_name, metric_value in self.metrics.items():
+            extras[metric_name] = torch.mean(metric_value[env_ids]).item()
+            metric_value[env_ids] = 0.0
+
+        pre_mask = self._pre_resampled_for_reset[env_ids]
+        pre_ids = env_ids[pre_mask]
+        fresh_ids = env_ids[~pre_mask]
+
+        self.command_counter[env_ids] = 0
         previous_resampling_for_reset = self._resampling_for_reset
         self._resampling_for_reset = True
         try:
-            extras = super().reset(env_ids)
+            if len(fresh_ids) > 0:
+                self._resample(fresh_ids)
+            if len(pre_ids) > 0:
+                self.command_counter[pre_ids] = 1
+                self._pre_resampled_for_reset[pre_ids] = False
             self._log_bad_orientation_diagnostics(env_ids)
             return extras
+        finally:
+            self._resampling_for_reset = previous_resampling_for_reset
+
+    def pre_resample_for_reset(self, env_ids: torch.Tensor) -> None:
+        """在 reset 事件写状态前预采样指令，保证关节默认姿态读取新 height。"""
+        previous_resampling_for_reset = self._resampling_for_reset
+        self._resampling_for_reset = True
+        try:
+            self._resample(env_ids)
+            self._pre_resampled_for_reset[env_ids] = True
         finally:
             self._resampling_for_reset = previous_resampling_for_reset
 

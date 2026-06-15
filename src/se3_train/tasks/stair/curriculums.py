@@ -27,6 +27,7 @@ def stair_terrain_levels(
     walking_phase_iterations: int = 0,
     flat_terrain_type_name: str = "flat",
     steps_per_policy_iter: int = 64,
+    fixed_iteration: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """仅根据倒金字塔完整出坑表现升降地形 row。"""
     terrain = env.scene.terrain
@@ -37,7 +38,12 @@ def stair_terrain_levels(
     if ids.numel() == 0:
         return _zero_log(env)
 
-    iteration = int(getattr(env, "common_step_counter", 0)) // max(1, int(steps_per_policy_iter))
+    if fixed_iteration is None:
+        iteration = int(getattr(env, "common_step_counter", 0)) // max(
+            1, int(steps_per_policy_iter)
+        )
+    else:
+        iteration = max(0, int(fixed_iteration))
     if iteration < max(0, int(walking_phase_iterations)):
         _set_walking_phase_terrain(
             env,

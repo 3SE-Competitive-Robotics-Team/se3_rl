@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _EXCLUDED_RUN_DIRS = {"base_model", "wandb_checkpoints"}
-# These aliases must register play_env_cfg as the real training env, because
-# mjlab play always loads task configs with play=True.
-_TRAIN_VIEW_TASKS = {
+# Kept for compatibility only. The default path now launches the original task
+# name and asks that task to use its training env as play_env_cfg.
+_LEGACY_TRAIN_VIEW_TASKS = {
     "SE3-WheelLegged-Stair-GRU": "SE3-WheelLegged-Stair-GRU-TrainView",
     "SE3-WheelLegged-Stair-GRU-WarmStart": "SE3-WheelLegged-Stair-GRU-TrainView",
     "SE3-WheelLegged-Stair-NoCTBC-GRU": "SE3-WheelLegged-Stair-NoCTBC-GRU-TrainView",
@@ -36,6 +36,10 @@ _TRAIN_VIEW_TASKS = {
     ),
 }
 _RECOVERY_STAND_TASK = "SE3-WheelLegged-Recovery-Stand-GRU"
+_WATCH_USE_TRAIN_ENV_ENV = "SE3_WATCH_USE_TRAIN_ENV"
+_WATCH_ITER_ENV = "SE3_WATCH_ITER"
+_WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
+_WATCH_COMMAND_HEIGHT_ENV = "SE3_WATCH_COMMAND_HEIGHT"
 _TRAIN_VIEW_ITER_ENV = "SE3_TRAIN_VIEW_ITER"
 _TRAIN_VIEW_TERRAIN_LEVEL_ENV = "SE3_TRAIN_VIEW_TERRAIN_LEVEL"
 _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
@@ -172,8 +176,8 @@ def _copy_checkpoint(args: argparse.Namespace, run_dir: str, ckpt: RemoteCheckpo
 def _viewer_task(args: argparse.Namespace) -> str:
     if args.viewer_task:
         return args.viewer_task
-    if args.train_env:
-        return _TRAIN_VIEW_TASKS.get(args.task, args.task)
+    if args.legacy_train_view_alias:
+        return _LEGACY_TRAIN_VIEW_TASKS.get(args.task, args.task)
     return args.task
 
 
@@ -185,16 +189,27 @@ def _checkpoint_iteration_from_path(checkpoint: Path) -> int:
 def _launch_viewer(args: argparse.Namespace, checkpoint: Path) -> subprocess.Popen:
     viewer_task = _viewer_task(args)
     env = os.environ.copy()
-    if viewer_task.endswith("-TrainView"):
+    if args.train_env and not args.legacy_train_view_alias:
+        env[_WATCH_USE_TRAIN_ENV_ENV] = "1"
+        print(f"[local-watch] {_WATCH_USE_TRAIN_ENV_ENV}=1")
+    if args.train_env or viewer_task.endswith("-TrainView"):
         view_iter = str(_checkpoint_iteration_from_path(checkpoint))
+        env[_WATCH_ITER_ENV] = view_iter
         env[_TRAIN_VIEW_ITER_ENV] = view_iter
-        print(f"[local-watch] {_TRAIN_VIEW_ITER_ENV}={view_iter}")
+        print(f"[local-watch] {_WATCH_ITER_ENV}={view_iter}")
     if args.terrain_level is not None:
+        env[_WATCH_TERRAIN_LEVEL_ENV] = str(args.terrain_level)
         env[_TRAIN_VIEW_TERRAIN_LEVEL_ENV] = str(args.terrain_level)
-        print(f"[local-watch] {_TRAIN_VIEW_TERRAIN_LEVEL_ENV}={args.terrain_level}")
+        print(f"[local-watch] {_WATCH_TERRAIN_LEVEL_ENV}={args.terrain_level}")
     if args.command_height is not None:
+        env[_WATCH_COMMAND_HEIGHT_ENV] = str(args.command_height)
         env[_TRAIN_VIEW_COMMAND_HEIGHT_ENV] = str(args.command_height)
-        print(f"[local-watch] {_TRAIN_VIEW_COMMAND_HEIGHT_ENV}={args.command_height}")
+        print(
+            f"[local-watch] {_WATCH_COMMAND_HEIGHT_ENV}={args.command_height} "
+            "(fixed height override)"
+        )
+    elif args.train_env:
+        print("[local-watch] command height follows the training curriculum")
     cmd = [
         sys.executable,
         "-m",
@@ -258,7 +273,12 @@ def main() -> None:
         "--train-env",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use the training-scene task alias. Kept enabled by default.",
+        help="Use the original task name with its training env as play_env_cfg.",
+    )
+    parser.add_argument(
+        "--legacy-train-view-alias",
+        action="store_true",
+        help="Use the old *-TrainView task alias instead of launching the original task.",
     )
     parser.add_argument("--interval-iters", type=int, default=100)
     parser.add_argument("--poll-seconds", type=int, default=60)
@@ -274,7 +294,10 @@ def main() -> None:
         "--command-height",
         type=float,
         default=None,
-        help="固定 Stair TrainView 的 height command；例如 0.37 用于检查最高站姿。",
+        help=(
+            "固定 Stair watch 的 height command；省略时按训练课程随机采样。"
+            "例如 0.37 只用于检查最高站姿。"
+        ),
     )
     parser.add_argument(
         "--stability-seconds",

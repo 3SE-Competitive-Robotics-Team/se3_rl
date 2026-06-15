@@ -13,10 +13,13 @@ from se3_shared import (
     DM8009P,
     ActionDelayConfig,
     JointGroup,
+    output_leg_length_limits_torch,
+    output_leg_wheel_xz_torch,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
     policy_to_output_pos_torch,
     policy_to_output_torque_torch,
+    wheel_xz_to_output_pos_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
@@ -124,6 +127,11 @@ class SerialLegDelayedAction(ActionTerm):
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
         self._unclipped_actions = torch.zeros_like(self._raw_actions)
         self._delayed_actions = torch.zeros_like(self._raw_actions)
+        self._ctbc_output_bias = torch.zeros_like(self._raw_actions)
+        self._ctbc_action_delta = torch.zeros_like(self._raw_actions)
+        self._ctbc_wheel_delta_xz = torch.zeros(
+            self.num_envs, 2, 2, device=self.device
+        )
         self._policy_leg_torque = torch.zeros(self.num_envs, 4, device=self.device)
         self._policy_leg_vel = torch.zeros_like(self._policy_leg_torque)
         self._policy_leg_target = torch.zeros_like(self._policy_leg_torque)
@@ -172,6 +180,28 @@ class SerialLegDelayedAction(ActionTerm):
         return self._delayed_actions
 
     @property
+    def ctbc_output_bias(self) -> torch.Tensor:
+        return self._ctbc_output_bias
+
+    @property
+    def ctbc_action_delta(self) -> torch.Tensor:
+        return self._ctbc_action_delta
+
+    @property
+    def ctbc_wheel_delta_xz(self) -> torch.Tensor:
+        return self._ctbc_wheel_delta_xz
+
+    @property
+    def actual_wheel_xz(self) -> torch.Tensor:
+        output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
+        return output_leg_wheel_xz_torch(output_pos)
+
+    @property
+    def target_wheel_xz(self) -> torch.Tensor:
+        output_target = policy_to_output_pos_torch(self._policy_leg_target)
+        return output_leg_wheel_xz_torch(output_target)
+
+    @property
     def policy_leg_torque(self) -> torch.Tensor:
         return self._policy_leg_torque
 
@@ -203,12 +233,17 @@ class SerialLegDelayedAction(ActionTerm):
         else:
             clip = float(self.cfg.action_clip)
             self._raw_actions[:] = torch.clamp(incoming_actions, -clip, clip)
+        self._ctbc_output_bias.zero_()
+        self._ctbc_action_delta.zero_()
+        self._ctbc_wheel_delta_xz.zero_()
         state = getattr(self._env, "stair_climb_state", None)
-        if state is not None:
-            self._raw_actions[:, :4] += self._ctbc_output_bias_to_action_delta(
+        if state is not None and state.kff != 0.0:
+            self._ctbc_output_bias[:] = state.ff_bias()
+            self._ctbc_action_delta[:, :4] = self._ctbc_output_bias_to_action_delta(
                 self._raw_actions[:, :4],
-                state.ff_bias()[:, :4],
+                self._ctbc_output_bias[:, :4],
             )
+            self._raw_actions[:, :4] += self._ctbc_action_delta[:, :4]
 
     def apply_actions(self) -> None:
         if self._max_delay_steps > 0:
@@ -323,8 +358,10 @@ class SerialLegDelayedAction(ActionTerm):
         乘以旧 leg_scale=0.25 后表示 [lf0, lf1, rf0, rf1] 输出关节角增量。
         源模型左右腿关节轴均为 -Y，目标模型左腿轴改为 +Y，因此左腿两维
         需要取反，右腿保持不变。
-        源任务是在裁剪后的 policy action 上叠加该 bias；这里先求当前 action
-        对应的输出关节目标，再加旧语义增量并反解回 [front, active_angle] action。
+        固定关节角增量只在默认姿态表现为轮子向后上方缩回；叠加到策略的任意
+        当前姿态后可能反而向前伸。这里先在当前默认姿态上求出旧 CTBC 对应的
+        轮心后上位移，再把同一物理 XZ 位移施加到策略当前姿态，最后反解回
+        [front, active_angle] action。
         """
         output_action_bias = output_action_bias.to(self.device)
         source_to_target_sign = output_action_bias.new_tensor(_CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN)
@@ -332,17 +369,43 @@ class SerialLegDelayedAction(ActionTerm):
         if not (self._closedchain or self._fourbar_surrogate):
             return output_delta / self._leg_action_scales
 
-        policy_default = self._current_leg_action_defaults()
+        active_side = output_action_bias.reshape(-1, 2, 2).abs().amax(dim=-1) > 0.0
+        active_env_ids = active_side.any(dim=1).nonzero().flatten()
+        active_leg_action = leg_action[active_env_ids]
+        active_output_delta = output_delta[active_env_ids]
+        active_side = active_side[active_env_ids]
+
+        policy_default = self._current_leg_action_defaults()[active_env_ids]
         current_policy = self._leg_action_to_policy_target(
-            leg_action,
+            active_leg_action,
             policy_default,
             update_active_targets=False,
         )
         current_output = policy_to_output_pos_torch(current_policy)
-        desired_output = current_output + output_delta
+
+        default_output = policy_to_output_pos_torch(policy_default)
+        nominal_requested_output = default_output + active_output_delta
+        nominal_realizable_output = policy_to_output_pos_torch(
+            output_to_policy_pos_torch(nominal_requested_output)
+        )
+        default_wheel_xz = output_leg_wheel_xz_torch(default_output)
+        nominal_wheel_xz = output_leg_wheel_xz_torch(nominal_realizable_output)
+        wheel_delta_xz = nominal_wheel_xz - default_wheel_xz
+        wheel_delta_xz[..., 0] = torch.clamp(wheel_delta_xz[..., 0], max=0.0)
+        wheel_delta_xz[..., 1] = torch.clamp(wheel_delta_xz[..., 1], min=0.0)
+        self._ctbc_wheel_delta_xz[active_env_ids] = wheel_delta_xz
+
+        current_wheel_xz = output_leg_wheel_xz_torch(current_output)
+        desired_wheel_xz = self._reachable_ctbc_wheel_target(
+            current_wheel_xz,
+            wheel_delta_xz,
+        )
+        cartesian_desired_output = wheel_xz_to_output_pos_torch(desired_wheel_xz)
+        active_joint = active_side.repeat_interleave(2, dim=1)
+        desired_output = torch.where(active_joint, cartesian_desired_output, current_output)
         desired_policy = output_to_policy_pos_torch(desired_output)
 
-        desired_action = torch.zeros_like(leg_action)
+        desired_action = torch.zeros_like(active_leg_action)
         for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
             front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
             if self.cfg.height_conditioned_action_default:
@@ -361,8 +424,36 @@ class SerialLegDelayedAction(ActionTerm):
             desired_action[:, back_idx] = (active_desired - active_default) / (
                 self._leg_action_scales[back_idx]
             )
-        action_delta = desired_action - leg_action
+        action_delta = torch.zeros_like(leg_action)
+        action_delta[active_env_ids] = desired_action - active_leg_action
         return torch.nan_to_num(action_delta, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _reachable_ctbc_wheel_target(
+        self,
+        current_wheel_xz: torch.Tensor,
+        wheel_delta_xz: torch.Tensor,
+    ) -> torch.Tensor:
+        """沿后上位移缩短到四连杆可达范围，保持位移方向不翻转。"""
+        min_length, max_length = output_leg_length_limits_torch(
+            current_wheel_xz.device,
+            current_wheel_xz.dtype,
+        )
+
+        def reachable(scale: torch.Tensor) -> torch.Tensor:
+            candidate = current_wheel_xz + wheel_delta_xz * scale.unsqueeze(-1)
+            length = torch.linalg.vector_norm(candidate, dim=-1)
+            return (length >= min_length) & (length <= max_length)
+
+        lower = torch.zeros_like(current_wheel_xz[..., 0])
+        upper = torch.ones_like(lower)
+        full_reachable = reachable(upper)
+        for _ in range(8):
+            middle = 0.5 * (lower + upper)
+            middle_reachable = reachable(middle)
+            lower = torch.where(middle_reachable, middle, lower)
+            upper = torch.where(middle_reachable, upper, middle)
+        scale = torch.where(full_reachable, torch.ones_like(lower), lower)
+        return current_wheel_xz + wheel_delta_xz * scale.unsqueeze(-1)
 
     def set_leg_pd_gain_scale(
         self,
@@ -427,6 +518,9 @@ class SerialLegDelayedAction(ActionTerm):
         self._raw_actions[resolved_env_ids] = 0.0
         self._unclipped_actions[resolved_env_ids] = 0.0
         self._delayed_actions[resolved_env_ids] = 0.0
+        self._ctbc_output_bias[resolved_env_ids] = 0.0
+        self._ctbc_action_delta[resolved_env_ids] = 0.0
+        self._ctbc_wheel_delta_xz[resolved_env_ids] = 0.0
         self._policy_leg_torque[resolved_env_ids] = 0.0
         self._policy_leg_vel[resolved_env_ids] = 0.0
         self._action_fifo[:, resolved_env_ids] = 0.0

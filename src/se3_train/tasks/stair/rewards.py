@@ -9,6 +9,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp import rewards as base_rewards
 from se3_train.mdp.joint_indices import wheel_joint_ids
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
@@ -58,6 +59,116 @@ def _ctbc_trigger_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
     if state is None:
         return torch.zeros(env.num_envs, device=env.device)
     return state.ctbc_trigger_weight()
+
+
+def _local_iteration(env: ManagerBasedRlEnv, steps_per_policy_iter: int = 64) -> int:
+    state = _get_stair_state(env)
+    if state is not None:
+        return int(state.local_iteration)
+    return int(getattr(env, "common_step_counter", 0)) // max(1, int(steps_per_policy_iter))
+
+
+def _walking_phase_gate(
+    env: ManagerBasedRlEnv,
+    walking_phase_iterations: int,
+    steps_per_policy_iter: int = 64,
+) -> torch.Tensor:
+    active = _local_iteration(env, steps_per_policy_iter) < max(0, int(walking_phase_iterations))
+    return torch.full((env.num_envs,), float(active), device=env.device)
+
+
+def _stair_phase_gate(
+    env: ManagerBasedRlEnv,
+    walking_phase_iterations: int,
+    steps_per_policy_iter: int = 64,
+) -> torch.Tensor:
+    active = _local_iteration(env, steps_per_policy_iter) >= max(0, int(walking_phase_iterations))
+    return torch.full((env.num_envs,), float(active), device=env.device)
+
+
+def flat_phase_tracking_lin_vel(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma_move: float,
+    sigma_stand: float,
+    vz_weight: float = 2.0,
+    use_upright_gate: bool = True,
+    tracking_upright_full_cos: float = 0.7,
+    walking_phase_iterations: int = 800,
+    steps_per_policy_iter: int = 64,
+) -> torch.Tensor:
+    gate = _walking_phase_gate(env, walking_phase_iterations, steps_per_policy_iter)
+    if not torch.any(gate):
+        return torch.zeros(env.num_envs, device=env.device)
+    reward = base_rewards.tracking_lin_vel(
+        env,
+        command_name=command_name,
+        sigma_move=sigma_move,
+        sigma_stand=sigma_stand,
+        vz_weight=vz_weight,
+        use_upright_gate=use_upright_gate,
+        tracking_upright_full_cos=tracking_upright_full_cos,
+    )
+    return reward * gate
+
+
+def stair_phase_forward_progress(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float = 0.25,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    walking_phase_iterations: int = 800,
+    steps_per_policy_iter: int = 64,
+) -> torch.Tensor:
+    gate = _stair_phase_gate(env, walking_phase_iterations, steps_per_policy_iter)
+    if not torch.any(gate):
+        return torch.zeros(env.num_envs, device=env.device)
+    return stair_forward_progress(
+        env,
+        command_name=command_name,
+        sigma=sigma,
+        asset_cfg=asset_cfg,
+    ) * gate
+
+
+def flat_phase_wheel_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    walking_phase_iterations: int = 800,
+    steps_per_policy_iter: int = 64,
+) -> torch.Tensor:
+    gate = _walking_phase_gate(env, walking_phase_iterations, steps_per_policy_iter)
+    if not torch.any(gate):
+        return torch.zeros(env.num_envs, device=env.device)
+    penalty = base_rewards.flat_wheel_contact_penalty(
+        env,
+        command_name=command_name,
+        sensor_name=sensor_name,
+        force_threshold=force_threshold,
+    )
+    return penalty * gate
+
+
+def flat_phase_leg_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    walking_phase_iterations: int = 800,
+    steps_per_policy_iter: int = 64,
+) -> torch.Tensor:
+    gate = _walking_phase_gate(env, walking_phase_iterations, steps_per_policy_iter)
+    if not torch.any(gate):
+        return torch.zeros(env.num_envs, device=env.device)
+    penalty = base_rewards.flat_leg_contact_penalty(
+        env,
+        command_name=command_name,
+        sensor_name=sensor_name,
+        force_threshold=force_threshold,
+    )
+    return penalty * gate
 
 
 def stair_steps_climbed(
@@ -433,6 +544,9 @@ __all__ = [
     *_FLAT_REWARD_ALL,
     "action_rate_no_ctbc",
     "contact_forces_no_ctbc",
+    "flat_phase_leg_contact_penalty",
+    "flat_phase_tracking_lin_vel",
+    "flat_phase_wheel_contact_penalty",
     "leg_power_no_ctbc",
     "leg_torques_no_ctbc",
     "stair_climb_progress",
@@ -444,6 +558,7 @@ __all__ = [
     "stair_forward_progress",
     "stair_height_gain",
     "stair_max_x_progress",
+    "stair_phase_forward_progress",
     "stair_riser_stall",
     "stair_steps_climbed",
     "stair_terrain_level",

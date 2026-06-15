@@ -72,7 +72,7 @@ def set_train_view_iteration(
     env,
     env_ids: torch.Tensor | None,
     iteration: int,
-    steps_per_policy_iter: int = 128,
+    steps_per_policy_iter: int = 64,
 ) -> None:
     """Set the local TrainView curriculum counter to the mirrored checkpoint iter."""
     del env_ids
@@ -80,7 +80,7 @@ def set_train_view_iteration(
     env.common_step_counter = iteration * max(1, int(steps_per_policy_iter))
     state = getattr(env, "stair_climb_state", None)
     if state is not None:
-        state.update_iter(iteration)
+        state.set_fixed_iteration(iteration)
 
 
 def reset_stair_climb_state(env, env_ids: torch.Tensor | None) -> None:
@@ -99,7 +99,7 @@ def step_stair_climb_state(
     sensor_name: str = "wheel_sensor",
     riser_sensor_name: str | None = None,
     riser_normal_z_max: float = 0.5,
-    num_steps_per_env: int = 128,
+    num_steps_per_env: int = 64,
 ) -> None:
     """interval 事件：每控制步更新 CTBC 状态机。"""
     del env_ids

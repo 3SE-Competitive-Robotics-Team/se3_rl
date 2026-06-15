@@ -22,12 +22,16 @@ def run(
 ) -> str:
     """执行本地命令，失败时立即终止。"""
     print("+", display or subprocess.list2cmdline(command), flush=True)
+    capture_kwargs = (
+        {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+        if capture
+        else {}
+    )
     result = subprocess.run(
         command,
         cwd=cwd,
         check=True,
-        capture_output=capture,
-        text=capture,
+        **capture_kwargs,
     )
     if capture and result.stdout:
         print(result.stdout, end="")
@@ -141,7 +145,12 @@ def parse_args() -> argparse.Namespace:
         default="stair_progress_fix_noctbc_m4100_20260610",
     )
     parser.add_argument("--watch-terrain-level", type=int, choices=range(10), default=6)
-    parser.add_argument("--watch-command-height", type=float, default=None)
+    parser.add_argument(
+        "--watch-command-height",
+        type=float,
+        default=None,
+        help="生成 watch 命令时固定 height command；省略则按训练课程随机采样。",
+    )
     parser.add_argument("--watch-interval-iters", type=int, default=100)
     return parser.parse_args()
 
@@ -265,7 +274,9 @@ export CUDA_TOOLKIT_LIB_DIR={shlex.quote(args.cuda_toolkit_lib_dir)}
 export LD_LIBRARY_PATH="$CUDA_COMPAT_DIR:$CUDA_TOOLKIT_LIB_DIR"
 export PYTHONPATH="$PWD/src${{PYTHONPATH:+:$PYTHONPATH}}"
 export MUJOCO_GL=egl
-./.venv/bin/python -m compileall -q src scripts experiments
+compile_targets=(src scripts)
+[ -d experiments ] && compile_targets+=(experiments)
+./.venv/bin/python -m compileall -q "${{compile_targets[@]}}"
 """
     pod_bash(
         entry_host=args.entry_host,
@@ -332,8 +343,11 @@ sleep 3
 kill -0 "$pid"
 run_dir=""
 for _ in $(seq 1 30); do
-  run_dir=$(find logs/rsl_rl/se3_wheel_leg -mindepth 1 -maxdepth 1 -type d \
-    -name '*_{args.run_name}' -printf '%T@ %f\n' | sort -nr | head -1 | cut -d' ' -f2-)
+  if [ -d logs/rsl_rl/se3_wheel_leg ]; then
+    run_dir_lines=$(find logs/rsl_rl/se3_wheel_leg -mindepth 1 -maxdepth 1 -type d \
+      -name '*_{args.run_name}' -printf '%T@ %f\n' | sort -nr)
+    run_dir=$(printf '%s\n' "$run_dir_lines" | sed -n '1s/^[^ ]* //p')
+  fi
   if [ -n "$run_dir" ]; then
     break
   fi

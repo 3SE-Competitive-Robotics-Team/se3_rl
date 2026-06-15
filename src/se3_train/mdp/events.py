@@ -256,19 +256,19 @@ def _load_recovery_state_cache(
     return cache
 
 
-def _pre_resample_jump_command_for_reset(
+def _pre_resample_command_for_reset(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     command_name: str = "velocity_height",
 ) -> None:
-    """在 reset 写状态前预采样跳跃指令，保证 RSI 读取新 episode 的 jump_flag。"""
+    """在 reset 写状态前预采样指令，保证姿态 reset 读取新 episode command。"""
     if not hasattr(env, "command_manager"):
         return
     try:
         term = env.command_manager.get_term(command_name)
     except Exception:
         return
-    if isinstance(term, JumpCommandTerm):
+    if hasattr(term, "pre_resample_for_reset"):
         term.pre_resample_for_reset(env_ids)
 
 
@@ -330,7 +330,7 @@ def reset_root_state_robotlab_full_random(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _pre_resample_jump_command_for_reset(env, env_ids)
+    _pre_resample_command_for_reset(env, env_ids)
     stage, curriculum_progress = _active_curriculum_stage(
         env,
         curriculum_stages,
@@ -577,7 +577,7 @@ def reset_root_state_recovery_standard_poses(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _pre_resample_jump_command_for_reset(env, env_ids)
+    _pre_resample_command_for_reset(env, env_ids)
     stage, curriculum_progress = _active_curriculum_stage(
         env,
         curriculum_stages,
@@ -757,7 +757,7 @@ def reset_root_state_full(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _pre_resample_jump_command_for_reset(env, env_ids)
+    _pre_resample_command_for_reset(env, env_ids)
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state

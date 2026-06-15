@@ -44,9 +44,9 @@ class StairClimbState:
         self.ff_amplitude = ff_amplitude_rad
         self.control_dt = control_dt
         self.ff_period_steps = max(1, round(ff_period_s / control_dt))
-        self.ff_start = ff_start_iter
-        self.ann_start = ann_start_iter
-        self.ann_end = ann_end_iter
+        self.ff_start = int(ff_start_iter)
+        self.ann_start = max(int(ann_start_iter), self.ff_start)
+        self.ann_end = max(int(ann_end_iter), self.ann_start)
         self.phantom_trigger_iter = phantom_trigger_iter
 
         self._contact_buf = torch.zeros(contact_window, num_envs, 2, device=device)
@@ -62,13 +62,17 @@ class StairClimbState:
         self._kff: float = 1.0
         self._iter: int = 0
         self._iter_origin: int | None = None
+        self._fixed_iter: int | None = None
 
     def update_iter(self, iteration: int) -> None:
         """更新当前 stair 阶段内的相对训练迭代数和前馈退火权重。"""
-        if self._iter_origin is None:
-            offset = int(os.environ.get("SE3_STAIR_LOCAL_ITER_OFFSET", "0"))
-            self._iter_origin = int(iteration) - offset
-        local_iter = max(0, int(iteration) - self._iter_origin)
+        if self._fixed_iter is not None:
+            local_iter = self._fixed_iter
+        else:
+            if self._iter_origin is None:
+                offset = int(os.environ.get("SE3_STAIR_LOCAL_ITER_OFFSET", "0"))
+                self._iter_origin = int(iteration) - offset
+            local_iter = max(0, int(iteration) - self._iter_origin)
         self._iter = local_iter
         if local_iter < self.ff_start:
             self._kff = 0.0
@@ -79,6 +83,12 @@ class StairClimbState:
         else:
             span = max(1, self.ann_end - self.ann_start)
             self._kff = max(0.0, 1.0 - (local_iter - self.ann_start) / span)
+
+    def set_fixed_iteration(self, iteration: int | None) -> None:
+        """将 play/watch 的 CTBC 课程固定到所选 checkpoint 轮数。"""
+        self._fixed_iter = None if iteration is None else max(0, int(iteration))
+        if self._fixed_iter is not None:
+            self.update_iter(self._fixed_iter)
 
     def step(self, wheel_contact_xy: torch.Tensor) -> None:
         """根据当前轮子水平接触力更新触发窗口和前馈相位。"""
@@ -184,6 +194,26 @@ class StairClimbState:
     @property
     def complete_ff_cycle_count(self) -> torch.Tensor:
         return self._complete_ff_cycle_count.clone()
+
+    @property
+    def local_iteration(self) -> int:
+        return self._iter
+
+    @property
+    def latest_contact_force(self) -> torch.Tensor:
+        return self._contact_buf[0].clone()
+
+    @property
+    def stable_contact(self) -> torch.Tensor:
+        return self._stable.clone()
+
+    @property
+    def ff_phase(self) -> torch.Tensor:
+        return self._ff_phase.clone()
+
+    @property
+    def cooldown(self) -> torch.Tensor:
+        return self._cooldown.clone()
 
     def diag(self) -> dict[str, float]:
         return {

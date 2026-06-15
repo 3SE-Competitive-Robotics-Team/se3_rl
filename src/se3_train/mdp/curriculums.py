@@ -23,8 +23,12 @@ def _curriculum_progress(
     use_iterations: bool,
     steps_per_policy_iter: int,
     offset_iter: int = 0,
+    fixed_iteration: int | None = None,
 ) -> int:
     """返回课程进度；recovery 任务使用 PPO iter，普通任务沿用 policy step。"""
+    if fixed_iteration is not None:
+        return max(0, int(fixed_iteration) - int(offset_iter))
+
     step = int(getattr(env, "common_step_counter", 0))
     if not use_iterations:
         return step
@@ -41,6 +45,7 @@ def commands_vel(
     use_iterations: bool = False,
     steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
     offset_iter: int = 0,
+    fixed_iteration: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """按课程进度阶梯式扩大速度指令范围。"""
     del env_ids
@@ -51,6 +56,7 @@ def commands_vel(
         use_iterations=use_iterations,
         steps_per_policy_iter=steps_per_policy_iter,
         offset_iter=offset_iter,
+        fixed_iteration=fixed_iteration,
     )
     threshold_key = "iteration" if use_iterations else "step"
     for stage in velocity_stages:
@@ -77,6 +83,7 @@ def commands_height(
     steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
     offset_iter: int = 0,
     interpolate: bool = False,
+    fixed_iteration: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """按课程进度逐步放开高度指令范围。"""
     del env_ids
@@ -87,6 +94,7 @@ def commands_height(
         use_iterations=use_iterations,
         steps_per_policy_iter=steps_per_policy_iter,
         offset_iter=offset_iter,
+        fixed_iteration=fixed_iteration,
     )
     threshold_key = "iteration" if use_iterations else "step"
     if interpolate:
@@ -186,6 +194,7 @@ def push_disturbance(
     use_iterations: bool = False,
     steps_per_policy_iter: int = _DEFAULT_STEPS_PER_POLICY_ITER,
     offset_iter: int = 0,
+    fixed_iteration: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """按训练进度逐步增大推扰动强度。
 
@@ -200,6 +209,7 @@ def push_disturbance(
         use_iterations=use_iterations,
         steps_per_policy_iter=steps_per_policy_iter,
         offset_iter=offset_iter,
+        fixed_iteration=fixed_iteration,
     )
     threshold_key = "iteration" if use_iterations else "step"
     current_max = 0.0
