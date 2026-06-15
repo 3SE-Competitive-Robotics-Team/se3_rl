@@ -15,7 +15,13 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared import (
+    RobotConfig as SharedRobotConfig,
+)
+from se3_shared import (
+    periodic_policy_action_second_difference_torch,
+    wrap_front_action_value_delta_torch,
+)
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
     active_leg_mirror_diffs,
@@ -862,7 +868,8 @@ def jump_action_mirror(
     jump_flag = cmd[:, 5] > 0.5
     action = env.action_manager.action
 
-    leg_mirror = (action[:, 0] - action[:, 2]) ** 2 + (action[:, 1] - action[:, 3]) ** 2
+    front_mirror = wrap_front_action_value_delta_torch(action[:, 0] - action[:, 2])
+    leg_mirror = front_mirror**2 + (action[:, 1] - action[:, 3]) ** 2
     # 左右轮 joint axis 相反,同号广义轮速更容易制造 yaw 扭转。
     wheel_yaw = (action[:, 4] + action[:, 5]) ** 2
     return (leg_mirror + 0.5 * wheel_yaw) * jump_flag.float()
@@ -1705,7 +1712,8 @@ def action_smoothness_no_jump(
         setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
         return torch.zeros(env.num_envs, device=env.device)
 
-    penalty = torch.sum((action - 2.0 * prev + prev_prev) ** 2, dim=1)
+    action_acc = periodic_policy_action_second_difference_torch(action, prev, prev_prev)
+    penalty = torch.sum(action_acc**2, dim=1)
     setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
     setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
 

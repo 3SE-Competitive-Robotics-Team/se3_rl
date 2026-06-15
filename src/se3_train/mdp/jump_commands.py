@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared import (
+    RobotConfig as SharedRobotConfig,
+)
+from se3_shared import (
+    periodic_policy_action_delta_torch,
+)
 from se3_train.mdp import recovery_state
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
@@ -479,10 +484,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         ref_extension_vel = torch.clamp(-torch.mean(ref_knee_vel, dim=1), min=0.05)
         impulse_reward = torch.clamp(extension_vel / ref_extension_vel, min=0.0, max=1.0)
 
-        action_rate = torch.sum(
-            (self._env.action_manager.action - self._env.action_manager.prev_action) ** 2,
-            dim=1,
+        action_delta = periodic_policy_action_delta_torch(
+            self._env.action_manager.action,
+            self._env.action_manager.prev_action,
         )
+        action_rate = torch.sum(action_delta**2, dim=1)
         ang_vel = robot.data.root_link_ang_vel_b
         pg = robot.data.projected_gravity_b
         pitch = torch.atan2(pg[:, 0], -pg[:, 2])

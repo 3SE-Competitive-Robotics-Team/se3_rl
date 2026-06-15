@@ -7,6 +7,7 @@ import os
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 _BASE_MODEL_DIR = "base_model"
+_DEFAULT_LOAD_CHECKPOINT = "model_4999_recovery_obs34_gru\\.pt"
 _NUM_STEPS_PER_ENV = 64
 
 
@@ -72,6 +73,9 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger=logger,
         wandb_project="se3_wheel_leg",
         resume=resume,
-        load_run=_BASE_MODEL_DIR,
-        load_checkpoint="model_[0-9]+_gru\\.pt",
+        load_run=os.environ.get("SE3_STAIR_LOAD_RUN", _BASE_MODEL_DIR),
+        load_checkpoint=os.environ.get(
+            "SE3_STAIR_LOAD_CHECKPOINT",
+            _DEFAULT_LOAD_CHECKPOINT,
+        ),
     )

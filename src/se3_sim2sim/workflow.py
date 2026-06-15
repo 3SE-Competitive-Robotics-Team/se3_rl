@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from se3_shared import periodic_policy_action_delta_np
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 
 from .config import RunConfig
@@ -284,12 +285,14 @@ class Sim2SimWorkflow:
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
                 action_delta = (
-                    np.zeros_like(action_now) if _prev_action is None else action_now - _prev_action
+                    np.zeros_like(action_now)
+                    if _prev_action is None
+                    else periodic_policy_action_delta_np(action_now, _prev_action)
                 )
                 applied_action_delta = (
                     np.zeros_like(applied_action_now)
                     if _prev_applied_action is None
-                    else applied_action_now - _prev_applied_action
+                    else periodic_policy_action_delta_np(applied_action_now, _prev_applied_action)
                 )
                 _prev_action = action_now
                 _prev_applied_action = applied_action_now

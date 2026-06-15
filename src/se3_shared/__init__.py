@@ -4,6 +4,18 @@
 """
 
 from .action_delay import ActionDelayConfig, delay_seconds_to_steps
+from .action_history import (
+    FRONT_ACTION_INDICES,
+    FRONT_ACTION_PERIOD,
+    periodic_policy_action_delta_np,
+    periodic_policy_action_delta_torch,
+    periodic_policy_action_second_difference_np,
+    periodic_policy_action_second_difference_torch,
+    wrap_front_action_delta_np,
+    wrap_front_action_delta_torch,
+    wrap_front_action_value_delta_np,
+    wrap_front_action_value_delta_torch,
+)
 from .fourbar import (
     FOURBAR_SURROGATE_MARKER,
     is_fourbar_surrogate_name_set,
@@ -50,6 +62,8 @@ from .robot import Joint, JointGroup, RobotConfig, Termination
 __all__ = [
     "DM8009P",
     "FOURBAR_SURROGATE_MARKER",
+    "FRONT_ACTION_INDICES",
+    "FRONT_ACTION_PERIOD",
     "M3508_C620_14",
     "M3508_HEXROLL",
     "RECOVERY_COMMAND_HEIGHT_M",
@@ -78,6 +92,10 @@ __all__ = [
     "output_to_policy_pos_torch",
     "output_to_policy_vel_np",
     "output_to_policy_vel_torch",
+    "periodic_policy_action_delta_np",
+    "periodic_policy_action_delta_torch",
+    "periodic_policy_action_second_difference_np",
+    "periodic_policy_action_second_difference_torch",
     "policy_default_from_height_np",
     "policy_default_from_height_torch",
     "policy_leg_phase_active_obs_np",
@@ -91,4 +109,8 @@ __all__ = [
     "policy_to_output_vel_torch",
     "wheel_xz_to_output_pos_np",
     "wheel_xz_to_output_pos_torch",
+    "wrap_front_action_delta_np",
+    "wrap_front_action_delta_torch",
+    "wrap_front_action_value_delta_np",
+    "wrap_front_action_value_delta_torch",
 ]

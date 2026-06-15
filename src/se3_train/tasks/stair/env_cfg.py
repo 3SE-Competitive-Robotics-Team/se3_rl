@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -36,6 +37,15 @@ from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from . import curriculums, events, observations, rewards
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+_STAIR_MJCF_PATH = (
+    _PROJECT_ROOT
+    / "assets"
+    / "robots"
+    / "serialleg"
+    / "mjcf"
+    / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
+)
 _STAIR_WHEEL_KD = 0.08
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060
 _STAIR_COMMAND_HALF_TRACK = 0.200725
@@ -145,7 +155,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """构造 CTBC teacher-forcing 的倒金字塔台阶爬升环境。"""
     cfg = flat_env_cfg(play=play)
 
-    cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_STAIR_WHEEL_KD)
+    cfg.scene.entities["robot"] = get_serialleg_cfg(
+        mjcf_path=_STAIR_MJCF_PATH,
+        wheel_kd_override=_STAIR_WHEEL_KD,
+    )
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
         terrain_generator=_stair_terrain_cfg(),

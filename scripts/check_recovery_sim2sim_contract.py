@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import torch
 
 from se3_shared import (
     JointGroup,
@@ -12,7 +13,11 @@ from se3_shared import (
     PolicyActionDecoder,
     RobotConfig,
     build_policy_observation_np,
+    periodic_policy_action_delta_np,
+    periodic_policy_action_delta_torch,
+    periodic_policy_action_second_difference_np,
     policy_leg_position_error_np,
+    wrap_front_action_value_delta_np,
 )
 from se3_sim2sim.deploy_telemetry import _decode_state_fields
 from se3_sim2sim.runtime_spec import RuntimeSpec
@@ -24,6 +29,7 @@ def main() -> int:
     _check_observation_shape_and_leg_phase()
     _check_deploy_telemetry_last_actions_slice()
     _check_periodic_pd_error()
+    _check_periodic_action_history()
     _check_height_conditioned_decoder()
     print("recovery sim2sim contract ok")
     return 0
@@ -128,6 +134,37 @@ def _check_periodic_pd_error() -> None:
         raise AssertionError("left active rod error was unexpectedly wrapped")
     if not np.isclose(right_active_error, expected_right_active, atol=1.0e-9):
         raise AssertionError("right active rod error was unexpectedly wrapped")
+
+
+def _check_periodic_action_history() -> None:
+    """确认 LF/RF raw action 在 ±1 周期边界不产生虚假的动作突变。"""
+    previous = np.asarray([[1.0, 0.2, -1.0, -0.2, 0.5, -0.5]], dtype=np.float64)
+    current = np.asarray([[-1.0, -0.2, 1.0, 0.2, -0.5, 0.5]], dtype=np.float64)
+    delta = periodic_policy_action_delta_np(current, previous)
+    expected = np.asarray([[0.0, -0.4, 0.0, 0.4, -1.0, 1.0]], dtype=np.float64)
+    if not np.allclose(delta, expected, atol=1.0e-9, rtol=0.0):
+        raise AssertionError(f"periodic action delta mismatch: got={delta}, expected={expected}")
+
+    front_mirror = wrap_front_action_value_delta_np(
+        np.asarray([1.0], dtype=np.float64) - np.asarray([-1.0], dtype=np.float64)
+    )
+    if not np.allclose(front_mirror, np.asarray([0.0]), atol=1.0e-9, rtol=0.0):
+        raise AssertionError(f"front mirror delta should wrap to zero, got {front_mirror}")
+
+    accel = periodic_policy_action_second_difference_np(
+        current,
+        previous,
+        previous,
+    )
+    if not np.isclose(accel[0, 0], 0.0, atol=1.0e-9):
+        raise AssertionError(f"front action acceleration should wrap to zero, got {accel[0, 0]}")
+
+    torch_delta = periodic_policy_action_delta_torch(
+        torch.as_tensor(current, dtype=torch.float32),
+        torch.as_tensor(previous, dtype=torch.float32),
+    )
+    if not torch.allclose(torch_delta, torch.as_tensor(expected, dtype=torch.float32)):
+        raise AssertionError(f"torch periodic action delta mismatch: got={torch_delta}")
 
 
 def _check_height_conditioned_decoder() -> None:

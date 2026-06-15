@@ -16,6 +16,8 @@ from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared import (
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    periodic_policy_action_delta_torch,
+    periodic_policy_action_second_difference_torch,
     policy_leg_position_error_torch,
 )
 from se3_train.mdp import recovery_state
@@ -1044,7 +1046,8 @@ def leg_power(
 def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
     """当前动作与上一动作差值的平方和。"""
     action = env.action_manager.action
-    penalty = torch.sum((action - env.action_manager.prev_action) ** 2, dim=1)
+    action_delta = periodic_policy_action_delta_torch(action, env.action_manager.prev_action)
+    penalty = torch.sum(action_delta**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
@@ -1086,9 +1089,11 @@ def _action_rate_slice(
     recovery_scale: float | None = None,
 ) -> torch.Tensor:
     """指定动作维度的一阶变化平方和。"""
-    action = env.action_manager.action[:, start:stop]
-    prev_action = env.action_manager.prev_action[:, start:stop]
-    penalty = torch.sum((action - prev_action) ** 2, dim=1)
+    action_delta = periodic_policy_action_delta_torch(
+        env.action_manager.action,
+        env.action_manager.prev_action,
+    )
+    penalty = torch.sum(action_delta[:, start:stop] ** 2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
     return penalty
@@ -1133,7 +1138,7 @@ def action_smoothness(
         setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
         return torch.zeros(env.num_envs, device=env.device)
 
-    action_acc = action - 2.0 * prev + prev_prev
+    action_acc = periodic_policy_action_second_difference_torch(action, prev, prev_prev)
     setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
     setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
 
@@ -1403,7 +1408,7 @@ def recovery_diagnostics(
         unclipped_action = action
     action_abs = torch.abs(action)
     unclipped_action_abs = torch.abs(unclipped_action)
-    action_delta = action - prev_action
+    action_delta = periodic_policy_action_delta_torch(action, prev_action)
     max_abs_action = torch.max(action_abs, dim=1).values
     leg_action_abs = action_abs[:, :4]
     wheel_action_abs = action_abs[:, 4:6]
