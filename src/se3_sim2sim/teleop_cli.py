@@ -15,7 +15,8 @@ from .course import CourseType
 from .teleop_input import DEFAULT_COMMAND_LIN_VEL_X, DEFAULT_COMMAND_YAW_RATE, KeyboardTeleopSource
 from .workflow import run_sim2sim
 
-DEFAULT_TELEOP_CHECKPOINT: Path | None = None
+# teleop 默认跟随当前 NX recovery runtime 的部署权重，避免误选本地 smoke checkpoint。
+DEFAULT_TELEOP_CHECKPOINT: Path | None = Path("logs/deploy/model_4999_recovery_obs34_gru.npz")
 DEFAULT_MIN_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[0]
 DEFAULT_MAX_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[1]
 DEFAULT_COMMAND_LIN_ACCEL = 0.8
@@ -60,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _set_checkpoint_help(
         parser,
-        "Policy checkpoint. Defaults to the latest logs/rsl_rl/se3_wheel_leg/*/model_*.pt.",
+        "Policy checkpoint. Defaults to logs/deploy/model_4999_recovery_obs34_gru.npz.",
     )
     parser.add_argument(
         "--teleop-vx",
