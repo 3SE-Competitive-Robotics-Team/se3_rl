@@ -23,6 +23,40 @@ ssh target-via-phone "kubectl get pods -n gczx-project06 -o wide"
 - 包含引号、管道、正则、变量或多行 Bash 的远端命令必须先 base64 编码，再传给 `kubectl exec`。不要直接拼接多层 PowerShell、SSH 和 Bash 字符串。
 - 不要使用 `pkill -f se3-train`，只停止明确的 PID 或进程组。
 
+## 网络分层与 A800 隔离
+
+- A800/abbtask 是隔离训练环境，不允许直连 GitHub，也不要通过恢复 `17892`、`7897`、`18080` 等 HTTP 代理或 SSH 反向代理让它间接出网。
+- SSH 只作为控制面使用：本机先连接 laptop，再由 laptop 进入 A800/abbtask 或 llm 执行命令、查看日志、启动/停止训练和 Viser 值守。
+- 代码同步的数据面不要走本机到 laptop 的 SSH 传大目录。流程应为：本机 push 到 GitHub，laptop 从 GitHub 拉取；A800/abbtask 需要更新代码时，由 laptop 生成 git bundle 或压缩包，再通过内网 SSH/kubectl cp 放入隔离环境。
+- checkpoint 数据面不要走本机到 laptop 的 SSH 慢链路。流程应为：A800/abbtask 生成 checkpoint，laptop 通过内网从 A800/abbtask 拉取；laptop 再上传到私有 checkpoint 交换仓库 `3SE-Competitive-Robotics-Team/se3_checkpoint_exchange` 的 GitHub Release asset，本机从该仓库下载。
+- checkpoint 交换仓库地址：`https://github.com/3SE-Competitive-Robotics-Team/se3_checkpoint_exchange`。不要把 `.pt` 直接提交进 git 历史，只允许作为 release asset 上传。
+- checkpoint 交换仓库每个 run 使用独立 release/tag，建议 tag 格式为 `run-<YYYYMMDD-HHMMSS>-<task-or-job>`，并附带 `model_N.pt`、`model_N.meta.json` 和必要日志尾部。metadata 至少记录任务名、run timestamp、commit、checkpoint iter、来源机器和上传时间，保证后续 sim2sim 或部署可追溯。
+- laptop 上传 checkpoint 示例：
+
+```powershell
+gh release create run-20260615-120000-flat `
+  --repo 3SE-Competitive-Robotics-Team/se3_checkpoint_exchange `
+  --title "run-20260615-120000-flat" `
+  --notes "SE3 checkpoint exchange; see attached metadata."
+
+gh release upload run-20260615-120000-flat `
+  C:\path\to\model_1000.pt `
+  C:\path\to\model_1000.meta.json `
+  --repo 3SE-Competitive-Robotics-Team/se3_checkpoint_exchange `
+  --clobber
+```
+
+- 本机下载 checkpoint 示例：
+
+```powershell
+gh release download run-20260615-120000-flat `
+  --repo 3SE-Competitive-Robotics-Team/se3_checkpoint_exchange `
+  --pattern "model_1000.*" `
+  --dir logs\remote_watch\run-20260615-120000-flat
+```
+
+- llm 容器的出网策略按当前任务另行确认；不要因为 llm 可以访问外网，就默认给 A800/abbtask 打开同样链路。
+
 ## 远端命令编码
 
 统一使用以下 PowerShell 模板。只修改 `$podScript` 内容：
