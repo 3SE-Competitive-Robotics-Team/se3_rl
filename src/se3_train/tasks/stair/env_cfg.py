@@ -22,7 +22,6 @@ from mjlab.sensor import (
 )
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import (
-    BoxFlatTerrainCfg,
     BoxInvertedPyramidStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
@@ -52,8 +51,8 @@ _STAIR_COMMAND_HALF_TRACK = 0.200725
 _STAIR_COMMAND_WHEEL_SPEED_FRACTION = 0.70
 _STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
-_WALKING_HEIGHT_RANGE = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
-_WALKING_PHASE_ITERATIONS = 800
+_INITIAL_STAIR_HEIGHT_RANGE = (0.24, 0.30)
+_WALKING_PHASE_ITERATIONS = 0
 _STEPS_PER_POLICY_ITER = 64
 _WATCH_ITER_ENV = "SE3_WATCH_ITER"
 _WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
@@ -112,14 +111,13 @@ def _stair_terrain_cfg() -> TerrainGeneratorCfg:
         add_lights=True,
         sub_terrains={
             "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
-                proportion=0.8,
+                proportion=1.0,
                 size=(8.0, 8.0),
                 step_height_range=(0.05, 0.20),
                 step_width=0.5,
                 platform_width=2.0,
                 border_width=1.0,
             ),
-            "flat": BoxFlatTerrainCfg(proportion=0.2, size=(8.0, 8.0)),
         },
     )
 
@@ -203,8 +201,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
     command_cfg.roll_range = (0.0, 0.0)
-    command_cfg.height_range = _WALKING_HEIGHT_RANGE
-    command_cfg.standing_height_range = _WALKING_HEIGHT_RANGE
+    command_cfg.height_range = _INITIAL_STAIR_HEIGHT_RANGE
+    command_cfg.standing_height_range = _INITIAL_STAIR_HEIGHT_RANGE
     command_cfg.height_resample_on_reset_only = True
     command_cfg.standing_ratio = 0.0
     command_cfg.lin_vel_deadband = 0.05
@@ -241,19 +239,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         terms["last_actions"] = last_action_term
         cfg.observations[group_name] = replace(group_cfg, terms=terms)
 
-    flat_tracking_lin_vel_cfg = cfg.rewards["tracking_lin_vel"]
-    flat_tracking_lin_vel_params = dict(flat_tracking_lin_vel_cfg.params or {})
-    flat_tracking_lin_vel_params.update(
-        {
-            "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
-            "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
-        }
-    )
-    cfg.rewards["flat_tracking_lin_vel"] = replace(
-        flat_tracking_lin_vel_cfg,
-        func=rewards.flat_phase_tracking_lin_vel,
-        params=flat_tracking_lin_vel_params,
-    )
+    cfg.rewards.pop("flat_wheel_contact", None)
+    cfg.rewards.pop("flat_leg_contact", None)
     cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
         func=rewards.stair_phase_forward_progress,
         weight=2.73,
@@ -264,24 +251,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
         },
     )
-    flat_contact_rewards = {
-        "flat_wheel_contact": rewards.flat_phase_wheel_contact_penalty,
-        "flat_leg_contact": rewards.flat_phase_leg_contact_penalty,
-    }
-    for reward_name, reward_func in flat_contact_rewards.items():
-        if reward_name in cfg.rewards:
-            contact_params = dict(cfg.rewards[reward_name].params or {})
-            contact_params.update(
-                {
-                    "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
-                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
-                }
-            )
-            cfg.rewards[reward_name] = replace(
-                cfg.rewards[reward_name],
-                func=reward_func,
-                params=contact_params,
-            )
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques_no_ctbc,
         weight=-2.0e-4,
@@ -437,8 +406,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "ff_amplitude_rad": 1.2,
             "ff_period_s": 0.6,
             "ff_start_iter": _WALKING_PHASE_ITERATIONS,
-            "ann_start_iter": _WALKING_PHASE_ITERATIONS + 200,
-            "ann_end_iter": _WALKING_PHASE_ITERATIONS + 800,
+            "ann_start_iter": 300,
+            "ann_end_iter": 1000,
             "phantom_trigger_iter": 0,
         },
     )
@@ -494,51 +463,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "velocity_stages": [
                     {
                         "iteration": 0,
-                        "lin_vel_x_range": (0.0, 0.0),
+                        "lin_vel_x_range": (0.4, 0.8),
                         "ang_vel_yaw_range": (0.0, 0.0),
-                    },
-                    {
-                        "iteration": 100,
-                        "lin_vel_x_range": (-0.5, 0.5),
-                        "ang_vel_yaw_range": (-0.5, 0.5),
                     },
                     {
                         "iteration": 250,
-                        "lin_vel_x_range": (-1.0, 1.0),
-                        "ang_vel_yaw_range": (-1.0, 1.0),
-                    },
-                    {
-                        "iteration": 400,
-                        "lin_vel_x_range": (-1.5, 1.5),
-                        "ang_vel_yaw_range": (-1.8, 1.8),
+                        "lin_vel_x_range": (0.4, 1.2),
+                        "ang_vel_yaw_range": (-0.15, 0.15),
                     },
                     {
                         "iteration": 600,
-                        "lin_vel_x_range": (-2.0, 2.0),
-                        "ang_vel_yaw_range": (-2.5, 2.5),
+                        "lin_vel_x_range": (0.5, 1.8),
+                        "ang_vel_yaw_range": (-0.35, 0.35),
                     },
                     {
-                        "iteration": 700,
-                        "lin_vel_x_range": (-2.5, 2.5),
-                        "ang_vel_yaw_range": (-3.0, 3.0),
-                    },
-                    {
-                        "iteration": _WALKING_PHASE_ITERATIONS,
-                        "lin_vel_x_range": (0.6, 1.0),
-                        "ang_vel_yaw_range": (0.0, 0.0),
-                    },
-                    {
-                        "iteration": _WALKING_PHASE_ITERATIONS + 250,
-                        "lin_vel_x_range": (0.6, 1.6),
-                        "ang_vel_yaw_range": (-0.25, 0.25),
-                    },
-                    {
-                        "iteration": _WALKING_PHASE_ITERATIONS + 500,
+                        "iteration": 1000,
                         "lin_vel_x_range": (0.6, 2.5),
-                        "ang_vel_yaw_range": (-0.50, 0.50),
+                        "ang_vel_yaw_range": (-0.60, 0.60),
                     },
                     {
-                        "iteration": _WALKING_PHASE_ITERATIONS + 800,
+                        "iteration": 1500,
                         "lin_vel_x_range": (0.6, 2.5),
                         "ang_vel_yaw_range": (-0.80, 0.80),
                     },
@@ -556,22 +500,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "height_stages": [
                     {
                         "iteration": 0,
-                        "height_range": _WALKING_HEIGHT_RANGE,
+                        "height_range": _INITIAL_STAIR_HEIGHT_RANGE,
                     },
                     {
-                        "iteration": 150,
-                        "height_range": (0.22, 0.28),
+                        "iteration": 250,
+                        "height_range": (0.24, 0.34),
                     },
                     {
-                        "iteration": 350,
-                        "height_range": (0.23, 0.32),
-                    },
-                    {
-                        "iteration": 600,
-                        "height_range": (0.24, 0.37),
-                    },
-                    {
-                        "iteration": _WALKING_PHASE_ITERATIONS,
+                        "iteration": 700,
                         "height_range": (0.24, 0.37),
                     },
                 ],
@@ -587,7 +523,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "upright_threshold": -0.5,
                 "terrain_type_names": _STAIR_TERRAIN_TYPES,
                 "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
-                "flat_terrain_type_name": "flat",
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
                 "fixed_iteration": watch_iter,
             },
@@ -609,16 +544,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                             "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)},
                         },
                         {
-                            "iteration": _WALKING_PHASE_ITERATIONS + 600,
-                            "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)},
+                            "iteration": 800,
+                            "velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)},
                         },
                         {
-                            "iteration": _WALKING_PHASE_ITERATIONS + 1000,
-                            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
+                            "iteration": 1300,
+                            "velocity_range": {"x": (-0.4, 0.4), "y": (-0.4, 0.4)},
                         },
                         {
-                            "iteration": _WALKING_PHASE_ITERATIONS + 1500,
-                            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+                            "iteration": 1800,
+                            "velocity_range": {"x": (-0.8, 0.8), "y": (-0.8, 0.8)},
                         },
                     ],
                 }

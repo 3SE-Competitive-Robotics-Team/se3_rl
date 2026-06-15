@@ -18,8 +18,8 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
         resume = False
     else:
-        # 前 800 轮使用平地走路课程；保持源仓库 stair GRU 的 64-step rollout。
-        # CTBC 在 800 轮满幅启用，1000->1600 轮退火，之后保留约 2200 轮适应期。
+        # 直接从台阶 level 0 开始训练；保持源仓库 stair GRU 的 64-step rollout。
+        # CTBC 从第 0 轮满幅启用，300->1000 轮退火，之后保留约 2800 轮适应期。
         max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3800"))
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
