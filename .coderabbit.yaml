@@ -1,0 +1,6 @@
+reviews:
+  path_filters:
+    - "!assets/robots/**"
+    - "!assets/base_model/**"
+    - "!assets/recovery_states/**"
+    - "!uv.lock"

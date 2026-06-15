@@ -49,25 +49,50 @@ check-code: fmt lint
 
 # CPU smoke 验证（5 轮，不上传 W&B）— 修改训练代码后必跑
 smoke:
-    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+
+# 显式回退开链模型的 CPU smoke，用于 A/B 定位闭链问题
+smoke-openchain:
+    SE3_SMOKE=1 SE3_ROBOT_MJCF_VARIANT=openchain uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+
+# 闭链 MJCF 编译、关节/actuator introspection 和默认站姿 residual 检查
+check-closedchain-model:
+    uv run python scripts/check_closedchain_model.py
 
 # GPU smoke 验证（5 轮，不上传 W&B）
 smoke-gpu:
-    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
 # 倒地自启 CPU smoke 验证（5 轮，不上传 W&B）
 smoke-recovery:
-    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 4 --gpu-ids None
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 8 --gpu-ids None
 
-# FlowMatch WHEEL 单标签训练（需要 GPU + .env）
+# 倒地自启 Discovery CPU smoke 验证（5 轮，不上传 W&B）
+smoke-recovery-discovery:
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --env.scene.num-envs 8 --gpu-ids None
+
+# 倒地自启 Stage II FineTune CPU smoke 验证（5 轮，不上传 W&B）
+smoke-recovery-finetune:
+    SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-FineTune-GRU --env.scene.num-envs 8 --gpu-ids None
+
+# 倒地自启 Stage II FineTune 零策略 Viser reset 检查
+play-recovery-finetune-zero:
+    uv run se3-play SE3-WheelLegged-Recovery-FineTune-GRU --agent zero --viewer viser --num-envs 1
+
+# 平地地形训练（需要 GPU + .env）
 train:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
-    uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+    uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
-# 倒地自启训练（需要 GPU + .env）
+# 倒地自启正式训练（从零训练，不从旧 checkpoint 续训）
 train-recovery:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
     uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 4096
+
+# 倒地自启轻量训练（资源紧张时临时使用）
+train-recovery-light:
+    @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
+    uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 1024
 
 # 崎岖地形训练（需要 GPU + .env）
 train-rough:
@@ -77,7 +102,7 @@ train-rough:
 # CPU 调试训练（极慢，仅用于调试）
 train-cpu:
     @[ -f .env ] || { echo "❌ 缺少 .env 文件。请先: cp .env.example .env  并填入 WANDB_API_KEY"; exit 1; }
-    uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+    uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # ---- 评估 / 回放 ----
 
@@ -85,12 +110,12 @@ train-cpu:
 
 # mjlab play 行走回放（自动选最新 checkpoint，本地 viewer）
 play:
-    uv run se3-play SE3-WheelLegged-FlowMatch-Wheel-GRU --num-envs 1
+    uv run se3-play SE3-WheelLegged-Flat-GRU --num-envs 1
 
 # mjlab play 行走回放（指定 checkpoint）
 # 用法: just play-ckpt logs/.../model_4999.pt
 play-ckpt checkpoint:
-    uv run se3-play SE3-WheelLegged-FlowMatch-Wheel-GRU --checkpoint-file {{checkpoint}} --num-envs 1
+    uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file {{checkpoint}} --num-envs 1
 
 # mjlab play 跳跃回放（自动选最新 checkpoint，本地 viewer）
 play-jump:
@@ -112,6 +137,15 @@ sim:
 sim-ckpt checkpoint:
     uv run se3-sim2sim --checkpoint {{checkpoint}} --max-steps 3000 --course walk-sweep
 
+# sim2sim 键盘遥控验证（R 切换输出，W/S 前后，A/D 旋转，自动保存 Rerun .rrd）
+sim-teleop:
+    uv run se3-sim2sim-teleop
+
+# sim2sim 指定 checkpoint 键盘遥控验证（自动保存 Rerun .rrd）
+# 用法: just sim-teleop-ckpt logs/.../model_4999.pt
+sim-teleop-ckpt checkpoint:
+    uv run se3-sim2sim-teleop --checkpoint {{checkpoint}}
+
 # sim2sim 无 GUI 快速验证（自动选最新 checkpoint）
 sim-headless:
     uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
@@ -120,6 +154,28 @@ sim-headless:
 # 用法: just sim-headless-ckpt logs/.../model_4999.pt
 sim-headless-ckpt checkpoint:
     uv run se3-sim2sim --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+
+# sim2sim 真实闭链模型回放（自动选最新 checkpoint，Rerun，walk-sweep 历程）
+sim-closedchain:
+    uv run se3-sim2sim --model-variant closedchain --max-steps 3000 --course walk-sweep
+
+# sim2sim 真实闭链模型回放（指定 checkpoint，Rerun，walk-sweep 历程）
+# 用法: just sim-closedchain-ckpt logs/.../model_4999.pt
+sim-closedchain-ckpt checkpoint:
+    uv run se3-sim2sim --model-variant closedchain --checkpoint {{checkpoint}} --max-steps 3000 --course walk-sweep
+
+# sim2sim 真实闭链模型无 GUI 快速验证（指定 checkpoint）
+# 用法: just sim-headless-closedchain-ckpt logs/.../model_4999.pt
+sim-headless-closedchain-ckpt checkpoint:
+    uv run se3-sim2sim --model-variant closedchain --checkpoint {{checkpoint}} --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+
+# NX recovery-only runtime dry-run：不连接 STM32，只验证 checkpoint 推理链路。
+nx-recovery-dry-run:
+    uv run se3-nx-recovery --dry-run --max-steps 100 --print-every 25
+
+# 导出 NX 轻量 NumPy policy 权重。
+nx-export-policy:
+    uv run se3-export-nx-policy
 
 # ---- sim2sim（跳跃模型） —— 默认跑 jump-sweep 历程 ----
 

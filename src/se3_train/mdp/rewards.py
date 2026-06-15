@@ -12,10 +12,11 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared import (
-    FourbarRobotConfig,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    policy_leg_position_error_torch,
 )
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
-_SHARED_ROBOT = FourbarRobotConfig()
+_SHARED_ROBOT = SharedRobotConfig()
 _DEFAULT_REWARD_LOG_INTERVAL_STEPS = 64
 _FOURBAR_WHEEL_RADIUS_M = 0.06
 _ACTION_SMOOTH_PREV_ATTR = "_se3_action_smooth_prev_action"
@@ -71,11 +72,6 @@ def _masked_min(values: torch.Tensor, mask: torch.Tensor) -> float:
     if mask.any():
         return values[mask].float().min().item()
     return 0.0
-
-
-def _mean_on_mask(values: torch.Tensor, mask: torch.Tensor) -> float:
-    """兼容旧奖励诊断命名的掩码均值。"""
-    return _masked_mean(values, mask)
 
 
 def _should_log_step(
@@ -130,40 +126,6 @@ def _accumulate_command_curriculum_metric(
         counts[valid] += 1.0
 
 
-def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
-    """缓存左右轮 body 在 entity 内的局部索引。"""
-    attr_name = f"_reward_wheel_body_ids_{asset_cfg.name}"
-    cached = getattr(env, attr_name, None)
-    if isinstance(cached, list) and len(cached) == 2:
-        return cached
-    robot = env.scene[asset_cfg.name]
-    body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
-    if len(body_ids) != 2:
-        raise RuntimeError(f"必须找到左右轮 body，实际找到: {body_names}")
-    setattr(env, attr_name, body_ids)
-    return body_ids
-
-
-def _wheel_alignment_error(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg,
-    center_lead_gain: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """计算左右轮前后对齐误差的共享几何核。"""
-    robot = env.scene[asset_cfg.name]
-    body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
-
-    com_x = robot.data.root_link_pos_w[:, 0]
-    vx = robot.data.root_link_lin_vel_w[:, 0]
-    ideal_x = com_x + float(center_lead_gain) * vx
-
-    dist_l = torch.abs(wheel_xy[:, 0, 0] - ideal_x)
-    dist_r = torch.abs(wheel_xy[:, 1, 0] - ideal_x)
-    mean_dist = (dist_l + dist_r) / 2.0
-    return ideal_x, dist_l, dist_r, mean_dist
-
-
 def _policy_leg_pos_and_default(robot) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的腿部当前位置和默认位置。"""
     leg_ids = policy_leg_joint_ids(robot)
@@ -194,6 +156,17 @@ def _policy_leg_pos_and_height_default(
     except Exception:
         return joint_pos, default_pos
     return joint_pos, height_default
+
+
+def _policy_leg_position_delta(
+    robot,
+    joint_pos: torch.Tensor,
+    default_pos: torch.Tensor,
+) -> torch.Tensor:
+    """返回 current-default 语义的腿部误差；整周转前杆使用最近等价相位。"""
+    if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot):
+        return policy_leg_position_error_torch(joint_pos, default_pos)
+    return joint_pos - default_pos
 
 
 def _active_rod_angles(robot) -> torch.Tensor:
@@ -325,7 +298,18 @@ def _policy_leg_mirror_diffs(robot) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的左右腿镜像误差。"""
     joint_pos, _ = _policy_leg_pos_and_default(robot)
     if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot):
-        return joint_pos[:, 0] + joint_pos[:, 2], joint_pos[:, 1] + joint_pos[:, 3]
+        front_diff = torch.atan2(
+            torch.sin(joint_pos[:, 0] + joint_pos[:, 2]),
+            torch.cos(joint_pos[:, 0] + joint_pos[:, 2]),
+        )
+        active_angles = []
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+            active_angles.append(
+                front_coef * joint_pos[:, front_idx] + back_coef * joint_pos[:, back_idx]
+            )
+        active_angle = torch.stack(active_angles, dim=1)
+        return front_diff, active_angle[:, 0] - active_angle[:, 1]
     return joint_pos[:, 0] - joint_pos[:, 2], joint_pos[:, 1] - joint_pos[:, 3]
 
 
@@ -642,15 +626,6 @@ def tracking_ang_vel(
     return reward
 
 
-def tracking_ang_vel_l2(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
-    """偏航角速度 L2 惩罚，抑制零 yaw 指令下的原地转向套利。"""
-    robot = env.scene["robot"]
-    cmd = env.command_manager.get_command(command_name)
-    ang_vel_z = robot.data.root_link_ang_vel_b[:, 2]
-    error = ang_vel_z - cmd[:, 1]
-    return error**2
-
-
 def tracking_lin_yaw_joint(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -803,6 +778,15 @@ def tracking_height(
     use_upright_gate: bool = False,
     min_upright_gate: float = 0.0,
     use_pose_end_gate: bool = False,
+    use_inverted_free_upright_height_gate: bool = False,
+    use_hard_inverted_height_gate: bool = False,
+    hard_inverted_release_deg: float = 130.0,
+    hard_inverted_full_deg: float = 170.0,
+    hard_inverted_min_gate: float = 0.05,
+    hard_inverted_wheel_sensor_name: str | None = None,
+    hard_inverted_force_threshold: float = 1.0,
+    hard_inverted_wheel_contact_min_count: int = 1,
+    hard_inverted_height_tolerance: float = 0.02,
     upright_gate_angle_deg: float = 30.0,
     inverted_gate_angle_deg: float = 150.0,
 ) -> torch.Tensor:
@@ -810,12 +794,7 @@ def tracking_height(
     cmd = env.command_manager.get_command(command_name)
 
     sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    robot = env.scene["robot"]
-    raw_height = sensor.data.heights[:, 0]
-    if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot):
-        height = torch.nan_to_num(raw_height, nan=0.0, posinf=0.0, neginf=0.0)
-    else:
-        height = raw_height
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
     target_height = cmd[:, 4]
     error_sq = torch.square(height - target_height)
     if kernel == "exp":
@@ -825,7 +804,16 @@ def tracking_height(
     else:
         raise ValueError(f"未知高度跟踪核函数: {kernel}")
 
-    if use_upright_gate:
+    robot = None
+    if (
+        use_upright_gate
+        or use_pose_end_gate
+        or use_inverted_free_upright_height_gate
+        or use_hard_inverted_height_gate
+    ):
+        robot = env.scene["robot"]
+
+    if use_upright_gate and robot is not None:
         gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
         gate = torch.clamp(gate, min=float(min_upright_gate))
         reward = reward * gate
@@ -835,7 +823,7 @@ def tracking_height(
             and _should_log_step(env)
         ):
             env.extras["log"]["Locomotion/height_gate"] = gate.mean().item()
-    if use_pose_end_gate:
+    if use_pose_end_gate and robot is not None:
         pg_z = robot.data.projected_gravity_b[:, 2]
         upright_gate = torch.clamp(-pg_z, 0.0, 1.0)
         inverted_gate = torch.clamp(pg_z, 0.0, 1.0)
@@ -853,67 +841,83 @@ def tracking_height(
                     "Locomotion/height_inverted_end_gate": inverted_gate.mean().item(),
                 }
             )
+    if use_inverted_free_upright_height_gate and robot is not None:
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        upright_projection_gate = torch.clamp(-pg_z, 0.0, 1.0)
+        inverted_free_gate = (pg_z > 0.0).float()
+        gate = torch.where(
+            pg_z > 0.0,
+            torch.ones_like(upright_projection_gate),
+            upright_projection_gate,
+        )
+        reward = reward * gate
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
+            env.extras["log"].update(
+                {
+                    "Locomotion/height_inverted_free_gate": inverted_free_gate.mean().item(),
+                    "Locomotion/height_upright_projection_gate": upright_projection_gate.mean().item(),
+                    "Locomotion/height_recovery_pose_gate": gate.mean().item(),
+                }
+            )
+    if use_hard_inverted_height_gate and robot is not None:
+        pg_z = robot.data.projected_gravity_b[:, 2]
+        tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+        gate_span = max(float(hard_inverted_full_deg) - float(hard_inverted_release_deg), 1.0e-6)
+        hard_ratio = torch.clamp(
+            (tilt_deg - float(hard_inverted_release_deg)) / gate_span,
+            0.0,
+            1.0,
+        )
+        hard_ratio = _smoothstep01(hard_ratio)
+        min_gate = min(max(float(hard_inverted_min_gate), 0.0), 1.0)
+        gate = 1.0 - hard_ratio * (1.0 - min_gate)
+        hard_inverted = tilt_deg > float(hard_inverted_release_deg)
+        wheel_contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        wheel_contact_count = torch.zeros(env.num_envs, device=env.device)
+        if hard_inverted_wheel_sensor_name is not None:
+            wheel_sensor: ContactSensor = env.scene[hard_inverted_wheel_sensor_name]
+            if wheel_sensor.data.force is not None:
+                force_mag = finite_contact_force_norm(wheel_sensor.data.force)
+                wheel_contact_count = (
+                    (force_mag > float(hard_inverted_force_threshold)).float().sum(dim=1)
+                )
+                wheel_contact = wheel_contact_count >= float(
+                    max(1, int(hard_inverted_wheel_contact_min_count))
+                )
+        gate = torch.where(hard_inverted & wheel_contact, torch.ones_like(gate), gate)
+        reward = reward * gate
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
+            high_enough = height >= target_height - float(hard_inverted_height_tolerance)
+            bad_high_pose = hard_inverted & high_enough & (~wheel_contact)
+            env.extras["log"].update(
+                {
+                    "Locomotion/height_hard_inverted_gate": gate.mean().item(),
+                    "Locomotion/height_hard_inverted_ratio": hard_inverted.float().mean().item(),
+                    "Locomotion/height_hard_inverted_wheel_contact_count": _masked_mean(
+                        wheel_contact_count, hard_inverted
+                    ),
+                    "Locomotion/height_hard_inverted_wheel_release_rate": (
+                        hard_inverted & wheel_contact
+                    )
+                    .float()
+                    .mean()
+                    .item(),
+                    "Locomotion/height_hard_inverted_high_bad_pose_rate": _masked_mean(
+                        bad_high_pose.float(), hard_inverted
+                    ),
+                }
+            )
     if ignore_recovery:
         reward = reward * (~_recovery_reset_mask(env)).float()
     return reward
-
-
-def flat_base_height_penalty_no_jump(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    height_sensor_name: str,
-    sigma: float = 0.05,
-) -> torch.Tensor:
-    """平地段 base 高度惩罚。"""
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    flat = ~jump_flag
-
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
-    target_height = cmd[:, 4]
-    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
-
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update(
-            {
-                "Jump/diag_flat_base_height_error_m": _mean_on_mask(
-                    torch.abs(height - target_height), flat
-                ),
-                "Jump/diag_flat_base_height_penalty": _mean_on_mask(penalty, flat),
-            }
-        )
-
-    return penalty * flat.float()
-
-
-def flat_base_lin_vel_z_no_jump(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    low_speed_threshold: float = 0.10,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """平地段基座竖直速度惩罚。"""
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
-        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
-    )
-
-    robot = env.scene[asset_cfg.name]
-    vz = robot.data.root_link_lin_vel_b[:, 2]
-    penalty = lin_vel_z(env)
-
-    active = (~jump_flag) & low_speed
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update(
-            {
-                "Jump/diag_flat_base_vz_raw": _mean_on_mask(torch.abs(vz), active),
-                "Jump/diag_flat_base_vz_penalty": _mean_on_mask(penalty, active),
-            }
-        )
-
-    return penalty * active.float()
 
 
 def bad_tilt(
@@ -1075,6 +1079,37 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
     return penalty
 
 
+def _action_rate_slice(
+    env: ManagerBasedRlEnv,
+    start: int,
+    stop: int,
+    recovery_scale: float | None = None,
+) -> torch.Tensor:
+    """指定动作维度的一阶变化平方和。"""
+    action = env.action_manager.action[:, start:stop]
+    prev_action = env.action_manager.prev_action[:, start:stop]
+    penalty = torch.sum((action - prev_action) ** 2, dim=1)
+    if recovery_scale is not None:
+        penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
+    return penalty
+
+
+def leg_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+    """腿部动作一阶变化平方和。"""
+    penalty = _action_rate_slice(env, 0, 4, recovery_scale=recovery_scale)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"]["Recovery/diag_leg_action_rate"] = penalty.mean().item()
+    return penalty
+
+
+def wheel_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+    """轮子动作一阶变化平方和。"""
+    penalty = _action_rate_slice(env, 4, 6, recovery_scale=recovery_scale)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"]["Recovery/diag_wheel_action_rate"] = penalty.mean().item()
+    return penalty
+
+
 def action_smoothness(
     env: ManagerBasedRlEnv,
     command_name: str | None = None,
@@ -1146,23 +1181,21 @@ def stand_still(
     ignore_recovery: bool = False,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """站立时关节偏差平方和，高度自适应 sigma。"""
+    """站立时惩罚腿部偏离高度条件默认姿态。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    leg_ids = policy_leg_joint_ids(robot)
-    diff = robot.data.joint_pos[:, leg_ids] - robot.data.default_joint_pos[:, leg_ids]
+    _ = default_height, height_tolerance
+    joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
+    diff = _policy_leg_position_delta(robot, joint_pos, default_pos)
     reward = torch.sum(diff**2, dim=1)
 
     cmd_norm = torch.linalg.norm(cmd[:, :2], dim=1)
     vel_scale = (cmd_norm <= command_threshold).float()
 
-    height_deviation = cmd[:, 4] - default_height
-    height_scale = torch.exp(-height_tolerance * height_deviation**2)
-
-    result = reward * vel_scale * height_scale * gate
+    result = reward * vel_scale * gate
     if ignore_recovery:
         result = result * (~_recovery_reset_mask(env)).float()
     return result
@@ -1183,7 +1216,9 @@ def joint_pos_penalty(
     gate = _upright_factor(pg_z)
 
     joint_pos, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
-    joint_error = torch.linalg.norm(joint_pos - default_pos, dim=1)
+    joint_error = torch.linalg.norm(
+        _policy_leg_position_delta(robot, joint_pos, default_pos), dim=1
+    )
     command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
     body_vel = torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2], dim=1)
     moving = (command_norm > float(command_threshold)) | (body_vel > float(velocity_threshold))
@@ -1204,6 +1239,74 @@ def joint_pos_penalty(
         )
 
     return penalty
+
+
+def recovery_upright_zero_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    wheel_radius: float = _FOURBAR_WHEEL_RADIUS_M,
+    gate_start_deg: float = 45.0,
+    gate_full_deg: float = 15.0,
+    base_speed_scale: float = 0.15,
+    wheel_speed_scale: float = 0.12,
+    base_ang_vel_scale: float = 0.6,
+    max_penalty: float = 8.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """近直立且零指令时惩罚机身漂移、角速度和轮子空转。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    standing = command_norm <= float(command_threshold)
+
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+    active = standing & (near_upright_gate > 0.0)
+
+    base_vxy = robot.data.root_link_lin_vel_b[:, :2]
+    base_speed_sq = torch.sum(base_vxy**2, dim=1)
+    base_ang_vel_sq = torch.sum(robot.data.root_link_ang_vel_b**2, dim=1)
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
+
+    penalty = (
+        base_speed_sq / (float(base_speed_scale) ** 2)
+        + wheel_speed_sq / (float(wheel_speed_scale) ** 2)
+        + base_ang_vel_sq / (float(base_ang_vel_scale) ** 2)
+    )
+    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * standing.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Recovery/upright_zero_velocity_penalty": _masked_mean(result, active),
+                "Recovery/diag_zero_velocity_gate": (near_upright_gate * standing.float())
+                .mean()
+                .item(),
+                "Recovery/diag_zero_velocity_gate_ratio": active.float().mean().item(),
+                "Recovery/diag_standing_near_upright_vxy_speed": _masked_mean(
+                    torch.sqrt(base_speed_sq), active
+                ),
+                "Recovery/diag_standing_near_upright_base_ang_vel_norm": _masked_mean(
+                    torch.sqrt(base_ang_vel_sq), active
+                ),
+                "Recovery/diag_standing_near_upright_wheel_speed": _masked_mean(
+                    torch.sqrt(wheel_speed_sq), active
+                ),
+            }
+        )
+
+    return result
 
 
 def recovery_diagnostics(
@@ -1400,8 +1503,11 @@ def recovery_diagnostics(
 
     joint_pos, fixed_default_pos = _policy_leg_pos_and_default(robot)
     _, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
-    fixed_joint_error_norm = torch.linalg.norm(joint_pos - fixed_default_pos, dim=1)
-    joint_error = joint_pos - default_pos
+    fixed_joint_error_norm = torch.linalg.norm(
+        _policy_leg_position_delta(robot, joint_pos, fixed_default_pos),
+        dim=1,
+    )
+    joint_error = _policy_leg_position_delta(robot, joint_pos, default_pos)
     joint_error_norm = torch.linalg.norm(joint_error, dim=1)
     default_active_angles = []
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
@@ -1872,6 +1978,28 @@ def upright_leg_contact_penalty(
     return penalty * active.float()
 
 
+def leg_contact_penalty(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """腿部触地惩罚，不使用直立门控。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    has_contact = (force_mag > float(force_threshold)).any(dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"]["Recovery/diag_leg_contact_penalty_rate"] = (
+            has_contact.float().mean().item()
+        )
+
+    return has_contact.float()
+
+
 def upright_wheel_contact_penalty(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -2101,6 +2229,9 @@ def recovery_progress(
     upright_delta_scale: float = 0.05,
     height_delta_scale: float = 0.03,
     max_reward: float = 4.0,
+    height_gate_start_deg: float | None = None,
+    height_gate_full_deg: float = 130.0,
+    min_height_gate: float = 0.0,
 ) -> torch.Tensor:
     """奖励恢复过程中直立程度和高度的单步正向进展。"""
     active = _recovery_reset_mask(env)
@@ -2124,6 +2255,18 @@ def recovery_progress(
     height_gain = torch.clamp(height - prev_height, min=0.0) / max(
         float(height_delta_scale), 1.0e-6
     )
+    height_gate = torch.ones_like(height_gain)
+    if height_gate_start_deg is not None:
+        tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+        gate_span = max(float(height_gate_full_deg) - float(height_gate_start_deg), 1.0e-6)
+        height_gate = _smoothstep01(
+            torch.clamp((tilt_deg - float(height_gate_start_deg)) / gate_span, 0.0, 1.0)
+        )
+        height_gate = torch.clamp(
+            height_gate,
+            min=min(max(float(min_height_gate), 0.0), 1.0),
+        )
+        height_gain = height_gain * height_gate
     reward = torch.clamp(upright_gain + height_gain, max=float(max_reward)) * active.float()
 
     prev_upright[active] = upright[active].detach()
@@ -2137,6 +2280,9 @@ def recovery_progress(
                 if active.any()
                 else 0.0,
                 "Recovery/height_gain": height_gain[active].mean().item() if active.any() else 0.0,
+                "Recovery/height_progress_gate": height_gate[active].mean().item()
+                if active.any()
+                else 0.0,
             }
         )
     return reward
@@ -2295,6 +2441,43 @@ def recovery_height(
     return reward * near_upright_gate * active.float()
 
 
+def recovery_wheel_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    gate_start_deg: float = 120.0,
+    gate_full_deg: float = 45.0,
+) -> torch.Tensor:
+    """倒地恢复期奖励轮子重新成为主要接地点。"""
+    active = _recovery_reset_mask(env)
+    contact_sensor: ContactSensor = env.scene[sensor_name]
+    data = contact_sensor.data
+    if data.force is None:
+        wheel_contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    else:
+        force_mag = finite_contact_force_norm(data.force)
+        wheel_contact = (force_mag > float(force_threshold)).any(dim=1)
+
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+
+    if hasattr(env, "extras"):
+        hard_tilt = _recovery_hard_tilt_mask(env)
+        env.extras.setdefault("log", {}).update(
+            {
+                "Recovery/wheel_contact_cond_rate": _masked_mean(wheel_contact.float(), active),
+                "Recovery/wheel_contact_gate": near_upright_gate[active].mean().item()
+                if active.any()
+                else 0.0,
+                "Recovery/hard_tilt_wheel_contact_gate": _masked_mean(near_upright_gate, hard_tilt),
+            }
+        )
+
+    return wheel_contact.float() * active.float()
+
+
 def joint_mirror(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
@@ -2313,11 +2496,12 @@ def collision(
     env: ManagerBasedRlEnv,
     sensor_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    use_recovery_gate: bool = True,
 ) -> torch.Tensor:
-    """受惩罚的身体接触计数,恢复惩罚门控。"""
+    """受惩罚的身体接触计数，可关闭恢复姿态门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _recovery_penalty_gate(env, pg_z)
+    gate = _recovery_penalty_gate(env, pg_z) if use_recovery_gate else torch.ones_like(pg_z)
 
     sensor: ContactSensor = env.scene[sensor_name]
     data = sensor.data
@@ -2345,11 +2529,12 @@ def contact_forces(
     threshold: float,
     sensor_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    use_recovery_gate: bool = True,
 ) -> torch.Tensor:
-    """轮子接触力超过阈值的部分,除以 100 归一化,恢复门控。"""
+    """轮子接触力超过阈值的部分,除以 100 归一化，可关闭恢复姿态门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _recovery_penalty_gate(env, pg_z)
+    gate = _recovery_penalty_gate(env, pg_z) if use_recovery_gate else torch.ones_like(pg_z)
 
     sensor: ContactSensor = env.scene[sensor_name]
     data = sensor.data
@@ -2367,7 +2552,6 @@ def feet_contact_without_cmd(
     force_threshold: float,
     cmd_threshold: float,
     sensor_name: str,
-    use_planar_command_norm: bool = False,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """静止时轮子接触,直立门控。"""
@@ -2376,10 +2560,8 @@ def feet_contact_without_cmd(
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
 
-    if use_planar_command_norm:
-        stationary = torch.linalg.norm(cmd[:, :2], dim=1) < cmd_threshold
-    else:
-        stationary = torch.abs(cmd[:, 0]) < cmd_threshold
+    velocity_command = torch.linalg.norm(cmd[:, :2], dim=1)
+    stationary = velocity_command < cmd_threshold
 
     sensor: ContactSensor = env.scene[sensor_name]
     data = sensor.data
@@ -2389,117 +2571,6 @@ def feet_contact_without_cmd(
     force_mag = finite_contact_force_norm(data.force)
     has_contact = (force_mag > force_threshold).float()
     return torch.sum(has_contact, dim=1) * gate * stationary.float()
-
-
-def flat_wheel_ground_slip_no_jump(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    sensor_name: str,
-    wheel_radius: float = 0.059,
-    contact_force_threshold: float = 1.0,
-    longitudinal_scale: float = 0.28,
-    lateral_scale: float = 0.20,
-    max_penalty: float = 9.0,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """平地段轮地滑移惩罚。"""
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    flat = ~jump_flag
-
-    sensor: ContactSensor = env.scene[sensor_name]
-    data = sensor.data
-    if data.force is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    force_mag = finite_contact_force_norm(data.force)
-    in_contact = force_mag > float(contact_force_threshold)
-
-    robot = env.scene[asset_cfg.name]
-    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
-    wheel_forward_speed = torch.stack(
-        (
-            wheel_vel[:, 0] * float(wheel_radius),
-            -wheel_vel[:, 1] * float(wheel_radius),
-        ),
-        dim=1,
-    )
-
-    base_vel_b = robot.data.root_link_lin_vel_b
-    forward_slip = wheel_forward_speed - base_vel_b[:, 0].unsqueeze(1)
-    lateral_slip = base_vel_b[:, 1].unsqueeze(1).expand_as(forward_slip)
-
-    penalty_per_wheel = (forward_slip / float(longitudinal_scale)) ** 2 + (
-        lateral_slip / float(lateral_scale)
-    ) ** 2
-    penalty = torch.sum(penalty_per_wheel * in_contact.float(), dim=1)
-    penalty = torch.clamp(penalty, max=float(max_penalty))
-    active = flat & in_contact.any(dim=1)
-
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update(
-            {
-                "Jump/diag_flat_wheel_ground_slip_raw": _mean_on_mask(penalty, active),
-                "Jump/diag_flat_wheel_ground_slip_contact_ratio": float(
-                    in_contact.any(dim=1).float().mean().item()
-                ),
-            }
-        )
-
-    return penalty * active.float()
-
-
-def flat_wheel_center_alignment_no_jump(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    contact_sensor_name: str,
-    contact_force_threshold: float = 1.0,
-    low_speed_threshold: float = 0.10,
-    center_lead_gain: float = 0.03,
-    center_tolerance: float = 0.05,
-    max_penalty: float = 4.0,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """平地段轮前后对齐惩罚。"""
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
-        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
-    )
-
-    sensor: ContactSensor = env.scene[contact_sensor_name]
-    data = sensor.data
-    if data.force is None:
-        return torch.zeros(env.num_envs, device=env.device)
-    force_mag = finite_contact_force_norm(data.force)
-    in_contact = force_mag > float(contact_force_threshold)
-    has_contact = in_contact.any(dim=1)
-
-    _ideal_x, dist_l, dist_r, mean_dist = _wheel_alignment_error(
-        env,
-        asset_cfg,
-        center_lead_gain,
-    )
-    penalty = torch.clamp(
-        (mean_dist / float(center_tolerance)) ** 2,
-        max=float(max_penalty),
-    )
-    active = (~jump_flag) & low_speed & has_contact
-
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update(
-            {
-                "Jump/diag_flat_wheel_center_error_m": _mean_on_mask(mean_dist, active),
-                "Jump/diag_flat_wheel_center_penalty": _mean_on_mask(penalty, active),
-                "Jump/diag_flat_wheel_center_contact_ratio": float(
-                    has_contact.float().mean().item()
-                ),
-                "Jump/diag_flat_wheel_center_left_error_m": _mean_on_mask(dist_l, active),
-                "Jump/diag_flat_wheel_center_right_error_m": _mean_on_mask(dist_r, active),
-            }
-        )
-
-    return penalty * active.float()
 
 
 def dof_pos_limits(

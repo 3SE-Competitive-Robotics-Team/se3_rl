@@ -10,28 +10,12 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
-| `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，复用平地任务结构并使用全角度 recovery reset |
-| `flow_match/wheel/` | `SE3-WheelLegged-FlowMatch-Wheel-GRU` | FlowMatch `WHEEL=0` 单标签平地轮式能力任务 |
-| `flow_match/gait_stage1/` | `SE3-WheelLegged-FlowMatch-Gait-Stage1-GRU` | FlowMatch `GAIT=1` 平地 `0-1.05m/s` 基础步态任务 |
-| `flow_match/gait_stage2/` | `SE3-WheelLegged-FlowMatch-Gait-Stage2-GRU` | FlowMatch `GAIT=1` 低矮随机地形和最高 `8cm` 台阶任务 |
-| `flow_match/gait_stage3/` | `SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU` | FlowMatch `GAIT=1` `8-24cm` 上台阶专项任务 |
-| `flow_match/wheel_leg/` | `SE3-WheelLegged-FlowMatch-WheelLeg-GRU` | FlowMatch `WHEEL_LEG=2` 单标签能力任务 |
-| `flow_match/gait_wheel/` | `SE3-WheelLegged-FlowMatch-GaitWheel-GRU` | FlowMatch `GAIT_WHEEL=3` 单标签能力任务 |
-| `flow_match/jump/` | `SE3-WheelLegged-FlowMatch-Jump-GRU` | FlowMatch `JUMP=4` 单标签能力任务 |
+| `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，从平地 GRU checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
+| `stair/` | `SE3-WheelLegged-Stair-GRU` | 倒金字塔台阶 CTBC fine-tune；前 400 轮平地走路，之后进入台阶课程 |
 
-阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。Recovery 目前只有 `Recovery-GRU` 一个正式入口，不注册 recovery-stand 或 stair/NX 实验入口。
-
-FlowMatch 任务用于先训练独立语义标签能力，再作为 FlowMatch 蒸馏源。正式语义标签为 `WHEEL=0`、`GAIT=1`、`WHEEL_LEG=2`、`GAIT_WHEEL=3`、`JUMP=4`。每个 FlowMatch 单标签 task 都固定自己的 `TaskMode`，关闭 episode 内模式切换；其中 `GAIT` 使用 Stage1/Stage2/Stage3 三段正式课程，阶段交接通过 CLI 显式传 `--agent.resume True --agent.load-run <上一阶段run> --agent.load-checkpoint <checkpoint>`，不在配置里写死 checkpoint。
-
-### `WHEEL_LEG` 与 `GAIT_WHEEL` 语义边界
-
-`WHEEL_LEG` 是轮式 locomotion 的腿增强版：轮子是主要推进源，腿的职责是抬升机身、越障、解卡和维持轮地接触。判断标准是，即使腿不形成稳定左右交替步态，机器人仍应主要靠轮速完成前进。
-
-`GAIT_WHEEL` 是步态 locomotion 的轮增强版：腿部左右交替摆动/蹬地形成主要步态节律，轮子在支撑和滑行阶段继续贡献前进速度与转向修正，目标行为类似“滑旱冰”。判断标准是，去掉交替步态后行为不应退化成纯轮式巡航；去掉轮子主动推进后也应明显损失滑行效率。
-
-reward 函数可以集中复用，但 reward 表属于具体 task。新增或调整语义任务时，应在对应 `tasks/<task>/env_cfg.py` 中显式列出该任务的 reward term、weight 和 params，避免把语义藏进共享 mode-gated 大表。
+阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
 ## 单个 task 的目录结构
 
@@ -51,8 +35,6 @@ tasks/<task_name>/
 `env_cfg.py` 可以复用更基础任务的配置，再覆盖当前任务的差异。例如 `jump_finetune` 基于 `jump_pretrain`，移除 EFGCL 辅助并调整 FineTune 阶段的奖励和课程。
 
 `observations.py`、`rewards.py`、`commands.py`、`curriculums.py`、`terminations.py` 和 `events.py` 可以转发共享实现，也可以放本任务独有实现。原则是从 task 目录能看出该任务实际依赖了哪些 MDP 代码。
-
-需要自定义 runner 时，应继承 `Se3OnPolicyRunner` 或 `Se3WarmStartRunner`，保留 W&B 失败时降级 TensorBoard 并继续保存 checkpoint 的保护。
 
 ## 注册流程
 
@@ -128,31 +110,9 @@ git diff --check
 
 ```bash
 uv run python - <<'PY'
-from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, rough
-from se3_train.tasks.flow_match import (
-    gait_stage1,
-    gait_stage2,
-    gait_stage3,
-    gait_wheel,
-    jump,
-    wheel,
-    wheel_leg,
-)
+from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, rough, stair
 
-for module in (
-    rough,
-    flat,
-    wheel,
-    gait_stage1,
-    gait_stage2,
-    gait_stage3,
-    wheel_leg,
-    gait_wheel,
-    jump,
-    recovery,
-    jump_pretrain,
-    jump_finetune,
-):
+for module in (rough, flat, recovery, jump_pretrain, jump_finetune, stair):
     cfg = module.env_cfg(play=True)
     rl = module.rl_cfg(smoke=True)
     print(module.TASK_ID, len(cfg.observations["actor"].terms), rl.max_iterations)

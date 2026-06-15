@@ -134,6 +134,42 @@ class PolicyRuntime:
             raise FileNotFoundError(f"checkpoint not found: {self.checkpoint_path}")
         self.device = torch.device(device)
         self.runtime = runtime
+        self._numpy_policy = None
+        self._onnx_policy = None
+        if self.checkpoint_path.suffix == ".npz":
+            from se3_deploy.numpy_policy import NumpyPolicyRuntime
+
+            self._numpy_policy = NumpyPolicyRuntime(self.checkpoint_path)
+            self.iteration = self._numpy_policy.iteration
+            self.spec = replace(
+                self.runtime.policy,
+                num_obs=int(self._numpy_policy.num_obs),
+                num_actions=int(self._numpy_policy.num_actions),
+                activation=self._numpy_policy.activation,
+                rnn_type=self._numpy_policy.rnn_type,
+                rnn_hidden_dim=int(self._numpy_policy.rnn_hidden_dim),
+                rnn_num_layers=int(self._numpy_policy.rnn_num_layers),
+            )
+            self._validate_runtime(self.spec)
+            self.model = None
+            return
+        if self.checkpoint_path.suffix == ".onnx":
+            from se3_deploy.onnx_policy import OnnxPolicyRuntime
+
+            self._onnx_policy = OnnxPolicyRuntime(self.checkpoint_path)
+            self.iteration = self._onnx_policy.iteration
+            self.spec = replace(
+                self.runtime.policy,
+                num_obs=int(self._onnx_policy.num_obs),
+                num_actions=int(self._onnx_policy.num_actions),
+                activation=self._onnx_policy.activation,
+                rnn_type=self._onnx_policy.rnn_type,
+                rnn_hidden_dim=int(self._onnx_policy.rnn_hidden_dim),
+                rnn_num_layers=int(self._onnx_policy.rnn_num_layers),
+            )
+            self._validate_runtime(self.spec)
+            self.model = None
+            return
         payload = torch.load(self.checkpoint_path, map_location=self.device)
         self.actor_state_dict, self.critic_state_dict = self._extract_state_dicts(payload)
         self.iteration = payload.get("iter", "unknown")
@@ -155,35 +191,31 @@ class PolicyRuntime:
         if self.spec.is_recurrent:
             self.reset()
 
-    @staticmethod
-    def probe_num_obs(checkpoint: Path, device: str = "cpu") -> int:
-        """Probe a checkpoint to determine its num_obs without full initialization."""
-        checkpoint = Path(checkpoint)
-        if not checkpoint.exists():
-            raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
-        payload = torch.load(checkpoint, map_location=device)
-        actor_state, _ = PolicyRuntime._extract_state_dicts(payload)
-        rnn_type, _, _ = PolicyRuntime._detect_rnn(actor_state)
-        if rnn_type is not None:
-            normalizer_mean = actor_state.get("obs_normalizer._mean")
-            if normalizer_mean is not None:
-                return int(normalizer_mean.shape[1])
-        actor_shapes = PolicyRuntime._linear_shapes(actor_state, "mlp")
-        if actor_shapes:
-            return int(actor_shapes[0][1])
-        raise ValueError("cannot determine num_obs from checkpoint")
-
     @property
     def policy_type(self) -> str:
+        if self._numpy_policy is not None:
+            return self._numpy_policy.policy_type
+        if self._onnx_policy is not None:
+            return self._onnx_policy.policy_type
         if self.spec.is_recurrent:
             return f"gru(hidden={self.spec.rnn_hidden_dim}, layers={self.spec.rnn_num_layers})"
         return "mlp"
 
     def reset(self) -> None:
+        if self._numpy_policy is not None:
+            self._numpy_policy.reset()
+            return
+        if self._onnx_policy is not None:
+            self._onnx_policy.reset()
+            return
         if isinstance(self.model, _DeterministicGRUActor):
             self.model.reset_hidden(self.device)
 
     def act(self, obs: np.ndarray) -> np.ndarray:
+        if self._numpy_policy is not None:
+            return self._numpy_policy.act(obs)
+        if self._onnx_policy is not None:
+            return self._onnx_policy.act(obs)
         obs = np.asarray(obs, dtype=np.float32).reshape(-1)
         if obs.shape != (self.spec.num_obs,):
             raise ValueError(
@@ -371,9 +403,7 @@ class PolicyRuntime:
             self._linear_shapes(critic_state_dict, "mlp") if critic_state_dict is not None else []
         )
         resolved = replace(
-            spec,
-            contract=self.runtime.policy.contract,
-            num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs,
+            spec, num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs
         )
 
         # MLP shape 验证：GRU 时第一层输入是 rnn_hidden_dim，MLP 时是 num_obs

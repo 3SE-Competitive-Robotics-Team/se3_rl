@@ -1,0 +1,136 @@
+[
+  {
+    "target": "base_link",
+    "generated": [
+      {
+        "name": "base_link_ucol_main",
+        "type": "box",
+        "pos": "0.0050578 0 -0.0321384",
+        "size": "0.215182 0.14325 0.0732178",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2"
+      }
+    ]
+  },
+  {
+    "target": "lf0_Link",
+    "generated": [
+      {
+        "name": "lf0_Link_ucol_main",
+        "type": "box",
+        "pos": "-0.0791153 0.0104893 0.00967075",
+        "size": "0.114195 0.0363472 0.0215947",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.0816062 -0.0715672 -0.757451 -0.643807"
+      }
+    ]
+  },
+  {
+    "target": "l_drive_bar_Link",
+    "generated": [
+      {
+        "name": "l_drive_bar_Link_ucol_main",
+        "type": "box",
+        "pos": "0.0140802 0.0137528 0.0161577",
+        "size": "0.0455967 0.0203935 0.008",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.499004 -0.500697 0.500727 0.499569"
+      }
+    ]
+  },
+  {
+    "target": "l_coupler_Link",
+    "generated": [
+      {
+        "name": "l_coupler_Link_ucol_main",
+        "type": "box",
+        "pos": "-0.0847227 0.000859694 0.0123235",
+        "size": "0.0957434 0.0209158 0.008",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.00343031 0.00526854 0.718068 -0.695944"
+      }
+    ]
+  },
+  {
+    "target": "lf1_Link",
+    "generated": [
+      {
+        "name": "lf1_Link_ucol_main",
+        "type": "box",
+        "pos": "-0.0686723 -0.00751413 -0.0734519",
+        "size": "0.105536 0.0226941 0.0170808",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.266815 0.312912 0.607394 -0.679683"
+      }
+    ]
+  },
+  {
+    "target": "rf0_Link",
+    "generated": [
+      {
+        "name": "rf0_Link_ucol_main",
+        "type": "box",
+        "pos": "-0.0790212 -0.0104735 0.00965626",
+        "size": "0.114374 0.0364025 0.0215992",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.0813693 0.071449 -0.756589 0.644862"
+      }
+    ]
+  },
+  {
+    "target": "r_drive_bar_Link",
+    "generated": [
+      {
+        "name": "r_drive_bar_Link_ucol_main",
+        "type": "box",
+        "pos": "0.0140806 -0.0137563 0.0164107",
+        "size": "0.0458355 0.0203854 0.008",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.50136 -0.498405 0.498371 0.501853"
+      }
+    ]
+  },
+  {
+    "target": "r_coupler_Link",
+    "generated": [
+      {
+        "name": "r_coupler_Link_ucol_main",
+        "type": "box",
+        "pos": "-0.0850801 -0.000862684 0.0122261",
+        "size": "0.0953848 0.0208264 0.008",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.00343881 -0.00524957 0.718104 0.695908"
+      }
+    ]
+  },
+  {
+    "target": "rf1_Link",
+    "generated": [
+      {
+        "name": "rf1_Link_ucol_main",
+        "type": "box",
+        "pos": "-0.0683563 0.00435352 -0.0733316",
+        "size": "0.105135 0.0227139 0.0170572",
+        "group": "0",
+        "contype": "1",
+        "conaffinity": "2",
+        "quat": "0.266497 0.313796 0.606149 -0.680511"
+      }
+    ]
+  }
+]

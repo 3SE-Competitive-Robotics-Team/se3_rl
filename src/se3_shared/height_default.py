@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .fourbar import output_knee_from_active_angle_np_array, output_knee_from_active_angle_torch
-from .robot import FourbarRobotConfig
+from .robot import RobotConfig
 
 if TYPE_CHECKING:
     import torch
 
-_ROBOT_CFG = FourbarRobotConfig()
+_ROBOT_CFG = RobotConfig()
 _LUT_SIZE = 1024
 _WHEEL_RADIUS = 0.06
 _BASE_COM_X = -0.01780372
@@ -28,7 +28,7 @@ _TORCH_CACHE: dict[
 
 def policy_default_from_height_torch(
     command_height: torch.Tensor,
-    cfg: FourbarRobotConfig | None = None,
+    cfg: RobotConfig | None = None,
 ) -> torch.Tensor:
     """根据 base height command 返回 policy 语义下的 [LF, LB, RF, RB] 默认姿态。"""
     torch = _import_torch()
@@ -56,7 +56,7 @@ def policy_default_from_height_torch(
 
 def policy_default_from_height_np(
     command_height: float | np.ndarray,
-    cfg: FourbarRobotConfig | None = None,
+    cfg: RobotConfig | None = None,
 ) -> np.ndarray:
     """NumPy 版本：根据 base height command 返回 [LF, LB, RF, RB] 默认姿态。"""
     robot_cfg = _ROBOT_CFG if cfg is None else cfg

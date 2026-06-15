@@ -9,28 +9,78 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import se3_shared
-from se3_shared import ActionDelayConfig, TaskMode, Termination
-from se3_shared.grounded_pose import solve_grounded_pose
+from se3_shared import ActionDelayConfig, Termination
 
 from .course import CourseConfig
 
-ViewerMode = Literal["rerun", "none"]
+ViewerMode = Literal["rerun", "mujoco", "none"]
+RerunGeomView = Literal["visual", "collision", "both"]
+SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
+RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
+RcOffMode = Literal["no-torque", "hold-current"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
-GAIT_BASE_HEIGHT = 0.35
+RECOVERY_COMMAND_HEIGHT_M = se3_shared.RECOVERY_COMMAND_HEIGHT_M
+RECOVERY_POSE_CHOICES: tuple[RecoveryPose, ...] = (
+    "standing",
+    "left_side",
+    "right_side",
+    "prone",
+    "supine",
+)
+RECOVERY_POSE_RP_RAD: dict[RecoveryPose, tuple[float, float]] = {
+    "standing": (0.0, 0.0),
+    "left_side": (0.5 * math.pi, 0.0),
+    "right_side": (-0.5 * math.pi, 0.0),
+    "prone": (0.0, math.pi),
+    "supine": (0.0, -math.pi),
+}
 
 _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
+_MJCF_DIR = Path("assets/robots/serialleg/mjcf")
+
+DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "closedchain"
+SIM_MODEL_VARIANT_CHOICES: tuple[SimModelVariant, ...] = (
+    "fourbar-surrogate",
+    "closedchain",
+    "openchain",
+)
+SIM_MODEL_VARIANT_PATHS: dict[SimModelVariant, Path] = {
+    "fourbar-surrogate": _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml",
+    "closedchain": _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml",
+    "openchain": _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml",
+}
+_SIM_MODEL_VARIANT_ALIASES: dict[str, SimModelVariant] = {
+    "default": "closedchain",
+    "fourbar": "fourbar-surrogate",
+    "fourbar-surrogate": "fourbar-surrogate",
+    "fourbar_surrogate": "fourbar-surrogate",
+    "surrogate": "fourbar-surrogate",
+    "equivalent-openchain": "fourbar-surrogate",
+    "closedchain": "closedchain",
+    "closed-chain": "closedchain",
+    "closedchain-obb": "closedchain",
+    "closedchain_obb": "closedchain",
+    "no-spring": "closedchain",
+    "no_spring": "closedchain",
+    "openchain": "openchain",
+    "open-chain": "openchain",
+}
 
 
-def _gait_default_dof_pos() -> tuple[float, ...]:
-    """返回 GAIT 训练用的 0.35m 轮子触地默认姿态。"""
-    result = solve_grounded_pose(GAIT_BASE_HEIGHT, keep_wheel_x=False, align_com_x=True)
-    if not result.success:
-        raise ValueError(
-            "无法求解 GAIT sim2sim 默认触地姿态: "
-            f"base_height={GAIT_BASE_HEIGHT}, message={result.message}"
-        )
-    return tuple(float(v) for v in result.q6)
+def normalize_model_variant(value: str) -> SimModelVariant:
+    """规范化 sim2sim 模型变体名称。"""
+    key = value.strip().lower()
+    try:
+        return _SIM_MODEL_VARIANT_ALIASES[key]
+    except KeyError as exc:
+        allowed = "/".join(SIM_MODEL_VARIANT_CHOICES)
+        raise ValueError(f"不支持的 sim2sim 模型变体 {value!r}；可选 {allowed}") from exc
+
+
+def model_path_for_variant(value: str) -> Path:
+    """返回指定 sim2sim 模型变体对应的 MJCF 路径。"""
+    return SIM_MODEL_VARIANT_PATHS[normalize_model_variant(value)]
 
 
 class YawPidConfig(BaseModel):
@@ -104,11 +154,42 @@ class JumpScheduleConfig(BaseModel):
         return self
 
 
-class TaskModeSimConfig(BaseModel):
-    """sim2sim 端的 Task Mode 配置。"""
+class RcSwitchEventConfig(BaseModel):
+    """遥控器输出使能切换事件。"""
 
-    mode: TaskMode = TaskMode.WHEEL
-    """当前固定 Task Mode。"""
+    trigger_time_s: Annotated[float, Field(ge=0.0)]
+    """触发时间，单位秒。"""
+
+    output_enabled: bool
+    """是否允许 policy 输出真正接管机器人。"""
+
+    @model_validator(mode="after")
+    def _check_finite(self) -> RcSwitchEventConfig:
+        if not math.isfinite(self.trigger_time_s):
+            raise ValueError(f"trigger_time_s must be finite, got {self.trigger_time_s}")
+        return self
+
+
+class RcSwitchScheduleConfig(BaseModel):
+    """sim2sim 中模拟遥控器开关 / output enable 的时间表。"""
+
+    initial_output_enabled: bool = True
+    """仿真开始时是否允许 policy 输出。"""
+
+    off_mode: RcOffMode = "no-torque"
+    """output disabled 时的物理语义；真机当前为 no-torque。"""
+
+    events: tuple[RcSwitchEventConfig, ...] = ()
+    """按绝对时间切换 output enable 的事件列表。"""
+
+    @model_validator(mode="after")
+    def _check_schedule(self) -> RcSwitchScheduleConfig:
+        last_time = -math.inf
+        for event in self.events:
+            if event.trigger_time_s <= last_time:
+                raise ValueError("rc switch event times must be strictly increasing")
+            last_time = event.trigger_time_s
+        return self
 
 
 class RobotConfig(BaseModel):
@@ -116,12 +197,19 @@ class RobotConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model_path: Path = Path("assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml")
+    model_path: Path = model_path_for_variant(DEFAULT_SIM_MODEL_VARIANT)
     task: str = "wheel_legged_joint_pos"
     seed: int = 0
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height
+    initial_roll_rad: float = 0.0
+    initial_pitch_rad: float = 0.0
+    initial_yaw_rad: float = 0.0
+    initial_ang_vel_rad_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """reset 初始 base 角速度，按 MuJoCo freejoint qvel 的 body-frame xyz 顺序。"""
+    initial_base_height: float | None = None
+    """sim2sim reset 初始 base 姿态。默认全 0，保持原站立回放行为。"""
     command: tuple[float, float, float, float, float, float, float, float] = (
         0.0,
         0.0,
@@ -129,7 +217,7 @@ class RobotConfig(BaseModel):
         0.0,
         _shared_robot.default_base_height,
         0.0,
-        0.2,
+        0.0,
         0.0,
     )
     """8 维指令: [vx, ωz, pitch, roll, height, jump_flag, jump_target_height, jump_phase]。
@@ -137,13 +225,32 @@ class RobotConfig(BaseModel):
     """
     command_scale: tuple[float, ...] = _shared_obs.command_scale
     default_dof_pos: tuple[float, ...] = _shared_robot.default_dof_pos
+    initial_leg_joint_pos: tuple[float, ...] | None = None
+    """reset 时覆写腿部初始关节位置；2 个值表示左右同型，4 个值表示 policy 腿部顺序。"""
+    initial_wheel_joint_pos: tuple[float, float] | None = None
+    """reset 时覆写轮子连续关节位置；主要用于从 deploy telemetry 起跑。"""
+    initial_dof_vel: tuple[float, ...] | None = None
+    """reset 时覆写 6 维 policy-order 关节速度：[4 腿, 2 轮]。"""
+    initial_last_action: tuple[float, ...] | None = None
+    """reset 时覆写 observation 中的 last_action；用于从 deploy obs 精确起跑。"""
+    settle_base_before_policy: bool = False
+    """policy 推理前先用零控制等待 base_link 接地。"""
+    pre_policy_settle_max_s: Annotated[float, Field(ge=0.0)] = 0.0
+    """base_link 贴地后额外等待接触稳定的最大仿真时间；默认不做被动滚动。"""
+    pre_policy_settle_contact_steps: Annotated[int, Field(ge=1)] = 5
+    """判定 base_link 已接地需要连续满足的 MuJoCo step 数。"""
     action_scale: tuple[float, ...] = _shared_robot.action_scale
+    action_clip: float | None = _shared_robot.action_clip
+    height_conditioned_action_default: bool = True
+    """让腿部 action=0 对应当前 command height 下的默认腿型。"""
+    active_rod_target_lower_preload_margin: Annotated[float, Field(ge=0.0)] = (
+        _shared_robot.active_rod_lower_target_overdrive
+    )
+    active_rod_target_upper_preload_margin: Annotated[float, Field(ge=0.0)] = 0.0
     torque_limits: tuple[float, ...] = _shared_robot.torque_limits
     leg_kp: float = _shared_robot.leg_kp
     leg_kd: float = _shared_robot.leg_kd
     wheel_kd: float = _shared_robot.wheel_kd
-    wheel_lock_damping: float | None = None
-    freeze_wheels: bool = False
     yaw_pid: YawPidConfig = Field(default_factory=YawPidConfig)
     action_delay: ActionDelayConfig = Field(
         default_factory=lambda: _shared_robot.action_delay.model_copy()
@@ -154,8 +261,8 @@ class RobotConfig(BaseModel):
     """跳跃参考相位参数，与训练端 JumpCommandTerm 对齐。"""
     jump_schedule: JumpScheduleConfig = Field(default_factory=JumpScheduleConfig)
     """定时跳跃调度配置。"""
-    task_mode: TaskModeSimConfig = Field(default_factory=TaskModeSimConfig)
-    """Task Mode 配置，仅 TaskMode policy 时使用。"""
+    rc_switch: RcSwitchScheduleConfig = Field(default_factory=RcSwitchScheduleConfig)
+    """sim2sim 中的遥控器输出使能脚本；关闭时按硬件 off 语义处理。"""
 
 
 class PolicyConfig(BaseModel):
@@ -180,6 +287,8 @@ class ViewerConfig(BaseModel):
     memory_limit: str = "1GB"
     log_every: int = 1
     follow_body: str = "base_link"
+    geom_view: RerunGeomView = "visual"
+    """3D viewer 显示的 MJCF 几何：visual 用于复查外观，collision 用于接触诊断。"""
 
 
 class RunConfig(BaseModel):
@@ -205,12 +314,13 @@ class RunConfig(BaseModel):
     terminate_on_fall: bool = False
     fail_tilt_deg: float = 80.0
     fail_height_m: float = 0.12
+    deploy_telemetry_init: dict[str, object] | None = None
+    deploy_telemetry_reference_obs: tuple[float, ...] | None = Field(default=None, exclude=True)
 
     def resolved(self, root: Path | None = None) -> RunConfig:
         """原地解析所有路径，返回 self（供链式调用）。"""
         base = Path.cwd() if root is None else Path(root)
         self.robot.model_path = _resolve_path(base, self.robot.model_path)
-        self._resolve_task_mode_defaults()
         self._resolve_legacy_action_delay_steps()
         self.policy.checkpoint = (
             _latest_checkpoint(base)
@@ -227,25 +337,6 @@ class RunConfig(BaseModel):
             fail_height_m=self.fail_height_m,
         )
         return self
-
-    def _resolve_task_mode_defaults(self) -> None:
-        """对齐训练端各 TaskMode 的 reset 姿态、指令和动作语义。"""
-        if self.robot.task_mode.mode != TaskMode.GAIT:
-            return
-        command = list(self.robot.command)
-        command[4] = GAIT_BASE_HEIGHT
-        command[5] = 0.0
-        command[6] = 0.0
-        command[7] = 0.0
-        action_scale = list(self.robot.action_scale)
-        action_scale[4] = 0.0
-        action_scale[5] = 0.0
-        self.robot.base_height = GAIT_BASE_HEIGHT
-        self.robot.command = tuple(command)
-        self.robot.default_dof_pos = _gait_default_dof_pos()
-        self.robot.action_scale = tuple(action_scale)
-        self.robot.wheel_lock_damping = 0.0
-        self.robot.freeze_wheels = True
 
     def to_dict(self) -> dict[str, object]:
         """序列化为纯 JSON 兼容字典（Path → str，嵌套 BaseModel 递归展开）。"""

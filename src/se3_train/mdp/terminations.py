@@ -6,18 +6,55 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import output_to_policy_pos_torch, output_to_policy_vel_torch
+from se3_shared import (
+    output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
+    policy_leg_position_error_torch,
+)
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
-from se3_train.mdp.joint_indices import is_fourbar_surrogate_model, policy_leg_joint_ids
+from se3_train.mdp.joint_indices import (
+    is_closedchain_model,
+    is_fourbar_surrogate_model,
+    policy_leg_joint_ids,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
     from mjlab.sensor import ContactSensor
 
+_DEFAULT_TERMINATION_LOG_INTERVAL_STEPS = 64
+
+
+def _should_log_step(
+    env: ManagerBasedRlEnv, interval: int = _DEFAULT_TERMINATION_LOG_INTERVAL_STEPS
+) -> bool:
+    """按 policy step 降频写 termination 诊断日志。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(1, int(getattr(env, "_se3_termination_log_interval_steps", interval)))
+    return interval <= 1 or (step - 1) % interval == 0
+
+
+def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """返回当前仍处于 recovery active 模式的 env。"""
+    return recovery_state.recovery_active_mask(env)
+
 
 def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf >= env.max_episode_length
+
+
+def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """返回 policy 主动杆语义下的腿部位置、默认位置和速度。"""
+    leg_ids = policy_leg_joint_ids(robot)
+    leg_pos = robot.data.joint_pos[:, leg_ids]
+    leg_default = robot.data.default_joint_pos[:, leg_ids]
+    leg_vel = robot.data.joint_vel[:, leg_ids]
+    if is_fourbar_surrogate_model(robot):
+        leg_pos = output_to_policy_pos_torch(leg_pos)
+        leg_default = output_to_policy_pos_torch(leg_default)
+        leg_vel = output_to_policy_vel_torch(robot.data.joint_pos[:, leg_ids], leg_vel)
+    return leg_pos, leg_default, leg_vel
 
 
 class BadOrientationDelayed:
@@ -27,21 +64,69 @@ class BadOrientationDelayed:
         self._fail_count: torch.Tensor | None = None
 
     def __call__(
-        self, env: ManagerBasedRlEnv, limit_angle: float = 0.5236, max_steps: int = 100
+        self,
+        env: ManagerBasedRlEnv,
+        limit_angle: float = 0.5236,
+        max_steps: int = 100,
+        recovery_grace_steps: int = 0,
+        recovery_terminate: bool = True,
     ) -> torch.Tensor:
-        if self._fail_count is None:
+        if (
+            self._fail_count is None
+            or self._fail_count.shape[0] != env.num_envs
+            or self._fail_count.device != env.device
+        ):
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         robot = env.scene["robot"]
         pg_z = robot.data.projected_gravity_b[:, 2]
         tilt_angle = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-        bad = tilt_angle > limit_angle
+        raw_bad = tilt_angle > limit_angle
+        bad = raw_bad
+        recovery_mask = _recovery_reset_mask(env)
+        in_recovery_grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        if not recovery_terminate:
+            bad = bad & ~recovery_mask
+        if recovery_grace_steps > 0:
+            in_recovery_grace = recovery_mask & (
+                env.episode_length_buf <= int(recovery_grace_steps)
+            )
+            bad = bad & ~in_recovery_grace
 
         self._fail_count[bad] += 1
         self._fail_count[~bad] = 0
         self._fail_count[env.episode_length_buf <= 1] = 0
 
-        return self._fail_count > max_steps
+        terminated = self._fail_count > max_steps
+        if hasattr(env, "extras"):
+
+            def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
+                if not mask.any():
+                    return 0.0
+                return values[mask].float().mean().item()
+
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Recovery/bad_orientation_raw_rate": _masked_rate(raw_bad, recovery_mask),
+                    "Recovery/bad_orientation_counted_rate": _masked_rate(bad, recovery_mask),
+                    "Recovery/bad_orientation_grace_rate": _masked_rate(
+                        in_recovery_grace, recovery_mask
+                    ),
+                    "Recovery/bad_orientation_termination_rate": _masked_rate(
+                        terminated, recovery_mask
+                    ),
+                }
+            )
+            # reset 日志会被清空，所以先缓存逐环境诊断，由 command reset 阶段搬运到 log。
+            env.extras["_bad_orientation_diag"] = {
+                "raw_bad": raw_bad.detach().clone(),
+                "counted_bad": bad.detach().clone(),
+                "terminated": terminated.detach().clone(),
+                "recovery_mask": recovery_mask.detach().clone(),
+                "recovery_grace": in_recovery_grace.detach().clone(),
+            }
+
+        return terminated
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         if self._fail_count is not None and env_ids is not None:
@@ -64,7 +149,7 @@ class RecoveryStagnation:
         max_steps: int = 256,
         min_delta: float = 0.02,
     ) -> torch.Tensor:
-        active = recovery_state.recovery_active_mask(env)
+        active = _recovery_reset_mask(env)
         robot = env.scene["robot"]
         pg_z = robot.data.projected_gravity_b[:, 2]
         score = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
@@ -146,7 +231,12 @@ def catastrophic_state(
     if max_leg_pos_error is None:
         leg_pos_bad = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
     else:
-        leg_pos_bad = torch.any(torch.abs(leg_pos - leg_default) > float(max_leg_pos_error), dim=1)
+        leg_error = (
+            policy_leg_position_error_torch(leg_pos, leg_default)
+            if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot)
+            else leg_pos - leg_default
+        )
+        leg_pos_bad = torch.any(torch.abs(leg_error) > float(max_leg_pos_error), dim=1)
     leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
     root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
     root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)
@@ -167,68 +257,6 @@ def catastrophic_state(
     return terminated
 
 
-def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """返回 policy 腿部坐标下的位置、默认位置和速度。"""
-    leg_ids = policy_leg_joint_ids(robot)
-    leg_pos = robot.data.joint_pos[:, leg_ids]
-    leg_default = robot.data.default_joint_pos[:, leg_ids]
-    leg_vel = robot.data.joint_vel[:, leg_ids]
-    if is_fourbar_surrogate_model(robot):
-        leg_pos_policy = output_to_policy_pos_torch(leg_pos)
-        return (
-            leg_pos_policy,
-            output_to_policy_pos_torch(leg_default),
-            output_to_policy_vel_torch(leg_pos, leg_vel),
-        )
-    return leg_pos, leg_default, leg_vel
-
-
-def _should_log_step(env: ManagerBasedRlEnv, interval: int = 64) -> bool:
-    """按 policy step 降频写 host 标量日志。"""
-    step = int(getattr(env, "common_step_counter", 0))
-    interval = max(1, int(interval))
-    return interval <= 1 or (step - 1) % interval == 0
-
-
-class LowBaseHeightDelayed:
-    """base height 连续低于阈值后终止。"""
-
-    def __init__(self) -> None:
-        self._fail_count: torch.Tensor | None = None
-
-    def __call__(
-        self,
-        env: ManagerBasedRlEnv,
-        sensor_name: str,
-        min_height: float,
-        max_steps: int = 30,
-    ) -> torch.Tensor:
-        if self._fail_count is None:
-            self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-
-        sensor = env.scene[sensor_name]
-        height = sensor.data.heights[:, 0]
-        low = height < float(min_height)
-
-        self._fail_count[low] += 1
-        self._fail_count[~low] = 0
-        self._fail_count[env.episode_length_buf <= 1] = 0
-
-        return self._fail_count > int(max_steps)
-
-    def reset(self, env_ids: torch.Tensor | None = None) -> None:
-        if self._fail_count is not None and env_ids is not None:
-            self._fail_count[env_ids] = 0
-
-
-gait_low_base_height_delayed = LowBaseHeightDelayed()
-
-
-def _has_jump_stage(term: object) -> bool:
-    """判断指令项是否暴露跳跃阶段。"""
-    return hasattr(term, "jump_stage")
-
-
 def leg_contact(
     env: ManagerBasedRlEnv,
     sensor_name: str,
@@ -237,6 +265,8 @@ def leg_contact(
     jump_force_threshold: float | None = None,
     jump_landing_force_threshold: float | None = None,
     jump_grace_steps: int = 0,
+    recovery_grace_steps: int = 0,
+    recovery_terminate: bool = True,
     terminate: bool = True,
 ) -> torch.Tensor:
     """腿部 link 接触地面即时终止（膝盖着地 = 非法运动模式）。
@@ -256,6 +286,12 @@ def leg_contact(
     has_contact = max_force > force_threshold
     terminate_threshold = torch.full_like(max_force, force_threshold)
     terminate_contact = has_contact
+    recovery_mask = _recovery_reset_mask(env)
+    if not recovery_terminate:
+        terminate_contact = terminate_contact & ~recovery_mask
+    if recovery_grace_steps > 0:
+        in_recovery_grace = recovery_mask & (env.episode_length_buf <= int(recovery_grace_steps))
+        terminate_contact = terminate_contact & ~in_recovery_grace
 
     # 精细拆分诊断：写入 extras["_leg_contact_diag"]（不是 log，log 在 reset 时会被清空）
     # command_manager._update_metrics 在 reset 之后调用，从此处读取并搬入 extras["log"]
@@ -270,6 +306,9 @@ def leg_contact(
             leg_contact_jump = has_contact[jump_flag].float().mean().item() if n_jump > 0 else 0.0
             leg_contact_walk = has_contact[~jump_flag].float().mean().item() if n_walk > 0 else 0.0
 
+            # RSI 期门控
+            from se3_train.mdp.jump_commands import JumpCommandTerm
+
             term = env.command_manager.get_term(diag_command_name)
             rsi_window = 5
             in_rsi = env.episode_length_buf <= rsi_window
@@ -278,7 +317,7 @@ def leg_contact(
             leg_contact_rsi = has_contact[rsi_jump].float().mean().item() if n_rsi > 0 else 0.0
 
             # landing stage 门控
-            if _has_jump_stage(term):
+            if isinstance(term, JumpCommandTerm):
                 in_landing = term.jump_stage == 2
                 landing_jump = jump_flag & in_landing
                 n_landing = landing_jump.sum().item()
@@ -333,130 +372,53 @@ def leg_contact(
     return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
 
 
-def body_contact(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    force_threshold: float = 1.0,
-) -> torch.Tensor:
-    """指定 body 接触地面即时终止。"""
-    sensor: ContactSensor = env.scene[sensor_name]
-    data = sensor.data
-    if data.force is None:
-        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-    force_mag = finite_contact_force_norm(data.force)
-    max_force = force_mag.max(dim=1).values
-    return max_force > force_threshold
-
-
-class BodyContactDelayed:
-    """body 接触后连续惩罚一段时间，再终止 episode。"""
+class LegContactDelayed:
+    """腿部 link 持续重接触超过 max_steps 步才终止，供台阶任务使用。"""
 
     def __init__(self) -> None:
-        self._contact_count: torch.Tensor | None = None
-        self._active: torch.Tensor | None = None
+        self._fail_count: torch.Tensor | None = None
 
     def __call__(
         self,
         env: ManagerBasedRlEnv,
         sensor_name: str,
-        force_threshold: float = 1.0,
-        delay_steps: int = 50,
+        force_threshold: float = 80.0,
+        max_steps: int = 50,
     ) -> torch.Tensor:
-        if self._contact_count is None:
-            self._contact_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-        if self._active is None:
-            self._active = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        if (
+            self._fail_count is None
+            or self._fail_count.shape[0] != env.num_envs
+            or self._fail_count.device != env.device
+        ):
+            self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         sensor: ContactSensor = env.scene[sensor_name]
         data = sensor.data
         if data.force is None:
-            contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-        else:
-            force_mag = finite_contact_force_norm(data.force)
-            max_force = force_mag.max(dim=1).values
-            contact = max_force > force_threshold
-
-        self._contact_count[contact] += 1
-        self._contact_count[~contact] = 0
-        self._contact_count[env.episode_length_buf <= 1] = 0
-        self._active[:] = self._contact_count > 0
-        return self._contact_count > int(delay_steps)
-
-    def penalty(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        """返回当前 delayed contact 窗口，供 reward 持续扣分。"""
-        if self._active is None:
-            return torch.zeros(env.num_envs, device=env.device)
-        return self._active.float()
-
-    def reset(self, env_ids: torch.Tensor | None = None) -> None:
-        if env_ids is None:
-            return
-        if self._contact_count is not None:
-            self._contact_count[env_ids] = 0
-        if self._active is not None:
-            self._active[env_ids] = False
-
-
-class BodyContactGracePenalty:
-    """body 接触后的 grace 窗口持续惩罚。
-
-    这个 reward term 独立维护接触窗口状态，不依赖 termination term 的实例。
-    MJLab manager 会 deepcopy cfg，跨 manager 共享 callable 实例会导致状态脱钩。
-    """
-
-    def __init__(self) -> None:
-        self._contact_count: torch.Tensor | None = None
-
-    def __call__(
-        self,
-        env: ManagerBasedRlEnv,
-        sensor_name: str,
-        force_threshold: float = 1.0,
-        delay_steps: int = 50,
-    ) -> torch.Tensor:
-        if self._contact_count is None:
-            self._contact_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-
-        sensor: ContactSensor = env.scene[sensor_name]
-        data = sensor.data
-        if data.force is None:
-            contact = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-        else:
-            force_mag = finite_contact_force_norm(data.force)
-            max_force = force_mag.max(dim=1).values
-            contact = max_force > force_threshold
-
-        self._contact_count[contact] += 1
-        self._contact_count[~contact] = 0
-        self._contact_count[env.episode_length_buf <= 1] = 0
-        in_grace = (self._contact_count > 0) & (self._contact_count <= int(delay_steps))
-        return in_grace.float()
-
-    def reset(self, env_ids: torch.Tensor | None = None) -> None:
-        if env_ids is None:
-            return
-        if self._contact_count is not None:
-            self._contact_count[env_ids] = 0
-
-
-class BodyContactPenalty:
-    """body 接触地面时每一步持续扣分。"""
-
-    def __call__(
-        self,
-        env: ManagerBasedRlEnv,
-        sensor_name: str,
-        force_threshold: float = 1.0,
-    ) -> torch.Tensor:
-        sensor: ContactSensor = env.scene[sensor_name]
-        data = sensor.data
-        if data.force is None:
-            return torch.zeros(env.num_envs, device=env.device)
+            return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
 
         force_mag = finite_contact_force_norm(data.force)
-        max_force = force_mag.max(dim=1).values
-        return (max_force > force_threshold).float()
+        has_contact = force_mag.max(dim=1).values > float(force_threshold)
+
+        self._fail_count[has_contact] += 1
+        self._fail_count[~has_contact] = 0
+        self._fail_count[env.episode_length_buf <= 1] = 0
+        terminated = self._fail_count > int(max_steps)
+
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Stair/diag_leg_heavy_contact_rate": has_contact.float().mean().item(),
+                    "Stair/diag_leg_contact_delayed_termination_rate": (
+                        terminated.float().mean().item()
+                    ),
+                }
+            )
+        return terminated
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._fail_count is not None and env_ids is not None:
+            self._fail_count[env_ids] = 0
 
 
-base_link_contact_delayed = BodyContactDelayed()
-leg_contact_delayed = BodyContactDelayed()
+leg_contact_delayed = LegContactDelayed()

@@ -1,280 +1,137 @@
 ---
 name: remote-dev-se3
-description: se3_wheel_leg 远程训练机运维。管理 SSH 隧道、代理穿透、训练启动/停止/监控、checkpoint 拉取、sim2sim 验证。当用户提到远程训练、训练机、GPU 机器、wuyinyun、阿里云、腾讯云、SSH 连接、代理隧道、训练日志、checkpoint 下载、wandb 看不到数据时触发。
-when_to_use: 远程训练 / 训练机 / SSH 隧道 / 代理穿透 / 训练启动 / 训练日志 / checkpoint / wandb / wuyinyun / 无影云 / 阿里云 / 腾讯云 / GPU 机器
-user-invocable: true
+description: 管理 se3_wheel_leg 在 A800 Kubernetes 容器中的代码同步、训练启动、GPU 选择、日志监控、停止任务和 checkpoint 拉取。用户提到 A800、Kubernetes、target-via-phone、远端训练、checkpoint、GPU 或训练日志时使用；台阶任务优先调用 scripts/remote_sync_start_stair.py。
 ---
 
-# se3_wheel_leg 远程训练机运维
+# SE3 远端训练
 
-每台训练机的具体参数（IP、用户名、SSH 别名、GPU 型号）在 `machines/` 子目录对应文件中。
-本文档是通用范式入口，所有机器共用同一套操作流程。
+## 基本原则
 
-## 当前已注册机器
+- 台阶训练优先使用 `scripts/remote_sync_start_stair.py`，不要重复手写同步和启动流程。
+- 脚本负责：远端预检查、checkpoint 检查、代码打包同步、`compileall`、训练启动，以及输出日志和 `watch_remote` 指令。
+- 默认环境：
+  - host：`target-via-phone`
+  - namespace：`gczx-project06`
+  - pod：`gpu-8-b6994457c-kv2rj`
+  - project：`/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg`
+- 实际环境与默认值不一致时，通过脚本参数覆盖；不确定 pod 时先查询：
 
-| SSH 别名 | 云厂商 | GPU | 备忘录 |
-|---|---|---|---|
-| `wuyinyun` | 无影云 | RTX 5880 Ada 48GB | `machines/wuyinyun.md` |
-
-> 新增机器时：在 `machines/` 下新建对应 `.md` 文件，并在上表添加一行。
-
----
-
-## 网络代理架构
-
-远程训练机处于内网，无法直接访问 PyPI / GitHub / wandb。
-解决方案：**SSH 反向隧道把本机已有的 HTTP 代理（端口 7890）直接暴露给远程机器。**
-
-```
-本机 HTTP 代理 (127.0.0.1:7890)   ← 系统级科学上网，Python 进程维护
-        │
-        └── SSH -R 17890:127.0.0.1:7890 → 远程机器 (127.0.0.1:17890)
+```powershell
+ssh target-via-phone "kubectl get pods -n gczx-project06 -o wide"
 ```
 
-> 端口约定：本机代理监听 **7890**，远程隧道落点 **17890**。
+- 包含引号、管道、正则、变量或多行 Bash 的远端命令必须先 base64 编码，再传给 `kubectl exec`。不要直接拼接多层 PowerShell、SSH 和 Bash 字符串。
+- 不要使用 `pkill -f se3-train`，只停止明确的 PID 或进程组。
 
-### 验证本机代理可用
+## 远端命令编码
 
-```bash
-lsof -i :7890 | grep LISTEN
-curl -s -o /dev/null -w "%{http_code}" --proxy http://127.0.0.1:7890 --max-time 8 https://api.wandb.ai
-```
+统一使用以下 PowerShell 模板。只修改 `$podScript` 内容：
 
-### 建立 / 重建隧道
-
-```bash
-pkill -f "ssh.*17890.*7890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:7890 wuyinyun && echo "tunnel ok"
-
-# 验证远程可用（404 = 正常）
-ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 8 https://api.wandb.ai"
-```
-
----
-
-## 项目部署
-
-### 源码同步规则
-
-**源码变更必须通过 git 协同到远程训练机，禁止用 `rsync` / `scp` / 手工复制直接覆盖源码文件。**
-
-正确流程：
-1. 本地完成修改、验证、提交到当前分支。
-2. `git push` 推送分支。
-3. 远程训练机执行 `git fetch`，再 `git switch` / `git pull --ff-only` 更新到该提交。
-
-只有 checkpoint、日志、回放、导出的分析产物允许用 `rsync` 拉取或上传；源码一律走 git，保证远程训练 run 可追溯到明确 commit。
-
-### 首次部署
-
-```bash
-ssh wuyinyun "
-  mkdir -p ~/project &&
-  cd ~/project &&
-  git clone git@github.com:3SE-Competitive-Robotics-Team/se3_wheel_leg.git &&
-  echo 'WANDB_API_KEY=<your_key>' > ~/project/se3_wheel_leg/.env
-"
-```
-
-### 安装 / 更新依赖
-
-```bash
-# 首次安装（需代理，5-10 分钟）
-ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && \
-  HTTPS_PROXY=http://127.0.0.1:17890 HTTP_PROXY=http://127.0.0.1:17890 uv sync 2>&1 | tail -5"
-
-# 更新代码 + 依赖
-ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull && uv sync 2>&1 | tail -3"
-```
-
----
-
-## 训练管理
-
-> **强制规范**：
-> - **所有训练必须在 tmux session 里启动**，禁止使用 `nohup` 或裸 SSH 后台。
->   tmux 采用 client-server 架构，`new-session -d` 完全不需要 PTY，SSH 断开后 session 和训练进程继续存活。
-> - **禁止使用 `WANDB_MODE=offline`**，所有训练必须 wandb 在线可观测。
->   wandb 网络问题时，正确做法是检查并重建 tunnel，而不是切 offline。
-
-### env 数量规则
-
-| 时段 | num_envs | 说明 |
-|---|---|---|
-| 夜间（22:00-08:00 CST） | **4096** | 无人使用，充分利用 GPU |
-| 白天（08:00-22:00 CST） | **1024** | 保留响应余量 |
-
-启动前先检查远程时间：`ssh wuyinyun "date '+%H:%M %Z'"`
-
-### 常用任务名
-
-| 任务 | 说明 |
-|---|---|
-| `SE3-WheelLegged-Flat-GRU` | GRU 行走基模（优先训练，作为跳跃 pretrain 的起点） |
-| `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练（依赖 GRU 行走基模） |
-| `SE3-WheelLegged-Jump-GRU` | 跳跃精细训练（依赖 PreTrain checkpoint） |
-| `SE3-WheelLegged-Flat` | MLP 行走（已有基模 `*_mlp.pt`，一般不需要重新训） |
-
-### 启动训练（标准流程）
-
-```bash
-ssh wuyinyun 'bash -s' <<'ENDSSH'
+```powershell
+$podScript = @'
 set -euo pipefail
+cd /workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg
+nvidia-smi
+pgrep -af '[s]e3-train|[t]orchrunx|[t]orch.distributed.run' || true
+'@
 
-# 清理同名旧 session
-tmux kill-session -t train 2>/dev/null
-
-# 创建新 session（detached，不需要 PTY）
-tmux new-session -d -s train -x 220 -y 50
-
-# 注入环境变量和训练命令。使用 -l 逐字发送,避免本地 shell 或远端 wrapper 提前展开 $()/${}。
-tmux send-keys -t train -l 'export HTTP_PROXY=http://127.0.0.1:17890'
-tmux send-keys -t train Enter
-tmux send-keys -t train -l 'export HTTPS_PROXY=http://127.0.0.1:17890'
-tmux send-keys -t train Enter
-tmux send-keys -t train -l 'export WANDB_API_KEY=$(grep WANDB_API_KEY ~/project/se3_wheel_leg/.env | cut -d= -f2-)'
-tmux send-keys -t train Enter
-tmux send-keys -t train -l 'export LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64:${LD_LIBRARY_PATH:-}'
-tmux send-keys -t train Enter
-tmux send-keys -t train -l 'source ~/.local/bin/env'
-tmux send-keys -t train Enter
-tmux send-keys -t train -l 'cd ~/project/se3_wheel_leg'
-tmux send-keys -t train Enter
-tmux send-keys -t train -l 'uv run --env-file .env se3-train <TASK_NAME> --env.scene.num-envs <NUM_ENVS>'
-tmux send-keys -t train Enter
-
-tmux list-sessions
-ENDSSH
+$podB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($podScript))
+$hostScript = @"
+set -euo pipefail
+kubectl exec -n gczx-project06 gpu-8-b6994457c-kv2rj -- bash -lc 'echo $podB64 | base64 -d | bash'
+"@
+$hostB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hostScript))
+ssh target-via-phone "echo $hostB64 | base64 -d | bash"
 ```
 
-> 向远端 tmux 注入包含 `$()`、`${}`、管道、重定向或复杂引号的命令时，必须使用 `ssh <host> 'bash -s' <<'ENDSSH'` 的单引号 heredoc，并用 `tmux send-keys -l 'literal command'` 加单独的 `Enter` 发送。禁止把整段 tmux 命令塞进本地双引号字符串；本地 zsh/bash 会提前解析 `$()`，导致命令没有真正进入远端 session，密钥也可能被展开到 pane 历史。
+需要查询、停止、清理或复制文件时，将对应 Bash 片段放入 `$podScript`。这样可避免：
 
-### 查看训练状态
+- PowerShell 反引号和变量展开。
+- SSH 引号嵌套。
+- Bash `$`、正则、管道和重定向被上层终端提前解释。
+- `kubectl exec -- bash -lc` 的多层转义错误。
+
+## 启动台阶训练
+
+在仓库根目录运行：
+
+```powershell
+uv run python scripts/remote_sync_start_stair.py `
+  --task SE3-WheelLegged-Stair-GRU `
+  --load-run base_model `
+  --load-checkpoint model_500\.pt `
+  --iterations 3000 `
+  --run-name <run_name> `
+  --job-name <job_name> `
+  --watch-terrain-level 9
+```
+
+脚本结束时会打印：
+
+- `TRAIN_PID`
+- `TRAIN_LOG`
+- `TRAIN_RUN_DIR`
+- 对应的 `watch_remote_train_local.py` 指令
+
+## 指定 GPU
+
+保留 `--gpu-ids all`，通过 `--cuda-visible-devices` 指定物理 GPU：
+
+```powershell
+uv run python scripts/remote_sync_start_stair.py `
+  ... `
+  --gpu-ids all `
+  --cuda-visible-devices 1,2,3,4,5,6,7
+```
+
+脚本会检查选定 GPU 的显存占用。未指定 `--cuda-visible-devices` 时，脚本要求没有其他活跃训练进程。
+
+## 查看状态
+
+将以下内容放入 base64 模板的 `$podScript`：
 
 ```bash
-# 查看 session 最新输出
-ssh wuyinyun "tmux capture-pane -t train -p | tail -30"
-
-# 列出所有 session
-ssh wuyinyun "tmux list-sessions"
-
-# GPU 状态
-ssh wuyinyun "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader"
+set +e
+nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader
+pgrep -af '[s]e3-train|[t]orchrunx|[t]orch.distributed.run' || true
+grep -E 'Learning iteration|Mean reward|Stair/diag_ctbc_kff|Traceback|RuntimeError|ValueError' \
+  /tmp/train_<job_name>.log | tail -160 || true
 ```
 
-### attach 进入 session 交互查看（人工）
+优先使用启动脚本输出的 `watch_remote_train_local.py` 指令查看 checkpoint。
+
+## 停止训练
+
+将以下内容放入 base64 模板的 `$podScript`，只停止对应任务：
 
 ```bash
-ssh wuyinyun -t "tmux attach -t train"
-# 退出但保持 session：Ctrl+B 然后 D
+if [ -f /tmp/train_<job_name>.pid ]; then
+  pid=$(cat /tmp/train_<job_name>.pid)
+  pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+  kill -TERM -- "-$pgid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+fi
 ```
 
-### 停止训练
+停止后检查 `nvidia-smi`。如果只剩 zombie，不需要处理；如果 GPU 显存仍被占用，定位同一 PGID 的非 zombie 子进程后再清理。
 
-```bash
-# 发送 Ctrl+C 终止训练进程
-ssh wuyinyun "tmux send-keys -t train C-c"
-sleep 3
+## 拉取 checkpoint
 
-# 确保 Python 子进程也终止（uv run 会 fork）
-ssh wuyinyun "pkill -f '[s]e3-train'"
+```powershell
+$run = "<run>"
+$checkpoint = "<model_N.pt>"
+$remoteProject = "/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg"
+$hostTmp = "/tmp/${run}_${checkpoint}"
+$localDir = "logs\remote_watch\$run"
 
-# 关闭 session
-ssh wuyinyun "tmux kill-session -t train"
+New-Item -ItemType Directory -Force -Path $localDir | Out-Null
+ssh target-via-phone "kubectl cp gczx-project06/gpu-8-b6994457c-kv2rj:$remoteProject/logs/rsl_rl/se3_wheel_leg/$run/$checkpoint $hostTmp -n gczx-project06"
+scp "target-via-phone:$hostTmp" "$localDir\$checkpoint"
+ssh target-via-phone "rm -f $hostTmp"
 ```
 
-> `kill $PID` 只杀 `uv run` 的 shell wrapper，实际 Python 训练子进程不会终止。
-> 多次"重启"后会有多个训练进程争抢 GPU，务必用 `pkill -f '[s]e3-train'`。
-> 不要在同一个远端命令字符串里写 `pkill -f 'se3-train'`：`pkill -f` 会匹配完整命令行，可能把当前 SSH shell 自己杀掉，表现为本地 SSH 返回 `255` 且没有输出。`[s]e3-train` 能匹配目标进程，又不会匹配命令字符串本身。
+## 必查项
 
----
-
-## Checkpoint 管理
-
-### 查看训练 run
-
-```bash
-ssh wuyinyun "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/"
-```
-
-### 查看某 run 的 checkpoints
-
-```bash
-TIMESTAMP=<timestamp>
-ssh wuyinyun "ls ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/ | grep model | sort -V | tail -5"
-```
-
-> checkpoint 文件名按数字排序，`sort -V` 才正确，`sort` 会把 `model_900.pt` 排在 `model_1000.pt` 后面。
-
-### 拉取 checkpoint 到本地
-
-```bash
-TIMESTAMP=$(ssh wuyinyun "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/ | head -1")
-CKPT=model_5000.pt
-
-mkdir -p logs/rsl_rl/se3_wheel_leg/$TIMESTAMP
-rsync -avz --progress \
-  wuyinyun:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/$CKPT \
-  logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/
-```
-
-### base model 资产管理
-
-训练完成后，将最终 checkpoint 存入 `assets/base_model/` 并用后缀标注架构：
-
-```bash
-TIMESTAMP=$(ssh wuyinyun "ls -t ~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/ | head -1")
-rsync -avz wuyinyun:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/$TIMESTAMP/model_5000.pt \
-  assets/base_model/model_5000_gru.pt
-git add assets/base_model/model_5000_gru.pt
-git commit -m "chore(assets): 存入 GRU 行走基模 model_5000_gru.pt"
-git push
-```
-
-| 文件名规范 | 说明 |
-|---|---|
-| `model_*_mlp.pt` | MLP 行走基模 |
-| `model_*_gru.pt` | GRU 行走基模（跳跃训练的起点） |
-
----
-
-## 常见问题
-
-### wandb 网络问题排查
-
-**规则：禁止使用 `WANDB_MODE=offline`，所有训练必须 wandb 在线可观测。**
-
-```bash
-# 验证远程能否访问 wandb（404 = 正常，000 = 不通）
-ssh wuyinyun "curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:17890 --max-time 8 https://api.wandb.ai"
-
-# 不通则重建隧道
-pkill -f "ssh.*17890.*7890" 2>/dev/null; ssh -f -N -R 17890:127.0.0.1:7890 wuyinyun && echo "tunnel ok"
-```
-
-**关键陷阱**：wandb 初始化失败时 `writer=None`，RSL-RL 不会保存任何 checkpoint，但训练日志正常打印，极难察觉。
-`WANDB_API_KEY` 必须在 tmux session 里显式 export，不能只靠 `--env-file .env`。
-
-### 多个训练进程并存
-
-```bash
-ssh wuyinyun "ps aux | grep se3-train | grep -v grep"
-ssh wuyinyun "pkill -f '[s]e3-train'"
-```
-
-### uv sync 卡住
-
-```bash
-ssh wuyinyun "ps aux | grep 'uv sync' | grep -v grep"
-ssh wuyinyun "pkill -f 'uv sync'"
-```
-
----
-
-## 新增训练机流程
-
-1. 在 `machines/` 下新建 `<alias>.md`，参考 `machines/wuyinyun.md` 格式
-2. 配置本机 `~/.ssh/config`（HostName、User、IdentityFile）
-3. 验证 SSH 连接：`ssh <alias> "whoami && nvidia-smi --query-gpu=name --format=csv,noheader"`
-4. 建立代理隧道并验证连通性
-5. 首次部署项目（见上方"项目部署"）
-6. 在本文件顶部"当前已注册机器"表格中添加一行
+- checkpoint 必须用 `sort -V` 排序。
+- CUDA compat/toolkit 路径由启动脚本检查，不要绕过检查直接启动。
+- 无外网训练使用 `WANDB_MODE=offline`，否则可能不保存 checkpoint。
+- 启动后同时验证进程、GPU 利用率、iteration 和 `diag_ctbc_kff`，不能只看 PID。

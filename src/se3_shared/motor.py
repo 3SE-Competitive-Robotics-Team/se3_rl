@@ -145,19 +145,8 @@ M3508_C620_14 = MotorSpec(
     torque_speed_curve=M3508_C620_14_TORQUE_SPEED_CURVE,
 )
 
-# ─── 3508 + hexroll 减速箱（main 既有轮子语义）───────────────────────────
-
-M3508_HEXROLL = MotorSpec(
-    name="M3508-Hexroll-C620",
-    rated_voltage=24.0,
-    gear_ratio=268.0 / 17.0,
-    stall_torque=3.69,
-    no_load_speed=587.0 * 2.0 * math.pi / 60.0,
-    rated_torque=2.46,
-    rated_current=10.0,
-    stall_current=2.5,
-    phase_resistance=0.194,
-)
+# 旧名字保留为兼容别名，新增代码优先使用 M3508_C620_14。
+M3508_HEXROLL = M3508_C620_14
 
 
 # ─── DM-8009P（腿部关节）──────────────────────────────────────────────────

@@ -26,7 +26,6 @@ def flow_matching_loss(
     dones: torch.Tensor | None = None,
     noise: torch.Tensor | None = None,
     times: torch.Tensor | None = None,
-    action_weights: torch.Tensor | None = None,
 ) -> FlowMatchingLoss:
     """计算 action-level Flow Matching 损失。
 
@@ -55,21 +54,7 @@ def flow_matching_loss(
     noisy_action = (1.0 - times) * actions + times * noise
     target = noise - actions
     pred = model(obs, noisy_action, times, dones=dones)
-    mse = (pred - target).square()
-    if action_weights is None:
-        mse_per_action = mse.mean(dim=-1)
-        loss = mse_per_action.mean()
-    else:
-        weights = action_weights.to(device=actions.device, dtype=actions.dtype)
-        if weights.ndim == 1:
-            weights = weights.view(1, 1, -1)
-        elif weights.ndim == 2:
-            weights = weights.unsqueeze(1)
-        if weights.shape != mse.shape:
-            raise ValueError(
-                f"action_weights 必须可变为 {tuple(mse.shape)}，实际为 {tuple(weights.shape)}"
-            )
-        denom = weights.sum().clamp_min(1.0e-6)
-        loss = (mse * weights).sum() / denom
+    mse_per_action = (pred - target).square().mean(dim=-1)
+    loss = mse_per_action.mean()
     valid_ratio = torch.ones((), device=actions.device, dtype=actions.dtype)
     return FlowMatchingLoss(loss=loss, mse=loss, valid_ratio=valid_ratio)

@@ -1,0 +1,1118 @@
+[
+  {
+    "target": "base_link",
+    "align_score": 0.15895719615913229,
+    "transform": [
+      [
+        0.0,
+        0.0,
+        1.0,
+        -0.29149882
+      ],
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.21930778
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.11139769
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "base_link - 【pom板】2mm底板-1.STL",
+      "base_link - 【pom板】3mm铝方管底部架板2-1.STL",
+      "base_link - 【碳板】1mm主控安装-1.STL",
+      "base_link - 【碳板】1mm前侧保护（电容端）-1.STL",
+      "base_link - 【碳板】1mm前侧保护（电容端）-2.STL",
+      "base_link - 【碳板】1mm后侧保护 左-1.STL",
+      "base_link - 【碳板】1mm后侧保护 左-2.STL",
+      "base_link - 【碳板】1mm测速侧保护板-1.STL",
+      "base_link - 【碳板】2mm前装甲保护板-1.STL",
+      "base_link - 【碳板】3mm电池安装板（右）-1.STL",
+      "base_link - 【碳板】3mm电池安装板（左）-1.STL",
+      "base_link - 【碳板】3mm缓冲支撑板-1.STL",
+      "base_link - 【碳板】3mm缓冲支撑板-2.STL",
+      "base_link - 【碳板】3mm缓冲支撑板-3.STL",
+      "base_link - 【碳板】3mm缓冲支撑板-4.STL",
+      "base_link - 【碳板】3mm装甲板下保护板-2.STL",
+      "base_link - 【碳板】3mm装甲板下保护板-电容侧-1.STL",
+      "base_link - 【碳板】4mm前端架板-1.STL",
+      "base_link - 【碳板】4mm前端架板-3.STL",
+      "base_link - 【碳板】4mm后端架板-1.STL",
+      "base_link - 【装配体】底部包裹-2 【pom板】2mm铝方管底部架板-2.STL",
+      "base_link - 【装配体】底部包裹-2 【pom板】3mm前端底板-3.STL",
+      "base_link - 【装配体】铝方管组-1 Mirror【铝方管】30x40x301x2大纵铝方管-2.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-2.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-3.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-4.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-5.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-上-6.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-上-7.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-上-8.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-上-9.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-下-10.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-下-11.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-下-8.STL",
+      "base_link - 【装配体】铝方管组-1 【加工件】纵铝方管加强件-下-9.STL",
+      "base_link - 【装配体】铝方管组-1 【碳板】底档拉铆板-1.STL",
+      "base_link - 【装配体】铝方管组-1 【碳板】底档拉铆板-2.STL",
+      "base_link - 【装配体】铝方管组-1 【铝方管】30x40x284x1大横铝方管-3.STL",
+      "base_link - 【装配体】铝方管组-1 【铝方管】30x40x301x2大纵铝方管-4.STL",
+      "base_link - 控制板装配体-1.STL",
+      "base_link - 装甲板-1 【裁判系统】装甲支架 A型 2019-1.STL",
+      "base_link - 装甲板-1 【裁判系统】装甲支架 A型 2019-2.STL",
+      "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+      "base_link - 装甲板-2 【裁判系统】装甲支架 A型 2019-1.STL",
+      "base_link - 装甲板-2 【裁判系统】装甲支架 A型 2019-2.STL",
+      "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_00.stl",
+        "source": "base_link - 【碳板】2mm前装甲保护板-1.STL",
+        "vertices": 46,
+        "faces": 88,
+        "extents": [
+          0.039686,
+          0.186,
+          0.141417
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_01.stl",
+        "source": "base_link - 【碳板】1mm测速侧保护板-1.STL",
+        "vertices": 24,
+        "faces": 44,
+        "extents": [
+          0.040306,
+          0.171,
+          0.14708
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_02.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 432,
+        "faces": 860,
+        "extents": [
+          0.044421,
+          0.141,
+          0.126628
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_03.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 421,
+        "faces": 838,
+        "extents": [
+          0.044421,
+          0.141,
+          0.126628
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_04.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 56,
+        "faces": 108,
+        "extents": [
+          0.03525,
+          0.135,
+          0.121517
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_05.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 56,
+        "faces": 108,
+        "extents": [
+          0.03525,
+          0.135,
+          0.121517
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_06.stl",
+        "source": "base_link - 【装配体】铝方管组-1 【铝方管】30x40x284x1大横铝方管-3.STL",
+        "vertices": 14,
+        "faces": 24,
+        "extents": [
+          0.04,
+          0.284,
+          0.03
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_07.stl",
+        "source": "base_link - 【装配体】底部包裹-2 【pom板】3mm前端底板-3.STL",
+        "vertices": 34,
+        "faces": 64,
+        "extents": [
+          0.079334,
+          0.210763,
+          0.016851
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_08.stl",
+        "source": "base_link - 【装配体】铝方管组-1 Mirror【铝方管】30x40x301x2大纵铝方管-2.STL",
+        "vertices": 8,
+        "faces": 12,
+        "extents": [
+          0.321,
+          0.02,
+          0.04
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_09.stl",
+        "source": "base_link - 【装配体】铝方管组-1 【铝方管】30x40x301x2大纵铝方管-4.STL",
+        "vertices": 8,
+        "faces": 12,
+        "extents": [
+          0.321,
+          0.02,
+          0.04
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_10.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲支架 A型 2019-1.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.070715,
+          0.015,
+          0.122657
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_11.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲支架 A型 2019-2.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.070715,
+          0.015,
+          0.122657
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_12.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲支架 A型 2019-1.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.070715,
+          0.015,
+          0.122657
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_13.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲支架 A型 2019-2.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.070715,
+          0.015,
+          0.122657
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_14.stl",
+        "source": "base_link - 【碳板】4mm后端架板-1.STL",
+        "vertices": 28,
+        "faces": 52,
+        "extents": [
+          0.098,
+          0.209,
+          0.005
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_15.stl",
+        "source": "base_link - 【碳板】3mm装甲板下保护板-2.STL",
+        "vertices": 24,
+        "faces": 44,
+        "extents": [
+          0.1545,
+          0.209,
+          0.003
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_16.stl",
+        "source": "base_link - 【碳板】3mm装甲板下保护板-电容侧-1.STL",
+        "vertices": 36,
+        "faces": 68,
+        "extents": [
+          0.1545,
+          0.209,
+          0.003
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_17.stl",
+        "source": "base_link - 【pom板】3mm铝方管底部架板2-1.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.135,
+          0.176,
+          0.003
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_18.stl",
+        "source": "base_link - 【碳板】4mm前端架板-3.STL",
+        "vertices": 44,
+        "faces": 84,
+        "extents": [
+          0.098,
+          0.0646,
+          0.004
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_19.stl",
+        "source": "base_link - 【碳板】4mm前端架板-1.STL",
+        "vertices": 44,
+        "faces": 84,
+        "extents": [
+          0.098,
+          0.0646,
+          0.004
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_20.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 81,
+        "faces": 158,
+        "extents": [
+          0.014347,
+          0.034,
+          0.043633
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_21.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 81,
+        "faces": 158,
+        "extents": [
+          0.014347,
+          0.034,
+          0.043633
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_22.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 75,
+        "faces": 146,
+        "extents": [
+          0.014347,
+          0.034,
+          0.043633
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_23.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 75,
+        "faces": 146,
+        "extents": [
+          0.014347,
+          0.034,
+          0.043633
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_24.stl",
+        "source": "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-2.STL",
+        "vertices": 16,
+        "faces": 28,
+        "extents": [
+          0.035,
+          0.076,
+          0.008
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_25.stl",
+        "source": "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-3.STL",
+        "vertices": 16,
+        "faces": 28,
+        "extents": [
+          0.035,
+          0.076,
+          0.008
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_26.stl",
+        "source": "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-4.STL",
+        "vertices": 16,
+        "faces": 28,
+        "extents": [
+          0.035,
+          0.076,
+          0.008
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_27.stl",
+        "source": "base_link - 【装配体】铝方管组-1 【加工件】横铝方管加强件-5.STL",
+        "vertices": 16,
+        "faces": 28,
+        "extents": [
+          0.035,
+          0.076,
+          0.008
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_28.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 79,
+        "faces": 154,
+        "extents": [
+          0.027801,
+          0.012,
+          0.059625
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_29.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 78,
+        "faces": 152,
+        "extents": [
+          0.027801,
+          0.012,
+          0.059625
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_30.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 82,
+        "faces": 160,
+        "extents": [
+          0.027801,
+          0.012,
+          0.059625
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_31.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 82,
+        "faces": 160,
+        "extents": [
+          0.027801,
+          0.012,
+          0.059625
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_32.stl",
+        "source": "base_link - 【pom板】2mm底板-1.STL",
+        "vertices": 40,
+        "faces": 76,
+        "extents": [
+          0.085,
+          0.115,
+          0.002
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_33.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 82,
+        "faces": 160,
+        "extents": [
+          0.012319,
+          0.034,
+          0.044176
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_34.stl",
+        "source": "base_link - 装甲板-1 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 82,
+        "faces": 160,
+        "extents": [
+          0.012319,
+          0.034,
+          0.044176
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_35.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 81,
+        "faces": 158,
+        "extents": [
+          0.012319,
+          0.034,
+          0.044176
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_36.stl",
+        "source": "base_link - 装甲板-2 【裁判系统】装甲模块 AM02-1.STL",
+        "vertices": 81,
+        "faces": 158,
+        "extents": [
+          0.012319,
+          0.034,
+          0.044176
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_37.stl",
+        "source": "base_link - 【装配体】底部包裹-2 【pom板】2mm铝方管底部架板-2.STL",
+        "vertices": 44,
+        "faces": 84,
+        "extents": [
+          0.0435,
+          0.169,
+          0.002
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_38.stl",
+        "source": "base_link - 【碳板】3mm电池安装板（右）-1.STL",
+        "vertices": 50,
+        "faces": 96,
+        "extents": [
+          0.077,
+          0.003,
+          0.06
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_39.stl",
+        "source": "base_link - 【碳板】3mm电池安装板（左）-1.STL",
+        "vertices": 48,
+        "faces": 92,
+        "extents": [
+          0.07879,
+          0.003,
+          0.058
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_40.stl",
+        "source": "base_link - 【碳板】3mm缓冲支撑板-3.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.099791,
+          0.003,
+          0.04
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_41.stl",
+        "source": "base_link - 【碳板】3mm缓冲支撑板-4.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.099791,
+          0.003,
+          0.04
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_42.stl",
+        "source": "base_link - 【碳板】3mm缓冲支撑板-1.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.099791,
+          0.003,
+          0.04
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_43.stl",
+        "source": "base_link - 【碳板】3mm缓冲支撑板-2.STL",
+        "vertices": 52,
+        "faces": 100,
+        "extents": [
+          0.099791,
+          0.003,
+          0.04
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_44.stl",
+        "source": "base_link - 【碳板】1mm后侧保护 左-1.STL",
+        "vertices": 28,
+        "faces": 52,
+        "extents": [
+          0.110078,
+          0.001,
+          0.105
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_45.stl",
+        "source": "base_link - 【碳板】1mm后侧保护 左-2.STL",
+        "vertices": 28,
+        "faces": 52,
+        "extents": [
+          0.110078,
+          0.001,
+          0.105
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_46.stl",
+        "source": "base_link - 控制板装配体-1.STL",
+        "vertices": 23,
+        "faces": 42,
+        "extents": [
+          0.024429,
+          0.027902,
+          0.01538
+        ]
+      },
+      {
+        "file": "sw_collision/base_link/base_link_sw_env_47.stl",
+        "source": "base_link - 【碳板】1mm主控安装-1.STL",
+        "vertices": 32,
+        "faces": 60,
+        "extents": [
+          0.062,
+          0.156,
+          0.001
+        ]
+      }
+    ]
+  },
+  {
+    "target": "lf0_Link",
+    "align_score": 0.025419990728619394,
+    "transform": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.04773808
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0,
+        0.02876
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.05661247
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "lf0_Link - 【加工件】腿限位块-1.STL",
+      "lf0_Link - 【碳板】15mm大腿板-1.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/lf0_Link/lf0_Link_sw_env_00.stl",
+        "source": "lf0_Link - 【碳板】15mm大腿板-1.STL",
+        "vertices": 58,
+        "faces": 112,
+        "extents": [
+          0.242367,
+          0.015,
+          0.097774
+        ]
+      },
+      {
+        "file": "sw_collision/lf0_Link/lf0_Link_sw_env_01.stl",
+        "source": "lf0_Link - 【加工件】腿限位块-1.STL",
+        "vertices": 33,
+        "faces": 62,
+        "extents": [
+          0.030456,
+          0.015,
+          0.032555
+        ]
+      }
+    ]
+  },
+  {
+    "target": "rf0_Link",
+    "align_score": 0.025815925514023556,
+    "transform": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.04773808
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0,
+        0.01513363
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.14266297
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "rf0_Link - Mirror【加工件】腿限位块-2.STL",
+      "rf0_Link - Mirror【碳板】15mm大腿板-2.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/rf0_Link/rf0_Link_sw_env_00.stl",
+        "source": "rf0_Link - Mirror【碳板】15mm大腿板-2.STL",
+        "vertices": 58,
+        "faces": 112,
+        "extents": [
+          0.242367,
+          0.015,
+          0.097774
+        ]
+      },
+      {
+        "file": "sw_collision/rf0_Link/rf0_Link_sw_env_01.stl",
+        "source": "rf0_Link - Mirror【加工件】腿限位块-2.STL",
+        "vertices": 33,
+        "faces": 62,
+        "extents": [
+          0.030456,
+          0.015,
+          0.032555
+        ]
+      }
+    ]
+  },
+  {
+    "target": "lf1_Link",
+    "align_score": 0.08831030151571051,
+    "transform": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.1339167
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        -0.035395
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.25045122
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "lf1_Link - 【碳板】15mm小腿板-1.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/lf1_Link/lf1_Link_sw_env_00.stl",
+        "source": "lf1_Link - 【碳板】15mm小腿板-1.STL",
+        "vertices": 62,
+        "faces": 120,
+        "extents": [
+          0.213917,
+          0.015,
+          0.238283
+        ]
+      }
+    ]
+  },
+  {
+    "target": "rf1_Link",
+    "align_score": 0.08615769618168191,
+    "transform": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.13390728
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0,
+        0.0864
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.25059659
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "rf1_Link - Mirror【碳板】15mm小腿板-2.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/rf1_Link/rf1_Link_sw_env_00.stl",
+        "source": "rf1_Link - Mirror【碳板】15mm小腿板-2.STL",
+        "vertices": 58,
+        "faces": 112,
+        "extents": [
+          0.213898,
+          0.015,
+          0.238283
+        ]
+      }
+    ]
+  },
+  {
+    "target": "l_wheel_Link",
+    "align_score": 0.05050055374400359,
+    "transform": [
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.06053142
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        -0.0541692
+      ],
+      [
+        1.0,
+        0.0,
+        0.0,
+        -0.060726
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "l_wheel_Link - 【加工件】轮毂（莞工版）-1.STL",
+      "l_wheel_Link - 【外购件】包胶-1.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/l_wheel_Link/l_wheel_Link_sw_env_00.stl",
+        "source": "l_wheel_Link - 【外购件】包胶-1.STL",
+        "vertices": 78,
+        "faces": 152,
+        "extents": [
+          0.119903,
+          0.02,
+          0.119805
+        ]
+      },
+      {
+        "file": "sw_collision/l_wheel_Link/l_wheel_Link_sw_env_01.stl",
+        "source": "l_wheel_Link - 【加工件】轮毂（莞工版）-1.STL",
+        "vertices": 90,
+        "faces": 176,
+        "extents": [
+          0.109853,
+          0.02,
+          0.109907
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_wheel_Link",
+    "align_score": 0.05069754428434297,
+    "transform": [
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.06066249
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        -0.00374053
+      ],
+      [
+        1.0,
+        0.0,
+        0.0,
+        -0.0605287
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "r_wheel_Link - Mirror【加工件】轮毂（莞工版）1-1.STL",
+      "r_wheel_Link - Mirror【外购件】包胶1-1.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/r_wheel_Link/r_wheel_Link_sw_env_00.stl",
+        "source": "r_wheel_Link - Mirror【外购件】包胶1-1.STL",
+        "vertices": 78,
+        "faces": 152,
+        "extents": [
+          0.119903,
+          0.02,
+          0.119805
+        ]
+      },
+      {
+        "file": "sw_collision/r_wheel_Link/r_wheel_Link_sw_env_01.stl",
+        "source": "r_wheel_Link - Mirror【加工件】轮毂（莞工版）1-1.STL",
+        "vertices": 91,
+        "faces": 178,
+        "extents": [
+          0.109853,
+          0.02,
+          0.109907
+        ]
+      }
+    ]
+  },
+  {
+    "target": "l_drive_bar_Link",
+    "align_score": 0.03222849526588997,
+    "transform": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        -0.01043242
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0,
+        0.018
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.03210339
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "l_drive_bar_Link.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/l_drive_bar_Link/l_drive_bar_Link_sw_env_00.stl",
+        "source": "l_drive_bar_Link.STL",
+        "vertices": 66,
+        "faces": 128,
+        "extents": [
+          0.049,
+          0.0085,
+          0.0975
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_drive_bar_Link",
+    "align_score": 0.03235452994196358,
+    "transform": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        -0.01043242
+      ],
+      [
+        0.0,
+        0.0,
+        -1.0,
+        -0.0095
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.03210339
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "r_drive_bar_Link.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/r_drive_bar_Link/r_drive_bar_Link_sw_env_00.stl",
+        "source": "r_drive_bar_Link.STL",
+        "vertices": 64,
+        "faces": 124,
+        "extents": [
+          0.049,
+          0.0085,
+          0.0975
+        ]
+      }
+    ]
+  },
+  {
+    "target": "l_coupler_Link",
+    "align_score": 0.009841754628532077,
+    "transform": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.01101085
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        -0.0034
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.01024094
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "l_coupler_Link.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/l_coupler_Link/l_coupler_Link_sw_env_00.stl",
+        "source": "l_coupler_Link.STL",
+        "vertices": 58,
+        "faces": 112,
+        "extents": [
+          0.19181,
+          0.009,
+          0.04364
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_coupler_Link",
+    "align_score": 0.009874839510475377,
+    "transform": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        0.01101085
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        -0.0056
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -0.01024279
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "raw_files": [
+      "r_coupler_Link.STL"
+    ],
+    "generated": [
+      {
+        "file": "sw_collision/r_coupler_Link/r_coupler_Link_sw_env_00.stl",
+        "source": "r_coupler_Link.STL",
+        "vertices": 57,
+        "faces": 110,
+        "extents": [
+          0.19181,
+          0.009,
+          0.043608
+        ]
+      }
+    ]
+  }
+]

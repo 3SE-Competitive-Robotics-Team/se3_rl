@@ -10,7 +10,7 @@ import torch
 from .config import FlowPolicyConfig
 from .model import FlowVelocityField
 
-_CHECKPOINT_FORMAT = "se3_flow_match"
+_CHECKPOINT_FORMAT = "se3_flow_match_v1"
 
 
 def save_flow_checkpoint(
@@ -41,8 +41,7 @@ def load_flow_checkpoint(
     payload = torch.load(path, map_location=device, weights_only=False)
     if not isinstance(payload, dict):
         raise TypeError("Flow checkpoint 必须是 dict")
-    fmt = payload.get("format")
-    if fmt != _CHECKPOINT_FORMAT:
+    if payload.get("format") != _CHECKPOINT_FORMAT:
         raise ValueError(f"不支持的 Flow checkpoint 格式：{payload.get('format')!r}")
     raw_config = payload.get("config")
     if not isinstance(raw_config, dict):

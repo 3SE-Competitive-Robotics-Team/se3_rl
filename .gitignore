@@ -17,6 +17,8 @@ wandb/
 
 # Training and smoke run logs
 logs/
+checkpoints/
+outputs/
 
 # MuJoCo runtime logs
 MUJOCO_LOG.TXT
@@ -28,7 +30,16 @@ replays/
 # AI tooling
 .sisyphus/
 .opencode/
+.omx/
+.tmp/
 opencode.json
 # PyTorch model checkpoints (only assets/base_model/ uses curated .pt files)
 *.pt
 .DS_Store
+.vscode/
+xyh-learning/
+
+# Local probes
+sw_probe.txt
+remote_artifacts/
+serialleg2026/

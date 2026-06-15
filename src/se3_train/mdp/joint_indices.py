@@ -7,17 +7,16 @@ from typing import Any
 
 import torch
 
-from se3_shared import FourbarRobotConfig, JointGroup, is_fourbar_surrogate_name_set
+from se3_shared import JointGroup, is_fourbar_surrogate_name_set
+from se3_shared import RobotConfig as SharedRobotConfig
 
-_SHARED_ROBOT = FourbarRobotConfig()
+_SHARED_ROBOT = SharedRobotConfig()
 
 
 def is_closedchain_model(entity: Any) -> bool:
-    """判断当前 MJCF 是否为真实闭链模型。"""
-    site_names = set(_entity_names(entity, "site_names"))
-    if is_fourbar_surrogate_name_set(tuple(site_names)):
-        return False
-    return {"lf_coupler_closure", "rf_coupler_closure"}.issubset(site_names)
+    """判断当前 MJCF 是否包含闭链主动驱动杆。"""
+    joint_names = set(_entity_names(entity, "joint_names"))
+    return all(name in joint_names for name in ("l_drive_bar_Joint", "r_drive_bar_Joint"))
 
 
 def is_fourbar_surrogate_model(entity: Any) -> bool:
@@ -27,12 +26,11 @@ def is_fourbar_surrogate_model(entity: Any) -> bool:
 
 def policy_leg_joint_ids(entity: Any) -> tuple[int, ...]:
     """返回 policy 腿部关节索引，闭链为主动杆，开链回退为 lf1/rf1。"""
-    names = (
-        JointGroup.POLICY_LEG_NAMES
-        if is_closedchain_model(entity)
-        else JointGroup.OPENCHAIN_LEG_NAMES
+    return joint_ids(
+        entity,
+        JointGroup.POLICY_LEG_NAMES,
+        fallback_names=JointGroup.OPENCHAIN_LEG_NAMES,
     )
-    return joint_ids(entity, names)
 
 
 def wheel_joint_ids(entity: Any) -> tuple[int, ...]:
@@ -102,12 +100,11 @@ def output_knee_joint_ids(entity: Any) -> tuple[int, ...]:
 
 def leg_actuator_ids(entity: Any) -> tuple[int, ...]:
     """返回 policy 腿部电机 actuator 索引，排除气弹簧 actuator。"""
-    names = (
-        JointGroup.POLICY_LEG_NAMES
-        if is_closedchain_model(entity)
-        else JointGroup.OPENCHAIN_LEG_NAMES
+    return actuator_ids(
+        entity,
+        JointGroup.POLICY_LEG_NAMES,
+        fallback_names=JointGroup.OPENCHAIN_LEG_NAMES,
     )
-    return actuator_ids(entity, names)
 
 
 def wheel_actuator_ids(entity: Any) -> tuple[int, ...]:

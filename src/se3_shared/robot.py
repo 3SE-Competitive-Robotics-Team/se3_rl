@@ -9,7 +9,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from .action_delay import ActionDelayConfig
-from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL
+from .motor import DM8009P, M3508_C620_14
 
 _ACTIVE_ROD_ANGLE_RANGE_DEG: float = 129.95 - 43.46
 _ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (
@@ -20,31 +20,25 @@ _ACTIVE_ROD_ACTION_SCALE: float = 0.5 * (_ACTIVE_ROD_ANGLE_LIMITS[1] - _ACTIVE_R
 
 
 class Joint(IntEnum):
-    """SerialLeg 受控关节语义枚举。
+    """SerialLeg policy 关节语义枚举。
 
-    值为 MJLab joint_pos / joint_vel 张量中的列索引。
-    MuJoCo 全局关节 ID 因四连杆虚拟关节插入而不同，
-    不要将此枚举值直接用于 model.jnt_* 数组。
+    值为 policy-order 数组中的列索引，不再等同于 MJCF qpos 顺序。
 
-    MJLab joint_pos 列布局（10 列，含虚拟关节）：
-        0: lf0_Joint       ← LF0
-        1: lf1_Joint       ← LF1
-        2: l_wheel_Joint   ← L_WHEEL
-        3: l_drive_bar_Joint  (虚拟，四连杆曲柄)
-        4: l_coupler_Joint    (虚拟，四连杆连杆)
-        5: rf0_Joint       ← RF0
-        6: rf1_Joint       ← RF1
-        7: r_wheel_Joint   ← R_WHEEL
-        8: r_drive_bar_Joint  (虚拟，四连杆曲柄)
-        9: r_coupler_Joint    (虚拟，四连杆连杆)
+    policy 动作/actor 观测布局（6 维）：
+        0: lf0_Joint          -> LF0 / 左前主动杆
+        1: l_drive_bar_Joint  -> LB / 左后主动杆
+        2: rf0_Joint          -> RF0 / 右前主动杆
+        3: r_drive_bar_Joint  -> RB / 右后主动杆
+        4: l_wheel_Joint      -> L_WHEEL
+        5: r_wheel_Joint      -> R_WHEEL
     """
 
     LF0 = 0
-    LF1 = 1
-    L_WHEEL = 2
-    RF0 = 5
-    RF1 = 6
-    R_WHEEL = 7
+    LB = 1
+    RF0 = 2
+    RB = 3
+    L_WHEEL = 4
+    R_WHEEL = 5
 
     @property
     def mjcf_name(self) -> str:
@@ -53,44 +47,37 @@ class Joint(IntEnum):
 
 _MJCF_NAMES: dict[Joint, str] = {
     Joint.LF0: "lf0_Joint",
-    Joint.LF1: "lf1_Joint",
-    Joint.L_WHEEL: "l_wheel_Joint",
+    Joint.LB: "l_drive_bar_Joint",
     Joint.RF0: "rf0_Joint",
-    Joint.RF1: "rf1_Joint",
+    Joint.RB: "r_drive_bar_Joint",
+    Joint.L_WHEEL: "l_wheel_Joint",
     Joint.R_WHEEL: "r_wheel_Joint",
 }
 
 
 class JointGroup:
-    """预定义的关节索引分组，替代散布在各处的魔法索引列表。
+    """预定义的 policy-order 分组和 MJCF 名称。
 
-    LEGS / WHEELS / ALL 中的值是 MJLab joint_pos (10 维) 的列索引。
-    CTRL_LEGS / CTRL_WHEELS 是受控关节 6 维数组（sim2sim dof_pos、actuator 输出）中的位置索引。
-    LEG_ACTUATORS / WHEEL_ACTUATORS 是 actuator_force (6 维) 的列索引，与关节索引无关。
+    LEGS / WHEELS / ALL 只适用于 policy-order 的 6 维数组。
+    训练端读取 MJLab joint_pos / actuator_force 时必须按名称解析，
+    不能把这些索引当作 MJCF qpos 或 actuator_force 的自然顺序。
     """
 
-    LEGS: ClassVar[list[int]] = [Joint.LF0, Joint.LF1, Joint.RF0, Joint.RF1]
+    LEGS: ClassVar[list[int]] = [Joint.LF0, Joint.LB, Joint.RF0, Joint.RB]
     WHEELS: ClassVar[list[int]] = [Joint.L_WHEEL, Joint.R_WHEEL]
-    CTRL_LEGS: ClassVar[list[int]] = [0, 1, 3, 4]
-    CTRL_WHEELS: ClassVar[list[int]] = [2, 5]
+    CTRL_LEGS: ClassVar[list[int]] = LEGS
+    CTRL_WHEELS: ClassVar[list[int]] = WHEELS
     LEG_ACTUATORS: ClassVar[list[int]] = [0, 1, 2, 3]
     WHEEL_ACTUATORS: ClassVar[list[int]] = [4, 5]
     ALL: ClassVar[list[int]] = [
         Joint.LF0,
-        Joint.LF1,
-        Joint.L_WHEEL,
+        Joint.LB,
         Joint.RF0,
-        Joint.RF1,
+        Joint.RB,
+        Joint.L_WHEEL,
         Joint.R_WHEEL,
     ]
-    POLICY_JOINT_NAMES: ClassVar[tuple[str, ...]] = (
-        "lf0_Joint",
-        "l_drive_bar_Joint",
-        "rf0_Joint",
-        "r_drive_bar_Joint",
-        "l_wheel_Joint",
-        "r_wheel_Joint",
-    )
+    POLICY_JOINT_NAMES: ClassVar[tuple[str, ...]] = tuple(j.mjcf_name for j in Joint)
     POLICY_LEG_NAMES: ClassVar[tuple[str, ...]] = (
         "lf0_Joint",
         "l_drive_bar_Joint",
@@ -123,7 +110,7 @@ class JointGroup:
 
     @staticmethod
     def joint_names() -> tuple[str, ...]:
-        return tuple(j.mjcf_name for j in Joint)
+        return JointGroup.POLICY_JOINT_NAMES
 
 
 class Termination(BaseModel):
@@ -135,38 +122,11 @@ class Termination(BaseModel):
 class RobotConfig(BaseModel):
     """机器人物理参数 — 训练和验证共享的单一来源。"""
 
-    leg_kp: float = 40.0
-    leg_kd: float = 2.0
-    wheel_kd: float = 0.5
-    torque_limits: tuple[float, ...] = (
-        DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
-        DM8009P.stall_torque,
-        M3508_HEXROLL.rated_torque,
-        DM8009P.stall_torque,
-        DM8009P.stall_torque,
-        M3508_HEXROLL.rated_torque,
-    )
-    default_dof_pos: tuple[float, ...] = (0.4610, 0.4742, 0.0, 0.4610, 0.4742, 0.0)
-    default_base_height: float = 0.22
-    action_scale: tuple[float, ...] = (0.25, 0.25, 0.25, 0.25, 20.0, 20.0)
-    sim_dt: float = 0.005
-    control_decimation: int = 4
-    action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
-    termination: Termination = Termination()
-
-    @property
-    def control_dt(self) -> float:
-        return self.sim_dt * self.control_decimation
-
-
-class FourbarRobotConfig(RobotConfig):
-    """四连杆/闭链 recovery 专用机器人参数。"""
-
     leg_kp: float = 60.0
     leg_kd: float = 3.0
     wheel_kd: float = 0.08
     torque_limits: tuple[float, ...] = (
-        DM8009P.stall_torque,
+        DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
         DM8009P.stall_torque,
         DM8009P.stall_torque,
         DM8009P.stall_torque,
@@ -190,6 +150,8 @@ class FourbarRobotConfig(RobotConfig):
         (1.0, -1.0),
         (-1.0, 1.0),
     )
+    default_base_height: float = 0.22
+    # 腿部 action 使用 [lf0, active_angle, rf0, active_angle] 语义；active 的零点是机械夹角中点。
     action_scale: tuple[float, ...] = (
         pi,
         _ACTIVE_ROD_ACTION_SCALE,
@@ -199,6 +161,14 @@ class FourbarRobotConfig(RobotConfig):
         45.0,
     )
     action_clip: float | None = 1.0
+    sim_dt: float = 0.002
+    control_decimation: int = 5
+    action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
+    termination: Termination = Termination()
+
+    @property
+    def control_dt(self) -> float:
+        return self.sim_dt * self.control_decimation
 
     @property
     def default_active_rod_angles(self) -> tuple[float, float]:
@@ -206,8 +176,10 @@ class FourbarRobotConfig(RobotConfig):
         left_front, left_back = self.active_rod_angle_coeffs[0]
         right_front, right_back = self.active_rod_angle_coeffs[1]
         return (
-            left_front * self.default_dof_pos[0] + left_back * self.default_dof_pos[1],
-            right_front * self.default_dof_pos[2] + right_back * self.default_dof_pos[3],
+            left_front * self.default_dof_pos[Joint.LF0]
+            + left_back * self.default_dof_pos[Joint.LB],
+            right_front * self.default_dof_pos[Joint.RF0]
+            + right_back * self.default_dof_pos[Joint.RB],
         )
 
     @property

@@ -18,22 +18,25 @@ dependencies = [
     "wandb==0.26.1",
     "pydantic==2.13.4",
     "casadi",
+    "onnxruntime>=1.26.0",
 ]
 
 [project.scripts]
 se3-train = "se3_train.cli:main"
 se3-play = "se3_train.play:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
+se3-sim2sim-teleop = "se3_sim2sim.teleop_cli:main"
+se3-nx-recovery = "se3_deploy.cli:main"
+se3-export-nx-policy = "se3_deploy.export_npz:main"
+se3-export-nx-policy-onnx = "se3_deploy.export_onnx:main"
+se3-replay-nx-telemetry = "se3_deploy.replay_telemetry:main"
+se3-visualize-cdc-state = "se3_deploy.visualize_cdc_state:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
-se3-grounded-pose = "se3_tools.grounded_pose:main"
+se3-recovery-state-cache = "se3_tools.recovery_state_cache:main"
+se3-recovery-state-cache-mjlab = "se3_tools.recovery_state_cache_mjlab:main"
 se3-jump-to = "se3_jump_to.cli:main"
 se3-jump-to-replay = "se3_jump_to.replay:main"
-se3-flow-collect = "se3_flow_match.collect:main"
-se3-flow-train = "se3_flow_match.train:main"
-se3-flow-play = "se3_flow_match.play:main"
-se3-flow-smoke = "se3_flow_match.smoke:main"
-se3-flow-monitor = "se3_flow_match.monitor:main"
 
 [build-system]
 requires = ["uv_build==0.11.8"]
@@ -41,12 +44,20 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = "src"
-module-name = ["se3_train", "se3_sim2sim", "se3_shared", "se3_tools", "se3_flow_match"]
+module-name = [
+    "se3_train",
+    "se3_sim2sim",
+    "se3_shared",
+    "se3_tools",
+    "se3_flow_match",
+    "se3_deploy",
+]
 
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
     { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'win32'" },
 ]
 
 [[tool.uv.index]]
@@ -89,7 +100,14 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["se3_train", "se3_sim2sim", "se3_shared", "se3_tools", "se3_flow_match"]
+known-first-party = [
+    "se3_train",
+    "se3_sim2sim",
+    "se3_shared",
+    "se3_tools",
+    "se3_flow_match",
+    "se3_deploy",
+]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -5,23 +5,20 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from se3_shared import TASK_MODE_LOCOMOTION_CONTRACT, ObservationConfig
+from se3_shared import ObservationConfig
 
 _OBS_CFG = ObservationConfig()
-_DEFAULT_TASK_MODES = ("wheel", "gait", "wheel_leg", "gait_wheel", "jump")
 
 
 @dataclass(frozen=True)
 class FlowPolicyConfig:
     """GRU Flow Matching 策略配置。"""
 
-    obs_dim: int = TASK_MODE_LOCOMOTION_CONTRACT.num_obs
+    obs_dim: int = _OBS_CFG.num_obs
     action_dim: int = _OBS_CFG.num_actions
     rnn_hidden_dim: int = 512
     rnn_num_layers: int = 1
     activation: str = "elu"
-    task_modes: tuple[str, ...] = _DEFAULT_TASK_MODES
-    sample_steps: int = 5
 
     def __post_init__(self) -> None:
         """校验配置值，避免训练时才暴露形状错误。"""
@@ -33,10 +30,6 @@ class FlowPolicyConfig:
             raise ValueError(f"rnn_hidden_dim 必须为正数，实际为 {self.rnn_hidden_dim}")
         if self.rnn_num_layers <= 0:
             raise ValueError(f"rnn_num_layers 必须为正数，实际为 {self.rnn_num_layers}")
-        if self.sample_steps <= 0:
-            raise ValueError(f"sample_steps 必须为正数，实际为 {self.sample_steps}")
-        if not self.task_modes:
-            raise ValueError("task_modes 不能为空")
 
     def to_dict(self) -> dict[str, Any]:
         """转成 checkpoint 可序列化字典。"""
@@ -46,11 +39,9 @@ class FlowPolicyConfig:
     def from_dict(cls, raw: dict[str, Any]) -> FlowPolicyConfig:
         """从 checkpoint 字典恢复配置。"""
         return cls(
-            obs_dim=int(raw.get("obs_dim", TASK_MODE_LOCOMOTION_CONTRACT.num_obs)),
+            obs_dim=int(raw.get("obs_dim", _OBS_CFG.num_obs)),
             action_dim=int(raw.get("action_dim", _OBS_CFG.num_actions)),
             rnn_hidden_dim=int(raw.get("rnn_hidden_dim", 512)),
             rnn_num_layers=int(raw.get("rnn_num_layers", 1)),
             activation=str(raw.get("activation", "elu")),
-            task_modes=tuple(str(value) for value in raw.get("task_modes", _DEFAULT_TASK_MODES)),
-            sample_steps=int(raw.get("sample_steps", 5)),
         )

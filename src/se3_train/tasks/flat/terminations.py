@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
-from se3_train.mdp.terminations import bad_orientation_delayed, leg_contact, time_out
+from se3_train.mdp.terminations import (
+    bad_orientation_delayed,
+    catastrophic_state,
+    leg_contact,
+    time_out,
+)
 
-__all__ = ["bad_orientation_delayed", "leg_contact", "time_out"]
+__all__ = ["bad_orientation_delayed", "catastrophic_state", "leg_contact", "time_out"]

@@ -6,15 +6,26 @@
 
 from __future__ import annotations
 
-from . import flat, flow_match, jump_finetune, jump_pretrain, recovery, rough
+from . import (
+    flat,
+    jump_finetune,
+    jump_pretrain,
+    recovery,
+    recovery_discovery,
+    recovery_finetune,
+    rough,
+    stair,
+)
 
 
 def register_all_tasks() -> None:
     """注册当前包内全部训练任务。"""
     rough.register()
     flat.register()
-    flow_match.register()
     recovery.register()
+    recovery_discovery.register()
+    recovery_finetune.register()
+    stair.register()
     jump_pretrain.register()
     jump_finetune.register()
 
