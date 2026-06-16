@@ -16,7 +16,7 @@ from itertools import count
 
 import mujoco
 import numpy as np
-from mjlab.terrains import SubTerrainCfg, TerrainEntityCfg, TerrainGeneratorCfg
+from mjlab.terrains import BoxFlatTerrainCfg, SubTerrainCfg, TerrainEntityCfg, TerrainGeneratorCfg
 from mjlab.terrains.terrain_generator import TerrainGeometry, TerrainOutput
 
 _MM = 0.001
@@ -36,6 +36,10 @@ BLIND_CLIMB_MAX_DIFFICULTY = BLIND_CLIMB_NUM_ROWS / BLIND_CLIMB_REFERENCE_NUM_RO
 BLIND_CLIMB_PIT_LENGTH_RANGE = (0.05, 0.65)
 BLIND_CLIMB_RAMP_HEIGHT_RANGE = (0.03, 0.35)
 BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG = (8.0, 17.0)
+BLIND_CLIMB_FLAT_TERRAIN_TYPE = 0
+BLIND_CLIMB_FACILITY_TERRAIN_TYPE = 1
+BLIND_CLIMB_FLAT_PROPORTION = 0.25
+BLIND_CLIMB_FACILITY_PROPORTION = 0.75
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -332,8 +336,11 @@ def gap_ramp_blind_climb_terrain_cfg(
         num_cols=1,
         color_scheme="height",
         sub_terrains={
+            "flat_retention": BoxFlatTerrainCfg(
+                proportion=BLIND_CLIMB_FLAT_PROPORTION,
+            ),
             "blind_climb_facility": GapRampFacilityTerrainCfg(
-                proportion=1.0,
+                proportion=BLIND_CLIMB_FACILITY_PROPORTION,
                 facility=spec,
                 use_difficulty=True,
             ),

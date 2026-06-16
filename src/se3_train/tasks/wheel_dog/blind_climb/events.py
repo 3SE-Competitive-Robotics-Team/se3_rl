@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -38,9 +39,11 @@ def reset_root_state(
     base_height: float = DOG_BASE_HEIGHT,
     runup_distance_range: tuple[float, float] = (1.0, 3.0),
     y_noise: float = 0.08,
+    flat_xy_noise: float = 0.15,
+    flat_yaw_range: tuple[float, float] = (-math.pi, math.pi),
     yaw_range: tuple[float, float] = (-0.12, 0.12),
 ) -> None:
-    """按距离坡顶高边的随机起跑距离重置 base，并让机身朝向坑坡方向。"""
+    """平地环境按平地方式重置，设施环境按起跑平台方式重置。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -52,27 +55,62 @@ def reset_root_state(
 
     pos = root_states[:, 0:3].clone()
     pos[:, 2] = float(base_height)
-    runup_distance = sample_uniform(
-        torch.tensor(float(runup_distance_range[0]), device=env.device),
-        torch.tensor(float(runup_distance_range[1]), device=env.device),
-        (num_ids,),
-        env.device,
-    )
-    pos[:, 0] = terrain_progress.ramp_high_progress(env, env_ids=env_ids) - runup_distance
-    pos[:, 1] += sample_uniform(
-        torch.tensor(-float(y_noise), device=env.device),
-        torch.tensor(float(y_noise), device=env.device),
-        (num_ids,),
-        env.device,
-    )
+    flat_mask = terrain_progress.is_flat_terrain(env, env_ids=env_ids)
+    facility_mask = ~flat_mask
+
+    runup_distance = torch.zeros(num_ids, device=env.device)
+    if facility_mask.any():
+        facility_env_ids = env_ids[facility_mask]
+        facility_count = len(facility_env_ids)
+        sampled_runup = sample_uniform(
+            torch.tensor(float(runup_distance_range[0]), device=env.device),
+            torch.tensor(float(runup_distance_range[1]), device=env.device),
+            (facility_count,),
+            env.device,
+        )
+        runup_distance[facility_mask] = sampled_runup
+        pos[facility_mask, 0] = (
+            terrain_progress.ramp_high_progress(env, env_ids=facility_env_ids) - sampled_runup
+        )
+        pos[facility_mask, 1] += sample_uniform(
+            torch.tensor(-float(y_noise), device=env.device),
+            torch.tensor(float(y_noise), device=env.device),
+            (facility_count,),
+            env.device,
+        )
+    if flat_mask.any():
+        flat_count = int(flat_mask.sum().item())
+        pos[flat_mask, 0] += sample_uniform(
+            torch.tensor(-float(flat_xy_noise), device=env.device),
+            torch.tensor(float(flat_xy_noise), device=env.device),
+            (flat_count,),
+            env.device,
+        )
+        pos[flat_mask, 1] += sample_uniform(
+            torch.tensor(-float(flat_xy_noise), device=env.device),
+            torch.tensor(float(flat_xy_noise), device=env.device),
+            (flat_count,),
+            env.device,
+        )
     pos[:, 0:3] += env.scene.env_origins[env_ids]
 
-    yaw = sample_uniform(
-        torch.tensor(float(yaw_range[0]), device=env.device),
-        torch.tensor(float(yaw_range[1]), device=env.device),
-        (num_ids,),
-        env.device,
-    )
+    yaw = torch.zeros(num_ids, device=env.device)
+    if facility_mask.any():
+        facility_count = int(facility_mask.sum().item())
+        yaw[facility_mask] = sample_uniform(
+            torch.tensor(float(yaw_range[0]), device=env.device),
+            torch.tensor(float(yaw_range[1]), device=env.device),
+            (facility_count,),
+            env.device,
+        )
+    if flat_mask.any():
+        flat_count = int(flat_mask.sum().item())
+        yaw[flat_mask] = sample_uniform(
+            torch.tensor(float(flat_yaw_range[0]), device=env.device),
+            torch.tensor(float(flat_yaw_range[1]), device=env.device),
+            (flat_count,),
+            env.device,
+        )
     roll = torch.zeros(num_ids, device=env.device)
     pitch = torch.zeros(num_ids, device=env.device)
     quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
@@ -85,11 +123,20 @@ def reset_root_state(
         env._wheel_dog_last_runup_distance = torch.zeros(env.num_envs, device=env.device)
     env._wheel_dog_last_runup_distance[env_ids] = runup_distance
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        facility_runup = runup_distance[facility_mask]
         env.extras["log"].update(
             {
-                "WheelDog/reset_runup_distance": float(runup_distance.mean().item()),
-                "WheelDog/reset_runup_min": float(runup_distance.min().item()),
-                "WheelDog/reset_runup_max": float(runup_distance.max().item()),
+                "WheelDog/reset_flat_ratio": float(flat_mask.float().mean().item()),
+                "WheelDog/reset_facility_ratio": float(facility_mask.float().mean().item()),
+                "WheelDog/reset_runup_distance": float(
+                    facility_runup.mean().item() if facility_runup.numel() > 0 else 0.0
+                ),
+                "WheelDog/reset_runup_min": float(
+                    facility_runup.min().item() if facility_runup.numel() > 0 else 0.0
+                ),
+                "WheelDog/reset_runup_max": float(
+                    facility_runup.max().item() if facility_runup.numel() > 0 else 0.0
+                ),
             }
         )
 

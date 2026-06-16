@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import sys
+import traceback
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
+import torch
 import tyro
 from mjlab import TYRO_FLAGS
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -13,6 +16,7 @@ from mjlab.scripts import play as mjlab_play
 from mjlab.scripts._cli import maybe_print_top_level_help
 from mjlab.scripts.play import PlayConfig
 from mjlab.tasks.registry import list_tasks, load_rl_cfg
+from mjlab.viewer.base import BaseViewer, VerbosityLevel
 
 
 @dataclass(frozen=True)
@@ -50,17 +54,64 @@ def _apply_play_terrain_difficulty(env_cfg: ManagerBasedRlEnvCfg, difficulty: fl
 
     terrain_generator.num_rows = 1
     terrain_generator.difficulty_range = (float(difficulty), float(difficulty))
+    facility_subterrain = terrain_generator.sub_terrains.get("blind_climb_facility")
+    if facility_subterrain is not None:
+        for subterrain in terrain_generator.sub_terrains.values():
+            subterrain.proportion = 0.0
+        facility_subterrain.proportion = 1.0
     terrain_cfg.max_init_terrain_level = 0
+    terrain_cfg.play_terrain_difficulty = float(difficulty)
     print(f"[INFO]: play terrain difficulty fixed at {difficulty:.3f}")
+
+
+def _extract_done_tensor(step_result: object) -> torch.Tensor | None:
+    """从 viewer 环境 step 返回值中提取 episode 结束标记。"""
+    if not isinstance(step_result, tuple) or len(step_result) < 3:
+        return None
+    done = step_result[2]
+    if not isinstance(done, torch.Tensor):
+        return None
+    if len(step_result) >= 5 and isinstance(step_result[3], torch.Tensor):
+        done = done | step_result[3]
+    return done
+
+
+def _reset_policy_on_done(policy: Any, step_result: object) -> None:
+    """auto-reset 发生后同步清理 GRU hidden state。"""
+    reset_fn = getattr(policy, "reset", None)
+    if reset_fn is None:
+        return
+    done = _extract_done_tensor(step_result)
+    if done is None or not torch.any(done):
+        return
+    reset_fn(done)
+
+
+def _execute_step_with_policy_reset(self: BaseViewer) -> bool:
+    """运行一步 viewer，并在环境 auto-reset 后同步重置 recurrent policy。"""
+    try:
+        with torch.no_grad():
+            obs = self.env.get_observations()
+            actions = self.policy(obs)
+            step_result = self.env.step(actions)
+            _reset_policy_on_done(self.policy, step_result)
+            self._step_count += 1
+            self._stats_steps += 1
+            return True
+    except Exception:
+        self._last_error = traceback.format_exc()
+        self.log(
+            f"[ERROR] Exception during step:\n{self._last_error}",
+            VerbosityLevel.SILENT,
+        )
+        self.pause()
+        return False
 
 
 def _run_play_with_se3_overrides(task_id: str, cfg: Se3PlayConfig) -> None:
     """在 MJLab play 前注入 SE3 专属 play 配置。"""
-    if cfg.play_terrain_difficulty is None:
-        mjlab_play.run_play(task_id, cfg)
-        return
-
     original_load_env_cfg = mjlab_play.load_env_cfg
+    original_execute_step = BaseViewer._execute_step
 
     def load_env_cfg_with_play_difficulty(
         task_name: str, play: bool = False
@@ -70,11 +121,14 @@ def _run_play_with_se3_overrides(task_id: str, cfg: Se3PlayConfig) -> None:
             _apply_play_terrain_difficulty(env_cfg, cfg.play_terrain_difficulty)
         return env_cfg
 
-    mjlab_play.load_env_cfg = load_env_cfg_with_play_difficulty
+    if cfg.play_terrain_difficulty is not None:
+        mjlab_play.load_env_cfg = load_env_cfg_with_play_difficulty
+    BaseViewer._execute_step = _execute_step_with_policy_reset
     try:
         mjlab_play.run_play(task_id, cfg)
     finally:
         mjlab_play.load_env_cfg = original_load_env_cfg
+        BaseViewer._execute_step = original_execute_step
 
 
 def _latest_checkpoint(base: Path, experiment_name: str) -> Path:

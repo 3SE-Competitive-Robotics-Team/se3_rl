@@ -64,6 +64,7 @@ def forward_velocity(
     speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
     active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    facility = terrain_progress.is_facility_terrain(env)
     return (
         torch.clamp(
             speed_along_cmd,
@@ -72,6 +73,7 @@ def forward_velocity(
         )
         * active.float()
         * gate
+        * facility.float()
     )
 
 
@@ -96,11 +98,13 @@ def progress_forward(
     )
     normalized = progress_x / torch.clamp(target_progress, min=1.0e-6)
     corridor = terrain_progress.corridor_gate(env)
+    facility = terrain_progress.is_facility_terrain(env)
     return (
         torch.clamp(normalized, min=0.0, max=float(max_progress_ratio))
         * active.float()
         * gate
         * corridor
+        * facility.float()
     )
 
 
@@ -133,12 +137,14 @@ def obstacle_lift(
     in_window = (progress_x > start_progress) & (progress_x < end_progress)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
     corridor = terrain_progress.corridor_gate(env)
+    facility = terrain_progress.is_facility_terrain(env)
     return (
         torch.clamp(vz, min=0.0, max=float(max_vertical_velocity))
         * active.float()
         * in_window.float()
         * gate
         * corridor
+        * facility.float()
     )
 
 
@@ -161,7 +167,14 @@ def success_progress(
         final_success_distance=success_distance,
     )
     in_corridor = terrain_progress.within_corridor(env)
-    return (progress_x > target_progress).float() * in_corridor.float() * active.float() * gate
+    facility = terrain_progress.is_facility_terrain(env)
+    return (
+        (progress_x > target_progress).float()
+        * in_corridor.float()
+        * active.float()
+        * gate
+        * facility.float()
+    )
 
 
 def lateral_corridor(
@@ -174,7 +187,8 @@ def lateral_corridor(
     soft = float(soft_half_width)
     hard = max(float(hard_half_width), soft + 1.0e-6)
     excess = torch.clamp(abs_y - soft, min=0.0) / (hard - soft)
-    return torch.clamp(torch.square(excess), max=4.0)
+    facility = terrain_progress.is_facility_terrain(env)
+    return torch.clamp(torch.square(excess), max=4.0) * facility.float()
 
 
 def run_stuck(
@@ -193,8 +207,9 @@ def run_stuck(
     speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
     active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    facility = terrain_progress.is_facility_terrain(env)
     deficit = (float(min_speed) - speed_along_cmd) / max(float(min_speed), 1.0e-6)
-    return torch.clamp(deficit, min=0.0, max=1.0) * active.float() * gate
+    return torch.clamp(deficit, min=0.0, max=1.0) * active.float() * gate * facility.float()
 
 
 def tracking_ang_vel_z(

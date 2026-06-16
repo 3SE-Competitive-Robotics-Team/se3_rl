@@ -105,7 +105,8 @@ def corridor_bounds(
     hard_half_width: float = terrain_progress.CORRIDOR_HARD_HALF_WIDTH,
 ) -> torch.Tensor:
     """base_link 离开中心通道时终止，避免绕过坑坡拿奖励。"""
-    return torch.abs(terrain_progress.lateral_offset(env)) > float(hard_half_width)
+    facility = terrain_progress.is_facility_terrain(env)
+    return (torch.abs(terrain_progress.lateral_offset(env)) > float(hard_half_width)) & facility
 
 
 class BodyContactDelayed:

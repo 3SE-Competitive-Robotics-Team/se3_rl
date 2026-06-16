@@ -34,9 +34,13 @@ class DogVelocityCommandCfg(CommandTermCfg):
     lin_vel_x_range: tuple[float, float] = (0.35, 0.70)
     lin_vel_y_range: tuple[float, float] = (0.0, 0.0)
     ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0)
+    flat_lin_vel_x_range: tuple[float, float] = (-2.0, 2.0)
+    flat_lin_vel_y_range: tuple[float, float] = (-0.6, 0.6)
+    flat_ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0)
     lin_vel_deadband: float = 0.08
     yaw_deadband: float = 0.08
     standing_ratio: float = 0.0
+    flat_standing_ratio: float = 0.08
     success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE
     obstacle_window_before_high_edge: float = 0.25
     obstacle_window_after_high_edge: float = 0.35
@@ -74,8 +78,35 @@ class DogVelocityCommandTerm(CommandTerm):
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         """为指定环境重新采样速度指令。"""
-        num_ids = len(env_ids)
-        standing_count = int(num_ids * self.cfg.standing_ratio)
+        flat_mask = terrain_progress.is_flat_terrain(self._env, env_ids=env_ids)
+        self._sample_group(
+            env_ids[~flat_mask],
+            standing_ratio=self.cfg.standing_ratio,
+            lin_vel_x_range=self.cfg.lin_vel_x_range,
+            lin_vel_y_range=self.cfg.lin_vel_y_range,
+            ang_vel_yaw_range=self.cfg.ang_vel_yaw_range,
+        )
+        self._sample_group(
+            env_ids[flat_mask],
+            standing_ratio=self.cfg.flat_standing_ratio,
+            lin_vel_x_range=self.cfg.flat_lin_vel_x_range,
+            lin_vel_y_range=self.cfg.flat_lin_vel_y_range,
+            ang_vel_yaw_range=self.cfg.flat_ang_vel_yaw_range,
+        )
+
+    def _sample_group(
+        self,
+        env_ids: torch.Tensor,
+        *,
+        standing_ratio: float,
+        lin_vel_x_range: tuple[float, float],
+        lin_vel_y_range: tuple[float, float],
+        ang_vel_yaw_range: tuple[float, float],
+    ) -> None:
+        """按同一组指令范围为一批环境采样速度。"""
+        if len(env_ids) == 0:
+            return
+        standing_count = int(len(env_ids) * standing_ratio)
         standing_ids = env_ids[:standing_count]
         moving_ids = env_ids[standing_count:]
 
@@ -85,11 +116,9 @@ class DogVelocityCommandTerm(CommandTerm):
 
         if len(moving_ids) == 0:
             return
-        self._command[moving_ids, 0] = self._sample_range(len(moving_ids), self.cfg.lin_vel_x_range)
-        self._command[moving_ids, 1] = self._sample_range(len(moving_ids), self.cfg.lin_vel_y_range)
-        self._command[moving_ids, 2] = self._sample_range(
-            len(moving_ids), self.cfg.ang_vel_yaw_range
-        )
+        self._command[moving_ids, 0] = self._sample_range(len(moving_ids), lin_vel_x_range)
+        self._command[moving_ids, 1] = self._sample_range(len(moving_ids), lin_vel_y_range)
+        self._command[moving_ids, 2] = self._sample_range(len(moving_ids), ang_vel_yaw_range)
 
     def _update_command(self) -> None:
         """对很小的速度指令施加死区。"""
@@ -144,6 +173,7 @@ class DogVelocityCommandTerm(CommandTerm):
             self._env,
             final_success_distance=self.cfg.success_distance,
         )
+        facility_mask = terrain_progress.is_facility_terrain(self._env)
         obstacle_start, obstacle_end = terrain_progress.obstacle_window(
             self._env,
             before_high_edge=self.cfg.obstacle_window_before_high_edge,
@@ -172,11 +202,19 @@ class DogVelocityCommandTerm(CommandTerm):
             terrain_level = 0.0
             high_level_ratio = 0.0
             target_level_ratio = 0.0
+        flat_ratio = float((~facility_mask).float().mean().item())
+        facility_ratio = float(facility_mask.float().mean().item())
         runup_distance = getattr(self._env, "_wheel_dog_last_runup_distance", None)
         if isinstance(runup_distance, torch.Tensor) and runup_distance.numel() >= self.num_envs:
-            runup_mean = float(runup_distance[: self.num_envs].mean().item())
-            runup_min = float(runup_distance[: self.num_envs].min().item())
-            runup_max = float(runup_distance[: self.num_envs].max().item())
+            facility_runup = runup_distance[: self.num_envs][facility_mask]
+            if facility_runup.numel() > 0:
+                runup_mean = float(facility_runup.mean().item())
+                runup_min = float(facility_runup.min().item())
+                runup_max = float(facility_runup.max().item())
+            else:
+                runup_mean = 0.0
+                runup_min = 0.0
+                runup_max = 0.0
         else:
             runup_mean = 0.0
             runup_min = 0.0
@@ -186,6 +224,8 @@ class DogVelocityCommandTerm(CommandTerm):
             {
                 "WheelDog/diag_active_ratio": float(active.float().mean().item()),
                 "WheelDog/diag_standing_ratio": float(self._standing_mask.float().mean().item()),
+                "WheelDog/diag_flat_terrain_ratio": flat_ratio,
+                "WheelDog/diag_facility_terrain_ratio": facility_ratio,
                 "WheelDog/diag_cmd_vx_abs": float(torch.abs(cmd[:, 0]).mean().item()),
                 "WheelDog/diag_cmd_vy_abs": float(torch.abs(cmd[:, 1]).mean().item()),
                 "WheelDog/diag_actual_vx": float(lin_vel_b[:, 0].mean().item()),
@@ -203,13 +243,22 @@ class DogVelocityCommandTerm(CommandTerm):
                 "WheelDog/diag_vy_error_abs_active": _mean_on_mask(torch.abs(vy_err), active),
                 "WheelDog/diag_yaw_error_abs": float(torch.abs(yaw_err).mean().item()),
                 "WheelDog/diag_base_height": float(height.mean().item()),
-                "WheelDog/diag_blind_climb_progress_x": float(progress_x.mean().item()),
-                "WheelDog/diag_blind_climb_success_ratio": float(success.float().mean().item()),
-                "WheelDog/diag_current_success_distance": float(target_progress.mean().item()),
+                "WheelDog/diag_blind_climb_progress_x": _mean_on_mask(progress_x, facility_mask),
+                "WheelDog/diag_blind_climb_success_ratio": _mean_on_mask(
+                    success.float(),
+                    facility_mask,
+                ),
+                "WheelDog/diag_current_success_distance": _mean_on_mask(
+                    target_progress,
+                    facility_mask,
+                ),
                 "WheelDog/diag_ramp_high_progress_x": float(ramp_high_x.mean().item()),
                 "WheelDog/diag_ramp_low_progress_x": float(ramp_low_x.mean().item()),
                 "WheelDog/diag_terrain_difficulty": float(difficulty.mean().item()),
-                "WheelDog/diag_obstacle_window_ratio": float(obstacle_window.float().mean().item()),
+                "WheelDog/diag_obstacle_window_ratio": _mean_on_mask(
+                    obstacle_window.float(),
+                    facility_mask,
+                ),
                 "WheelDog/diag_obstacle_window_vz": _mean_on_mask(vz_w, obstacle_window),
                 "WheelDog/diag_obstacle_window_positive_vz": _mean_on_mask(
                     torch.clamp(vz_w, min=0.0),
@@ -219,10 +268,19 @@ class DogVelocityCommandTerm(CommandTerm):
                     torch.clamp(vz_w, min=0.0),
                     pre_obstacle_window,
                 ),
-                "WheelDog/diag_early_takeoff_ratio": float(early_takeoff.float().mean().item()),
+                "WheelDog/diag_early_takeoff_ratio": _mean_on_mask(
+                    early_takeoff.float(),
+                    facility_mask,
+                ),
                 "WheelDog/diag_lateral_offset_abs": float(abs_lateral_offset.mean().item()),
-                "WheelDog/diag_in_corridor_ratio": float(in_corridor.float().mean().item()),
-                "WheelDog/diag_out_of_corridor_ratio": float(out_of_bounds.float().mean().item()),
+                "WheelDog/diag_in_corridor_ratio": _mean_on_mask(
+                    in_corridor.float(),
+                    facility_mask,
+                ),
+                "WheelDog/diag_out_of_corridor_ratio": _mean_on_mask(
+                    out_of_bounds.float(),
+                    facility_mask,
+                ),
                 "WheelDog/diag_terrain_level": terrain_level,
                 "WheelDog/diag_high_level_ratio": high_level_ratio,
                 "WheelDog/diag_target_level_ratio": target_level_ratio,

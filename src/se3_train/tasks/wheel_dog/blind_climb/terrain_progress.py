@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_train.terrains import (
+    BLIND_CLIMB_FACILITY_TERRAIN_TYPE,
+    BLIND_CLIMB_FLAT_TERRAIN_TYPE,
     BLIND_CLIMB_MAX_DIFFICULTY,
     BLIND_CLIMB_PIT_LENGTH_RANGE,
     BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG,
@@ -131,11 +133,86 @@ def within_corridor(
     return torch.abs(lateral_offset(env, env_ids=env_ids)) <= float(half_width)
 
 
+def current_terrain_types(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | slice | None = None,
+) -> torch.Tensor | None:
+    """读取当前环境对应的 terrain type；没有课程地形时返回 None。"""
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if not isinstance(terrain_types, torch.Tensor):
+        return None
+    if terrain_types.numel() < env.num_envs:
+        return None
+    if env_ids is None or isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long)
+    return terrain_types[env_ids].to(device=env.device, dtype=torch.long)
+
+
+def _terrain_type_mask(
+    env: ManagerBasedRlEnv,
+    terrain_type: int,
+    env_ids: torch.Tensor | slice | None = None,
+    *,
+    default_value: bool,
+) -> torch.Tensor:
+    """按 terrain type 生成布尔掩码。"""
+    terrain_types = current_terrain_types(env, env_ids=env_ids)
+    if terrain_types is None:
+        if env_ids is None or isinstance(env_ids, slice):
+            env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+        return torch.full(
+            (len(env_ids),),
+            bool(default_value),
+            device=env.device,
+            dtype=torch.bool,
+        )
+    return terrain_types == int(terrain_type)
+
+
+def is_flat_terrain(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | slice | None = None,
+) -> torch.Tensor:
+    """判断当前环境是否属于平地列。"""
+    return _terrain_type_mask(
+        env,
+        BLIND_CLIMB_FLAT_TERRAIN_TYPE,
+        env_ids=env_ids,
+        default_value=False,
+    )
+
+
+def is_facility_terrain(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | slice | None = None,
+) -> torch.Tensor:
+    """判断当前环境是否属于坑坡设施列。"""
+    return _terrain_type_mask(
+        env,
+        BLIND_CLIMB_FACILITY_TERRAIN_TYPE,
+        env_ids=env_ids,
+        default_value=True,
+    )
+
+
 def current_difficulty(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """把 terrain level 转成 difficulty，保持 level 39 对应旧满难度。"""
+    play_difficulty = _play_terrain_difficulty(env)
+    if play_difficulty is not None:
+        if env_ids is None:
+            env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+        return torch.full(
+            (len(env_ids),),
+            float(play_difficulty),
+            device=env.device,
+            dtype=torch.float,
+        )
     levels, num_rows = current_terrain_levels(env, env_ids=env_ids)
     del num_rows
     reference_rows = max(float(BLIND_CLIMB_REFERENCE_NUM_ROWS), 1.0)
@@ -168,6 +245,16 @@ def _lerp_tensor(value_range: tuple[float, float], progress: torch.Tensor) -> to
     return float(start) + (float(end) - float(start)) * progress
 
 
+def _play_terrain_difficulty(env: ManagerBasedRlEnv) -> float | None:
+    """读取 se3-play 注入的固定地形难度。"""
+    terrain = getattr(env.scene, "terrain", None)
+    cfg = getattr(terrain, "cfg", None)
+    value = getattr(cfg, "play_terrain_difficulty", None)
+    if value is None:
+        return None
+    return max(0.0, min(float(value), float(BLIND_CLIMB_MAX_DIFFICULTY)))
+
+
 __all__ = [
     "CORRIDOR_HARD_HALF_WIDTH",
     "CORRIDOR_SOFT_HALF_WIDTH",
@@ -177,6 +264,9 @@ __all__ = [
     "current_difficulty",
     "current_success_distance",
     "current_terrain_levels",
+    "current_terrain_types",
+    "is_facility_terrain",
+    "is_flat_terrain",
     "lateral_offset",
     "obstacle_window",
     "ramp_high_progress",
