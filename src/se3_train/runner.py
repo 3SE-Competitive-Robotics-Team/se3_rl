@@ -234,6 +234,50 @@ def _init_logging_writer_with_wandb_guard(logger: Any) -> None:
         _init_tensorboard_fallback(logger, exc)
 
 
+def _normalize_legacy_actor_state_dict(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """兼容旧 checkpoint 里的动作分布参数命名。"""
+    normalized_state_dict = dict(state_dict)
+    if "std" in normalized_state_dict and "distribution.std_param" not in normalized_state_dict:
+        normalized_state_dict["distribution.std_param"] = normalized_state_dict.pop("std")
+    if (
+        "log_std" in normalized_state_dict
+        and "distribution.log_std_param" not in normalized_state_dict
+    ):
+        normalized_state_dict["distribution.log_std_param"] = normalized_state_dict.pop("log_std")
+    return normalized_state_dict
+
+
+def _load_compatible_state_dict(
+    module: torch.nn.Module,
+    state_dict: dict[str, Any],
+    module_name: str,
+) -> None:
+    """只加载 shape 一致的参数，跳过任务间不兼容的部分。"""
+    current_state_dict = module.state_dict()
+    compatible_state_dict: dict[str, torch.Tensor] = {}
+    skipped_keys: list[str] = []
+
+    for key, value in state_dict.items():
+        current_value = current_state_dict.get(key)
+        if current_value is None or not isinstance(value, torch.Tensor):
+            continue
+        if value.shape == current_value.shape:
+            compatible_state_dict[key] = value
+            continue
+        skipped_keys.append(f"{key} {tuple(value.shape)} -> {tuple(current_value.shape)}")
+
+    module.load_state_dict(compatible_state_dict, strict=False)
+
+    if skipped_keys:
+        skipped_preview = ", ".join(skipped_keys[:6])
+        if len(skipped_keys) > 6:
+            skipped_preview += ", ..."
+        print(
+            f"[WARN] {module_name} warm-start 已跳过 {len(skipped_keys)} 个不兼容参数："
+            f"{skipped_preview}"
+        )
+
+
 class Se3OnPolicyRunner(MjlabOnPolicyRunner):
     """SE3 默认 runner，保护训练不被 W&B 网络初始化阻塞。"""
 
@@ -410,17 +454,21 @@ class Se3WarmStartRunner(Se3OnPolicyRunner):
             "iteration": False,
             "rnd": False,
         }
+        resume_cfg = warm_start_cfg if load_cfg is None else {**warm_start_cfg, **load_cfg}
 
         if map_location is None and not torch.cuda.is_available():
             map_location = "cpu"
         loaded_dict = torch.load(path, map_location=map_location, weights_only=False)
-        actor_state_dict = loaded_dict.get("actor_state_dict", {})
-        if "std" in actor_state_dict:
-            actor_state_dict["distribution.std_param"] = actor_state_dict.pop("std")
-        if "log_std" in actor_state_dict:
-            actor_state_dict["distribution.log_std_param"] = actor_state_dict.pop("log_std")
+        actor_state_dict = _normalize_legacy_actor_state_dict(
+            loaded_dict.get("actor_state_dict", {})
+        )
+        critic_state_dict = loaded_dict.get("critic_state_dict", {})
 
-        self.alg.load(loaded_dict, warm_start_cfg if load_cfg is None else load_cfg, strict)
+        if resume_cfg.get("actor", True):
+            _load_compatible_state_dict(self.alg._raw_actor, actor_state_dict, "actor")
+        if resume_cfg.get("critic", True):
+            _load_compatible_state_dict(self.alg._raw_critic, critic_state_dict, "critic")
+
         self.current_learning_iteration = 0
         self.env.unwrapped.common_step_counter = 0
         return loaded_dict.get("infos", {})
