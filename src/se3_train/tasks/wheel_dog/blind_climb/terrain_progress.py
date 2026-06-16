@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
 
 from se3_train.terrains import (
+    BLIND_CLIMB_MAX_DIFFICULTY,
     BLIND_CLIMB_PIT_LENGTH_RANGE,
     BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG,
     BLIND_CLIMB_RAMP_HEIGHT_RANGE,
+    BLIND_CLIMB_REFERENCE_NUM_ROWS,
     GapRampFacilitySpec,
 )
 
@@ -20,11 +23,19 @@ _SPEC = GapRampFacilitySpec()
 POST_RAMP_RUNOUT = 1.0
 """到达坡底后仍需继续前进的距离。"""
 
+
+def _lerp_scalar(value_range: tuple[float, float], progress: float) -> float:
+    start, end = value_range
+    return float(start) + (float(end) - float(start)) * float(progress)
+
+
+_MAX_PIT_LENGTH = _lerp_scalar(BLIND_CLIMB_PIT_LENGTH_RANGE, BLIND_CLIMB_MAX_DIFFICULTY)
+_MAX_RAMP_HEIGHT = _lerp_scalar(BLIND_CLIMB_RAMP_HEIGHT_RANGE, BLIND_CLIMB_MAX_DIFFICULTY)
+_MAX_RAMP_ANGLE_DEG = _lerp_scalar(BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG, BLIND_CLIMB_MAX_DIFFICULTY)
+_MAX_RAMP_RUN = _MAX_RAMP_HEIGHT / math.tan(math.radians(_MAX_RAMP_ANGLE_DEG))
+
 FINAL_SUCCESS_DISTANCE = (
-    _SPEC.left_platform_length * 0.5
-    + BLIND_CLIMB_PIT_LENGTH_RANGE[1]
-    + _SPEC.ramp_horizontal_run
-    + POST_RAMP_RUNOUT
+    _SPEC.left_platform_length * 0.5 + _MAX_PIT_LENGTH + _MAX_RAMP_RUN + POST_RAMP_RUNOUT
 )
 """最高难度下的完整路线目标距离：起跑、越坑上坡、落地后继续前进。"""
 
@@ -81,9 +92,11 @@ def current_difficulty(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """把 terrain level 转成近似 difficulty，使用每个 row 的中点。"""
+    """把 terrain level 转成 difficulty，保持 level 39 对应旧满难度。"""
     levels, num_rows = current_terrain_levels(env, env_ids=env_ids)
-    return torch.clamp((levels.float() + 0.5) / max(float(num_rows), 1.0), 0.0, 1.0)
+    del num_rows
+    reference_rows = max(float(BLIND_CLIMB_REFERENCE_NUM_ROWS), 1.0)
+    return torch.clamp((levels.float() + 0.5) / reference_rows, 0.0, BLIND_CLIMB_MAX_DIFFICULTY)
 
 
 def current_terrain_levels(

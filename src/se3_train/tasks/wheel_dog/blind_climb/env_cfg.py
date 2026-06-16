@@ -351,7 +351,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot"),
                 "base_height": DOG_BASE_HEIGHT,
-                "x_noise": 0.06,
+                "runup_distance_range": (1.0, 3.0),
                 "y_noise": 0.08,
                 "yaw_range": (-0.12, 0.12),
             },
@@ -416,6 +416,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "command_name": _COMMAND_NAME,
                     "success_distance": FINAL_SUCCESS_DISTANCE,
                     "min_progress_ratio": 0.50,
+                    "top_sample_min_level": 35,
+                    "high_level_threshold": 35,
+                    "target_level_threshold": 39,
                 },
             ),
             "command_vel": CurriculumTermCfg(

@@ -153,12 +153,29 @@ class DogVelocityCommandTerm(CommandTerm):
         ramp_low_x = terrain_progress.ramp_low_progress(self._env)
         difficulty = terrain_progress.current_difficulty(self._env)
         obstacle_window = active & (progress_x > obstacle_start) & (progress_x < obstacle_end)
+        pre_obstacle_window = active & (progress_x < obstacle_start)
+        early_takeoff = pre_obstacle_window & (vz_w > 0.25)
         terrain = getattr(self._env.scene, "terrain", None)
         terrain_levels = getattr(terrain, "terrain_levels", None)
         if isinstance(terrain_levels, torch.Tensor) and terrain_levels.numel() >= self.num_envs:
             terrain_level = float(terrain_levels[: self.num_envs].float().mean().item())
+            high_level_ratio = float((terrain_levels[: self.num_envs] >= 35).float().mean().item())
+            target_level_ratio = float(
+                (terrain_levels[: self.num_envs] >= 39).float().mean().item()
+            )
         else:
             terrain_level = 0.0
+            high_level_ratio = 0.0
+            target_level_ratio = 0.0
+        runup_distance = getattr(self._env, "_wheel_dog_last_runup_distance", None)
+        if isinstance(runup_distance, torch.Tensor) and runup_distance.numel() >= self.num_envs:
+            runup_mean = float(runup_distance[: self.num_envs].mean().item())
+            runup_min = float(runup_distance[: self.num_envs].min().item())
+            runup_max = float(runup_distance[: self.num_envs].max().item())
+        else:
+            runup_mean = 0.0
+            runup_min = 0.0
+            runup_max = 0.0
 
         self._env.extras["log"].update(
             {
@@ -195,7 +212,17 @@ class DogVelocityCommandTerm(CommandTerm):
                     torch.clamp(vz_w, min=0.0),
                     obstacle_window,
                 ),
+                "WheelDog/diag_pre_obstacle_positive_vz": _mean_on_mask(
+                    torch.clamp(vz_w, min=0.0),
+                    pre_obstacle_window,
+                ),
+                "WheelDog/diag_early_takeoff_ratio": float(early_takeoff.float().mean().item()),
                 "WheelDog/diag_terrain_level": terrain_level,
+                "WheelDog/diag_high_level_ratio": high_level_ratio,
+                "WheelDog/diag_target_level_ratio": target_level_ratio,
+                "WheelDog/diag_runup_distance": runup_mean,
+                "WheelDog/diag_runup_min": runup_min,
+                "WheelDog/diag_runup_max": runup_max,
                 "WheelDog/diag_cmd_x_limit": float(abs(self.cfg.lin_vel_x_range[1])),
                 "WheelDog/diag_cmd_y_limit": float(abs(self.cfg.lin_vel_y_range[1])),
             }

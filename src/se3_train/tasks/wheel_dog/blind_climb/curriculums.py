@@ -44,6 +44,9 @@ def terrain_levels(
     min_progress_ratio: float = 0.25,
     healthy_height_margin: float = -0.02,
     healthy_tilt_limit_deg: float = 35.0,
+    top_sample_min_level: int = 35,
+    high_level_threshold: int = 35,
+    target_level_threshold: int = 39,
 ) -> dict[str, torch.Tensor]:
     """按盲爬完成度推进地形难度。"""
     terrain = env.scene.terrain
@@ -92,10 +95,30 @@ def terrain_levels(
     )
     move_up = (progress_x > current_success) & healthy
     move_down = (progress_x < target_progress) & ~move_up
-    terrain.update_env_origins(env_ids, move_up, move_down)
+    num_rows = int(terrain.terrain_origins.shape[0])
+    top_sample_min_level = max(0, min(int(top_sample_min_level), num_rows - 1))
+    new_levels = terrain.terrain_levels[env_ids] + move_up.long() - move_down.long()
+    new_levels = torch.clamp(new_levels, 0, num_rows - 1)
+    top_mask = move_up & (terrain.terrain_levels[env_ids] >= num_rows - 1)
+    if top_mask.any():
+        new_levels[top_mask] = torch.randint(
+            top_sample_min_level,
+            num_rows,
+            (int(top_mask.sum().item()),),
+            device=env.device,
+            dtype=new_levels.dtype,
+        )
+    terrain.terrain_levels[env_ids] = new_levels
+    terrain.env_origins[env_ids] = terrain.terrain_origins[
+        terrain.terrain_levels[env_ids], terrain.terrain_types[env_ids]
+    ]
 
     new_levels, num_rows = terrain_progress.current_terrain_levels(env, env_ids=env_ids)
     difficulty = terrain_progress.current_difficulty(env, env_ids=env_ids)
+    all_levels, _ = terrain_progress.current_terrain_levels(env)
+    all_difficulty = terrain_progress.current_difficulty(env)
+    target_level_threshold = max(0, min(int(target_level_threshold), num_rows - 1))
+    high_level_threshold = max(0, min(int(high_level_threshold), num_rows - 1))
     return {
         "step_counter": torch.tensor(float(env.common_step_counter), device=env.device),
         "progress": torch.tensor(
@@ -112,6 +135,11 @@ def terrain_levels(
         "healthy_ratio": healthy.float().mean(),
         "move_up_ratio": move_up.float().mean(),
         "move_down_ratio": move_down.float().mean(),
+        "global_terrain_level": all_levels.float().mean(),
+        "global_terrain_difficulty": all_difficulty.mean(),
+        "high_level_ratio": (all_levels >= high_level_threshold).float().mean(),
+        "target_level_ratio": (all_levels >= target_level_threshold).float().mean(),
+        "top_sample_min_level": torch.tensor(float(top_sample_min_level), device=env.device),
     }
 
 

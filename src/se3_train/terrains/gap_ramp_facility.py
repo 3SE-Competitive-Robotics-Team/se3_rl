@@ -24,7 +24,15 @@ _TERRAIN_COLOR_LEFT = (0.45, 0.56, 0.40, 1.0)
 _TERRAIN_COLOR_RAMP = (0.38, 0.45, 0.55, 1.0)
 _TERRAIN_COLOR_TOP = (0.72, 0.68, 0.60, 1.0)
 _FACILITY_INSTANCE_COUNTER = count()
-BLIND_CLIMB_NUM_ROWS = 40
+BLIND_CLIMB_REFERENCE_NUM_ROWS = 40
+"""旧版 0-39 课程行数；level 39 对应最初定义的满难度。"""
+
+BLIND_CLIMB_NUM_ROWS = 46
+"""新版课程行数；level 40-45 用于在旧满难度之上继续加难。"""
+
+BLIND_CLIMB_MAX_DIFFICULTY = BLIND_CLIMB_NUM_ROWS / BLIND_CLIMB_REFERENCE_NUM_ROWS
+"""新版最高 difficulty，保证 level 39 仍落在旧版满难度附近。"""
+
 BLIND_CLIMB_PIT_LENGTH_RANGE = (0.05, 0.65)
 BLIND_CLIMB_RAMP_HEIGHT_RANGE = (0.03, 0.35)
 BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG = (8.0, 17.0)
@@ -37,8 +45,8 @@ class GapRampFacilitySpec:
     left_platform_height: float = 200 * _MM
     """左侧平台顶面高度。"""
 
-    left_platform_length: float = 1800 * _MM
-    """左侧起跑平台长度。"""
+    left_platform_length: float = 3800 * _MM
+    """左侧起跑平台长度，需容纳 1-3m 随机起跑距离。"""
 
     pit_length: float = 650 * _MM
     """左侧平台到反飞坡高边之间的坑宽。"""
@@ -308,9 +316,16 @@ def gap_ramp_blind_climb_terrain_cfg(
 ) -> TerrainGeneratorCfg:
     """返回盲爬训练用的课程化坑坡设施生成器。"""
     spec = GapRampFacilitySpec()
+    max_spec = _facility_for_difficulty(
+        spec,
+        BLIND_CLIMB_MAX_DIFFICULTY,
+        pit_length_range=BLIND_CLIMB_PIT_LENGTH_RANGE,
+        ramp_height_range=BLIND_CLIMB_RAMP_HEIGHT_RANGE,
+        ramp_angle_range_deg=BLIND_CLIMB_RAMP_ANGLE_RANGE_DEG,
+    )
     return TerrainGeneratorCfg(
         curriculum=True,
-        size=spec.terrain_size,
+        size=max_spec.terrain_size,
         border_width=0.0,
         border_height=0.0,
         num_rows=num_rows,
@@ -323,7 +338,7 @@ def gap_ramp_blind_climb_terrain_cfg(
                 use_difficulty=True,
             ),
         },
-        difficulty_range=(0.0, 1.0),
+        difficulty_range=(0.0, BLIND_CLIMB_MAX_DIFFICULTY),
         add_lights=True,
     )
 
@@ -357,7 +372,7 @@ def _facility_for_difficulty(
     ramp_angle_range_deg: tuple[float, float],
 ) -> GapRampFacilitySpec:
     """按课程难度插值设施几何，难度 1 对应完整场景。"""
-    progress = min(1.0, max(0.0, float(difficulty)))
+    progress = max(0.0, float(difficulty))
     return replace(
         facility,
         pit_length=_lerp(pit_length_range[0], pit_length_range[1], progress),

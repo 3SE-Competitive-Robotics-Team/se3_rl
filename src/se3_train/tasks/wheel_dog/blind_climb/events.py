@@ -16,6 +16,8 @@ from se3_train.tasks.wheel_dog.robot_cfg import (
     DOG_WHEEL_JOINT_IDS,
 )
 
+from . import terrain_progress
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -34,11 +36,11 @@ def reset_root_state(
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     base_height: float = DOG_BASE_HEIGHT,
-    x_noise: float = 0.06,
+    runup_distance_range: tuple[float, float] = (1.0, 3.0),
     y_noise: float = 0.08,
     yaw_range: tuple[float, float] = (-0.12, 0.12),
 ) -> None:
-    """重置 base 到左平台中心附近，并让机身朝向坑坡方向。"""
+    """按距离坡顶高边的随机起跑距离重置 base，并让机身朝向坑坡方向。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -50,12 +52,13 @@ def reset_root_state(
 
     pos = root_states[:, 0:3].clone()
     pos[:, 2] = float(base_height)
-    pos[:, 0] += sample_uniform(
-        torch.tensor(-float(x_noise), device=env.device),
-        torch.tensor(float(x_noise), device=env.device),
+    runup_distance = sample_uniform(
+        torch.tensor(float(runup_distance_range[0]), device=env.device),
+        torch.tensor(float(runup_distance_range[1]), device=env.device),
         (num_ids,),
         env.device,
     )
+    pos[:, 0] = terrain_progress.ramp_high_progress(env, env_ids=env_ids) - runup_distance
     pos[:, 1] += sample_uniform(
         torch.tensor(-float(y_noise), device=env.device),
         torch.tensor(float(y_noise), device=env.device),
@@ -78,6 +81,17 @@ def reset_root_state(
     vel = torch.zeros(num_ids, 6, device=env.device)
     asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
     asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
+    if not hasattr(env, "_wheel_dog_last_runup_distance"):
+        env._wheel_dog_last_runup_distance = torch.zeros(env.num_envs, device=env.device)
+    env._wheel_dog_last_runup_distance[env_ids] = runup_distance
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "WheelDog/reset_runup_distance": float(runup_distance.mean().item()),
+                "WheelDog/reset_runup_min": float(runup_distance.min().item()),
+                "WheelDog/reset_runup_max": float(runup_distance.max().item()),
+            }
+        )
 
 
 def reset_joints(
