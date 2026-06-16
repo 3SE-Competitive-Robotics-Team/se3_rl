@@ -1,171 +1,127 @@
 ---
 name: remote-dev-se3
-description: 管理 se3_wheel_leg 在 A800 Kubernetes 容器中的代码同步、训练启动、GPU 选择、日志监控、停止任务和 checkpoint 拉取。用户提到 A800、Kubernetes、target-via-phone、远端训练、checkpoint、GPU 或训练日志时使用；台阶任务优先调用 scripts/remote_sync_start_stair.py。
+description: se3_wheel_leg 远程训练运维。当前 codex/xyh 分支只使用 a800 与 gpufree 两台远程训练服务器；不要把 wuyinyun 作为 SSH、代理、训练、checkpoint 拉取或默认示例目标。
+when_to_use: 远程训练 / 训练机 / SSH 隧道 / 训练启动 / 训练日志 / checkpoint / wandb / gpufree / a800 / GPU 机器
+user-invocable: true
 ---
 
-# SE3 远端训练
+# se3_wheel_leg 远程训练机运维
 
-## 基本原则
+当前 `codex/xyh` 分支只使用两台远程训练服务器：
 
-- 台阶训练优先使用 `scripts/remote_sync_start_stair.py`，不要重复手写同步和启动流程。
-- 脚本负责：远端预检查、checkpoint 检查、代码打包同步、`compileall`、训练启动，以及输出日志和 `watch_remote` 指令。
-- 默认环境：
-  - host：`target-via-phone`
-  - namespace：`gczx-project06`
-  - pod：`gpu-8-b6994457c-kv2rj`
-  - project：`/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg`
-- 实际环境与默认值不一致时，通过脚本参数覆盖；不确定 pod 时先查询：
+| SSH 别名 | 环境 | GPU | 默认环境数 | 机器文档 |
+|---|---|---|---:|---|
+| `a800` | 局域网 Kubernetes 容器 | NVIDIA A800 * 4 | 每卡 4096，全局约 16384 | `machines/a800.md` |
+| `gpufree` | gpufree 容器 | NVIDIA L40S * 1 | 单卡 8192 | `machines/gpufree.md` |
 
-```powershell
-ssh target-via-phone "kubectl get pods -n gczx-project06 -o wide"
-```
+`wuyinyun` 不属于当前分支的可用远程训练服务器。遇到历史归档里的 `wuyinyun` 命令时，只能作为旧记录阅读，不能直接运行，也不要把它改写成默认目标。
 
-- 包含引号、管道、正则、变量或多行 Bash 的远端命令必须先 base64 编码，再传给 `kubectl exec`。不要直接拼接多层 PowerShell、SSH 和 Bash 字符串。
-- 不要使用 `pkill -f se3-train`，只停止明确的 PID 或进程组。
+## 先选机器
 
-## 网络分层与 A800 隔离
+远程操作前必须明确目标机器：
 
-- A800/abbtask 是隔离训练环境，不允许直连 GitHub，也不要通过恢复 `17892`、`7897`、`18080` 等 HTTP 代理或 SSH 反向代理让它间接出网。
-- SSH 只作为控制面使用：本机先连接 laptop，再由 laptop 进入 A800/abbtask 或 llm 执行命令、查看日志、启动/停止训练和 Viser 值守。
-- 代码同步的数据面不要走本机到 laptop 的 SSH 传大目录。流程应为：本机 push 到 GitHub，laptop 从 GitHub 拉取；A800/abbtask 需要更新代码时，由 laptop 生成 git bundle 或压缩包，再通过内网 SSH/kubectl cp 放入隔离环境。
-- checkpoint 数据面不要走本机到 laptop 的 SSH 慢链路。流程应为：A800/abbtask 生成 checkpoint，laptop 通过内网从 A800/abbtask 拉取；laptop 再上传到私有 checkpoint 交换仓库 `3SE-Competitive-Robotics-Team/se3_checkpoint_exchange` 的 GitHub Release asset，本机从该仓库下载。
-- checkpoint 交换仓库地址：`https://github.com/3SE-Competitive-Robotics-Team/se3_checkpoint_exchange`。不要把 `.pt` 直接提交进 git 历史，只允许作为 release asset 上传。
-- checkpoint 交换仓库每个 run 使用独立 release/tag，建议 tag 格式为 `run-<YYYYMMDD-HHMMSS>-<task-or-job>`，并附带 `model_N.pt`、`model_N.meta.json` 和必要日志尾部。metadata 至少记录任务名、run timestamp、commit、checkpoint iter、来源机器和上传时间，保证后续 sim2sim 或部署可追溯。
-- laptop 上传 checkpoint 示例：
+- `a800`：主力多卡训练。当前台阶训练脚本默认通过 `target-via-phone` 进入 Kubernetes pod `gczx-project06/abbtask`，仓库路径为 `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg`。
+- `gpufree`：L40S 单卡 smoke、短验证和备用训练。每次开机后从控制台刷新 SSH 连接参数，进入后先 `source /root/gpufree-data/se3_env.sh`。
 
-```powershell
-gh release create run-20260615-120000-flat `
-  --repo 3SE-Competitive-Robotics-Team/se3_checkpoint_exchange `
-  --title "run-20260615-120000-flat" `
-  --notes "SE3 checkpoint exchange; see attached metadata."
+具体 IP、pod、路径、CUDA 兼容库和依赖坑以对应 `machines/*.md` 为准。
 
-gh release upload run-20260615-120000-flat `
-  C:\path\to\model_1000.pt `
-  C:\path\to\model_1000.meta.json `
-  --repo 3SE-Competitive-Robotics-Team/se3_checkpoint_exchange `
-  --clobber
-```
+## 源码同步规则
 
-- 本机下载 checkpoint 示例：
+源码变更必须通过 git 同步到远程训练机，禁止用 `rsync`、`scp` 或手工复制覆盖源码文件。
+
+标准流程：
+
+1. 本地完成修改、验证、提交。
+2. `git push` 当前分支。
+3. 远程执行 `git fetch` 后 `git switch` / `git pull --ff-only` 到明确 commit。
+
+A800 pod 访问 GitHub TLS 失败时，用 git bundle 作为 fallback：本地 `git bundle create <name>.bundle HEAD`，传到宿主机和 pod 后在 pod 内 `git fetch /tmp/<name>.bundle HEAD`，仍保持源码通过 git 更新。详细命令见 `machines/a800.md`。
+
+checkpoint、日志、Rerun `.rrd`、summary JSON 等产物可以用 `kubectl cp`、`scp` 或 `rsync` 拉取。
+
+## Windows PowerShell 规则
+
+从 Windows 调远端 bash 时，默认使用 `scripts/remote_bash.ps1` 或专用脚本。不要把含 `&&`、`$()`、`$变量`、管道或多层引号的复杂 bash 直接塞进 PowerShell 双引号字符串。
+
+推荐模板：
 
 ```powershell
-gh release download run-20260615-120000-flat `
-  --repo 3SE-Competitive-Robotics-Team/se3_checkpoint_exchange `
-  --pattern "model_1000.*" `
-  --dir logs\remote_watch\run-20260615-120000-flat
-```
-
-- llm 容器的出网策略按当前任务另行确认；不要因为 llm 可以访问外网，就默认给 A800/abbtask 打开同样链路。
-
-## 远端命令编码
-
-统一使用以下 PowerShell 模板。只修改 `$podScript` 内容：
-
-```powershell
-$podScript = @'
-set -euo pipefail
+$bash = @'
+date
 cd /workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg
-nvidia-smi
-pgrep -af '[s]e3-train|[t]orchrunx|[t]orch.distributed.run' || true
+git status --short --branch
 '@
 
-$podB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($podScript))
-$hostScript = @"
-set -euo pipefail
-kubectl exec -n gczx-project06 gpu-8-b6994457c-kv2rj -- bash -lc 'echo $podB64 | base64 -d | bash'
-"@
-$hostB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hostScript))
-ssh target-via-phone "echo $hostB64 | base64 -d | bash"
+.\scripts\remote_bash.ps1 -HostAlias target-via-phone -ScriptText $bash
 ```
 
-需要查询、停止、清理或复制文件时，将对应 Bash 片段放入 `$podScript`。这样可避免：
+需要进入 Kubernetes pod 时，优先使用仓库已有的 A800 自动化脚本或 `scripts/remote_bash.ps1` 的 pod 参数，不要手写多层 `ssh "kubectl exec ... bash -lc \"...\""`。
 
-- PowerShell 反引号和变量展开。
-- SSH 引号嵌套。
-- Bash `$`、正则、管道和重定向被上层终端提前解释。
-- `kubectl exec -- bash -lc` 的多层转义错误。
+## 训练管理
 
-## 启动台阶训练
-
-在仓库根目录运行：
-
-```powershell
-uv run python scripts/remote_sync_start_stair.py `
-  --task SE3-WheelLegged-Stair-GRU `
-  --load-run base_model `
-  --load-checkpoint model_500\.pt `
-  --iterations 3000 `
-  --run-name <run_name> `
-  --job-name <job_name> `
-  --watch-terrain-level 9
-```
-
-脚本结束时会打印：
-
-- `TRAIN_PID`
-- `TRAIN_LOG`
-- `TRAIN_RUN_DIR`
-- 对应的 `watch_remote_train_local.py` 指令
-
-## 指定 GPU
-
-保留 `--gpu-ids all`，通过 `--cuda-visible-devices` 指定物理 GPU：
-
-```powershell
-uv run python scripts/remote_sync_start_stair.py `
-  ... `
-  --gpu-ids all `
-  --cuda-visible-devices 1,2,3,4,5,6,7
-```
-
-脚本会检查选定 GPU 的显存占用。未指定 `--cuda-visible-devices` 时，脚本要求没有其他活跃训练进程。
-
-## 查看状态
-
-将以下内容放入 base64 模板的 `$podScript`：
+训练必须在 tmux session 或现有自动化脚本托管的后台任务中启动；禁止用裸 `nohup ... &`。停止训练时必须杀到实际 Python 子进程：
 
 ```bash
-set +e
-nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader
-pgrep -af '[s]e3-train|[t]orchrunx|[t]orch.distributed.run' || true
-grep -E 'Learning iteration|Mean reward|Stair/diag_ctbc_kff|Traceback|RuntimeError|ValueError' \
-  /tmp/train_<job_name>.log | tail -160 || true
+pkill -f "se3-train"
 ```
 
-优先使用启动脚本输出的 `watch_remote_train_local.py` 指令查看 checkpoint。
+环境数规则：
 
-## 停止训练
+| 服务器 | `--gpu-ids` | `--env.scene.num-envs` |
+|---|---|---:|
+| `a800` | `all` | 每卡 4096，除非实验脚本显式覆盖 |
+| `gpufree` | `0` | 8192 |
 
-将以下内容放入 base64 模板的 `$podScript`，只停止对应任务：
+需要 smoke 或短 benchmark 时，在命令里显式降低 `--env.scene.num-envs`。
 
-```bash
-if [ -f /tmp/train_<job_name>.pid ]; then
-  pid=$(cat /tmp/train_<job_name>.pid)
-  pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
-  kill -TERM -- "-$pgid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-fi
-```
+## A800 台阶训练入口
 
-停止后检查 `nvidia-smi`。如果只剩 zombie，不需要处理；如果 GPU 显存仍被占用，定位同一 PGID 的非 zombie 子进程后再清理。
-
-## 拉取 checkpoint
+当前台阶训练优先使用仓库脚本：
 
 ```powershell
-$run = "<run>"
-$checkpoint = "<model_N.pt>"
-$remoteProject = "/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg"
-$hostTmp = "/tmp/${run}_${checkpoint}"
-$localDir = "logs\remote_watch\$run"
-
-New-Item -ItemType Directory -Force -Path $localDir | Out-Null
-ssh target-via-phone "kubectl cp gczx-project06/gpu-8-b6994457c-kv2rj:$remoteProject/logs/rsl_rl/se3_wheel_leg/$run/$checkpoint $hostTmp -n gczx-project06"
-scp "target-via-phone:$hostTmp" "$localDir\$checkpoint"
-ssh target-via-phone "rm -f $hostTmp"
+uv run python scripts\remote_sync_start_stair.py
 ```
 
-## 必查项
+脚本默认目标：
 
-- checkpoint 必须用 `sort -V` 排序。
-- CUDA compat/toolkit 路径由启动脚本检查，不要绕过检查直接启动。
-- 无外网训练使用 `WANDB_MODE=offline`，否则可能不保存 checkpoint。
-- 启动后同时验证进程、GPU 利用率、iteration 和 `diag_ctbc_kff`，不能只看 PID。
+| 参数 | 默认值 |
+|---|---|
+| entry host | `target-via-phone` |
+| namespace | `gczx-project06` |
+| pod | `abbtask` |
+| remote project | `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg` |
+| CUDA compat | `/workspace/cudacompat/usr/local/cuda-12.6/compat` |
+| CUDA toolkit lib | `/usr/local/cuda-12.2/lib64` |
+
+A800 容器必须让 compat `libcuda.so` 优先生效。训练日志里必须确认 `Driver 12.6` 且没有 `CUDA Graphs disabled`；否则立即停训并修正库路径。
+
+## gpufree 入口
+
+gpufree 按量计费，默认把 GPU 时间看成最贵资源。代码修改、文档整理、依赖安装、CPU smoke 和产物同步尽量在本地或无卡模式完成；只有 GPU smoke、吞吐 benchmark、长训和 checkpoint 评估需要开启 L40S。
+
+常用命令见 `machines/gpufree.md`。训练前必须加载环境入口：
+
+```bash
+source /root/gpufree-data/se3_env.sh
+```
+
+## Viser 值守
+
+当前台阶远程训练不在 A800/abbtask 上开 MJLab Viser。值守按 `docs/laptop_viser_play.md` 执行：
+
+- A800 只负责训练。
+- Windows laptop 运行 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`。
+- 开发机只转发 laptop 的 8080 端口并打开浏览器。
+- 验收时必须确认台阶是真实 MuJoCo 碰撞地形，机器人不会穿过台阶。
+
+非台阶本地调试可继续用 `se3-play --viewer viser`。
+
+## Checkpoint 和回放
+
+checkpoint 文件名必须按数字排序：
+
+```bash
+find logs/rsl_rl/se3_wheel_leg -name "model_*.pt" | sort -V | tail -1
+```
+
+远端回放和 Rerun 录制优先使用已安装入口，例如 `.venv/bin/se3-sim2sim` 或 `.venv/bin/python`，避免裸 `uv run` 在录制时触发联网同步。A800 pod 的可选 `.done` / `.failed` marker 缺一个时，`kubectl cp` 的 `Cannot stat` warning 通常无害；以主产物存在且 `.done`/`.failed` 至少一个存在为准。

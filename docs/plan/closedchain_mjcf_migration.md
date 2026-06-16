@@ -31,7 +31,7 @@ default_base_height = 0.22 m
 
 1. 训练默认模型切换为解析四连杆等效开树 MJCF；sim2sim 默认模型切换为真实闭链 OBB 模型，当前实验阶段默认不启用气弹簧常力。
 2. 旧开链 XML 文件保留，训练端和 sim2sim 端保留显式 `openchain` variant。
-3. policy 仍为 6 维动作，actor 观测维度保持 32 维。
+3. policy 仍为 6 维动作，actor 观测维度为当前统一的 34 维。
 4. 腿部 action 和 actor 腿部观测改为主动杆坐标。
 5. action 顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`。
 6. `LF/RF` 对应 `lf0_Joint/rf0_Joint`，`LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。
@@ -151,7 +151,7 @@ default_base_height = 0.22 m
 
 验收：
 
-- actor 观测仍是 32 维。
+- actor 观测仍是当前统一的 34 维。
 - action 仍是 6 维。
 - `JointGroup.LEGS` 不再指向 `lf1/rf1`。
 - 所有用到输出膝角的奖励、终止和诊断显式使用输出组。

@@ -11,11 +11,26 @@
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
 | `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，从平地 GRU checkpoint warm start |
+| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` | 倒地自启 discovery 阶段，从 recovery 配置派生 |
+| `recovery_finetune/` | `SE3-WheelLegged-Recovery-FineTune-GRU` | 倒地自启 fine-tune 阶段，使用台阶/恢复状态缓存继续训练 |
+| `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
-| `stair/` | `SE3-WheelLegged-Stair-GRU` | 倒金字塔台阶 CTBC fine-tune；前 400 轮平地走路，之后进入台阶课程 |
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
+
+## 台阶任务
+
+`stair/` 是当前台阶训练入口，注册 `SE3-WheelLegged-Stair-GRU`，并保留 `SE3-WheelLegged-Stair-GRU-TrainView` 作为历史 watch/play 别名。正式远程训练和本地值守脚本默认使用原始 task id；只有需要兼容旧 watch 流程时才显式使用 `*-TrainView`。
+
+台阶任务的核心差异集中在 `src/se3_train/tasks/stair/`：
+
+- `env_cfg.py` 使用倒金字塔台阶地形 `BoxInvertedPyramidStairsTerrainCfg`，当前训练 MJCF 为 `serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml`。
+- `state.py`、`events.py` 和 `observations.py` 管理 CTBC 前馈状态机；actor 仍为 34 维观测，最后 3 维扩展槽在台阶任务中输出 CTBC 左右摆动相位和触发位。
+- `rewards.py`、`curriculums.py` 提供台阶爬升奖励、地形等级课程和诊断项。
+- `env_cfg.py` 同时接入 recovery replay 状态缓存，用于提升台阶训练中跌倒后的恢复覆盖率。
+
+当前 `codex/xyh` 台阶远程训练的 Viser 值守不在 A800/abbtask 上运行 MJLab play，而是按 `docs/laptop_viser_play.md` 在 Windows laptop 上运行 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`。
 
 ## 单个 task 的目录结构
 
@@ -110,9 +125,27 @@ git diff --check
 
 ```bash
 uv run python - <<'PY'
-from se3_train.tasks import flat, jump_finetune, jump_pretrain, recovery, rough, stair
+from se3_train.tasks import (
+    flat,
+    jump_finetune,
+    jump_pretrain,
+    recovery,
+    recovery_discovery,
+    recovery_finetune,
+    rough,
+    stair,
+)
 
-for module in (rough, flat, recovery, jump_pretrain, jump_finetune, stair):
+for module in (
+    rough,
+    flat,
+    recovery,
+    recovery_discovery,
+    recovery_finetune,
+    stair,
+    jump_pretrain,
+    jump_finetune,
+):
     cfg = module.env_cfg(play=True)
     rl = module.rl_cfg(smoke=True)
     print(module.TASK_ID, len(cfg.observations["actor"].terms), rl.max_iterations)

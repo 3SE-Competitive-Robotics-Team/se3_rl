@@ -1,14 +1,14 @@
 # 控制频率基准
 
-本项目默认采用 **500 Hz 物理仿真 + 100 Hz policy/action 更新**：
+本项目默认采用 **200 Hz 物理仿真 + 50 Hz policy/action 更新**：
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
-| `RobotConfig.sim_dt` | `0.002 s` | MuJoCo / MJLab 物理积分步长，500 Hz |
-| `RobotConfig.control_decimation` | `5` | 每 5 个物理步执行一次 policy action |
-| `RobotConfig.control_dt` | `0.010 s` | policy/action 更新周期，100 Hz |
+| `RobotConfig.sim_dt` | `0.005 s` | MuJoCo / MJLab 物理积分步长，200 Hz |
+| `RobotConfig.control_decimation` | `4` | 每 4 个物理步执行一次 policy action |
+| `RobotConfig.control_dt` | `0.020 s` | policy/action 更新周期，50 Hz |
 
-这个频率基准沿用 SerialLeg 源训练仓库的设置：`0.002 s * 5 = 0.010 s`。因此 policy 以 100 Hz 更新，每个 policy step 执行 5 个 MuJoCo / MJLab 物理步。
+这个频率基准对齐 Unitree 官方 `unitree_rl_mjlab`、`unitree_rl_lab` 和 `unitree_rl_gym` 的常见训练配置：`0.005 s * 4 = 0.020 s`。因此 policy 仍以 50 Hz 更新，但每个 policy step 只执行 4 个 MuJoCo / MJLab 物理步。
 
 ## 统一来源
 
@@ -16,7 +16,7 @@
 
 当前约定：
 
-- 训练端：`src/se3_train/env_cfg.py` 读取 `_ROBOT_DEFAULTS.control_decimation` 和 `_ROBOT_DEFAULTS.sim_dt`。
+- 训练端：各 `src/se3_train/tasks/<task>/env_cfg.py` 通过共享机器人配置读取 `_ROBOT_DEFAULTS.control_decimation` 和 `_ROBOT_DEFAULTS.sim_dt`。
 - sim2sim：`src/se3_sim2sim/config.py` 和 CLI 默认值读取 `se3_shared.RobotConfig`。
 - 奖励/课程中按秒换算 step 时，优先读取环境实际 `step_dt`；没有 `step_dt` 时才用 `physics_dt * decimation` 兜底。
 
@@ -25,7 +25,7 @@
 如果后续需要重新调整控制频率，必须同步检查：
 
 1. `src/se3_shared/robot.py` 的 `sim_dt`、`control_decimation`。
-2. `src/se3_train/env_cfg.py` 是否仍从共享配置读取物理步长和 decimation。
+2. `src/se3_train/tasks/<task>/env_cfg.py` 是否仍从共享配置读取物理步长和 decimation。
 3. `src/se3_sim2sim` 的 CLI 帮助文本、运行日志和配置导出。
 4. `src/se3_train/mdp` 下所有按秒换算 step 的奖励、课程、状态机逻辑。
 5. `docs/` 和真机 runtime 文档中的频率说明。

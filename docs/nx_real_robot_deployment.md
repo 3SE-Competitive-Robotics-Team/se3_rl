@@ -5,7 +5,7 @@
 ## 当前目标
 
 - 阶段一只在 NX 上部署 `SE3-WheelLegged-Recovery-GRU` 倒地自启 policy。
-- NX 只负责 policy 推理和上层状态机，通过 USB CDC 以 100 Hz 给 STM32 发送 6 维 raw policy action。
+- NX 只负责 policy 推理和上层状态机，通过 USB CDC 以 50 Hz 给 STM32 发送 6 维 raw policy action。
 - STM32 继续负责 CAN、电机闭环、急停、限幅、限速、通信超时和底层安全。
 - 阶段一不做 policy 切换；runtime 只运行 recovery 网络。
 - 训练端、sim2sim 端和真机端必须沿用同一份 policy contract：动作顺序、观测布局、默认姿态、动作缩放和动作延迟不能漂移。
@@ -56,7 +56,7 @@ uv run se3-export-nx-policy \
 uv run se3-nx-recovery \
   --checkpoint logs/deploy/model_recovery_gru.npz \
   --port /dev/ttyUSB0 \
-  --rate-hz 100
+  --rate-hz 50
 ```
 
 不接 STM32 时先跑 dry-run，确认 checkpoint、GRU hidden 和 34 维观测拼装能正常推理：
@@ -72,7 +72,7 @@ just nx-recovery-dry-run
 - `src/se3_deploy/observation.py`：真机 recovery-only 34 维 actor 观测拼装。
 - `src/se3_deploy/export_npz.py`：把 PyTorch checkpoint 导出为 NX 轻量 NumPy 权重。
 - `src/se3_deploy/numpy_policy.py`：不依赖 torch 的 GRU actor NumPy 推理后端。
-- `src/se3_deploy/recovery_runtime.py`：100 Hz recovery policy 主循环。
+- `src/se3_deploy/recovery_runtime.py`：50 Hz recovery policy 主循环。
 
 当前 NX 环境检查结果：JetPack R36.4.3，系统 Python 3.10.12，已在用户目录安装 `uv` 和 Python 3.11.15。由于 PyTorch cu128 wheel 对 NX 阶段一过重，当前实测路线为本地导出 `logs/deploy/model_recovery_gru.npz`，NX 上只安装 `numpy` / `pydantic` 并用 NumPy 后端推理。NX 测试目录：
 
@@ -232,7 +232,7 @@ scp logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt \
 - USB CDC 联调：STM32 上行 policy 顺序物理状态，NX 下行 6 维 raw policy action。
 - NX 上层状态机：禁能、recovery-only policy 运行、GRU hidden reset、故障/人工停止回退；阶段一不实现多 policy 切换。
 - STM32 底层安全状态机：CAN、电机闭环、急停、限幅、限速、通信超时和安全回退。
-- 频率与延迟对齐：policy/action 默认 100 Hz（`control_dt=0.01 s`，`control_decimation=5`），动作延迟和 actuator 限幅必须显式记录。
+- 频率与延迟对齐：policy/action 默认 50 Hz（`control_dt=0.02 s`，`control_decimation=4`），动作延迟和 actuator 限幅必须显式记录。
 - 日志与回放：动态日志继续优先使用 Rerun，便于和 sim2sim 对齐排查。
 
 不要在 NX runtime 或 STM32 firmware 中各自发明一套关节顺序、动作缩放常量或控制频率；应以 `se3_shared` 作为部署 contract 的单一来源，避免部署端和训练端漂移。当前频率基准见 `docs/control_frequency.md`。

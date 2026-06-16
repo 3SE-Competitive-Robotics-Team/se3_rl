@@ -161,8 +161,8 @@ class RobotConfig(BaseModel):
         45.0,
     )
     action_clip: float | None = 1.0
-    sim_dt: float = 0.002
-    control_decimation: int = 5
+    sim_dt: float = 0.005
+    control_decimation: int = 4
     action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
     termination: Termination = Termination()
 

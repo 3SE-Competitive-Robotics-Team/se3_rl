@@ -20,7 +20,7 @@ Recovery V2 改为两阶段训练：
 3. 第二阶段不再依赖“随机欧拉角 + 高度修正”假装真实倒地，而是使用离线物理 settle 后的状态缓存。
 4. `pose_type`、`cache_split`、`reset_source` 只能用于 reset、日志和评估，不能进入 actor observation。
 5. 旧任务 `SE3-WheelLegged-Recovery-GRU` 保留为 baseline，不直接覆盖。
-6. 每次训练仍必须显式开启 MJLab Viser 值守，确认姿态、接触和奖励面板。
+6. 台阶远程训练按 `docs/laptop_viser_play.md` 做 laptop Viser 值守；非台阶本地调试可用 `se3-play --viewer viser` 确认姿态、接触和奖励面板。
 
 ## 任务拆分
 
@@ -41,13 +41,13 @@ Recovery V2 改为两阶段训练：
 [LF, LB, RF, RB, l_wheel, r_wheel]
 ```
 
-actor 观测仍为 32 维，沿用当前 recovery/flat/jump 合同：
+actor 观测为当前统一的 34 维，沿用 recovery/flat/jump/stair 共享合同：
 
 ```text
 base_ang_vel        3
 projected_gravity   3
 commands            5   [vx, yaw_rate, pitch, roll, base_height]
-leg_joint_pos       4
+leg_joint_pos       6
 leg_joint_vel       4
 wheel_pos_zero      2
 wheel_vel           2
@@ -55,7 +55,7 @@ last_actions        6
 jump_commands       3
 ```
 
-部署端 `se3-nx-recovery` 和 `se3-sim2sim` 不应因为本方案改变输入输出维度。
+当前实现中 `leg_joint_pos` 展开为 6 维 `[sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]`，因此 actor 总维度为 34。部署端 `se3-nx-recovery` 和 `se3-sim2sim` 不应因为本方案改变输入输出维度。
 
 ## 阶段一：Discovery
 

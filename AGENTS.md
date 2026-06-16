@@ -80,19 +80,11 @@ just clean       # 清理 logs/ wandb/ replays/
 
 如需自定义参数，仍可直接用原始 `uv run` 命令（见 `justfile` 内对应配方）。
 
-### MJLab Viser 训练值守（必开）
+### Viser 训练值守（必开）
 
-每次启动任何 `se3-train` 训练或 smoke 训练时，必须同步显式开启一个 MJLab Viser viewer（口语中也可能写作 visor）窗口，用肉眼检查机器人姿态、接触和奖励/诊断面板。不要只看 W&B 曲线或终端日志，也不要依赖 `--viewer auto`；必须在命令里写 `--viewer viser`。
+当前 `codex/xyh` 台阶训练的值守方案以 `docs/laptop_viser_play.md` 为准：A800/abbtask 只负责训练，Windows laptop 运行 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`，开发机只转发 laptop 的 8080 端口并打开浏览器。台阶值守必须确认 Viser 里真实台阶参与 MuJoCo 接触，不能用显示层 overlay 代替碰撞地形。
 
-```bash
-# 有 checkpoint 时，观察训练策略
-uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file <checkpoint> --viewer viser --num-envs 1
-
-# 新 run 尚未保存 checkpoint 时，先打开同任务环境确认模型和接触；首个 checkpoint 出现后立刻切到 trained policy
-uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 1
-```
-
-Viser 默认使用 `http://localhost:8080`。远程训练时必须把 8080 端口转发到本地并确认浏览器能打开 Controls / Rewards / Visualization 面板；如果没有可见 Viser 窗口，本次训练视为未完成启动检查。
+非台阶任务或本地临时调试仍可用 `se3-play --viewer viser` 打开对应 task/checkpoint，但当前台阶远程训练不要在 A800/abbtask 上启动 MJLab Viser。没有可见 Viser 窗口或 laptop 值守未通过 `docs/laptop_viser_play.md` 的验收项，本次训练视为未完成启动检查。
 
 跳跃任务专用命令（just 暂未封装，直接用 uv run）：
 
@@ -176,7 +168,7 @@ Smoke 模式特点：
 
 ### 可视化
 - **动态日志/回放**（sim2sim 轨迹、训练曲线、实时诊断）：必须使用 `rerun-sdk`，禁止 matplotlib
-- **训练值守**：每次 `se3-train` 启动后必须显式开启 MJLab Viser viewer（`se3-play --viewer viser`），并确认浏览器窗口可见；远程训练必须转发默认 8080 端口。
+- **训练值守**：当前台阶远程训练按 `docs/laptop_viser_play.md` 值守，A800/abbtask 只训练，Windows laptop 用 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain` 可视化并提供 8080；非台阶本地调试可继续用 `se3-play --viewer viser`。
 - **静态分析小工具**（参数曲线、几何示意图、包络线等一次性绘图脚本）：允许使用 matplotlib，放在 `scripts/` 目录，参考 `scripts/plot_tn_envelope.py`
 - 可视化是仓库长期建设的一部分，必须严肃对待
 
@@ -208,11 +200,15 @@ se3_train/
 ├── tasks/           # 每个训练任务的最小独立单元
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-GRU
+│   ├── recovery/    # SE3-WheelLegged-Recovery-GRU
+│   ├── recovery_discovery/ # 倒地自启 discovery 阶段
+│   ├── recovery_finetune/  # 倒地自启 fine-tune 阶段
+│   ├── stair/       # SE3-WheelLegged-Stair-GRU，CTBC 倒金字塔台阶任务
 │   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
 │   └── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
-    ├── observations.py     # 32 维 actor 观测（含跳跃扩展）
+    ├── observations.py     # 34 维 actor 观测（含跳跃/台阶扩展槽）
     ├── rewards.py          # 行走奖励函数
     ├── jump_rewards.py     # 跳跃专属奖励函数
     ├── commands.py         # 速度+高度指令生成器
@@ -239,19 +235,21 @@ se3_jump_to/
 
 轨迹文件字段：`base_pos`、`base_vel`、`q_ref`、`q_vel`（关节角速度，用于 RSI）、`t_stance`、`dt` 等。
 
-### 观测空间（32 维 actor）
+### 观测空间（34 维 actor）
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
 [6:11]  commands × (2.0, 0.25, 5.0, 5.0, 5.0)
-[11:15] leg_joint_pos（相对默认姿态）
-[15:19] leg_joint_vel × 0.25
-[19:21] wheel_pos_zero（固定为 0；轮子连续转角不进入 policy）
-[21:23] wheel_vel × 0.05
-[23:29] last_actions
-[29:32] jump_commands  [jump_flag, jump_target_height, jump_phase]
+[11:17] leg_joint_pos [sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]
+[17:21] leg_joint_vel × 0.25
+[21:23] wheel_pos_zero（固定为 0；轮子连续转角不进入 policy）
+[23:25] wheel_vel × 0.05
+[25:31] last_actions
+[31:34] jump_commands  [jump_flag, jump_target_height, jump_phase]
                         jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
+
+台阶任务复用最后 3 维扩展槽输出 CTBC 左右摆动相位和触发位，实际观测项由 `src/se3_train/tasks/stair/observations.py` 定义。
 
 critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和 base height 特权观测。
 
@@ -363,7 +361,7 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 
 ### 观测维度不对齐
 
-跳跃任务观测为 32 维（行走基模为 31 维）。从行走 checkpoint fine-tune 跳跃任务时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
+当前 actor 观测统一为 34 维。旧的 31/32 维 checkpoint 只能作为权重迁移来源；从旧 checkpoint fine-tune 到当前任务时，需要 `strict=False` 加载，输入层按当前 34 维观测随机初始化，其余权重复用。
 
 ## 常见错误手册
 

@@ -31,7 +31,7 @@ class StairClimbState:
         force_threshold_n: float = 30.0,
         ff_amplitude_rad: float = 0.3,
         ff_period_s: float = 0.6,
-        control_dt: float = 0.01,
+        control_dt: float = 0.02,
         ff_start_iter: int = 0,
         ann_start_iter: int = 200,
         ann_end_iter: int = 800,
