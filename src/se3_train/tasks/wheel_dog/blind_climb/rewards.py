@@ -95,7 +95,13 @@ def progress_forward(
         final_success_distance=success_distance,
     )
     normalized = progress_x / torch.clamp(target_progress, min=1.0e-6)
-    return torch.clamp(normalized, min=0.0, max=float(max_progress_ratio)) * active.float() * gate
+    corridor = terrain_progress.corridor_gate(env)
+    return (
+        torch.clamp(normalized, min=0.0, max=float(max_progress_ratio))
+        * active.float()
+        * gate
+        * corridor
+    )
 
 
 def obstacle_lift(
@@ -126,11 +132,13 @@ def obstacle_lift(
     )
     in_window = (progress_x > start_progress) & (progress_x < end_progress)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    corridor = terrain_progress.corridor_gate(env)
     return (
         torch.clamp(vz, min=0.0, max=float(max_vertical_velocity))
         * active.float()
         * in_window.float()
         * gate
+        * corridor
     )
 
 
@@ -152,7 +160,21 @@ def success_progress(
         env,
         final_success_distance=success_distance,
     )
-    return (progress_x > target_progress).float() * active.float() * gate
+    in_corridor = terrain_progress.within_corridor(env)
+    return (progress_x > target_progress).float() * in_corridor.float() * active.float() * gate
+
+
+def lateral_corridor(
+    env: ManagerBasedRlEnv,
+    soft_half_width: float = terrain_progress.CORRIDOR_SOFT_HALF_WIDTH,
+    hard_half_width: float = terrain_progress.CORRIDOR_HARD_HALF_WIDTH,
+) -> torch.Tensor:
+    """惩罚偏离中心通道，防止沿全局地面绕开坑坡。"""
+    abs_y = torch.abs(terrain_progress.lateral_offset(env))
+    soft = float(soft_half_width)
+    hard = max(float(hard_half_width), soft + 1.0e-6)
+    excess = torch.clamp(abs_y - soft, min=0.0) / (hard - soft)
+    return torch.clamp(torch.square(excess), max=4.0)
 
 
 def run_stuck(
@@ -419,6 +441,7 @@ __all__ = [
     "joint_pos_penalty",
     "joint_power",
     "joint_torques_l2",
+    "lateral_corridor",
     "lin_vel_z_l2",
     "obstacle_lift",
     "progress_forward",

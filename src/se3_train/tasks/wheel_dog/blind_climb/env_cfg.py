@@ -241,6 +241,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-1.0,
             params={"soft_limit_deg": 20.0, "hard_limit_deg": 50.0, "max_penalty": 4.0},
         ),
+        "lateral_corridor": RewardTermCfg(
+            func=rewards.lateral_corridor,
+            weight=-4.0,
+            params={
+                "soft_half_width": 0.35,
+                "hard_half_width": 0.75,
+            },
+        ),
         "joint_torques_l2": RewardTermCfg(
             func=rewards.joint_torques_l2,
             weight=-5.0e-6,
@@ -324,6 +332,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=terminations.root_height_bounds,
             time_out=False,
             params={"min_relative_height": -0.08, "max_relative_height": 2.0},
+        ),
+        "corridor_bounds": TerminationTermCfg(
+            func=terminations.corridor_bounds,
+            time_out=False,
+            params={"hard_half_width": 0.75},
         ),
         "nonfinite_state": TerminationTermCfg(
             func=terminations.nonfinite_state,
@@ -419,6 +432,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "top_sample_min_level": 35,
                     "high_level_threshold": 35,
                     "target_level_threshold": 39,
+                    "success_half_width": 0.55,
                 },
             ),
             "command_vel": CurriculumTermCfg(

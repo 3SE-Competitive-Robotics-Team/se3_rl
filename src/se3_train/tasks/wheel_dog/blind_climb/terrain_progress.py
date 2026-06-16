@@ -23,6 +23,15 @@ _SPEC = GapRampFacilitySpec()
 POST_RAMP_RUNOUT = 1.0
 """到达坡底后仍需继续前进的距离。"""
 
+CORRIDOR_SOFT_HALF_WIDTH = 0.35
+"""中心通道软半宽；超过后开始惩罚横向绕路。"""
+
+CORRIDOR_SUCCESS_HALF_WIDTH = 0.55
+"""有效完成判定的中心通道半宽。"""
+
+CORRIDOR_HARD_HALF_WIDTH = 0.75
+"""中心通道硬半宽；超过后终止 episode。"""
+
 
 def _lerp_scalar(value_range: tuple[float, float], progress: float) -> float:
     start, end = value_range
@@ -88,6 +97,40 @@ def obstacle_window(
     return start, end
 
 
+def lateral_offset(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """返回 base_link 相对设施中心线的横向偏移。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    robot = env.scene["robot"]
+    offset = robot.data.root_link_pos_w[env_ids, 1] - env.scene.env_origins[env_ids, 1]
+    return torch.nan_to_num(offset, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def corridor_gate(
+    env: ManagerBasedRlEnv,
+    soft_half_width: float = CORRIDOR_SOFT_HALF_WIDTH,
+    hard_half_width: float = CORRIDOR_HARD_HALF_WIDTH,
+    env_ids: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """返回中心通道门控，中心为 1，硬边界外为 0。"""
+    abs_y = torch.abs(lateral_offset(env, env_ids=env_ids))
+    soft = float(soft_half_width)
+    hard = max(float(hard_half_width), soft + 1.0e-6)
+    return torch.clamp((hard - abs_y) / (hard - soft), min=0.0, max=1.0)
+
+
+def within_corridor(
+    env: ManagerBasedRlEnv,
+    half_width: float = CORRIDOR_SUCCESS_HALF_WIDTH,
+    env_ids: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """判断 base_link 是否仍在有效中心通道内。"""
+    return torch.abs(lateral_offset(env, env_ids=env_ids)) <= float(half_width)
+
+
 def current_difficulty(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None = None,
@@ -126,11 +169,17 @@ def _lerp_tensor(value_range: tuple[float, float], progress: torch.Tensor) -> to
 
 
 __all__ = [
+    "CORRIDOR_HARD_HALF_WIDTH",
+    "CORRIDOR_SOFT_HALF_WIDTH",
+    "CORRIDOR_SUCCESS_HALF_WIDTH",
     "FINAL_SUCCESS_DISTANCE",
+    "corridor_gate",
     "current_difficulty",
     "current_success_distance",
     "current_terrain_levels",
+    "lateral_offset",
     "obstacle_window",
     "ramp_high_progress",
     "ramp_low_progress",
+    "within_corridor",
 ]

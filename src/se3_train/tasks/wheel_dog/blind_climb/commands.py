@@ -152,6 +152,11 @@ class DogVelocityCommandTerm(CommandTerm):
         ramp_high_x = terrain_progress.ramp_high_progress(self._env)
         ramp_low_x = terrain_progress.ramp_low_progress(self._env)
         difficulty = terrain_progress.current_difficulty(self._env)
+        lateral_offset = terrain_progress.lateral_offset(self._env)
+        abs_lateral_offset = torch.abs(lateral_offset)
+        in_corridor = terrain_progress.within_corridor(self._env)
+        out_of_bounds = abs_lateral_offset > terrain_progress.CORRIDOR_HARD_HALF_WIDTH
+        success = (progress_x > target_progress) & in_corridor
         obstacle_window = active & (progress_x > obstacle_start) & (progress_x < obstacle_end)
         pre_obstacle_window = active & (progress_x < obstacle_start)
         early_takeoff = pre_obstacle_window & (vz_w > 0.25)
@@ -199,9 +204,7 @@ class DogVelocityCommandTerm(CommandTerm):
                 "WheelDog/diag_yaw_error_abs": float(torch.abs(yaw_err).mean().item()),
                 "WheelDog/diag_base_height": float(height.mean().item()),
                 "WheelDog/diag_blind_climb_progress_x": float(progress_x.mean().item()),
-                "WheelDog/diag_blind_climb_success_ratio": float(
-                    (progress_x > target_progress).float().mean().item()
-                ),
+                "WheelDog/diag_blind_climb_success_ratio": float(success.float().mean().item()),
                 "WheelDog/diag_current_success_distance": float(target_progress.mean().item()),
                 "WheelDog/diag_ramp_high_progress_x": float(ramp_high_x.mean().item()),
                 "WheelDog/diag_ramp_low_progress_x": float(ramp_low_x.mean().item()),
@@ -217,6 +220,9 @@ class DogVelocityCommandTerm(CommandTerm):
                     pre_obstacle_window,
                 ),
                 "WheelDog/diag_early_takeoff_ratio": float(early_takeoff.float().mean().item()),
+                "WheelDog/diag_lateral_offset_abs": float(abs_lateral_offset.mean().item()),
+                "WheelDog/diag_in_corridor_ratio": float(in_corridor.float().mean().item()),
+                "WheelDog/diag_out_of_corridor_ratio": float(out_of_bounds.float().mean().item()),
                 "WheelDog/diag_terrain_level": terrain_level,
                 "WheelDog/diag_high_level_ratio": high_level_ratio,
                 "WheelDog/diag_target_level_ratio": target_level_ratio,

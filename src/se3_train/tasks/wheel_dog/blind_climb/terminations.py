@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.tasks.wheel_dog.blind_climb import terrain_progress
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -99,6 +100,14 @@ def root_height_bounds(
     return (rel_height < float(min_relative_height)) | (rel_height > float(max_relative_height))
 
 
+def corridor_bounds(
+    env: ManagerBasedRlEnv,
+    hard_half_width: float = terrain_progress.CORRIDOR_HARD_HALF_WIDTH,
+) -> torch.Tensor:
+    """base_link 离开中心通道时终止，避免绕过坑坡拿奖励。"""
+    return torch.abs(terrain_progress.lateral_offset(env)) > float(hard_half_width)
+
+
 class BodyContactDelayed:
     """非轮子 body 连续触地一段时间后终止。"""
 
@@ -154,6 +163,7 @@ __all__ = [
     "bad_orientation_delayed",
     "body_contact",
     "body_contact_delayed",
+    "corridor_bounds",
     "low_base_height_delayed",
     "nonfinite_state",
     "root_height_bounds",

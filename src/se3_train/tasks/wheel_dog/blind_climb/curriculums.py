@@ -47,6 +47,7 @@ def terrain_levels(
     top_sample_min_level: int = 35,
     high_level_threshold: int = 35,
     target_level_threshold: int = 39,
+    success_half_width: float = terrain_progress.CORRIDOR_SUCCESS_HALF_WIDTH,
 ) -> dict[str, torch.Tensor]:
     """按盲爬完成度推进地形难度。"""
     terrain = env.scene.terrain
@@ -93,6 +94,9 @@ def terrain_levels(
     healthy = (rel_height > float(healthy_height_margin)) & (
         tilt < torch.deg2rad(torch.tensor(float(healthy_tilt_limit_deg), device=env.device))
     )
+    lateral_offset = terrain_progress.lateral_offset(env, env_ids=env_ids)
+    in_corridor = torch.abs(lateral_offset) <= float(success_half_width)
+    healthy = healthy & in_corridor
     move_up = (progress_x > current_success) & healthy
     move_down = (progress_x < target_progress) & ~move_up
     num_rows = int(terrain.terrain_origins.shape[0])
@@ -133,6 +137,8 @@ def terrain_levels(
         "success_progress_x": current_success.mean(),
         "target_progress_x": target_progress.mean(),
         "healthy_ratio": healthy.float().mean(),
+        "in_corridor_ratio": in_corridor.float().mean(),
+        "lateral_offset_abs": torch.abs(lateral_offset).mean(),
         "move_up_ratio": move_up.float().mean(),
         "move_down_ratio": move_down.float().mean(),
         "global_terrain_level": all_levels.float().mean(),
