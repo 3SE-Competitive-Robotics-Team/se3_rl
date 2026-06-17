@@ -182,9 +182,12 @@ def remote_pod_shell(args: argparse.Namespace, shell_script: str, *, timeout: fl
 def latest_remote_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
     script = (
         f"cd {shlex.quote(args.remote_project)}\n"
-        f"find {shlex.quote(args.remote_log_dir + '/' + args.run_dir)} "
-        "-maxdepth 1 -name 'model_*.pt' -printf '%f\\t%s\\t%T@\\n' "
-        "| sort -V | tail -1\n"
+        f"for f in {shlex.quote(args.remote_log_dir + '/' + args.run_dir)}/model_*.pt; do\n"
+        '  [ -f "$f" ] || continue\n'
+        '  base="$(basename "$f")"\n'
+        '  [[ "$base" =~ ^model_[0-9]+\\.pt$ ]] || continue\n'
+        '  printf \'%s\\t%s\\t%s\\n\' "$base" "$(stat -c%s "$f")" "$(stat -c%Y "$f")"\n'
+        "done | sort -V | tail -1\n"
     )
     output = remote_pod_shell(args, script, timeout=120.0).strip()
     if not output:

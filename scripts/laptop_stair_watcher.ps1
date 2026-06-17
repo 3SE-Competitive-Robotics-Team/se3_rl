@@ -38,18 +38,18 @@ $env:TMP = $TempRoot
 
 function Invoke-A800HostBash([string]$ScriptText) {
   $normalized = $ScriptText -replace "`r`n", "`n"
-  $normalized | & ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o IPQoS=none a800 "timeout 180s bash -s"
+  $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
+  $remote = "printf '%s' '$payload' | base64 -d | timeout 180s bash -s"
+  & ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o IPQoS=none a800 $remote
   if ($LASTEXITCODE -ne 0) { throw "a800 host command failed: $LASTEXITCODE" }
 }
 
 function Invoke-PodBash([string]$ScriptText, [int]$TimeoutSeconds = 60) {
   $normalized = $ScriptText -replace "`r`n", "`n"
-  $marker = "SE3_POD_SCRIPT_$([Guid]::NewGuid().ToString('N'))"
+  $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
   $hostScript = @"
 set -euo pipefail
-timeout ${TimeoutSeconds}s kubectl exec -i -n $Namespace $Pod -- bash -s <<'$marker'
-$normalized
-$marker
+printf '%s' '$payload' | base64 -d | timeout ${TimeoutSeconds}s kubectl exec -i -n $Namespace $Pod -- bash -s
 "@
   Invoke-A800HostBash $hostScript
 }
@@ -140,13 +140,12 @@ function Stop-Viewer() {
     Stop-Process -Id $script:Viewer.Id -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
   }
-  Get-CimInstance Win32_Process |
+  Get-Process python -ErrorAction SilentlyContinue |
     Where-Object {
-      $_.CommandLine -match 'se3_sim2sim\.cli' -and
-      $_.CommandLine -match [regex]::Escape($Repo)
+      $_.Path -and $_.Path.StartsWith($Repo, [StringComparison]::OrdinalIgnoreCase)
     } |
     ForEach-Object {
-      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+      Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
 }
 
