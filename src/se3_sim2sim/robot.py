@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import mujoco
@@ -27,6 +28,7 @@ from .diagnostics import model_diagnostics
 from .math_utils import euler_xyz_to_quat_wxyz, extract_yaw, rotate, rotate_inverse, wrap_angle
 from .observation import ObservationBuilder
 from .runtime_spec import RuntimeSpec, as_float64
+from .stair_ctbc import StairCtbcRuntime
 from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
@@ -119,11 +121,17 @@ class WheelLeggedRobot:
             self._left_wheel_geom_ids,
             self._right_wheel_geom_ids,
         ) = self._build_contact_geom_groups()
+        self._stair_geom_ids = self._build_stair_geom_ids()
         self.rng = np.random.default_rng(int(cfg.seed))
         self.sim_dt = float(self.model.opt.timestep)
         self.decimation = int(cfg.control_decimation)
         self.control_dt = self.sim_dt * self.decimation
         self.yaw_pid = YawPidController(cfg.yaw_pid)
+        self.stair_ctbc = (
+            StairCtbcRuntime(cfg.stair_ctbc, control_dt=self.control_dt)
+            if bool(cfg.stair_ctbc.enabled)
+            else None
+        )
 
         self.policy_joint_names = _policy_joint_names_for_model(self.model)
         self.joint_ids = [
@@ -189,6 +197,7 @@ class WheelLeggedRobot:
         self.last_applied_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
+        self.last_ctbc_action_delta = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
         self.reset_floor_lift_m = 0.0
         self.closed_chain_reset_position_residual_m = 0.0
@@ -242,9 +251,12 @@ class WheelLeggedRobot:
         self.last_applied_action.fill(0.0)
         self.last_policy_action.fill(0.0)
         self.last_clipped_policy_action.fill(0.0)
+        self.last_ctbc_action_delta.fill(0.0)
         self.action_fifo.fill(0.0)
         self.action_delay_steps = self._sample_action_delay_steps()
         self.last_ctrl.fill(0.0)
+        if self.stair_ctbc is not None:
+            self.stair_ctbc.reset()
         self._apply_initial_policy_io_state()
         yaw_rate_cmd = self.yaw_pid.reset(self.base_yaw)
         if self.cfg.yaw_pid.enabled:
@@ -259,8 +271,19 @@ class WheelLeggedRobot:
         self.last_applied_action.fill(0.0)
         self.last_policy_action.fill(0.0)
         self.last_clipped_policy_action.fill(0.0)
+        self.last_ctbc_action_delta.fill(0.0)
         self.action_fifo.fill(0.0)
         self.last_ctrl.fill(0.0)
+
+    def update_stair_ctbc(self, *, iteration: int | None) -> None:
+        """用当前轮-台阶立面接触更新 stair CTBC 状态机。"""
+
+        if self.stair_ctbc is None:
+            return
+        self.stair_ctbc.update(
+            self._stair_riser_wheel_contact_score(),
+            iteration=iteration,
+        )
 
     def settle_base_before_policy(
         self,
@@ -322,6 +345,7 @@ class WheelLeggedRobot:
         self.last_applied_action.fill(0.0)
         self.last_policy_action.fill(0.0)
         self.last_clipped_policy_action.fill(0.0)
+        self.last_ctbc_action_delta.fill(0.0)
         self.action_fifo.fill(0.0)
         self.last_ctrl.fill(0.0)
         self._refresh_state()
@@ -336,6 +360,16 @@ class WheelLeggedRobot:
         self.command[1] = self.yaw_pid.update(self.base_yaw, self.control_dt)
         return float(self.command[1])
 
+    def _apply_stair_ctbc(self, action: np.ndarray) -> np.ndarray:
+        """对最终执行 action 注入 stair CTBC，保持 last_action 为策略原始输出。"""
+
+        self.last_ctbc_action_delta.fill(0.0)
+        if self.stair_ctbc is None:
+            return np.asarray(action, dtype=np.float64).reshape(6)
+        execution_action = self.stair_ctbc.apply(self, action)
+        self.last_ctbc_action_delta[:] = self.stair_ctbc.action_delta
+        return execution_action
+
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict[str, object]]:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != (self.runtime.policy.num_actions,):
@@ -347,10 +381,11 @@ class WheelLeggedRobot:
             action = np.clip(action, -clip, clip)
         self.last_clipped_policy_action[:] = action
         self.last_action[:] = action
+        execution_action = self._apply_stair_ctbc(action)
         for _ in range(self.decimation):
             self._refresh_state()
             self.action_fifo[1:] = self.action_fifo[:-1].copy()
-            self.action_fifo[0] = action
+            self.action_fifo[0] = execution_action
             applied_action = self.action_fifo[self.action_delay_steps]
             self.last_applied_action[:] = applied_action
             ctrl = self._compute_pd_torques(applied_action)
@@ -408,7 +443,7 @@ class WheelLeggedRobot:
 
     def observation(self) -> np.ndarray:
         self._refresh_state()
-        return self.obs.build(
+        obs = self.obs.build(
             base_quat_wxyz=self.base_quat,
             base_ang_vel_world=self.base_ang_vel_world,
             dof_pos=self.dof_pos,
@@ -416,6 +451,10 @@ class WheelLeggedRobot:
             command=self.command,
             action_obs=self.last_action,
         )
+        if self.stair_ctbc is not None:
+            obs = obs.copy()
+            obs[self.runtime.observation_slices["jump_commands"]] = self.stair_ctbc.obs()
+        return obs
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
         wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
@@ -508,6 +547,7 @@ class WheelLeggedRobot:
             "policy_action_raw": self.last_policy_action.copy().tolist(),
             "policy_action_clipped": self.last_clipped_policy_action.copy().tolist(),
             "last_action": self.last_action.copy().tolist(),
+            "ctbc_action_delta": self.last_ctbc_action_delta.copy().tolist(),
             "applied_action": self.last_applied_action.copy().tolist(),
             "last_ctrl": self.last_ctrl.copy().tolist(),
             "action_delay_steps": int(self.action_delay_steps),
@@ -528,6 +568,8 @@ class WheelLeggedRobot:
             yaw_pid["current_yaw"] = float(self.base_yaw)
             yaw_pid["error"] = float(wrap_angle(yaw_pid["target_yaw"] - float(self.base_yaw)))
             telemetry["yaw_pid"] = yaw_pid
+        if self.stair_ctbc is not None:
+            telemetry.update(self.stair_ctbc.telemetry())
         return telemetry
 
     def diagnostics(self) -> dict[str, object]:
@@ -611,6 +653,56 @@ class WheelLeggedRobot:
                 right_legs.add(int(geom_id))
 
         return ground, base, legs, left_legs, right_legs, wheels, left_wheels, right_wheels
+
+    def _build_stair_geom_ids(self) -> set[int]:
+        """缓存程序化台阶几何 id，用于 CTBC 立面触发。"""
+
+        stair_geoms: set[int] = set()
+        for geom_id in range(self.model.ngeom):
+            geom_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            if geom_name.startswith("stair_terrain_step_"):
+                stair_geoms.add(int(geom_id))
+        return stair_geoms
+
+    def _stair_riser_wheel_contact_score(self) -> np.ndarray:
+        """估计左右轮撞到台阶立面的接触强度。"""
+
+        score = np.zeros(2, dtype=np.float64)
+        if self.stair_ctbc is None or not self._stair_geom_ids:
+            return score
+
+        fallback_score = float(self.cfg.stair_ctbc.force_threshold_n) + 1.0
+        for contact_idx in range(int(self.data.ncon)):
+            contact = self.data.contact[contact_idx]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            if geom1 in self._stair_geom_ids:
+                wheel_geom = geom2
+            elif geom2 in self._stair_geom_ids:
+                wheel_geom = geom1
+            else:
+                continue
+
+            if wheel_geom in self._left_wheel_geom_ids:
+                side = 0
+            elif wheel_geom in self._right_wheel_geom_ids:
+                side = 1
+            else:
+                continue
+
+            normal = np.asarray(contact.frame[:3], dtype=np.float64)
+            if normal.shape != (3,) or not np.isfinite(normal).all():
+                continue
+            if abs(float(normal[2])) > 0.5:
+                continue
+
+            contact_force = np.zeros(6, dtype=np.float64)
+            mujoco.mj_contactForce(self.model, self.data, contact_idx, contact_force)
+            contact_score = abs(float(contact_force[0]))
+            if not math.isfinite(contact_score) or contact_score <= 0.0:
+                contact_score = fallback_score
+            score[side] += contact_score
+        return score
 
     def _ground_contact_state(self) -> dict[str, bool]:
         """返回轮子、腿和 base 是否正在与地面接触。"""

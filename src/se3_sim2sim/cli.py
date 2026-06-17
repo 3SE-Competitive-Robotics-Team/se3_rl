@@ -23,6 +23,7 @@ from .config import (
     RcSwitchScheduleConfig,
     RobotConfig,
     RunConfig,
+    StairCtbcConfig,
     ViewerConfig,
     YawPidConfig,
     model_path_for_variant,
@@ -159,6 +160,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=robot_defaults.stair_terrain_level,
         choices=range(10),
         help="台阶课程等级，0=5cm，9=20cm。",
+    )
+    parser.add_argument(
+        "--stair-ctbc",
+        action="store_true",
+        help="在原生 MuJoCo sim2sim 中启用与训练端对齐的台阶 CTBC 前馈。",
+    )
+    parser.add_argument(
+        "--stair-ctbc-iter",
+        type=int,
+        default=None,
+        help="固定 CTBC 退火迭代数；laptop watcher 应传入 checkpoint 轮数。",
     )
     parser.add_argument(
         "--checkpoint",
@@ -607,6 +619,12 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             seed=int(args.seed),
             stair_terrain=bool(args.stair_terrain),
             stair_terrain_level=int(args.stair_terrain_level),
+            stair_ctbc=StairCtbcConfig(
+                enabled=bool(args.stair_ctbc),
+                fixed_iter=(
+                    None if args.stair_ctbc_iter is None else max(0, int(args.stair_ctbc_iter))
+                ),
+            ),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
             initial_roll_rad=initial_roll_rad,

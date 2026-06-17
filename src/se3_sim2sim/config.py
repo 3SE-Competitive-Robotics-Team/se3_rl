@@ -192,6 +192,25 @@ class RcSwitchScheduleConfig(BaseModel):
         return self
 
 
+class StairCtbcConfig(BaseModel):
+    """sim2sim 台阶 CTBC 前馈配置，与训练端默认值保持一致。"""
+
+    enabled: bool = False
+    contact_window: Annotated[int, Field(ge=1)] = 1
+    force_threshold_n: Annotated[float, Field(ge=0.0)] = 5.0
+    ff_x_m: float = 0.025
+    ff_lift_m: float = 0.095
+    ff_period_s: Annotated[float, Field(gt=0.0)] = 0.60
+    ff_rise_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
+    ff_hold_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
+    ff_wheel_action: float = 0.22
+    ann_start_iter: Annotated[int, Field(ge=0)] = 500
+    ann_end_iter: Annotated[int, Field(ge=0)] = 700
+    fixed_iter: Annotated[int, Field(ge=0)] | None = None
+    obs_scale: Annotated[float, Field(gt=0.0)] = 0.01
+    allow_bilateral_trigger: bool = False
+
+
 class RobotConfig(BaseModel):
     """sim2sim 机器人运行配置。"""
 
@@ -210,6 +229,8 @@ class RobotConfig(BaseModel):
     stair_step_depth_m: Annotated[float, Field(gt=0.0)] = 0.5
     stair_start_x_m: float = 1.0
     stair_half_width_m: Annotated[float, Field(gt=0.0)] = 2.0
+    stair_ctbc: StairCtbcConfig = Field(default_factory=StairCtbcConfig)
+    """原生 MuJoCo 台阶值守时使用的 CTBC 前馈注入器。"""
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height

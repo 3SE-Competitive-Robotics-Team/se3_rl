@@ -373,6 +373,10 @@ class Sim2SimWorkflow:
                         rc_switch_event = 1.0
                     obs = self.robot.observation()
 
+                policy_iteration = self._policy_iteration_int()
+                self.robot.update_stair_ctbc(iteration=policy_iteration)
+                obs = self.robot.observation()
+
                 rc_policy_reset = 0.0
                 if _rc_output_enabled:
                     action = self.policy.act(obs)
@@ -581,6 +585,14 @@ class Sim2SimWorkflow:
         if self.viewer is not None:
             self.viewer.close()
         return summary
+
+    def _policy_iteration_int(self) -> int | None:
+        """返回当前 checkpoint 的迭代数，无法解析时交给 CTBC 使用默认值。"""
+
+        try:
+            return int(self.policy.iteration)
+        except (TypeError, ValueError):
+            return None
 
     def _make_viewer(self) -> RerunViewer | MujocoViewer | ViserViewer | CompositeViewer | None:
         if self.cfg.viewer.mode == "none":
