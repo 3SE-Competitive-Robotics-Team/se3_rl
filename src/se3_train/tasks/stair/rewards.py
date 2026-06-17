@@ -11,6 +11,7 @@ from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import recovery_state
+from se3_train.mdp import rewards as mdp_rewards
 from se3_train.mdp.joint_indices import wheel_joint_ids
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
@@ -19,12 +20,14 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
+_FLAT_TERRAIN_TYPES = ("flat",)
 _DEFAULT_STANDING_HEIGHT = SharedRobotConfig().default_base_height
 _WHEEL_RADIUS_M = 0.060
 _WHEEL_SUPPORT_CLEARANCE_TOL_M = 0.035
 _WHEEL_SUPPORT_FORCE_THRESHOLD_N = 1.0
 _TASK_MODE_STAIR = 0
 _TASK_MODE_RECOVERY = 1
+_TASK_MODE_FLAT = 2
 
 
 def _get_stair_state(env: ManagerBasedRlEnv):
@@ -86,6 +89,242 @@ def _task_mode_mask(env: ManagerBasedRlEnv, modes: tuple[int, ...]) -> torch.Ten
     for value in modes:
         selected |= mode == int(value)
     return selected
+
+
+def _flat_mode_gate(
+    env: ManagerBasedRlEnv,
+    terrain_type_names: tuple[str, ...] = _FLAT_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """只在 flat rehearsal mode 且真实平地 terrain 上打开奖励。"""
+    return _task_mode_mask(env, (_TASK_MODE_FLAT,)) & _terrain_type_mask(env, terrain_type_names)
+
+
+def _recovery_active_gate(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """只在 recovery active 阶段打开 rehearsal 奖励。"""
+    active = recovery_state.recovery_active_mask(env)
+    if active.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    return active
+
+
+def flat_mode_tracking_lin_vel(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma_move: float = 0.08,
+    sigma_stand: float = 0.1,
+    vz_weight: float = 2.0,
+    use_upright_gate: bool = False,
+    tracking_upright_full_cos: float = 0.7,
+    terrain_type_names: tuple[str, ...] = _FLAT_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """flat rehearsal 的原始平地线速度跟踪奖励。"""
+    reward = mdp_rewards.tracking_lin_vel(
+        env,
+        command_name=command_name,
+        sigma_move=sigma_move,
+        sigma_stand=sigma_stand,
+        vz_weight=vz_weight,
+        use_upright_gate=use_upright_gate,
+        tracking_upright_full_cos=tracking_upright_full_cos,
+    )
+    return reward * _flat_mode_gate(env, terrain_type_names).float()
+
+
+def flat_mode_wheel_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    terrain_type_names: tuple[str, ...] = _FLAT_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """flat rehearsal 中保持双轮接地。"""
+    penalty = mdp_rewards.flat_wheel_contact_penalty(
+        env,
+        command_name=command_name,
+        sensor_name=sensor_name,
+        force_threshold=force_threshold,
+    )
+    return penalty * _flat_mode_gate(env, terrain_type_names).float()
+
+
+def flat_mode_leg_contact_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    terrain_type_names: tuple[str, ...] = _FLAT_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """flat rehearsal 中禁止腿部触地。"""
+    penalty = mdp_rewards.flat_leg_contact_penalty(
+        env,
+        command_name=command_name,
+        sensor_name=sensor_name,
+        force_threshold=force_threshold,
+    )
+    return penalty * _flat_mode_gate(env, terrain_type_names).float()
+
+
+def recovery_active_tracking_height(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float,
+    height_sensor_name: str,
+    kernel: str = "l2",
+    use_upright_gate: bool = False,
+    use_pose_end_gate: bool = False,
+    use_inverted_free_upright_height_gate: bool = True,
+    use_hard_inverted_height_gate: bool = True,
+    hard_inverted_release_deg: float = 130.0,
+    hard_inverted_full_deg: float = 170.0,
+    hard_inverted_min_gate: float = 0.25,
+    hard_inverted_wheel_sensor_name: str | None = "wheel_sensor",
+    hard_inverted_force_threshold: float = 1.0,
+    hard_inverted_wheel_contact_min_count: int = 2,
+    hard_inverted_height_tolerance: float = 0.02,
+) -> torch.Tensor:
+    """recovery_finetune 对齐的硬倒置高度 L2，只作用于 active recovery。"""
+    reward = mdp_rewards.tracking_height(
+        env,
+        command_name=command_name,
+        sigma=sigma,
+        height_sensor_name=height_sensor_name,
+        kernel=kernel,
+        use_upright_gate=use_upright_gate,
+        use_pose_end_gate=use_pose_end_gate,
+        use_inverted_free_upright_height_gate=use_inverted_free_upright_height_gate,
+        use_hard_inverted_height_gate=use_hard_inverted_height_gate,
+        hard_inverted_release_deg=hard_inverted_release_deg,
+        hard_inverted_full_deg=hard_inverted_full_deg,
+        hard_inverted_min_gate=hard_inverted_min_gate,
+        hard_inverted_wheel_sensor_name=hard_inverted_wheel_sensor_name,
+        hard_inverted_force_threshold=hard_inverted_force_threshold,
+        hard_inverted_wheel_contact_min_count=hard_inverted_wheel_contact_min_count,
+        hard_inverted_height_tolerance=hard_inverted_height_tolerance,
+    )
+    return reward * _recovery_active_gate(env).float()
+
+
+def recovery_active_upward(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """recovery active 阶段的全姿态向上奖励。"""
+    return mdp_rewards.upward(env) * _recovery_active_gate(env).float()
+
+
+def recovery_active_lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """recovery active 阶段的竖直速度惩罚。"""
+    return mdp_rewards.lin_vel_z(env) * _recovery_active_gate(env).float()
+
+
+def recovery_active_upright_orientation_l2(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 20.0,
+    roll_scale_rad: float = 0.14,
+    pitch_scale_rad: float = 0.20,
+    roll_weight: float = 1.5,
+    pitch_weight: float = 1.0,
+    max_penalty: float = 6.0,
+) -> torch.Tensor:
+    """recovery active 接近直立后压住 pitch/roll 误差。"""
+    active = _recovery_active_gate(env)
+    if not torch.any(active):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pg = robot.data.projected_gravity_b
+    tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    gate = torch.clamp((float(gate_start_deg) - tilt_deg) / gate_span, 0.0, 1.0)
+    current_pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
+    current_roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
+    pitch_error = current_pitch - cmd[:, 2]
+    roll_error = current_roll - cmd[:, 3]
+    pitch_term = (pitch_error / max(float(pitch_scale_rad), 1.0e-6)) ** 2
+    roll_term = (roll_error / max(float(roll_scale_rad), 1.0e-6)) ** 2
+    penalty = torch.clamp(
+        float(roll_weight) * roll_term + float(pitch_weight) * pitch_term,
+        max=float(max_penalty),
+    )
+    result = penalty * gate * active.float()
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"]["Recovery/diag_upright_orientation_penalty"] = _masked_mean(
+            result, active
+        )
+    return result
+
+
+def recovery_active_upright_zero_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.1,
+    wheel_radius: float = _WHEEL_RADIUS_M,
+    gate_start_deg: float = 45.0,
+    gate_full_deg: float = 15.0,
+    base_speed_scale: float = 0.15,
+    wheel_speed_scale: float = 0.12,
+    base_ang_vel_scale: float = 0.6,
+    max_penalty: float = 8.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """recovery active 接近站稳时抑制漂移和空转。"""
+    active_recovery = _recovery_active_gate(env)
+    if not torch.any(active_recovery):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    command_norm = torch.linalg.norm(cmd[:, :2], dim=1)
+    standing = command_norm <= float(command_threshold)
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
+    gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
+    near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
+    active = active_recovery & standing & (near_upright_gate > 0.0)
+
+    base_vxy = robot.data.root_link_lin_vel_b[:, :2]
+    base_speed_sq = torch.sum(base_vxy**2, dim=1)
+    base_ang_vel_sq = torch.sum(robot.data.root_link_ang_vel_b**2, dim=1)
+    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+    wheel_speed_sq = torch.mean(wheel_forward_speed**2, dim=1)
+    penalty = (
+        base_speed_sq / (float(base_speed_scale) ** 2)
+        + wheel_speed_sq / (float(wheel_speed_scale) ** 2)
+        + base_ang_vel_sq / (float(base_ang_vel_scale) ** 2)
+    )
+    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * active.float()
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"]["Recovery/upright_zero_velocity_penalty"] = _masked_mean(result, active)
+    return result
+
+
+def recovery_active_wheel_air_velocity_penalty(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    velocity_scale: float = 1.0,
+    max_penalty: float = 10000.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    log_prefix: str = "Recovery",
+) -> torch.Tensor:
+    """recovery active 阶段惩罚离地轮空转。"""
+    return mdp_rewards.wheel_air_velocity_penalty(
+        env,
+        sensor_name=sensor_name,
+        force_threshold=force_threshold,
+        velocity_scale=velocity_scale,
+        max_penalty=max_penalty,
+        recovery_active_only=True,
+        asset_cfg=asset_cfg,
+        log_prefix=log_prefix,
+    )
 
 
 def _wheel_body_ids(
@@ -1159,6 +1398,7 @@ def stair_diagnostics(
     terrain_level = stair_terrain_level(env)
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
     recovery_mode = _task_mode_mask(env, (_TASK_MODE_RECOVERY,))
+    flat_mode = _task_mode_mask(env, (_TASK_MODE_FLAT,))
     robot = env.scene["robot"]
     body_vx = _finite(robot.data.root_link_lin_vel_b[:, 0])
     origins = getattr(env.scene, "env_origins", None)
@@ -1281,6 +1521,10 @@ def stair_diagnostics(
                 "Stair/obs_terrain_level": terrain_level.mean().item(),
                 "Stair/diag_stair_env_rate": terrain_mask.float().mean().item(),
                 "Stair/diag_task_mode_recovery_rate": recovery_mode.float().mean().item(),
+                "Stair/diag_task_mode_flat_rate": flat_mode.float().mean().item(),
+                "Stair/diag_task_mode_stair_rate": (
+                    _task_mode_mask(env, (_TASK_MODE_STAIR,)).float().mean().item()
+                ),
                 "Stair/diag_body_vx": body_vx.mean().item(),
                 "Stair/diag_radial_vx": radial_vx.mean().item(),
                 "Stair/diag_radial_retreat_rate": (radial_vx < -0.05).float().mean().item(),
@@ -1297,8 +1541,17 @@ __all__ = [
     *_FLAT_REWARD_ALL,
     "action_rate_no_ctbc",
     "contact_forces_no_ctbc",
+    "flat_mode_leg_contact_penalty",
+    "flat_mode_tracking_lin_vel",
+    "flat_mode_wheel_contact_penalty",
     "leg_power_no_ctbc",
     "leg_torques_no_ctbc",
+    "recovery_active_lin_vel_z",
+    "recovery_active_tracking_height",
+    "recovery_active_upward",
+    "recovery_active_upright_orientation_l2",
+    "recovery_active_upright_zero_velocity_penalty",
+    "recovery_active_wheel_air_velocity_penalty",
     "recovery_stagnation_penalty",
     "stair_climb_progress",
     "stair_commanded_stall",

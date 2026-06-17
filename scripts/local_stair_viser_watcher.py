@@ -659,7 +659,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--github-timeout-s", type=float, default=120.0)
     parser.add_argument("--sim-dt", type=float, default=0.005)
     parser.add_argument("--control-decimation", type=int, default=4)
-    parser.add_argument("--fixed-ctbc-iter", action="store_true")
+    parser.add_argument(
+        "--fixed-ctbc-iter",
+        action="store_true",
+        default=True,
+        help="按 checkpoint iteration 固定 CTBC 退火阶段，默认开启。",
+    )
+    parser.add_argument(
+        "--live-ctbc-iter",
+        dest="fixed_ctbc_iter",
+        action="store_false",
+        help="让 Viser 从本地 rollout step 重新计算 CTBC 阶段，仅用于调试前馈。",
+    )
     parser.add_argument("--command-vx", type=float, default=1.2)
     parser.add_argument("--command-height", type=float, default=0.32)
     parser.add_argument("--device", default="cpu")

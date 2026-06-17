@@ -61,8 +61,9 @@ _STAIR_RECOVERY_REPLAY_PROB = 0.30
 _STAIR_RECOVERY_GRACE_STEPS = 400
 _STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
 _RECOVERY_TERRAIN_TYPES = ("flat",)
-_TASK_MIXTURE_STAIR_PROB = 0.70
+_TASK_MIXTURE_STAIR_PROB = 0.55
 _TASK_MIXTURE_RECOVERY_PROB = 0.30
+_TASK_MIXTURE_FLAT_PROB = 0.15
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _INITIAL_STAIR_HEIGHT_RANGE = (0.30, 0.34)
 _WALKING_PHASE_ITERATIONS = 0
@@ -281,7 +282,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards.pop("flat_leg_contact", None)
     cfg.rewards.pop("tracking_lin_yaw_joint", None)
     if "tracking_height" in cfg.rewards:
-        cfg.rewards["tracking_height"] = replace(cfg.rewards["tracking_height"], weight=0.5)
+        tracking_height_params = dict(cfg.rewards["tracking_height"].params or {})
+        tracking_height_params["ignore_recovery"] = True
+        cfg.rewards["tracking_height"] = replace(
+            cfg.rewards["tracking_height"],
+            weight=0.5,
+            params=tracking_height_params,
+        )
     if "tracking_ang_vel" in cfg.rewards:
         cfg.rewards["tracking_ang_vel"] = replace(cfg.rewards["tracking_ang_vel"], weight=1.5)
     if "tracking_orientation_l2" in cfg.rewards:
@@ -309,6 +316,38 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
             "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
             "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+        },
+    )
+    cfg.rewards["flat_tracking_lin_vel"] = RewardTermCfg(
+        func=rewards.flat_mode_tracking_lin_vel,
+        weight=3.0,
+        params={
+            "command_name": "velocity_height",
+            "sigma_move": 0.08,
+            "sigma_stand": 0.1,
+            "vz_weight": 2.0,
+            "use_upright_gate": False,
+            "terrain_type_names": _RECOVERY_TERRAIN_TYPES,
+        },
+    )
+    cfg.rewards["flat_wheel_contact"] = RewardTermCfg(
+        func=rewards.flat_mode_wheel_contact_penalty,
+        weight=-6.0,
+        params={
+            "command_name": "velocity_height",
+            "sensor_name": "wheel_sensor",
+            "force_threshold": 1.0,
+            "terrain_type_names": _RECOVERY_TERRAIN_TYPES,
+        },
+    )
+    cfg.rewards["flat_leg_contact"] = RewardTermCfg(
+        func=rewards.flat_mode_leg_contact_penalty,
+        weight=-15.0,
+        params={
+            "command_name": "velocity_height",
+            "sensor_name": "leg_contact_sensor",
+            "force_threshold": 1.0,
+            "terrain_type_names": _RECOVERY_TERRAIN_TYPES,
         },
     )
     cfg.rewards["leg_torques"] = RewardTermCfg(
@@ -567,6 +606,31 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "riser_stall_duration_s": 0.15,
         },
     )
+    cfg.rewards["recovery_tracking_height"] = RewardTermCfg(
+        func=rewards.recovery_active_tracking_height,
+        weight=-1500.0,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.0025,
+            "height_sensor_name": "base_height_sensor",
+            "kernel": "l2",
+            "use_upright_gate": False,
+            "use_pose_end_gate": False,
+            "use_inverted_free_upright_height_gate": True,
+            "use_hard_inverted_height_gate": True,
+            "hard_inverted_release_deg": 130.0,
+            "hard_inverted_full_deg": 170.0,
+            "hard_inverted_min_gate": 0.25,
+            "hard_inverted_wheel_sensor_name": "wheel_sensor",
+            "hard_inverted_force_threshold": 1.0,
+            "hard_inverted_wheel_contact_min_count": 2,
+            "hard_inverted_height_tolerance": 0.02,
+        },
+    )
+    cfg.rewards["recovery_upward"] = RewardTermCfg(
+        func=rewards.recovery_active_upward,
+        weight=3.0,
+    )
     cfg.rewards["recovery_upright"] = RewardTermCfg(
         func=mdp_rewards.recovery_upright,
         weight=1.0,
@@ -582,7 +646,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["recovery_progress"] = RewardTermCfg(
         func=mdp_rewards.recovery_progress,
-        weight=0.5,
+        weight=1.0,
         params={
             "height_sensor_name": "base_height_sensor",
             "upright_delta_scale": 0.05,
@@ -590,6 +654,40 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "max_reward": 4.0,
             "height_gate_start_deg": 60.0,
             "height_gate_full_deg": 130.0,
+            "min_height_gate": 0.0,
+        },
+    )
+    cfg.rewards["recovery_lin_vel_z"] = RewardTermCfg(
+        func=rewards.recovery_active_lin_vel_z,
+        weight=-2.0,
+    )
+    cfg.rewards["recovery_upright_orientation_l2"] = RewardTermCfg(
+        func=rewards.recovery_active_upright_orientation_l2,
+        weight=-0.5,
+        params={
+            "command_name": "velocity_height",
+            "gate_start_deg": 60.0,
+            "gate_full_deg": 20.0,
+            "roll_scale_rad": 0.14,
+            "pitch_scale_rad": 0.20,
+            "roll_weight": 1.5,
+            "pitch_weight": 1.0,
+            "max_penalty": 6.0,
+        },
+    )
+    cfg.rewards["recovery_upright_zero_velocity"] = RewardTermCfg(
+        func=rewards.recovery_active_upright_zero_velocity_penalty,
+        weight=-0.25,
+        params={
+            "command_name": "velocity_height",
+            "command_threshold": 0.1,
+            "gate_start_deg": 45.0,
+            "gate_full_deg": 15.0,
+            "base_speed_scale": 0.15,
+            "wheel_speed_scale": 0.12,
+            "base_ang_vel_scale": 0.6,
+            "max_penalty": 8.0,
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
     cfg.rewards["recovery_height"] = RewardTermCfg(
@@ -603,34 +701,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "gate_full_deg": 15.0,
         },
     )
-    cfg.rewards["recovery_stable_bonus"] = RewardTermCfg(
-        func=mdp_rewards.recovery_stable_bonus,
-        weight=1.0,
+    cfg.rewards["recovery_wheel_air_velocity"] = RewardTermCfg(
+        func=rewards.recovery_active_wheel_air_velocity_penalty,
+        weight=-1.0e-3,
         params={
             "sensor_name": "wheel_sensor",
-            "height_sensor_name": "base_height_sensor",
-            "command_name": "velocity_height",
-            "upright_angle_deg": 20.0,
-            "height_tolerance": 0.08,
-            "ang_vel_threshold": 2.0,
             "force_threshold": 1.0,
-            "stable_steps_required": 32,
-            "per_step_bonus": 0.1,
-            "completion_bonus": 1.0,
+            "velocity_scale": 1.0,
+            "max_penalty": 10000.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "log_prefix": "Recovery",
         },
     )
-    cfg.rewards["recovery_stagnation"] = RewardTermCfg(
-        func=rewards.recovery_stagnation_penalty,
-        weight=-1.0,
-        params={
-            "command_name": "velocity_height",
-            "height_sensor_name": "base_height_sensor",
-            "max_steps": 256,
-            "min_delta": 0.02,
-            "height_scale": 0.08,
-        },
-    )
-
     if "bad_orientation" in cfg.terminations:
         cfg.terminations["bad_orientation"].params = {
             "limit_angle": 0.698,
@@ -695,8 +777,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "stair_prob": _TASK_MIXTURE_STAIR_PROB,
                 "recovery_prob": _TASK_MIXTURE_RECOVERY_PROB,
+                "flat_prob": _TASK_MIXTURE_FLAT_PROB,
                 "stair_terrain_type_name": _STAIR_TERRAIN_TYPES[0],
                 "recovery_terrain_type_name": _RECOVERY_TERRAIN_TYPES[0],
+                "flat_terrain_type_name": _RECOVERY_TERRAIN_TYPES[0],
                 "max_level_stages": _STAIR_LEVEL_MAX_STAGES,
                 "level_buckets": _STAIR_LEVEL_BUCKETS,
                 "bucket_weight_stages": _STAIR_BUCKET_WEIGHT_STAGES,
@@ -711,6 +795,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "recovery_lin_vel_x_range": (-1.5, 1.5),
                 "recovery_ang_vel_yaw_range": (-1.0, 1.0),
                 "recovery_height_range": (0.195, 0.390),
+                "flat_lin_vel_x_range": (0.0, 0.8),
+                "flat_ang_vel_yaw_range": (-1.0, 1.0),
+                "flat_height_range": (0.22, 0.30),
             },
         )
         for event_name, event_term in cfg.events.items():
@@ -761,6 +848,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "recovery_lin_vel_x_range": (-1.5, 1.5),
             "recovery_ang_vel_yaw_range": (-1.0, 1.0),
             "recovery_height_range": (0.195, 0.390),
+            "flat_lin_vel_x_range": (0.0, 0.8),
+            "flat_ang_vel_yaw_range": (-1.0, 1.0),
+            "flat_height_range": (0.22, 0.30),
         },
     )
     cfg.events["reset_stair_climb_state"] = EventTermCfg(

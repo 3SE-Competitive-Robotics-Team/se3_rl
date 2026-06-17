@@ -16,6 +16,7 @@ from se3_train.tasks.stair.terrain_curriculum import (
 
 _TASK_MODE_STAIR = 0
 _TASK_MODE_RECOVERY = 1
+_TASK_MODE_FLAT = 2
 
 
 def _ensure_long_buffer(env, name: str) -> torch.Tensor:
@@ -125,8 +126,10 @@ def sample_stair_task_mode(
     env_ids: torch.Tensor | None,
     stair_prob: float = 0.70,
     recovery_prob: float = 0.30,
+    flat_prob: float = 0.0,
     stair_terrain_type_name: str = "inv_pyramid_stairs",
     recovery_terrain_type_name: str = "flat",
+    flat_terrain_type_name: str = "flat",
     max_level_stages: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_MAX_STAGES,
     level_buckets: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_BUCKETS,
     bucket_weight_stages: tuple[
@@ -138,14 +141,16 @@ def sample_stair_task_mode(
     """reset 前采样 stair/recovery rehearsal mode，并同步地形 origin。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-    total = max(float(stair_prob) + float(recovery_prob), 1.0e-6)
+    total = max(float(stair_prob) + float(recovery_prob) + float(flat_prob), 1.0e-6)
     stair_p = float(stair_prob) / total
+    recovery_p = float(recovery_prob) / total
 
     r = torch.rand(env_ids.numel(), device=env.device)
     local_mode = torch.full(
         (env_ids.numel(),), _TASK_MODE_STAIR, device=env.device, dtype=torch.long
     )
-    local_mode[r >= stair_p] = _TASK_MODE_RECOVERY
+    local_mode[(r >= stair_p) & (r < stair_p + recovery_p)] = _TASK_MODE_RECOVERY
+    local_mode[r >= stair_p + recovery_p] = _TASK_MODE_FLAT
 
     task_mode = _ensure_long_buffer(env, "_stair_task_mode")
     recovery_mask = _ensure_bool_buffer(env, "_stair_recovery_mode_mask")
@@ -155,6 +160,7 @@ def sample_stair_task_mode(
     iteration = _active_iteration(env, steps_per_policy_iter)
     stair_ids = env_ids[local_mode == _TASK_MODE_STAIR]
     recovery_ids = env_ids[local_mode == _TASK_MODE_RECOVERY]
+    flat_ids = env_ids[local_mode == _TASK_MODE_FLAT]
     if stair_ids.numel() > 0:
         terrain_levels, _ = sample_levels(
             env,
@@ -167,6 +173,7 @@ def sample_stair_task_mode(
         )
         _set_terrain_levels(env, stair_ids, stair_terrain_type_name, terrain_levels)
     _set_terrain(env, recovery_ids, recovery_terrain_type_name, 0)
+    _set_terrain(env, flat_ids, flat_terrain_type_name, 0)
 
 
 def apply_stair_task_mode_commands(
@@ -176,12 +183,16 @@ def apply_stair_task_mode_commands(
     recovery_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
     recovery_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
     recovery_height_range: tuple[float, float] = (0.195, 0.390),
+    flat_lin_vel_x_range: tuple[float, float] = (0.0, 0.8),
+    flat_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
+    flat_height_range: tuple[float, float] = (0.22, 0.30),
 ) -> None:
     """reset 后按 recovery mode 重采样倒地自起指令。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
     task_mode = _ensure_long_buffer(env, "_stair_task_mode")
     recovery_ids = env_ids[task_mode[env_ids] == _TASK_MODE_RECOVERY]
+    flat_ids = env_ids[task_mode[env_ids] == _TASK_MODE_FLAT]
     _apply_command_ranges(
         env,
         recovery_ids,
@@ -190,6 +201,51 @@ def apply_stair_task_mode_commands(
         recovery_ang_vel_yaw_range,
         recovery_height_range,
     )
+    _apply_command_ranges(
+        env,
+        flat_ids,
+        command_name,
+        flat_lin_vel_x_range,
+        flat_ang_vel_yaw_range,
+        flat_height_range,
+    )
+
+
+def _clamp_command_ranges(
+    env,
+    env_ids: torch.Tensor,
+    command_name: str,
+    lin_vel_x_range: tuple[float, float],
+    ang_vel_yaw_range: tuple[float, float],
+    height_range: tuple[float, float],
+) -> None:
+    """把已重采样的指令夹回指定 mode 的合法范围。"""
+    if env_ids.numel() == 0 or not hasattr(env, "command_manager"):
+        return
+    cmd = env.command_manager.get_command(command_name)
+    cmd[env_ids, 0] = torch.clamp(
+        cmd[env_ids, 0],
+        min=float(lin_vel_x_range[0]),
+        max=float(lin_vel_x_range[1]),
+    )
+    if cmd.shape[1] > 1:
+        cmd[env_ids, 1] = torch.clamp(
+            cmd[env_ids, 1],
+            min=float(ang_vel_yaw_range[0]),
+            max=float(ang_vel_yaw_range[1]),
+        )
+    if cmd.shape[1] > 2:
+        cmd[env_ids, 2:4] = 0.0
+    if cmd.shape[1] > 4:
+        cmd[env_ids, 4] = torch.clamp(
+            cmd[env_ids, 4],
+            min=float(height_range[0]),
+            max=float(height_range[1]),
+        )
+    if cmd.shape[1] >= 8:
+        cmd[env_ids, 5] = 0.0
+        cmd[env_ids, 7] = 0.0
+    update_policy_default_from_height_cache(env, command_name, env_ids=env_ids, command=cmd)
 
 
 def enforce_recovery_active_commands(
@@ -199,41 +255,38 @@ def enforce_recovery_active_commands(
     recovery_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
     recovery_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
     recovery_height_range: tuple[float, float] = (0.195, 0.390),
+    flat_lin_vel_x_range: tuple[float, float] = (0.0, 0.8),
+    flat_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
+    flat_height_range: tuple[float, float] = (0.22, 0.30),
 ) -> None:
     """每步把 recovery active 指令限制在 recovery_finetune 最难课程范围内。"""
     del env_ids
     active = getattr(env, "_recovery_reset_mask", None)
-    if not isinstance(active, torch.Tensor) or active.shape[0] != env.num_envs:
-        return
-    active = active.to(device=env.device, dtype=torch.bool)
-    if not active.any() or not hasattr(env, "command_manager"):
-        return
-    cmd = env.command_manager.get_command(command_name)
-    cmd[active, 0] = torch.clamp(
-        cmd[active, 0],
-        min=float(recovery_lin_vel_x_range[0]),
-        max=float(recovery_lin_vel_x_range[1]),
-    )
-    if cmd.shape[1] > 1:
-        cmd[active, 1] = torch.clamp(
-            cmd[active, 1],
-            min=float(recovery_ang_vel_yaw_range[0]),
-            max=float(recovery_ang_vel_yaw_range[1]),
+    if isinstance(active, torch.Tensor) and active.shape[0] == env.num_envs:
+        _clamp_command_ranges(
+            env,
+            active.to(device=env.device, dtype=torch.bool).nonzero().flatten(),
+            command_name,
+            recovery_lin_vel_x_range,
+            recovery_ang_vel_yaw_range,
+            recovery_height_range,
         )
-    if cmd.shape[1] > 2:
-        cmd[active, 2:4] = 0.0
-    if cmd.shape[1] > 4:
-        low, high = float(recovery_height_range[0]), float(recovery_height_range[1])
-        cmd[active, 4] = torch.clamp(cmd[active, 4], min=low, max=high)
-    if cmd.shape[1] >= 8:
-        cmd[active, 5] = 0.0
-        cmd[active, 7] = 0.0
-    update_policy_default_from_height_cache(
-        env,
-        command_name,
-        env_ids=active.nonzero().flatten(),
-        command=cmd,
-    )
+
+    task_mode = getattr(env, "_stair_task_mode", None)
+    if isinstance(task_mode, torch.Tensor) and task_mode.shape[0] == env.num_envs:
+        flat_ids = (
+            (task_mode.to(device=env.device, dtype=torch.long) == _TASK_MODE_FLAT)
+            .nonzero(as_tuple=False)
+            .flatten()
+        )
+        _clamp_command_ranges(
+            env,
+            flat_ids,
+            command_name,
+            flat_lin_vel_x_range,
+            flat_ang_vel_yaw_range,
+            flat_height_range,
+        )
 
 
 def init_stair_climb_state(
@@ -370,12 +423,17 @@ def step_stair_climb_state(
                 valid = valid & found
             wheel_xy = torch.where(valid, force_xy, torch.zeros_like(force_xy)).sum(dim=-1)
 
+    inactive = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    task_mode = getattr(env, "_stair_task_mode", None)
+    if isinstance(task_mode, torch.Tensor) and task_mode.shape[0] == env.num_envs:
+        inactive |= task_mode.to(device=env.device, dtype=torch.long) != _TASK_MODE_STAIR
     recovery_active = getattr(env, "_recovery_reset_mask", None)
     if isinstance(recovery_active, torch.Tensor) and recovery_active.shape[0] == env.num_envs:
-        active_ids = recovery_active.to(device=env.device, dtype=torch.bool).nonzero().flatten()
-        if active_ids.numel() > 0:
-            wheel_xy[active_ids] = 0.0
-            state.reset(active_ids)
+        inactive |= recovery_active.to(device=env.device, dtype=torch.bool)
+    inactive_ids = inactive.nonzero().flatten()
+    if inactive_ids.numel() > 0:
+        wheel_xy[inactive_ids] = 0.0
+        state.reset(inactive_ids)
 
     state.step(wheel_xy)
     iteration = int(env.common_step_counter) // max(1, int(num_steps_per_env))

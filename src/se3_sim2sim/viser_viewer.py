@@ -15,6 +15,8 @@ _SPEEDS = (1.0 / 8.0, 1.0 / 4.0, 1.0 / 2.0, 1.0, 2.0, 4.0)
 _TRAINING_STATUS_FILENAME = "se3_training_status.json"
 _CHECKPOINT_PATTERN = re.compile(r"model_(\d+)\.pt$")
 _NO_CHECKPOINT_OPTION = "(no model_*.pt)"
+_NORMAL_RESET_MODE = "normal"
+_RECOVERY_RESET_OPTIONS = ("left_side", "right_side", "prone", "supine")
 
 
 class ViserViewer:
@@ -44,8 +46,10 @@ class ViserViewer:
         self._speed = 1.0
         self._paused = False
         self._closed = False
-        self._reset_requested = False
+        self._reset_request_lock = threading.Lock()
+        self._reset_request_mode: str | None = None
         self._reset_request_last_time = 0.0
+        self._last_reset_mode = "initial"
         self._reset_count = 0
         self._last_render_time = 0.0
         self._start_wall_time: float | None = None
@@ -110,17 +114,23 @@ class ViserViewer:
 
         return bool(self._closed)
 
+    def consume_reset_request(self) -> str | None:
+        """消费 GUI 触发的 reset 请求，并返回 reset 模式。"""
+
+        with self._reset_request_lock:
+            mode = self._reset_request_mode
+            self._reset_request_mode = None
+        return mode
+
     def consume_reset_requested(self) -> bool:
         """消费 GUI 触发的 reset 请求。"""
 
-        if not self._reset_requested:
-            return False
-        self._reset_requested = False
-        return True
+        return self.consume_reset_request() is not None
 
-    def notify_reset(self) -> None:
+    def notify_reset(self, mode: str = _NORMAL_RESET_MODE) -> None:
         """主仿真线程完成 reset 后同步 viewer 计数和计时。"""
 
+        self._last_reset_mode = str(mode)
         self._reset_count += 1
         self._last_step = 0
         self._stats_steps = 0
@@ -222,12 +232,19 @@ class ViserViewer:
 
                 @reset_button.on_click
                 def _(_) -> None:
-                    now = time.monotonic()
-                    if now - self._reset_request_last_time < 0.5:
-                        return
-                    self._reset_request_last_time = now
-                    self._reset_requested = True
-                    self._update_status_display()
+                    self._request_reset(_NORMAL_RESET_MODE)
+
+                recovery_pose = self._server.gui.add_dropdown(
+                    "Recovery Pose",
+                    options=_RECOVERY_RESET_OPTIONS,
+                    initial_value=_RECOVERY_RESET_OPTIONS[0],
+                    hint="Reset to a fixed recovery pose and clear policy state.",
+                )
+                recovery_reset_button = self._server.gui.add_button("Recovery Reset")
+
+                @recovery_reset_button.on_click
+                def _(_) -> None:
+                    self._request_reset(str(recovery_pose.value))
 
                 speed_buttons = self._server.gui.add_button_group(
                     "Speed",
@@ -368,6 +385,15 @@ class ViserViewer:
         self._checkpoint_switch_status = f"loading {target.name}"
         self._update_status_display()
 
+    def _request_reset(self, mode: str) -> None:
+        now = time.monotonic()
+        if now - self._reset_request_last_time < 0.5:
+            return
+        self._reset_request_last_time = now
+        with self._reset_request_lock:
+            self._reset_request_mode = str(mode)
+        self._update_status_display()
+
     def _latest_checkpoint_path(self) -> Path | None:
         if self._checkpoint_path is None:
             return None
@@ -449,6 +475,7 @@ class ViserViewer:
             <strong>Sim time:</strong> {sim_time}<br/>
             <strong>Wall time:</strong> {wall_time}<br/>
             <strong>Reset count:</strong> {self._reset_count}<br/>
+            <strong>Last reset:</strong> {html.escape(self._last_reset_mode)}<br/>
             <strong>Speed:</strong> {_format_speed(self._speed)}<br/>
             <strong>Target RT:</strong> {self._speed:.2f}x<br/>
             <strong>Actual RT:</strong> {rt_display} ({fps_display} FPS)<br/>

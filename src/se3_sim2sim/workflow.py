@@ -11,7 +11,7 @@ import numpy as np
 from se3_shared import periodic_policy_action_delta_np
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 
-from .config import RunConfig
+from .config import RECOVERY_COMMAND_HEIGHT_M, RECOVERY_POSE_RP_RAD, RunConfig
 from .course import CourseType, create_course
 from .diagnostics import rollout_diagnostics
 from .mujoco_viewer import CompositeViewer, MujocoViewer
@@ -39,6 +39,12 @@ class Sim2SimWorkflow:
         self._course = create_course(self.cfg.course, control_dt)
         self.command_source = command_source
         self.viewer = self._make_viewer()
+        self._viewer_default_initial_roll_rad = float(self.cfg.robot.initial_roll_rad)
+        self._viewer_default_initial_pitch_rad = float(self.cfg.robot.initial_pitch_rad)
+        self._viewer_default_initial_yaw_rad = float(self.cfg.robot.initial_yaw_rad)
+        self._viewer_default_initial_base_height = self.cfg.robot.initial_base_height
+        self._viewer_default_command = tuple(float(value) for value in self.cfg.robot.command)
+        self._viewer_default_yaw_pid_enabled = bool(self.cfg.robot.yaw_pid.enabled)
 
     def run(self) -> dict[str, object]:
         obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
@@ -195,6 +201,7 @@ class Sim2SimWorkflow:
                         )
                         episode_step_offset = step
                         viewer_step_offset = step
+                        self._apply_viewer_reset_mode("normal")
                         obs = self.robot.reset(
                             fixed=self.cfg.fixed_reset,
                             randomize_root=self.cfg.randomize_root,
@@ -220,7 +227,7 @@ class Sim2SimWorkflow:
                         _jump_active = self.robot.command[5] > 0.5
                         _prev_action = None
                         _prev_applied_action = None
-                        self._notify_viewer_reset(self.viewer)
+                        self._notify_viewer_reset(self.viewer, "checkpoint_switch")
                         if self.viewer is not None:
                             reset_telemetry = self.robot.telemetry(reward=0.0)
                             reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
@@ -236,9 +243,11 @@ class Sim2SimWorkflow:
                                 telemetry=reset_telemetry,
                             )
                         continue
-                if self._consume_viewer_reset_requested(self.viewer):
+                reset_mode = self._consume_viewer_reset_request(self.viewer)
+                if reset_mode is not None:
                     episode_step_offset = step
                     viewer_step_offset = step
+                    applied_reset_mode = self._apply_viewer_reset_mode(reset_mode)
                     obs = self.robot.reset(
                         fixed=self.cfg.fixed_reset,
                         randomize_root=self.cfg.randomize_root,
@@ -259,7 +268,7 @@ class Sim2SimWorkflow:
                     _jump_active = self.robot.command[5] > 0.5
                     _prev_action = None
                     _prev_applied_action = None
-                    self._notify_viewer_reset(self.viewer)
+                    self._notify_viewer_reset(self.viewer, applied_reset_mode)
                     if self.viewer is not None:
                         reset_telemetry = self.robot.telemetry(reward=0.0)
                         reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
@@ -267,7 +276,7 @@ class Sim2SimWorkflow:
                         reset_telemetry["rc_switch_event"] = 0.0
                         reset_telemetry["rc_policy_reset"] = 1.0
                         reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
-                        reset_telemetry["target_mode"] = "reset"
+                        reset_telemetry["target_mode"] = applied_reset_mode
                         self.viewer.log_state(
                             self.robot.model,
                             self.robot.data,
@@ -586,6 +595,35 @@ class Sim2SimWorkflow:
             self.viewer.close()
         return summary
 
+    def _apply_viewer_reset_mode(self, mode: str | None) -> str:
+        reset_mode = "normal" if mode is None else str(mode)
+        if reset_mode in RECOVERY_POSE_RP_RAD and reset_mode != "standing":
+            roll, pitch = RECOVERY_POSE_RP_RAD[reset_mode]
+            self.cfg.robot.initial_roll_rad = float(roll)
+            self.cfg.robot.initial_pitch_rad = float(pitch)
+            self.cfg.robot.initial_yaw_rad = self._viewer_default_initial_yaw_rad
+            self.cfg.robot.initial_base_height = 0.16
+            self.cfg.robot.command = (
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                float(RECOVERY_COMMAND_HEIGHT_M),
+                0.0,
+                0.0,
+                0.0,
+            )
+            self.cfg.robot.yaw_pid.enabled = False
+            return f"recovery_reset:{reset_mode}"
+
+        self.cfg.robot.initial_roll_rad = self._viewer_default_initial_roll_rad
+        self.cfg.robot.initial_pitch_rad = self._viewer_default_initial_pitch_rad
+        self.cfg.robot.initial_yaw_rad = self._viewer_default_initial_yaw_rad
+        self.cfg.robot.initial_base_height = self._viewer_default_initial_base_height
+        self.cfg.robot.command = self._viewer_default_command
+        self.cfg.robot.yaw_pid.enabled = self._viewer_default_yaw_pid_enabled
+        return "normal"
+
     def _policy_iteration_int(self) -> int | None:
         """返回当前 checkpoint 的迭代数，无法解析时交给 CTBC 使用默认值。"""
 
@@ -660,6 +698,27 @@ class Sim2SimWorkflow:
         )
 
     @staticmethod
+    def _consume_viewer_reset_request(viewer: object | None) -> str | None:
+        """从 viewer 或组合 viewer 中消费 reset 请求。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_reset_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume_typed = getattr(viewer, "consume_reset_request", None)
+        if callable(consume_typed):
+            requested = consume_typed()
+            return None if requested is None else str(requested)
+        consume = getattr(viewer, "consume_reset_requested", None)
+        if callable(consume):
+            return "normal" if bool(consume()) else None
+        return None
+
+    @staticmethod
     def _consume_viewer_reset_requested(viewer: object | None) -> bool:
         """从 viewer 或组合 viewer 中消费 reset 请求。"""
         if viewer is None:
@@ -691,18 +750,18 @@ class Sim2SimWorkflow:
         return None
 
     @staticmethod
-    def _notify_viewer_reset(viewer: object | None) -> None:
+    def _notify_viewer_reset(viewer: object | None, mode: str = "normal") -> None:
         """通知 viewer 主线程已经完成 reset。"""
         if viewer is None:
             return
         children = getattr(viewer, "_viewers", None)
         if children is not None:
             for child in children:
-                Sim2SimWorkflow._notify_viewer_reset(child)
+                Sim2SimWorkflow._notify_viewer_reset(child, mode)
             return
         notify = getattr(viewer, "notify_reset", None)
         if callable(notify):
-            notify()
+            notify(mode)
 
     @staticmethod
     def _notify_viewer_checkpoint_loaded(
