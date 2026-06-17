@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -12,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +47,7 @@ class CheckpointInfo:
     iteration: int
     size: int
     mtime: str
+    download_url: str | None = None
 
 
 def run(
@@ -53,11 +56,13 @@ def run(
     capture: bool = True,
     timeout: float = 120.0,
     check: bool = True,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         cmd,
         check=False,
         capture_output=capture,
+        input=input_text,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -99,6 +104,42 @@ def ps_quote(value: str) -> str:
 
 def powershell_encoded_command(script: str) -> str:
     return base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
+
+def github_token() -> str | None:
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        token = os.environ.get(name)
+        if token:
+            return token
+    result = run(
+        ["git", "credential", "fill"],
+        capture=True,
+        timeout=20.0,
+        check=False,
+        input_text="protocol=https\nhost=github.com\n\n",
+    )
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    return fields.get("password") or None
+
+
+def github_request(args: argparse.Namespace, url: str, *, accept: str) -> bytes:
+    headers = {
+        "Accept": accept,
+        "User-Agent": "se3-local-viser-watch",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=float(args.github_timeout_s)) as response:
+        return response.read()
+
+
+def github_json(args: argparse.Namespace, url: str) -> object:
+    return json.loads(
+        github_request(args, url, accept="application/vnd.github+json").decode("utf-8")
+    )
 
 
 def laptop_cmd(args: argparse.Namespace, *command: str) -> list[str]:
@@ -175,6 +216,58 @@ def stable_remote_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
     return None
 
 
+def latest_github_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
+    url = (
+        "https://api.github.com/repos/"
+        f"{args.github_release_repo}/releases/tags/{args.github_release_tag}"
+    )
+    release = github_json(args, url)
+    if not isinstance(release, dict):
+        raise RuntimeError("unexpected GitHub release response")
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        raise RuntimeError("unexpected GitHub release assets response")
+    candidates: list[CheckpointInfo] = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name", ""))
+        match = MODEL_RE.match(name)
+        if match is None:
+            continue
+        size = int(asset.get("size", 0) or 0)
+        if size <= 0:
+            continue
+        api_url = str(asset.get("url", ""))
+        if not api_url:
+            continue
+        candidates.append(
+            CheckpointInfo(
+                name=name,
+                iteration=int(match.group(1)),
+                size=size,
+                mtime=str(asset.get("updated_at", "")),
+                download_url=api_url,
+            )
+        )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda ckpt: ckpt.iteration)
+
+
+def stable_github_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
+    first = latest_github_checkpoint(args)
+    if first is None or args.stability_seconds <= 0:
+        return first
+    time.sleep(args.stability_seconds)
+    second = latest_github_checkpoint(args)
+    if second is None:
+        return None
+    if first.name == second.name and first.size == second.size and first.mtime == second.mtime:
+        return second
+    return None
+
+
 def latest_local_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
     local_run_dir = args.local_run_root / args.run_dir
     if not local_run_dir.exists():
@@ -200,9 +293,25 @@ def latest_local_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
     return max(checkpoints, key=lambda ckpt: ckpt.iteration)
 
 
-def select_checkpoint(args: argparse.Namespace) -> tuple[CheckpointInfo | None, bool]:
+def select_checkpoint(args: argparse.Namespace) -> tuple[CheckpointInfo | None, str]:
     if args.source == "local":
-        return latest_local_checkpoint(args), False
+        return latest_local_checkpoint(args), "local"
+    if args.source == "github-release":
+        try:
+            github = stable_github_checkpoint(args)
+        except Exception as exc:
+            print(
+                "[local-viser-watch] GitHub release query failed; "
+                f"falling back to local checkpoints: {exc}",
+                file=sys.stderr,
+            )
+            return latest_local_checkpoint(args), "local"
+        if github is not None:
+            return github, "github-release"
+        local = latest_local_checkpoint(args)
+        if local is not None:
+            print("[local-viser-watch] GitHub release has no checkpoint; using local checkpoint")
+        return local, "local"
     try:
         remote = stable_remote_checkpoint(args)
     except Exception as exc:
@@ -210,13 +319,13 @@ def select_checkpoint(args: argparse.Namespace) -> tuple[CheckpointInfo | None, 
             f"[local-viser-watch] remote query failed; falling back to local checkpoints: {exc}",
             file=sys.stderr,
         )
-        return latest_local_checkpoint(args), False
+        return latest_local_checkpoint(args), "local"
     if remote is not None:
-        return remote, True
+        return remote, "remote"
     local = latest_local_checkpoint(args)
     if local is not None:
         print("[local-viser-watch] remote has no stable checkpoint; using local checkpoint")
-    return local, False
+    return local, "local"
 
 
 def terrain_level(args: argparse.Namespace) -> int:
@@ -345,15 +454,54 @@ def copy_laptop_to_local(args: argparse.Namespace, ckpt: CheckpointInfo, laptop_
     return local_path.resolve()
 
 
+def download_github_checkpoint(args: argparse.Namespace, ckpt: CheckpointInfo) -> Path:
+    if not ckpt.download_url:
+        raise RuntimeError(f"GitHub checkpoint {ckpt.name} has no download URL")
+    local_run_dir = args.local_run_root / args.run_dir
+    local_run_dir.mkdir(parents=True, exist_ok=True)
+    local_path = local_run_dir / ckpt.name
+    if local_path.exists() and local_path.stat().st_size == ckpt.size:
+        return local_path.resolve()
+    tmp_path = local_run_dir / f"{ckpt.name}.{os.getpid()}.github.tmp"
+    if tmp_path.exists():
+        tmp_path.unlink()
+    try:
+        data = github_request(args, ckpt.download_url, accept="application/octet-stream")
+        tmp_path.write_bytes(data)
+        if tmp_path.stat().st_size != ckpt.size:
+            raise RuntimeError(
+                f"GitHub asset size mismatch for {ckpt.name}: "
+                f"{tmp_path.stat().st_size} != {ckpt.size}"
+            )
+        tmp_path.replace(local_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return local_path.resolve()
+
+
 def local_checkpoint_path(args: argparse.Namespace, ckpt: CheckpointInfo) -> Path:
     return (args.local_run_root / args.run_dir / ckpt.name).resolve()
 
 
 def copy_checkpoint_to_local(
-    args: argparse.Namespace, ckpt: CheckpointInfo, *, remote: bool
+    args: argparse.Namespace, ckpt: CheckpointInfo, *, source: str
 ) -> tuple[Path, CheckpointInfo]:
-    if not remote:
+    if source == "local":
         return local_checkpoint_path(args, ckpt), ckpt
+    if source == "github-release":
+        try:
+            return download_github_checkpoint(args, ckpt), ckpt
+        except Exception as exc:
+            print(
+                "[local-viser-watch] GitHub release download failed; "
+                f"using latest local checkpoint if available: {exc}",
+                file=sys.stderr,
+            )
+            local = latest_local_checkpoint(args)
+            if local is None:
+                raise
+            return local_checkpoint_path(args, local), local
     try:
         laptop_path = ensure_laptop_checkpoint(args, ckpt)
         return copy_laptop_to_local(args, ckpt, laptop_path), ckpt
@@ -495,7 +643,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=60.0)
     parser.add_argument("--stability-seconds", type=float, default=2.0)
     parser.add_argument("--terrain-level", type=int, default=-1)
-    parser.add_argument("--source", choices=("remote", "local"), default="remote")
+    parser.add_argument(
+        "--source",
+        choices=("github-release", "remote", "local"),
+        default="github-release",
+    )
+    parser.add_argument(
+        "--github-release-repo",
+        default="3SE-Competitive-Robotics-Team/se3_checkpoint_exchange",
+    )
+    parser.add_argument(
+        "--github-release-tag",
+        default="run-20260617-101355-stair3k-ctbcslow-f4ebc01",
+    )
+    parser.add_argument("--github-timeout-s", type=float, default=120.0)
     parser.add_argument("--sim-dt", type=float, default=0.005)
     parser.add_argument("--control-decimation", type=int, default=4)
     parser.add_argument("--fixed-ctbc-iter", action="store_true")
@@ -515,20 +676,20 @@ def main() -> None:
     viewer_proc: subprocess.Popen[str] | None = None
     while True:
         try:
-            ckpt, remote = select_checkpoint(args)
+            ckpt, source = select_checkpoint(args)
             if ckpt is None:
                 print("[local-viser-watch] no stable checkpoint yet")
             else:
                 local_path = local_checkpoint_path(args, ckpt)
-                if remote and ckpt.iteration > last_synced_iter:
+                if source != "local" and ckpt.iteration > last_synced_iter:
                     print(
-                        f"[local-viser-watch] syncing {ckpt.name} "
+                        f"[local-viser-watch] syncing {ckpt.name} from {source} "
                         f"iter={ckpt.iteration} size={ckpt.size}"
                     )
-                    local_path, ckpt = copy_checkpoint_to_local(args, ckpt, remote=True)
+                    local_path, ckpt = copy_checkpoint_to_local(args, ckpt, source=source)
                     last_synced_iter = ckpt.iteration
                     print(f"[local-viser-watch] local checkpoint {local_path}")
-                elif not remote:
+                elif source == "local":
                     last_synced_iter = max(last_synced_iter, ckpt.iteration)
                     print(
                         f"[local-viser-watch] local latest {ckpt.name} "
@@ -544,7 +705,7 @@ def main() -> None:
                 if should_restart:
                     level = (
                         terrain_level(args)
-                        if remote
+                        if source == "remote"
                         else max(0, min(9, args.terrain_level if args.terrain_level >= 0 else 3))
                     )
                     stop_viewer(viewer_proc)

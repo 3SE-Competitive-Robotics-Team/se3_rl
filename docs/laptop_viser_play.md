@@ -94,6 +94,7 @@ checkpoint 文件同步，不再承载 Viser HTTP/WebSocket 交互。
 
 ```powershell
 uv run python scripts\local_stair_viser_watcher.py `
+  --source github-release `
   --run-dir 2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
   --terrain-level 3 `
   --interval-iters 100 `
@@ -102,7 +103,7 @@ uv run python scripts\local_stair_viser_watcher.py `
   --device cpu
 ```
 
-该脚本会把远端稳定的 `model_*.pt` 原子同步到
+该脚本默认从 GitHub Release checkpoint exchange 拉取稳定的 `model_*.pt`，原子同步到
 `logs\remote_watch\<run>\`，再在本机启动 native MuJoCo closedchain：
 
 ```cmd
@@ -127,6 +128,23 @@ run 目录下的新 checkpoint 时，CTBC 退火会跟随 policy checkpoint 的 
 远端连接临时失败时，watcher 会继续使用本机已有的最新 checkpoint 保持 Viser 可用；这时画面
 不会自动更新到远端最新模型，但本机交互不会因为 tunnel 抖动而断开。恢复 laptop/A800 链路后，
 下一轮 poll 会继续同步新 checkpoint。
+
+GitHub Release 数据通道的发布端使用：
+
+```powershell
+uv run python scripts\github_release_checkpoint_publisher.py `
+  --checkpoint-dir logs\remote_watch\2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
+  --poll-seconds 60 `
+  --stability-seconds 10 `
+  --interval-iters 100
+```
+
+publisher 可以跑在任何能拿到 checkpoint 文件的机器上，例如 laptop 侧 A800 同步缓存目录。
+它不依赖 `gh`，优先使用 `GITHUB_TOKEN` / `GH_TOKEN`，否则读取 git credential helper。viewer
+侧只从 release 下载 asset，因此不再依赖 laptop 的 `8080` 或 `2224` 反向端口是否稳定。
+
+如果确实要绕过 GitHub exchange，watcher 仍可显式传 `--source remote`，按
+`laptop -> a800 -> pod` 的 SSH 路线复制 checkpoint；这条路线只作为备用，不作为当前推荐值守通道。
 
 旧方案是开发机只做 laptop 的 8080 转发：
 
