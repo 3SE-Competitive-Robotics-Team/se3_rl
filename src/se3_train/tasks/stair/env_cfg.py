@@ -785,6 +785,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "level_buckets": _STAIR_LEVEL_BUCKETS,
                 "bucket_weight_stages": _STAIR_BUCKET_WEIGHT_STAGES,
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+                "balance_occupancy": True,
             },
         )
         task_mode_commands = EventTermCfg(

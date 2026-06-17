@@ -97,6 +97,94 @@ def _sample_uniform(
     return low + (high - low) * torch.rand(env_ids.numel(), device=env.device)
 
 
+def _normalized_task_mode_probs(
+    stair_prob: float,
+    recovery_prob: float,
+    flat_prob: float,
+    device: torch.device,
+) -> torch.Tensor:
+    probs = torch.tensor(
+        [
+            max(float(stair_prob), 0.0),
+            max(float(recovery_prob), 0.0),
+            max(float(flat_prob), 0.0),
+        ],
+        device=device,
+        dtype=torch.float32,
+    )
+    total = float(probs.sum().item())
+    if total <= 1.0e-6:
+        probs[0] = 1.0
+        return probs
+    return probs / total
+
+
+def _task_mode_counts_from_probs(probs: torch.Tensor, total_count: int) -> torch.Tensor:
+    if total_count <= 0:
+        return torch.zeros(3, device=probs.device, dtype=torch.long)
+    raw_counts = probs * float(total_count)
+    counts = torch.floor(raw_counts).to(dtype=torch.long)
+    remainder = int(total_count - counts.sum().item())
+    if remainder > 0:
+        fractions = raw_counts - torch.floor(raw_counts)
+        order = torch.argsort(fractions, descending=True)
+        counts[order[:remainder]] += 1
+    return counts
+
+
+def _sample_balanced_task_modes(
+    env,
+    env_ids: torch.Tensor,
+    task_mode: torch.Tensor,
+    probs: torch.Tensor,
+) -> torch.Tensor:
+    """按当前全局占用补偿 reset 采样，避免短 episode mode 被时间占比稀释。"""
+    num_new = int(env_ids.numel())
+    if num_new <= 0:
+        return torch.empty(0, device=env.device, dtype=torch.long)
+
+    reset_mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    reset_mask[env_ids] = True
+    remaining_modes = task_mode[~reset_mask]
+    remaining_counts = torch.stack(
+        [
+            (remaining_modes == _TASK_MODE_STAIR).sum(),
+            (remaining_modes == _TASK_MODE_RECOVERY).sum(),
+            (remaining_modes == _TASK_MODE_FLAT).sum(),
+        ]
+    ).to(device=env.device, dtype=torch.long)
+    target_counts = _task_mode_counts_from_probs(probs, env.num_envs)
+    needed_counts = torch.clamp(target_counts - remaining_counts, min=0)
+    needed_total = int(needed_counts.sum().item())
+    if needed_total <= 0:
+        counts = _task_mode_counts_from_probs(probs, num_new)
+    elif needed_total > num_new:
+        counts = _task_mode_counts_from_probs(needed_counts.float() / float(needed_total), num_new)
+    else:
+        counts = needed_counts
+        leftover = num_new - needed_total
+        if leftover > 0:
+            counts = counts + _task_mode_counts_from_probs(probs, leftover)
+
+    mode_values = torch.tensor(
+        [_TASK_MODE_STAIR, _TASK_MODE_RECOVERY, _TASK_MODE_FLAT],
+        device=env.device,
+        dtype=torch.long,
+    )
+    local_mode = torch.repeat_interleave(mode_values, counts)
+    if local_mode.numel() < num_new:
+        padding = torch.full(
+            (num_new - local_mode.numel(),),
+            _TASK_MODE_STAIR,
+            device=env.device,
+            dtype=torch.long,
+        )
+        local_mode = torch.cat((local_mode, padding), dim=0)
+    elif local_mode.numel() > num_new:
+        local_mode = local_mode[:num_new]
+    return local_mode[torch.randperm(num_new, device=env.device)]
+
+
 def _apply_command_ranges(
     env,
     env_ids: torch.Tensor,
@@ -137,22 +225,25 @@ def sample_stair_task_mode(
         ...,
     ] = DEFAULT_BUCKET_WEIGHT_STAGES,
     steps_per_policy_iter: int = 64,
+    balance_occupancy: bool = True,
 ) -> None:
     """reset 前采样 stair/recovery rehearsal mode，并同步地形 origin。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-    total = max(float(stair_prob) + float(recovery_prob) + float(flat_prob), 1.0e-6)
-    stair_p = float(stair_prob) / total
-    recovery_p = float(recovery_prob) / total
-
-    r = torch.rand(env_ids.numel(), device=env.device)
-    local_mode = torch.full(
-        (env_ids.numel(),), _TASK_MODE_STAIR, device=env.device, dtype=torch.long
-    )
-    local_mode[(r >= stair_p) & (r < stair_p + recovery_p)] = _TASK_MODE_RECOVERY
-    local_mode[r >= stair_p + recovery_p] = _TASK_MODE_FLAT
-
+    probs = _normalized_task_mode_probs(stair_prob, recovery_prob, flat_prob, env.device)
     task_mode = _ensure_long_buffer(env, "_stair_task_mode")
+    if balance_occupancy:
+        local_mode = _sample_balanced_task_modes(env, env_ids, task_mode, probs)
+    else:
+        stair_p = float(probs[0].item())
+        recovery_p = float(probs[1].item())
+        r = torch.rand(env_ids.numel(), device=env.device)
+        local_mode = torch.full(
+            (env_ids.numel(),), _TASK_MODE_STAIR, device=env.device, dtype=torch.long
+        )
+        local_mode[(r >= stair_p) & (r < stair_p + recovery_p)] = _TASK_MODE_RECOVERY
+        local_mode[r >= stair_p + recovery_p] = _TASK_MODE_FLAT
+
     recovery_mask = _ensure_bool_buffer(env, "_stair_recovery_mode_mask")
     task_mode[env_ids] = local_mode
     recovery_mask[env_ids] = local_mode == _TASK_MODE_RECOVERY
