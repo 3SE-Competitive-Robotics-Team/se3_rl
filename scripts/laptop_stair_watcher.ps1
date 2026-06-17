@@ -6,9 +6,9 @@ $ErrorActionPreference = 'Continue'
 $Namespace = 'gczx-project06'
 $Pod = 'abbtask-79cdb78487-mgx44'
 $Project = '/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg'
-$RunDir = '2026-06-17_07-28-26_stair_strict_success_a3887a5_8gpu_4096pergpu_20260617'
+$RunDir = '2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k'
 $Task = 'SE3-WheelLegged-Stair-GRU'
-$TrainLog = '/tmp/stair_strict_formal_a3887a5.log'
+$TrainLog = '/tmp/train_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k.log'
 $Repo = 'E:\se3_stair_viewer'
 $LocalRunDir = Join-Path $Repo "logs\remote_watch\$RunDir"
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
@@ -19,6 +19,8 @@ $PollSeconds = 60
 $StepHeightMin = 0.05
 $StepHeightMax = 0.20
 $MoveUpMinSteps = 2.0
+$SimDt = '0.005'
+$ControlDecimation = '4'
 $LastIter = -1
 $LastTerrainLevel = -1
 $Viewer = $null
@@ -36,17 +38,18 @@ $env:TMP = $TempRoot
 
 function Invoke-A800HostBash([string]$ScriptText) {
   $normalized = $ScriptText -replace "`r`n", "`n"
-  $hostB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
-  & ssh -T -o BatchMode=yes -o ConnectTimeout=10 a800 "echo $hostB64 | base64 -d | bash"
+  $normalized | & ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o IPQoS=none a800 "timeout 180s bash -s"
   if ($LASTEXITCODE -ne 0) { throw "a800 host command failed: $LASTEXITCODE" }
 }
 
 function Invoke-PodBash([string]$ScriptText, [int]$TimeoutSeconds = 60) {
   $normalized = $ScriptText -replace "`r`n", "`n"
-  $podB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
+  $marker = "SE3_POD_SCRIPT_$([Guid]::NewGuid().ToString('N'))"
   $hostScript = @"
 set -euo pipefail
-timeout ${TimeoutSeconds}s kubectl exec -n $Namespace $Pod -- bash -lc 'echo $podB64 | base64 -d | bash'
+timeout ${TimeoutSeconds}s kubectl exec -i -n $Namespace $Pod -- bash -s <<'$marker'
+$normalized
+$marker
 "@
   Invoke-A800HostBash $hostScript
 }
@@ -155,7 +158,7 @@ function Start-Viewer($checkpointPath, [int]$terrainLevel) {
   $env:SE3_TRAIN_VIEW_TERRAIN_LEVEL = "$terrainLevel"
   $env:SE3_WATCH_ITER = ([regex]::Match((Split-Path $checkpointPath -Leaf), 'model_(\d+)\.pt').Groups[1].Value)
   $env:SE3_TRAIN_VIEW_ITER = $env:SE3_WATCH_ITER
-  $args = @('-m','se3_sim2sim.cli','--checkpoint',$checkpointPath,'--model-variant','closedchain','--viewer','viser','--device','cpu','--print-every','0','--stair-terrain','--stair-terrain-level',"$terrainLevel",'--stair-ctbc','--stair-ctbc-iter',$env:SE3_WATCH_ITER,'--command','1.2','0','0','0','0.32','0','0','0')
+  $args = @('-m','se3_sim2sim.cli','--checkpoint',$checkpointPath,'--model-variant','closedchain','--sim-dt',$SimDt,'--control-decimation',$ControlDecimation,'--viewer','viser','--device','cpu','--print-every','0','--stair-terrain','--stair-terrain-level',"$terrainLevel",'--stair-ctbc','--stair-ctbc-iter',$env:SE3_WATCH_ITER,'--command','1.2','0','0','0','0.32','0','0','0')
   $script:Viewer = Start-Process -FilePath $Python -ArgumentList $args -WorkingDirectory $Repo -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Hidden -PassThru
   Write-Output "viewer pid=$($script:Viewer.Id) terrain_level=$terrainLevel checkpoint=$checkpointPath"
 }
