@@ -26,8 +26,24 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
     """带 SE3 运行时画像的 MJLab on-policy runner。"""
+
+    actor_freeze_iters_default = 0
+    actor_freeze_iters_env = "SE3_ACTOR_FREEZE_ITERS"
+    save_warmstart_snapshot_default = False
+    save_warmstart_snapshot_env = "SE3_SAVE_WARMSTART_SNAPSHOT"
 
     def __init__(self, *args, **kwargs) -> None:
         """初始化 runner，并采集一次训练运行时资源快照。"""
@@ -36,6 +52,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         self._se3_runtime_info_logged = False
         self._se3_async_host_logger_enabled = async_host_logger_enabled()
         self._se3_last_async_logger_flush_s = 0.0
+        self._se3_stage_warm_start_loaded = False
         self._se3_check_nan_enabled = _env_flag(
             "SE3_CHECK_NAN",
             os.environ.get("SE3_SMOKE", "0") == "1",
@@ -64,6 +81,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             self.alg.broadcast_parameters()
 
         self.logger.init_logging_writer()
+        self._save_warmstart_snapshot()
         async_logger = (
             Se3AsyncHostLogger(self.logger) if self._se3_async_host_logger_enabled else None
         )
@@ -72,6 +90,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         total_it = start_it + num_learning_iterations
         num_steps_per_env = int(self.cfg["num_steps_per_env"])
         for it in range(start_it, total_it):
+            actor_frozen = self._freeze_actor_for_iteration(it)
             timer = IterationTimer(self.env.num_envs, num_steps_per_env)
             with torch.inference_mode():
                 for _ in range(num_steps_per_env):
@@ -97,7 +116,11 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 self.alg.compute_returns(obs)
                 timer.mark_returns_done()
 
-            loss_dict = self.alg.update()
+            try:
+                loss_dict = self.alg.update()
+            finally:
+                if actor_frozen:
+                    self._restore_actor_training()
             timing = timer.finish()
             self._se3_last_async_logger_flush_s = (
                 async_logger.flush() if async_logger is not None else 0.0
@@ -162,6 +185,68 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             )
             self._se3_runtime_info_logged = True
 
+    def _actor_freeze_iters(self) -> int:
+        """返回 actor 冻结迭代数。"""
+        return max(
+            0,
+            _env_int(self.actor_freeze_iters_env, int(self.actor_freeze_iters_default)),
+        )
+
+    def _freeze_actor_for_iteration(self, iteration: int) -> bool:
+        """在保护期内冻结 actor，只更新 critic 和 critic 观测统计。"""
+        freeze_iters = self._actor_freeze_iters()
+        should_freeze = (
+            self._se3_stage_warm_start_loaded and freeze_iters > 0 and iteration < freeze_iters
+        )
+        if should_freeze:
+            self._set_actor_requires_grad(False)
+            self.alg.actor.eval()
+            self.alg.get_policy().eval()
+        else:
+            self._restore_actor_training()
+        writer = self.logger.writer
+        if writer is not None:
+            writer.add_scalar("Runtime/actor_frozen", float(should_freeze), iteration)
+            writer.add_scalar("Runtime/actor_freeze_iters", float(freeze_iters), iteration)
+        if should_freeze and (not self.is_distributed or self.gpu_global_rank == 0):
+            print(
+                f"[SE3 WarmStart] actor frozen for iteration {iteration}/{freeze_iters}",
+                flush=True,
+            )
+        return should_freeze
+
+    def _set_actor_requires_grad(self, enabled: bool) -> None:
+        """切换 actor 参数梯度开关。"""
+        for parameter in self.alg.get_policy().parameters():
+            parameter.requires_grad_(enabled)
+
+    def _restore_actor_training(self) -> None:
+        """恢复 actor 训练模式和梯度。"""
+        self._set_actor_requires_grad(True)
+        self.alg.actor.train()
+        self.alg.get_policy().train()
+
+    def _save_warmstart_snapshot(self) -> None:
+        """保存 PPO 更新前的 warm-start checkpoint，便于诊断首轮漂移。"""
+        enabled = _env_flag(
+            self.save_warmstart_snapshot_env,
+            bool(self.save_warmstart_snapshot_default),
+        )
+        if not enabled or not self._se3_stage_warm_start_loaded:
+            return
+        if self.current_learning_iteration != 0:
+            return
+        if self.is_distributed and self.gpu_global_rank != 0:
+            return
+        log_dir = self.logger.log_dir
+        if not log_dir:
+            return
+        path = os.path.join(log_dir, "model_warmstart.pt")
+        if os.path.exists(path):
+            return
+        self.save(path)
+        print(f"[SE3 WarmStart] saved pre-update checkpoint: {path}", flush=True)
+
 
 class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
     """阶段切换专用 warm-start runner。
@@ -169,6 +254,9 @@ class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
     上一阶段 checkpoint 只提供 actor/critic 初始权重。新阶段必须从新的 runner
     迭代、optimizer 和环境计数开始，否则课程和日志会继承旧 checkpoint 的训练进度。
     """
+
+    warm_start_load_critic_default = True
+    warm_start_load_critic_env = "SE3_WARMSTART_LOAD_CRITIC"
 
     def load(
         self,
@@ -179,11 +267,16 @@ class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
     ) -> dict:
         """只加载策略和价值网络权重，不恢复 optimizer、iter 和 env_state。"""
         if _env_flag("SE3_FULL_RESUME", False):
+            self._se3_stage_warm_start_loaded = False
             return super().load(path, load_cfg=load_cfg, strict=strict, map_location=map_location)
 
+        load_critic = _env_flag(
+            self.warm_start_load_critic_env,
+            bool(self.warm_start_load_critic_default),
+        )
         warm_start_cfg = {
             "actor": True,
-            "critic": True,
+            "critic": load_critic,
             "optimizer": False,
             "iteration": False,
             "rnd": False,
@@ -201,7 +294,25 @@ class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
         self.alg.load(loaded_dict, warm_start_cfg if load_cfg is None else load_cfg, strict)
         self.current_learning_iteration = 0
         self.env.unwrapped.common_step_counter = 0
+        self._se3_stage_warm_start_loaded = load_cfg is None
+        if load_cfg is None and (not self.is_distributed or self.gpu_global_rank == 0):
+            print(
+                "[SE3 WarmStart] loaded checkpoint "
+                f"actor=True critic={load_critic} optimizer=False iteration=False",
+                flush=True,
+            )
         return loaded_dict.get("infos", {})
 
 
 Se3PretrainWarmStartRunner = Se3WarmStartRunner
+
+
+class Se3StairWarmStartRunner(Se3WarmStartRunner):
+    """台阶任务专用 warm-start runner。"""
+
+    warm_start_load_critic_default = True
+    warm_start_load_critic_env = "SE3_STAIR_WARMSTART_LOAD_CRITIC"
+    actor_freeze_iters_default = 0
+    actor_freeze_iters_env = "SE3_STAIR_ACTOR_FREEZE_ITERS"
+    save_warmstart_snapshot_default = True
+    save_warmstart_snapshot_env = "SE3_STAIR_SAVE_WARMSTART_SNAPSHOT"
