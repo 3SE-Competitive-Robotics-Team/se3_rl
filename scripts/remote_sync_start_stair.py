@@ -87,7 +87,9 @@ def parse_args() -> argparse.Namespace:
             "Resume notes:\n"
             "  Warm-start is the default: only policy/value weights are loaded and the new run\n"
             "  starts its runner iteration, optimizer, env common_step_counter, and CTBC local\n"
-            "  iteration from zero.\n\n"
+            "  iteration from zero. For yaw repair or other curriculum-offset warm starts,\n"
+            "  pass --warm-start-iteration N; this initializes env common_step_counter to\n"
+            "  N * 64 while still starting the runner/optimizer from zero.\n\n"
             "  For full training resume from an in-task checkpoint, pass --full-resume. The\n"
             "  checkpoint restores optimizer, runner iteration, and env common_step_counter.\n"
             "  The stair CTBC state object is still recreated on startup, so set\n"
@@ -98,7 +100,11 @@ def parse_args() -> argparse.Namespace:
             "  instead of reopening from local iteration 0.\n\n"
             "  --iterations is the number of iterations to run in this launch. With\n"
             "  --full-resume the final iteration is checkpoint_iter + --iterations, so to\n"
-            "  finish a model_800.pt resume at total iteration 3800, pass --iterations 3000."
+            "  finish a model_800.pt resume at total iteration 3800, pass --iterations 3000.\n\n"
+            "  Terrain mastery target level is runtime-only state, not serialized in the\n"
+            "  runner checkpoint. When resuming a stair-stage checkpoint and you already\n"
+            "  know the intended level, pass --stair-initial-target-level N; otherwise the\n"
+            "  new process starts the target terrain level at 0 again."
         ),
     )
     parser.add_argument("--entry-host", default="target-via-phone")
@@ -168,6 +174,25 @@ def parse_args() -> argparse.Namespace:
         help=(
             "CTBC 台阶阶段 local iter 对齐值；full resume 从 model_N.pt 续训时设为 N，"
             "例如 model_800.pt 配 800，避免新建 CTBC 状态机后 local iter 从 0 重开。"
+        ),
+    )
+    parser.add_argument(
+        "--warm-start-iteration",
+        type=int,
+        default=None,
+        help=(
+            "仅 warm-start 时使用：把新 run 的 env common_step_counter 初始化到该 PPO iteration。"
+            "用于从 checkpoint 权重开始补训但让课程从指定轮数继续，例如 yaw repair 从 700 开始。"
+        ),
+    )
+    parser.add_argument(
+        "--stair-initial-target-level",
+        type=int,
+        choices=range(10),
+        default=None,
+        help=(
+            "台阶全局 mastery curriculum 的初始 target level；从中途 checkpoint full resume "
+            "时可设为当时已经达到的难度，避免课程状态回到 0。"
         ),
     )
     parser.add_argument(
@@ -354,6 +379,16 @@ compile_targets=(src scripts)
         if args.stair_local_iter_offset is not None
         else "unset SE3_STAIR_LOCAL_ITER_OFFSET"
     )
+    stair_target_level_line = (
+        f"export SE3_STAIR_INITIAL_TARGET_LEVEL={args.stair_initial_target_level}"
+        if args.stair_initial_target_level is not None
+        else "unset SE3_STAIR_INITIAL_TARGET_LEVEL"
+    )
+    warm_start_iteration_line = (
+        f"export SE3_WARM_START_ITERATION={args.warm_start_iteration}"
+        if args.warm_start_iteration is not None and not args.full_resume
+        else "unset SE3_WARM_START_ITERATION"
+    )
     full_resume_value = "1" if args.full_resume else "0"
     launch_script = f"""
 set -euo pipefail
@@ -367,6 +402,9 @@ export WANDB_MODE=offline
 export SE3_LOGGER=wandb
 export SE3_FULL_RESUME={full_resume_value}
 {stair_offset_line}
+{stair_target_level_line}
+{warm_start_iteration_line}
+export SE3_WARM_START_STEPS_PER_ITER=64
 export PYTHONUNBUFFERED=1
 {cuda_visible_line}
 rm -f {shlex.quote(log_path)} {shlex.quote(pid_path)}

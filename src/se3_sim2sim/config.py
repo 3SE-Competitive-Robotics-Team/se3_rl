@@ -83,6 +83,24 @@ def model_path_for_variant(value: str) -> Path:
     return SIM_MODEL_VARIANT_PATHS[normalize_model_variant(value)]
 
 
+class StairConfig(BaseModel):
+    """倒金字塔坑台阶地形配置，程序化注入到 MuJoCo 场景中。"""
+
+    enabled: bool = False
+    num_steps: int = 10
+    """坑底到外侧高地的单侧台阶级数。"""
+    step_height: float = 0.10
+    """单级台阶高度(m)。默认 10cm。"""
+    step_depth: float = 0.60
+    """单级台阶深度(踏面长度,m)。"""
+    width: float = 1.5
+    """坑底平台宽度(m)，需大于机器人轮距。"""
+    start_x: float = 0.8
+    """兼容源仓库参数：作为坑底半宽下限，决定到第一圈台阶的距离。"""
+    friction: float = 0.8
+    """台阶地面摩擦系数。"""
+
+
 class YawPidConfig(BaseModel):
     """yaw 轴闭环控制配置。"""
 
@@ -263,6 +281,8 @@ class RobotConfig(BaseModel):
     """定时跳跃调度配置。"""
     rc_switch: RcSwitchScheduleConfig = Field(default_factory=RcSwitchScheduleConfig)
     """sim2sim 中的遥控器输出使能脚本；关闭时按硬件 off 语义处理。"""
+    stair: StairConfig = Field(default_factory=StairConfig)
+    """台阶地形配置，stair.enabled=True 时注入源仓库同款倒金字塔台阶。"""
 
 
 class PolicyConfig(BaseModel):

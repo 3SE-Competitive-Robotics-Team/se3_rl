@@ -35,6 +35,17 @@ ENTITY_COLORS = {
 }
 
 
+def _is_procedural_terrain_geom(name: str) -> bool:
+    return any(
+        token in name
+        for token in (
+            "pit_bottom",
+            "stair_ring",
+            "outer_platform",
+        )
+    )
+
+
 class RerunViewer:
     def __init__(
         self,
@@ -90,6 +101,9 @@ class RerunViewer:
     def _should_log_geom(self, model: mujoco.MjModel, geom_id: int) -> bool:
         """按 Rerun 显示模式筛选 MJCF 几何。"""
         if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
+            return True
+        name = (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or "").lower()
+        if _is_procedural_terrain_geom(name):
             return True
         if self.geom_view == "both":
             return True

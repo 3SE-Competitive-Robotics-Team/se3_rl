@@ -200,7 +200,12 @@ class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
 
         self.alg.load(loaded_dict, warm_start_cfg if load_cfg is None else load_cfg, strict)
         self.current_learning_iteration = 0
-        self.env.unwrapped.common_step_counter = 0
+        warm_start_iter = int(os.environ.get("SE3_WARM_START_ITERATION", "0"))
+        warm_start_steps_per_iter = max(
+            1,
+            int(os.environ.get("SE3_WARM_START_STEPS_PER_ITER", "64")),
+        )
+        self.env.unwrapped.common_step_counter = max(0, warm_start_iter) * warm_start_steps_per_iter
         return loaded_dict.get("infos", {})
 
 

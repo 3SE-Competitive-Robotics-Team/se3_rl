@@ -70,3 +70,47 @@
 - Remote restart: stopped the previous `0.4 s` pulse run at about iter `1403`, synced into the existing remote project, and full-resumed again from the original walking `model_800.pt` with stair local offset `800`.
 - Run: `2026-06-15_10-42-21_pr24_obs34_walk800_v18_ctbc_pulse03_ann900to1100_m800_resume_total3800_8192_gpu1to7_20260615`; log path `/tmp/train_pr24_obs34_walk800_v18_ctbc_pulse03_ann900to1100_m800_20260615.log`; PID `1813093`; GPUs `1-7`.
 - Verification: the log starts at `Learning iteration 800/3800` with actor `GRU(34, 512)`, `walking_phase=0`, `diag_ctbc_local_iter=800.0156`, and `diag_ctbc_kff=1.0`. GPU 0 remains unused.
+
+## 2026-06-16 - Full resume from model_2400 for 2000 more iterations
+
+- Diagnosis: the previous `pulse03_ann900to1100` run stopped at iter `2457/3800` with no Python traceback; zombie exit codes showed `signal=15` (`SIGTERM`). The last complete checkpoint was `model_2400.pt`.
+- Start: synced current code into the existing remote project and launched a full resume from `model_2400.pt` with `8192` envs, `--iterations 2000`, `--stair-local-iter-offset 2400`, and `CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7`.
+- Run: `2026-06-16_03-26-35_pr24_obs34_walk800_v18_ctbc_pulse03_m2400_fullresume_plus2000_total4400_8192_gpu1to7_20260616`; log path `/tmp/train_pr24_obs34_walk800_v18_ctbc_pulse03_m2400_plus2000_20260616.log`; PID `3136340`.
+- Verification: the log starts at `Learning iteration 2400/4400`, with `walking_phase=0`, `diag_ctbc_local_iter=2400.0156`, and `diag_ctbc_kff=0.0`; GPU 0 remains unused while GPUs `1-7` are active.
+
+## 2026-06-16 - Stair mastery terrain curriculum
+
+- Change: replaced per-env terrain row up/down with a global mastery target level. Target difficulty upgrades by one row when the target-level success window reaches at least `128` samples and success rate is `>= 80%`; failed windows do not downgrade the target.
+- Sampling after the walking phase: `75%` target-level stair episodes, `20%` random lower-level stair episodes, and `5%` flat episodes. The first target level remains `0` unless `SE3_STAIR_INITIAL_TARGET_LEVEL` is set.
+- Resume support: `scripts/remote_sync_start_stair.py` now exposes `--stair-initial-target-level` and documents that this runtime curriculum state is not restored by runner checkpoints.
+- Validation: `ruff`, `compileall`, and a fake-env curriculum check passed. The fake-env check upgraded level `2 -> 3`, kept level `3` after a failed window, and measured sampling rates near `74.97% / 20.13% / 4.90%`.
+
+## 2026-06-16 - Remote episode-10s level-3 full resume
+
+- Change: the stair training environment now overrides the inherited flat-task timeout to `episode_length_s=10.0` for training while keeping play/watch at `9999.0`.
+- Remote environment: the review project's `.venv` symlink was broken because the deleted walk400 project had owned the previous venv. It was relinked to `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg/.venv`; no missing-package install was needed.
+- Start: synced current code into `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_pr24_review_walk800_obs34_v18_20260615` and full-resumed from `model_2400.pt` with `--stair-local-iter-offset 2400`, `--stair-initial-target-level 3`, `8192` envs, and GPUs `1-7`.
+- Run: `2026-06-16_06-50-51_pr24_obs34_walk800_v18_ctbc_pulse03_ep10_mastery_lvl3_m2400_fullresume_plus2000_total4400_8192_gpu1to7_20260616`; log path `/tmp/train_pr24_obs34_walk800_v18_ctbc_pulse03_ep10_lvl3_m2400_plus2000_20260616.log`; PID `3406417`.
+- Verification: the run starts at `Learning iteration 2400/4400`; `env.yaml` records `episode_length_s: 10.0`, `flat_ratio: 0.05`, and `initial_target_level: 3`; logs show `diag_ctbc_local_iter=2400.0156`, `diag_ctbc_kff=0.0`, `target_level=3.0`, and GPU 0 unused.
+
+## 2026-06-17 - Stair reward alignment v12
+
+- Change: replaced the stair climb progress reward with `stair_target_progress_delta`, which rewards only new normalized radial progress toward the same `move_up_distance_ratio=0.35` target used by the mastery terrain curriculum. `stair_max_x_progress` was also changed from a height-gain proxy to the same normalized radial progress metric.
+- New penalties: added `stair_no_progress`, `stair_backtrack`, and `stair_ctbc_no_progress` to penalize commanded stair episodes that stop, move back toward the pit center, or trigger CTBC without outward progress. Existing stall penalties were strengthened: `stair_riser_stall` weight `-1.0 -> -2.0`, `stair_commanded_stall` weight `-2.0 -> -3.0`.
+- Reward rebalance: reduced CTBC shape rewards so they do not dominate locomotion: `stair_feet_clearance 2.0 -> 0.3`, `stair_feet_air_time 2.0 -> 0.2`, `stair_contact_number 2.0 -> 0.2`, and `stair_wheel_swing_zero_vel 0.5 -> 0.1`. The new radial progress reward weight is `5.0`.
+- Curriculum: stair-phase forward speed is capped at `vx=(0.6, 1.2)` after iter `1050`; walking-phase yaw range still reaches `(-3.0, 3.0)` by iter `700`. CTBC local iteration remains aligned by full resume with `--stair-local-iter-offset 800`.
+- Remote run: full-resumed from walking `model_800.pt` in the existing remote project as `2026-06-16_17-57-21_pr24_obs34_rewardalign_v12_m800_resume_total3800_8192_gpu1to7_20260617`; it completed through `model_3799.pt`. Final logs showed `target_level=9`, `level_mean` about `7.93`, `target_success_rate` about `0.83`, `flat_sample_rate` about `0.05`, `low_stair_sample_rate` about `0.19`, and `diag_ctbc_kff=0.0`.
+- Validation: `compileall` and `ruff check` passed for `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/env_cfg.py`.
+- Follow-up diagnosis: `model_3799.pt` can climb but tends to exploit diagonal motion on the square inverted-pyramid stairs. Training terrain uses `step_width=0.5 m`, while the robot collision envelope is about `0.56 m` for the base and `0.63 m` overall, so straight climbing can contact the next riser and diagonal climbing is geometrically easier. Sim2sim slow startup was not caused by `rc_off`; recorded rollouts had `output_enabled=1.0` and `rc_policy_reset=0.0`, and aligning sim2sim `--initial-base-height 0.36` with `command height=0.36` improved early flat speed.
+
+## 2026-06-17 - Yaw PID robustness run and watch_remote fixes
+
+- Training change: stair-phase yaw control now uses random world-frame yaw PID targets after the 800-iteration walking phase. Target bases remain `0/90/180/-90 deg`, target jitter was narrowed to `±35 deg`, and reset aligns the initial yaw to the command target with `90%` probability plus `±0.25 rad` noise. The reset randomization also keeps the command-height mismatch/no-torque cases for sim2sim-style startup robustness.
+- Remote run: synced code into the existing remote project and restarted from walking `model_800.pt` as `2026-06-17_08-24-18_pr24_obs34_yawpid35_m800_restart_total3800_8192_gpu1to7_20260617` with `8192` envs on GPUs `1-7`. The run starts in the stair phase, not the walking phase.
+- Target-level log interpretation: apparent rows with `target_success_rate=0` after an upgrade are a logging/window-reset artifact. `upgraded=0.0156` means one of 64 rollout steps upgraded the global target level; the next row often has an empty new target-level success window.
+- Watch bug: `watch_remote` previously passed only the checkpoint filename iteration, so a warm-started `model_500.pt` was viewed as iteration `500` instead of `1300`. This incorrectly forced the local viewer back into walking/flat curriculum. `scripts/watch_remote_train_local.py` now infers the offset from the remote log, infers the current stair target level, and exports `SE3_WATCH_ITER`, `SE3_TRAIN_VIEW_ITER`, `SE3_WARM_START_ITERATION`, and `SE3_WARM_START_STEPS_PER_ITER=64`.
+- Yaw debug: the robots that spun more than 360 deg in `remote_watch` were not running yaw PID. `Se3WarmStartRunner.load()` reset `common_step_counter` to zero unless `SE3_WARM_START_ITERATION` was set, so the command term stayed in the walking-phase yaw profile. After exporting the warm-start iteration, local diagnostics showed `pid_active=True`, `profile_active=False`, `spin_gt_360_rate=0`, and `spin_gt_180_rate=0` over 32 envs for 5 s.
+- Viewer CTBC sync: `src/se3_train/play.py` now prefers `SE3_WATCH_ITER` over the raw checkpoint filename when syncing CTBC iteration, preventing a `model_N.pt` warm-start checkpoint from overriding CTBC/watch state back to `N`.
+- NaN log diagnosis: `Stair/target_progress_mean`, `Stair/target_speed_mean`, and related stair/curriculum diagnostics became `nan` only on iterations with nonzero `Episode_Termination/catastrophic_state`. A few physically divergent envs produced non-finite root pose/velocity, and the diagnostic mean propagated those NaNs before reset.
+- NaN log fix: `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/curriculums.py` now use finite-safe means for diagnostics, skipping NaN/Inf samples and returning `0` if no finite sample exists. This does not hide the underlying divergence; `Episode_Termination/catastrophic_state` remains the signal for that.
+- Validation: `compileall` passed for `watch_remote_train_local.py`, `diagnose_stair_rollout.py`, `play.py`, `rewards.py`, and `curriculums.py`. A finite-mean check on `[1, nan, 3, inf]` returned `2.0`.

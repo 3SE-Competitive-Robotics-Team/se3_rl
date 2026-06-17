@@ -752,6 +752,18 @@ def reset_root_state_full(
     recovery_grace_steps: int = 400,
     recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
     recovery_zero_velocity_command: bool = True,
+    command_height_reset_prob: float = 0.0,
+    command_height_offset_range: tuple[float, float] = (0.0, 0.0),
+    command_height_no_torque_prob: float = 0.0,
+    command_height_no_torque_offset_range: tuple[float, float] = (0.0, 0.0),
+    command_height_min: float = 0.12,
+    command_height_max: float = 0.45,
+    no_torque_lin_vel_range: tuple[float, float] = (0.0, 0.0),
+    no_torque_ang_vel_range: tuple[float, float] = (0.0, 0.0),
+    command_height_name: str = "velocity_height",
+    command_yaw_target_align_prob: float = 0.0,
+    command_yaw_target_noise_range: tuple[float, float] = (0.0, 0.0),
+    command_yaw_name: str = "velocity_height",
 ) -> None:
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
@@ -821,6 +833,8 @@ def reset_root_state_full(
     env._recovery_stage_cache_prob = float(recovery_state_cache_prob)
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
+    reset_height_offset = torch.zeros(n, device=env.device)
+    no_torque_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
     recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
     init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
     init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
@@ -849,6 +863,60 @@ def reset_root_state_full(
         env._recovery_command_height = float(recovery_command_height)
         command_height_buf[env_ids] = float(recovery_command_height)
 
+    height_mismatch_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
+    if (
+        float(command_height_reset_prob) > 0.0
+        or float(command_height_no_torque_prob) > 0.0
+    ) and hasattr(env, "command_manager"):
+        try:
+            cmd = env.command_manager.get_command(command_height_name)
+            standard_mask = ~recovery_mask
+            if float(command_height_reset_prob) > 0.0:
+                height_mismatch_mask = (
+                    torch.rand(n, device=env.device)
+                    < min(max(float(command_height_reset_prob), 0.0), 1.0)
+                ) & standard_mask
+                if height_mismatch_mask.any():
+                    reset_height_offset[height_mismatch_mask] += sample_uniform(
+                        torch.tensor(float(command_height_offset_range[0]), device=env.device),
+                        torch.tensor(float(command_height_offset_range[1]), device=env.device),
+                        (int(height_mismatch_mask.sum().item()),),
+                        env.device,
+                    )
+            if float(command_height_no_torque_prob) > 0.0:
+                no_torque_mask = (
+                    torch.rand(n, device=env.device)
+                    < min(max(float(command_height_no_torque_prob), 0.0), 1.0)
+                ) & standard_mask
+                if no_torque_mask.any():
+                    reset_height_offset[no_torque_mask] += sample_uniform(
+                        torch.tensor(
+                            float(command_height_no_torque_offset_range[0]),
+                            device=env.device,
+                        ),
+                        torch.tensor(
+                            float(command_height_no_torque_offset_range[1]),
+                            device=env.device,
+                        ),
+                        (int(no_torque_mask.sum().item()),),
+                        env.device,
+                    )
+
+            apply_height_mask = (height_mismatch_mask | no_torque_mask) & standard_mask
+            if apply_height_mask.any():
+                root_height = torch.clamp(
+                    cmd[env_ids, 4] + reset_height_offset,
+                    min=float(command_height_min),
+                    max=float(command_height_max),
+                )
+                pos[apply_height_mask, 2] = (
+                    root_height[apply_height_mask]
+                    + env.scene.env_origins[env_ids][apply_height_mask, 2]
+                )
+        except Exception:
+            height_mismatch_mask.zero_()
+            no_torque_mask.zero_()
+
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
         torch.tensor(-torch.pi, device=env.device),
@@ -858,6 +926,26 @@ def reset_root_state_full(
     )
     roll = torch.zeros(n, device=env.device)
     pitch = torch.zeros(n, device=env.device)
+    yaw_align_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
+    if float(command_yaw_target_align_prob) > 0.0 and hasattr(env, "command_manager"):
+        try:
+            term = env.command_manager.get_term(command_yaw_name)
+            target_yaw = getattr(term, "target_yaw", None)
+            if isinstance(target_yaw, torch.Tensor) and target_yaw.shape[0] == env.num_envs:
+                yaw_align_mask = (
+                    torch.rand(n, device=env.device)
+                    < min(max(float(command_yaw_target_align_prob), 0.0), 1.0)
+                ) & (~recovery_mask)
+                if yaw_align_mask.any():
+                    yaw_noise = sample_uniform(
+                        torch.tensor(float(command_yaw_target_noise_range[0]), device=env.device),
+                        torch.tensor(float(command_yaw_target_noise_range[1]), device=env.device),
+                        (int(yaw_align_mask.sum().item()),),
+                        env.device,
+                    )
+                    yaw[yaw_align_mask] = target_yaw[env_ids][yaw_align_mask] + yaw_noise
+        except Exception:
+            yaw_align_mask.zero_()
     cache_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
     cached_root_quat = torch.zeros(n, 4, device=env.device)
     cached_root_vel = torch.zeros(n, 6, device=env.device)
@@ -1045,6 +1133,20 @@ def reset_root_state_full(
         new_quat[cache_mask] = cached_root_quat[cache_mask]
 
     vel = torch.zeros(n, 6, device=env.device)
+    if no_torque_mask.any():
+        no_torque_count = int(no_torque_mask.sum().item())
+        vel[no_torque_mask, 0:3] = sample_uniform(
+            torch.tensor(float(no_torque_lin_vel_range[0]), device=env.device),
+            torch.tensor(float(no_torque_lin_vel_range[1]), device=env.device),
+            (no_torque_count, 3),
+            env.device,
+        )
+        vel[no_torque_mask, 3:6] = sample_uniform(
+            torch.tensor(float(no_torque_ang_vel_range[0]), device=env.device),
+            torch.tensor(float(no_torque_ang_vel_range[1]), device=env.device),
+            (no_torque_count, 3),
+            env.device,
+        )
     if recovery_mask.any():
         n_recovery = int(recovery_mask.sum().item())
         vel[recovery_mask, 0:3] = sample_uniform(
@@ -1085,6 +1187,20 @@ def reset_root_state_full(
         local_cache_mask = cache_reset_mask[env_ids]
         if local_cache_mask.any():
             vel[local_cache_mask] = cached_root_vel[local_cache_mask]
+
+    if (
+        hasattr(env, "extras")
+        and isinstance(env.extras.get("log"), dict)
+        and (height_mismatch_mask.any() or no_torque_mask.any())
+    ):
+        env.extras["log"].update(
+            {
+                "Reset/command_height_mismatch_rate": height_mismatch_mask.float().mean().item(),
+                "Reset/no_torque_equiv_rate": no_torque_mask.float().mean().item(),
+                "Reset/command_height_offset_mean": reset_height_offset.mean().item(),
+                "Reset/command_yaw_target_align_rate": yaw_align_mask.float().mean().item(),
+            }
+        )
 
     # jump_flag=1 的 episode：从参考轨迹初始化。
     #

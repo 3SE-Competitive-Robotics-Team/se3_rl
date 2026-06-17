@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,34 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     diff_drive_half_track: float = 0.20
     diff_drive_max_wheel_speed: float = 45.0
     diff_drive_wheel_speed_fraction: float = 1.0
+    yaw_rate_profile_enabled: bool = False
+    """是否将 yaw_rate 指令随机为常值/正弦/锯齿 profile。"""
+    yaw_rate_profile_iteration_range: tuple[int, int] | None = None
+    """启用 profile 的 PPO iteration 区间；None 表示全程启用。"""
+    yaw_rate_profile_steps_per_policy_iter: int = 64
+    yaw_rate_profile_mode_weights: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    """常值、正弦、锯齿三种 yaw_rate profile 的采样权重。"""
+    yaw_rate_profile_period_range_s: tuple[float, float] = (1.5, 3.0)
+    yaw_rate_profile_amplitude_fraction_range: tuple[float, float] = (0.5, 1.0)
+    """波形幅度占当前 vx 下可用 yaw 预算的比例范围。"""
+    yaw_pid_enabled: bool = False
+    """是否用随机世界系朝向目标生成 yaw_rate 指令。"""
+    yaw_pid_iteration_range: tuple[int, int] | None = None
+    """启用 yaw PID 的 PPO iteration 区间；None 表示全程启用。"""
+    yaw_pid_steps_per_policy_iter: int = 64
+    yaw_pid_target_base_yaws: tuple[float, ...] = (
+        0.0,
+        math.pi * 0.5,
+        math.pi,
+        -math.pi * 0.5,
+    )
+    """随机目标朝向基准，默认四个正交方向。"""
+    yaw_pid_target_jitter_range: tuple[float, float] = (-math.pi * 0.25, math.pi * 0.25)
+    """目标朝向在基准方向上的扰动范围。"""
+    yaw_pid_kp: float = 2.0
+    yaw_pid_max_rate: float | None = None
+    yaw_pid_target_resample_on_reset_only: bool = True
+    """是否只在 episode reset 时重采样目标朝向，避免中途切换爬楼方向。"""
     terrain_aware_height: bool = True
     """是否按当前 env 的地形台阶高度抬高 body height 指令下限。"""
     terrain_height_clearance: float = 0.0
@@ -72,10 +101,30 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._pre_resampled_for_reset = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.bool
         )
+        self._yaw_profile_mode = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self._yaw_profile_base = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_profile_amplitude = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_profile_frequency = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_profile_phase = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_profile_lower = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_profile_upper = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_pid_target_yaw = torch.zeros(self.num_envs, device=self.device)
+        self._yaw_pid_target_direction_w = torch.zeros(self.num_envs, 2, device=self.device)
+        self._yaw_pid_target_direction_w[:, 0] = 1.0
 
     @property
     def command(self) -> torch.Tensor:
         return self._command
+
+    @property
+    def target_yaw(self) -> torch.Tensor:
+        """世界系目标 yaw，用于台阶 target-direction reward/curriculum。"""
+        return self._yaw_pid_target_yaw
+
+    @property
+    def target_direction_w(self) -> torch.Tensor:
+        """世界系二维目标前进方向。"""
+        return self._yaw_pid_target_direction_w
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         """重置指令项，并保留 reset 事件阶段已预采样的指令。"""
@@ -197,6 +246,8 @@ class VelocityHeightCommandTerm(CommandTerm):
                 standing_ids,
                 standing_height,
             )
+        if len(standing_ids) > 0:
+            self._reset_yaw_profiles(standing_ids)
 
         # 运动环境:随机速度 + 随机姿态 + 随机高度。
         if len(moving_ids) > 0:
@@ -211,6 +262,7 @@ class VelocityHeightCommandTerm(CommandTerm):
                 + self.cfg.ang_vel_yaw_range[0]
             )
             lin_vel, yaw_vel = self._constrain_diff_drive_command(lin_vel, yaw_vel)
+            self._resample_yaw_profiles(moving_ids, lin_vel, yaw_vel)
             pitch = (
                 torch.rand(len(moving_ids), device=self.device)
                 * (self.cfg.pitch_range[1] - self.cfg.pitch_range[0])
@@ -227,6 +279,12 @@ class VelocityHeightCommandTerm(CommandTerm):
             self._command[moving_ids, 3] = roll
             if resample_height:
                 self._command[moving_ids, 4] = self._sample_terrain_aware_height(moving_ids)
+
+        if self.cfg.yaw_pid_enabled and (
+            not self.cfg.yaw_pid_target_resample_on_reset_only
+            or bool(getattr(self, "_resampling_for_reset", False))
+        ):
+            self._resample_yaw_pid_targets(env_ids)
 
         if resample_height:
             update_policy_default_from_height_cache(
@@ -327,12 +385,145 @@ class VelocityHeightCommandTerm(CommandTerm):
         )
         return torch.maximum(base_min, required)
 
-    def _constrain_diff_drive_command(
-        self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """按双轮差速轮速预算约束 vx/yaw，避免同时吃满直行和转向。"""
+    def _reset_yaw_profiles(self, env_ids: torch.Tensor) -> None:
+        self._yaw_profile_mode[env_ids] = 0
+        self._yaw_profile_base[env_ids] = 0.0
+        self._yaw_profile_amplitude[env_ids] = 0.0
+        self._yaw_profile_frequency[env_ids] = 0.0
+        self._yaw_profile_phase[env_ids] = 0.0
+        self._yaw_profile_lower[env_ids] = 0.0
+        self._yaw_profile_upper[env_ids] = 0.0
+
+    def _yaw_profile_active(self) -> bool:
+        if not self.cfg.yaw_rate_profile_enabled:
+            return False
+        iteration_range = self.cfg.yaw_rate_profile_iteration_range
+        if iteration_range is None:
+            return True
+        steps_per_iter = max(1, int(self.cfg.yaw_rate_profile_steps_per_policy_iter))
+        iteration = int(getattr(self._env, "common_step_counter", 0)) // steps_per_iter
+        return int(iteration_range[0]) <= iteration < int(iteration_range[1])
+
+    def _yaw_pid_active(self) -> bool:
+        if not self.cfg.yaw_pid_enabled:
+            return False
+        iteration_range = self.cfg.yaw_pid_iteration_range
+        if iteration_range is None:
+            return True
+        steps_per_iter = max(1, int(self.cfg.yaw_pid_steps_per_policy_iter))
+        iteration = int(getattr(self._env, "common_step_counter", 0)) // steps_per_iter
+        return int(iteration_range[0]) <= iteration < int(iteration_range[1])
+
+    def _resample_yaw_pid_targets(self, env_ids: torch.Tensor) -> None:
+        n = int(env_ids.numel())
+        if n <= 0:
+            return
+        base_yaws = tuple(float(v) for v in self.cfg.yaw_pid_target_base_yaws)
+        if len(base_yaws) == 0:
+            base_yaws = (0.0,)
+        base = torch.tensor(base_yaws, device=self.device, dtype=torch.float32)
+        base_idx = torch.randint(base.numel(), (n,), device=self.device)
+        jitter_low, jitter_high = self.cfg.yaw_pid_target_jitter_range
+        jitter = (
+            torch.rand(n, device=self.device) * (float(jitter_high) - float(jitter_low))
+            + float(jitter_low)
+        )
+        target_yaw = _wrap_to_pi(base[base_idx] + jitter)
+        self._yaw_pid_target_yaw[env_ids] = target_yaw
+        self._yaw_pid_target_direction_w[env_ids, 0] = torch.cos(target_yaw)
+        self._yaw_pid_target_direction_w[env_ids, 1] = torch.sin(target_yaw)
+
+    def _resample_yaw_profiles(
+        self,
+        env_ids: torch.Tensor,
+        lin_vel: torch.Tensor,
+        yaw_vel: torch.Tensor,
+    ) -> None:
+        yaw_low, yaw_high = self._diff_drive_yaw_bounds(lin_vel)
+        self._yaw_profile_lower[env_ids] = yaw_low
+        self._yaw_profile_upper[env_ids] = yaw_high
+
+        if not self._yaw_profile_active():
+            self._yaw_profile_mode[env_ids] = 0
+            self._yaw_profile_base[env_ids] = yaw_vel
+            self._yaw_profile_amplitude[env_ids] = 0.0
+            self._yaw_profile_frequency[env_ids] = 0.0
+            self._yaw_profile_phase[env_ids] = 0.0
+            return
+
+        n = int(env_ids.numel())
+        mode_weights = torch.tensor(
+            self.cfg.yaw_rate_profile_mode_weights,
+            device=self.device,
+            dtype=torch.float32,
+        ).clamp_min(0.0)
+        if float(mode_weights.sum().item()) <= 0.0:
+            mode_weights = torch.tensor((1.0, 0.0, 0.0), device=self.device)
+        modes = torch.multinomial(mode_weights / mode_weights.sum(), n, replacement=True)
+
+        amp_min, amp_max = self.cfg.yaw_rate_profile_amplitude_fraction_range
+        amp_low = min(max(float(amp_min), 0.0), 1.0)
+        amp_high = min(max(float(amp_max), amp_low), 1.0)
+        amp_fraction = torch.rand(n, device=self.device) * (amp_high - amp_low) + amp_low
+        yaw_budget = torch.minimum(torch.abs(yaw_low), torch.abs(yaw_high)).clamp_min(0.0)
+        amplitude = yaw_budget * amp_fraction
+
+        period_min, period_max = self.cfg.yaw_rate_profile_period_range_s
+        period_low = max(float(period_min), 1.0e-3)
+        period_high = max(float(period_max), period_low)
+        period = torch.rand(n, device=self.device) * (period_high - period_low) + period_low
+
+        wave = modes > 0
+        self._yaw_profile_mode[env_ids] = modes
+        self._yaw_profile_base[env_ids] = torch.where(wave, torch.zeros_like(yaw_vel), yaw_vel)
+        self._yaw_profile_amplitude[env_ids] = torch.where(wave, amplitude, torch.zeros_like(yaw_vel))
+        self._yaw_profile_frequency[env_ids] = torch.where(wave, 1.0 / period, torch.zeros_like(yaw_vel))
+        self._yaw_profile_phase[env_ids] = torch.rand(n, device=self.device)
+
+    def _control_dt(self) -> float:
+        physics_dt = float(getattr(self._env, "physics_dt", 0.002))
+        decimation = int(getattr(getattr(self._env, "cfg", None), "decimation", 1))
+        return physics_dt * max(1, decimation)
+
+    def _profiled_yaw(self, yaw_vel: torch.Tensor) -> torch.Tensor:
+        if not self.cfg.yaw_rate_profile_enabled:
+            return yaw_vel
+        if not self._yaw_profile_active():
+            return self._yaw_profile_base.clone()
+        mode = self._yaw_profile_mode
+        wave = (mode > 0) & (~self._standing_mask)
+        if not bool(torch.any(wave)):
+            return self._yaw_profile_base.clone()
+
+        elapsed = self.command_counter.to(device=self.device, dtype=yaw_vel.dtype) * self._control_dt()
+        phase = torch.remainder(self._yaw_profile_phase + elapsed * self._yaw_profile_frequency, 1.0)
+        sine = self._yaw_profile_amplitude * torch.sin(float(math.tau) * phase)
+        saw = self._yaw_profile_amplitude * (2.0 * phase - 1.0)
+
+        profiled = self._yaw_profile_base.clone()
+        profiled = torch.where(mode == 1, sine, profiled)
+        profiled = torch.where(mode == 2, saw, profiled)
+        profiled = torch.where(wave, profiled, self._yaw_profile_base)
+        return torch.clamp(profiled, min=self._yaw_profile_lower, max=self._yaw_profile_upper)
+
+    def _yaw_pid_command(self, lin_vel: torch.Tensor) -> torch.Tensor:
+        robot = self._env.scene["robot"]
+        current_yaw = _yaw_from_quat_wxyz(robot.data.root_link_quat_w)
+        yaw_error = _wrap_to_pi(self._yaw_pid_target_yaw - current_yaw)
+        yaw_vel = yaw_error * float(self.cfg.yaw_pid_kp)
+        if self.cfg.yaw_pid_max_rate is not None:
+            max_rate = abs(float(self.cfg.yaw_pid_max_rate))
+            yaw_vel = torch.clamp(yaw_vel, min=-max_rate, max=max_rate)
+        yaw_low, yaw_high = self._diff_drive_yaw_bounds(lin_vel)
+        return torch.clamp(yaw_vel, min=yaw_low, max=yaw_high)
+
+    def _diff_drive_yaw_bounds(self, lin_vel: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.cfg.constrain_diff_drive_commands:
-            return lin_vel, yaw_vel
+            yaw_low_cfg, yaw_high_cfg = self.cfg.ang_vel_yaw_range
+            return (
+                torch.full_like(lin_vel, float(yaw_low_cfg)),
+                torch.full_like(lin_vel, float(yaw_high_cfg)),
+            )
 
         wheel_radius = max(float(self.cfg.diff_drive_wheel_radius), 1.0e-6)
         half_track = max(float(self.cfg.diff_drive_half_track), 1.0e-6)
@@ -341,8 +532,6 @@ class VelocityHeightCommandTerm(CommandTerm):
             * max(float(self.cfg.diff_drive_max_wheel_speed), 1.0e-6)
             * max(float(self.cfg.diff_drive_wheel_speed_fraction), 1.0e-6)
         )
-
-        lin_vel = torch.clamp(lin_vel, min=-wheel_speed_budget, max=wheel_speed_budget)
         yaw_low_cfg, yaw_high_cfg = self.cfg.ang_vel_yaw_range
         lower_from_left = (-wheel_speed_budget - lin_vel) / half_track
         upper_from_left = (wheel_speed_budget - lin_vel) / half_track
@@ -356,6 +545,24 @@ class VelocityHeightCommandTerm(CommandTerm):
             torch.full_like(lin_vel, float(yaw_high_cfg)),
             torch.minimum(upper_from_left, upper_from_right),
         )
+        return yaw_low, yaw_high
+
+    def _constrain_diff_drive_command(
+        self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """按双轮差速轮速预算约束 vx/yaw，避免同时吃满直行和转向。"""
+        if not self.cfg.constrain_diff_drive_commands:
+            return lin_vel, yaw_vel
+
+        wheel_radius = max(float(self.cfg.diff_drive_wheel_radius), 1.0e-6)
+        wheel_speed_budget = (
+            wheel_radius
+            * max(float(self.cfg.diff_drive_max_wheel_speed), 1.0e-6)
+            * max(float(self.cfg.diff_drive_wheel_speed_fraction), 1.0e-6)
+        )
+
+        lin_vel = torch.clamp(lin_vel, min=-wheel_speed_budget, max=wheel_speed_budget)
+        yaw_low, yaw_high = self._diff_drive_yaw_bounds(lin_vel)
         yaw_span = torch.clamp(yaw_high - yaw_low, min=0.0)
         yaw_vel = yaw_low + torch.rand_like(yaw_vel) * yaw_span
         return lin_vel, yaw_vel
@@ -364,7 +571,10 @@ class VelocityHeightCommandTerm(CommandTerm):
         """对速度指令施加死区。"""
         moving = ~self._standing_mask
         lin_vel = self._command[:, 0]
-        yaw_vel = self._command[:, 1]
+        if self._yaw_pid_active():
+            yaw_vel = self._yaw_pid_command(lin_vel)
+        else:
+            yaw_vel = self._profiled_yaw(self._command[:, 1])
 
         # 将小速度置零(死区)。
         lin_vel = torch.where(
@@ -384,3 +594,12 @@ class VelocityHeightCommandTerm(CommandTerm):
     def _update_metrics(self) -> None:
         """更新指令指标。"""
         pass
+
+
+def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+    return torch.atan2(torch.sin(angle), torch.cos(angle))
+
+
+def _yaw_from_quat_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    w, x, y, z = quat.unbind(dim=-1)
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))

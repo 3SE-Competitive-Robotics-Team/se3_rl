@@ -23,6 +23,7 @@ from .config import (
     RcSwitchScheduleConfig,
     RobotConfig,
     RunConfig,
+    StairConfig,
     ViewerConfig,
     YawPidConfig,
     model_path_for_variant,
@@ -396,6 +397,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fail-tilt-deg", type=float, default=80.0)
     parser.add_argument("--fail-height-m", type=float, default=0.12)
 
+    # 源仓库 sim2sim 台阶地形
+    stair_defaults = StairConfig()
+    parser.add_argument(
+        "--stair",
+        action="store_true",
+        default=False,
+        help="在 MuJoCo 场景中程序化添加源仓库同款倒金字塔坑台阶地形。",
+    )
+    parser.add_argument("--stair-steps", type=int, default=stair_defaults.num_steps)
+    parser.add_argument(
+        "--stair-height",
+        type=float,
+        default=stair_defaults.step_height,
+        help="单级台阶高度(m)。默认 0.10m。",
+    )
+    parser.add_argument(
+        "--stair-depth",
+        type=float,
+        default=stair_defaults.step_depth,
+        help="单级台阶踏面深度(m)。默认 0.60m。",
+    )
+    parser.add_argument("--stair-width", type=float, default=stair_defaults.width)
+    parser.add_argument(
+        "--stair-start-x",
+        type=float,
+        default=stair_defaults.start_x,
+        help="台阶起点距机器人初始位置的距离(m)。",
+    )
+    parser.add_argument("--stair-friction", type=float, default=stair_defaults.friction)
+
     # 历程（Course）：指令扫描序列
     parser.add_argument(
         "--course",
@@ -639,6 +670,15 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 initial_output_enabled=rc_initial_output_enabled,
                 off_mode=str(args.rc_off_mode),
                 events=rc_events,
+            ),
+            stair=StairConfig(
+                enabled=bool(args.stair),
+                num_steps=int(args.stair_steps),
+                step_height=float(args.stair_height),
+                step_depth=float(args.stair_depth),
+                width=float(args.stair_width),
+                start_x=float(args.stair_start_x),
+                friction=float(args.stair_friction),
             ),
         ),
         policy=PolicyConfig(

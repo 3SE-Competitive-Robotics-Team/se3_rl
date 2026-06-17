@@ -17,6 +17,8 @@ WATCH_USE_TRAIN_ENV_ENV = "SE3_WATCH_USE_TRAIN_ENV"
 WATCH_ITER_ENV = "SE3_WATCH_ITER"
 WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
 WATCH_COMMAND_HEIGHT_ENV = "SE3_WATCH_COMMAND_HEIGHT"
+WARM_START_ITER_ENV = "SE3_WARM_START_ITERATION"
+WARM_START_STEPS_PER_ITER_ENV = "SE3_WARM_START_STEPS_PER_ITER"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -43,6 +45,8 @@ def _set_watch_env(args: argparse.Namespace) -> None:
     os.environ[WATCH_USE_TRAIN_ENV_ENV] = "1"
     if args.iteration is not None:
         os.environ[WATCH_ITER_ENV] = str(args.iteration)
+        os.environ[WARM_START_ITER_ENV] = str(args.iteration)
+        os.environ[WARM_START_STEPS_PER_ITER_ENV] = "64"
     if args.terrain_level is not None:
         os.environ[WATCH_TERRAIN_LEVEL_ENV] = str(args.terrain_level)
     if args.command_height is not None:

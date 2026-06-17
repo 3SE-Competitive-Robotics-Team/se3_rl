@@ -304,11 +304,11 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         state = getattr(self.env.unwrapped, "stair_climb_state", None)
         if state is None:
             return
-        checkpoint_name = self._ckpt_mgr.current_name if self._ckpt_mgr is not None else ""
-        iteration = _checkpoint_iteration(Path(checkpoint_name))
+        raw_iteration = os.environ.get("SE3_WATCH_ITER", "")
+        iteration = int(raw_iteration) if raw_iteration.isdigit() else -1
         if iteration < 0:
-            raw_iteration = os.environ.get("SE3_WATCH_ITER", "")
-            iteration = int(raw_iteration) if raw_iteration.isdigit() else -1
+            checkpoint_name = self._ckpt_mgr.current_name if self._ckpt_mgr is not None else ""
+            iteration = _checkpoint_iteration(Path(checkpoint_name))
         if iteration < 0 or (not force and iteration == self._se3_ctbc_checkpoint_iter):
             return
         state.set_fixed_iteration(iteration)

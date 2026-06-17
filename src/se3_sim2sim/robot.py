@@ -15,14 +15,16 @@ from se3_shared import (
     Termination,
     output_to_policy_pos_np,
     output_to_policy_vel_np,
+    policy_default_from_height_np,
     policy_leg_position_error_np,
+    policy_to_output_pos_np,
     policy_to_output_torque_np,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared.motor import DM8009P, M3508_C620_14
 
 from .closed_chain import ClosedChainClosureSolver
-from .config import RobotConfig
+from .config import RobotConfig, StairConfig
 from .diagnostics import model_diagnostics
 from .math_utils import euler_xyz_to_quat_wxyz, extract_yaw, rotate, rotate_inverse, wrap_angle
 from .observation import ObservationBuilder
@@ -33,6 +35,26 @@ _SHARED_ROBOT = SharedRobotConfig()
 _RESET_FLOOR_CLEARANCE_M = 0.01
 _BASE_CONTACT_PENETRATION_M = 0.001
 _GROUND_GEOM_GROUP = 2
+
+
+def _task_uses_jump_lifecycle(task: str) -> bool:
+    """Whether policy observations should expose jump command slots by task name."""
+    return "jump" in str(task).lower()
+
+
+def _is_ground_geom_name(name: str) -> bool:
+    """识别程序化台阶和常规地面几何体。"""
+    return any(
+        token in name
+        for token in (
+            "terrain",
+            "floor",
+            "ground",
+            "pit_bottom",
+            "stair_ring",
+            "outer_platform",
+        )
+    )
 
 
 def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
@@ -101,7 +123,7 @@ class WheelLeggedRobot:
         self.model_path = Path(cfg.model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
-        self.model = self._build_model(str(self.model_path))
+        self.model = self._build_model(str(self.model_path), stair_cfg=cfg.stair)
         # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -413,9 +435,21 @@ class WheelLeggedRobot:
             base_ang_vel_world=self.base_ang_vel_world,
             dof_pos=self.dof_pos,
             dof_vel=self.dof_vel,
-            command=self.command,
+            command=self._policy_observation_command(),
             action_obs=self.last_action,
         )
+
+    def _policy_observation_command(self) -> np.ndarray:
+        command = self.command.copy()
+        keep_jump_slots = (
+            _task_uses_jump_lifecycle(self.cfg.task)
+            or bool(self.cfg.jump_schedule.enabled)
+            or bool(self.cfg.jump_schedule.events)
+            or bool(command[5] > 0.5)
+        )
+        if not keep_jump_slots:
+            command[5:8] = 0.0
+        return command
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
         wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
@@ -544,7 +578,8 @@ class WheelLeggedRobot:
             mujoco.mj_forward(self.model, self.data)
 
     def _min_collision_geom_z(self) -> float:
-        return self._min_collision_geom_z_for(set(range(self.model.ngeom)))
+        robot_geom_ids = set(range(self.model.ngeom)) - self._ground_geom_ids
+        return self._min_collision_geom_z_for(robot_geom_ids)
 
     def _min_collision_geom_z_for(self, geom_ids: set[int]) -> float:
         """计算一组可碰撞几何体最低点离地高度。"""
@@ -588,9 +623,7 @@ class WheelLeggedRobot:
                 body_id == 0
                 or geom_type
                 in (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
-                or "terrain" in name
-                or "floor" in name
-                or "ground" in name
+                or _is_ground_geom_name(name)
             ):
                 ground.add(int(geom_id))
             if "base_link" in name:
@@ -709,12 +742,13 @@ class WheelLeggedRobot:
         return int(idx)
 
     @staticmethod
-    def _build_model(xml_path: str) -> mujoco.MjModel:
+    def _build_model(xml_path: str, stair_cfg: StairConfig | None = None) -> mujoco.MjModel:
         """加载 MJCF 并程序化添加 motor actuator（与训练端 DcMotorActuatorCfg 一致）。
 
         PD 控制在 Python 层计算，T-N 包络 clamp 也在 Python 层执行。
         MuJoCo actuator 仅作为力矩执行器，不做内部 PD。
         训练端 actuator 顺序: 先 leg（4个），再 wheel（2个）。
+        若 stair_cfg.enabled，则在 worldbody 下程序化添加源仓库同款倒金字塔台阶地形。
         """
         spec = mujoco.MjSpec.from_file(xml_path)
 
@@ -756,9 +790,93 @@ class WheelLeggedRobot:
             act.ctrllimited = False
             act.inheritrange = 0.0
 
+        if stair_cfg is not None and stair_cfg.enabled:
+            WheelLeggedRobot._add_stair_geoms(spec, stair_cfg)
+
         model = spec.compile()
         WheelLeggedRobot._assign_ground_geom_group(model)
         return model
+
+    @staticmethod
+    def _add_stair_geoms(spec: mujoco.MjSpec, cfg: StairConfig) -> None:
+        """在 worldbody 下程序化生成源仓库 sim2sim 的倒金字塔坑台阶。"""
+        worldbody = spec.worldbody
+        d = float(cfg.step_depth)
+        bottom_half = max(float(cfg.width) * 0.5, float(cfg.start_x), 0.6)
+        friction = float(cfg.friction)
+        levels = max(1, int(cfg.num_steps))
+        outer_height = max(0.01, float(cfg.step_height)) * float(levels)
+        outer_margin = max(4.0, 2.0 * bottom_half)
+
+        def add_box(
+            name: str, pos: tuple[float, float, float], size: tuple[float, float, float]
+        ) -> None:
+            body = worldbody.add_body()
+            body.name = name
+            body.pos = np.asarray(pos, dtype=np.float64)
+            geom = body.add_geom()
+            geom.name = f"{name}_geom"
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.size = np.asarray(size, dtype=np.float64)
+            geom.friction = np.array([friction, 0.005, 0.0001], dtype=np.float64)
+            geom.rgba = np.array([0.6, 0.6, 0.6, 1.0], dtype=np.float64)
+            geom.contype = 1
+            geom.conaffinity = 1
+
+        # 坑底是 z=0 的方形平台；MJCF 原有 floor 也保留在 z=0 作为坑底接触平面。
+        add_box("pit_bottom", (0.0, 0.0, -0.025), (bottom_half, bottom_half, 0.025))
+
+        for i in range(levels):
+            inner = bottom_half + i * d
+            outer = inner + d
+            top = outer_height * float(i + 1) / float(levels)
+            zc = top * 0.5
+            hz = top * 0.5
+            add_box(
+                f"stair_ring_{i}_front",
+                (0.0, inner + d * 0.5, zc),
+                (outer, d * 0.5, hz),
+            )
+            add_box(
+                f"stair_ring_{i}_back",
+                (0.0, -(inner + d * 0.5), zc),
+                (outer, d * 0.5, hz),
+            )
+            add_box(
+                f"stair_ring_{i}_left",
+                (-(inner + d * 0.5), 0.0, zc),
+                (d * 0.5, inner, hz),
+            )
+            add_box(
+                f"stair_ring_{i}_right",
+                (inner + d * 0.5, 0.0, zc),
+                (d * 0.5, inner, hz),
+            )
+
+        top_inner = bottom_half + levels * d
+        platform_outer = top_inner + outer_margin
+        top_zc = outer_height * 0.5
+        top_hz = outer_height * 0.5
+        add_box(
+            "outer_platform_front",
+            (0.0, top_inner + outer_margin * 0.5, top_zc),
+            (platform_outer, outer_margin * 0.5, top_hz),
+        )
+        add_box(
+            "outer_platform_back",
+            (0.0, -(top_inner + outer_margin * 0.5), top_zc),
+            (platform_outer, outer_margin * 0.5, top_hz),
+        )
+        add_box(
+            "outer_platform_left",
+            (-(top_inner + outer_margin * 0.5), 0.0, top_zc),
+            (outer_margin * 0.5, top_inner, top_hz),
+        )
+        add_box(
+            "outer_platform_right",
+            (top_inner + outer_margin * 0.5, 0.0, top_zc),
+            (outer_margin * 0.5, top_inner, top_hz),
+        )
 
     @staticmethod
     def _assign_ground_geom_group(model: mujoco.MjModel) -> None:
@@ -767,8 +885,7 @@ class WheelLeggedRobot:
             geom_type = int(model.geom_type[geom_id])
             if (
                 geom_type in (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
-                or "floor" in name
-                or "ground" in name
+                or _is_ground_geom_name(name)
             ):
                 model.geom_group[geom_id] = _GROUND_GEOM_GROUP
 
@@ -781,6 +898,11 @@ class WheelLeggedRobot:
                 continue
             self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
         if self.cfg.initial_leg_joint_pos is None:
+            if (
+                self.cfg.height_conditioned_action_default
+                and self.active_rod_action_semantics
+            ):
+                self._apply_height_conditioned_default_leg_positions()
             return
         initial_leg_pos = np.asarray(self.cfg.initial_leg_joint_pos, dtype=np.float64).reshape(-1)
         if initial_leg_pos.shape == (2,):
@@ -796,6 +918,17 @@ class WheelLeggedRobot:
         if not np.isfinite(initial_leg_pos).all():
             raise ValueError("initial_leg_joint_pos must be finite")
         for joint_name, value in zip(self.policy_joint_names[:4], initial_leg_pos, strict=True):
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                raise ValueError(f"missing leg joint in MJCF: {joint_name}")
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
+
+    def _apply_height_conditioned_default_leg_positions(self) -> None:
+        """Initialize leg joints to the same command-height default used in training."""
+        command_height = float(self.command[4])
+        policy_default = policy_default_from_height_np(command_height, _SHARED_ROBOT).reshape(4)
+        leg_pos = policy_to_output_pos_np(policy_default) if self.fourbar_surrogate else policy_default
+        for joint_name, value in zip(self.policy_joint_names[:4], leg_pos, strict=True):
             jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
             if jid < 0:
                 raise ValueError(f"missing leg joint in MJCF: {joint_name}")

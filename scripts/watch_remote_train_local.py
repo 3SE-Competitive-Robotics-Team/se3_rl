@@ -43,7 +43,13 @@ _WATCH_COMMAND_HEIGHT_ENV = "SE3_WATCH_COMMAND_HEIGHT"
 _TRAIN_VIEW_ITER_ENV = "SE3_TRAIN_VIEW_ITER"
 _TRAIN_VIEW_TERRAIN_LEVEL_ENV = "SE3_TRAIN_VIEW_TERRAIN_LEVEL"
 _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
+_STAIR_INITIAL_TARGET_LEVEL_ENV = "SE3_STAIR_INITIAL_TARGET_LEVEL"
+_WARM_START_ITER_ENV = "SE3_WARM_START_ITERATION"
+_WARM_START_STEPS_PER_ITER_ENV = "SE3_WARM_START_STEPS_PER_ITER"
 _MODEL_RE = re.compile(r"^model_(\d+)\.pt$")
+_LEARNING_ITER_RE = re.compile(r"Learning iteration\s+(\d+)\s*/")
+_CURRICULUM_ITER_RE = re.compile(r"Curriculum/terrain_levels/iteration:\s+([-+]?\d+(?:\.\d+)?)")
+_TARGET_LEVEL_RE = re.compile(r"Curriculum/terrain_levels/target_level:\s+([-+]?\d+(?:\.\d+)?)")
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,86 @@ def _checkpoint_iteration_from_path(checkpoint: Path) -> int:
     return int(match.group(1)) if match else -1
 
 
+def _resolve_watch_iter_offset(args: argparse.Namespace, run_dir: str) -> int:
+    if args.watch_iter_offset is not None:
+        return int(args.watch_iter_offset)
+    if args.no_auto_watch_iter_offset:
+        return 0
+
+    log_root = f"{args.remote_log_dir}/{run_dir}"
+    command = (
+        f"cd {shlex.quote(args.remote_project)} && "
+        f"log=$(find {shlex.quote(log_root)} -name 'localhost[[]0[]].log' -type f | sort | tail -1); "
+        "if [ -z \"$log\" ]; then "
+        f"log=$(find {shlex.quote(log_root)} -name 'localhost.log' -type f | sort | tail -1); "
+        "fi; "
+        "[ -n \"$log\" ] || exit 0; "
+        "grep -E 'Learning iteration|Curriculum/terrain_levels/iteration' \"$log\" | tail -400"
+    )
+    try:
+        output = _remote_shell(args, command, timeout=60)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"[local-watch] could not infer watch iter offset from remote log: {exc}")
+        return 0
+
+    pairs: list[tuple[int, float]] = []
+    learning_iter: int | None = None
+    for line in output.splitlines():
+        learning_match = _LEARNING_ITER_RE.search(line)
+        if learning_match:
+            learning_iter = int(learning_match.group(1))
+            continue
+        curriculum_match = _CURRICULUM_ITER_RE.search(line)
+        if curriculum_match and learning_iter is not None:
+            pairs.append((learning_iter, float(curriculum_match.group(1))))
+
+    offsets = [round(curr_iter - learn_iter) for learn_iter, curr_iter in pairs]
+    if not offsets:
+        print("[local-watch] watch iter offset not found in remote log; using 0")
+        return 0
+
+    offsets.sort()
+    offset = offsets[len(offsets) // 2]
+    print(f"[local-watch] inferred watch iter offset: {offset}")
+    return int(offset)
+
+
+def _resolve_watch_target_level(args: argparse.Namespace, run_dir: str) -> int | None:
+    if args.watch_target_level is not None:
+        return int(args.watch_target_level)
+    if args.no_auto_watch_target_level or "Stair" not in _viewer_task(args):
+        return None
+
+    log_root = f"{args.remote_log_dir}/{run_dir}"
+    command = (
+        f"cd {shlex.quote(args.remote_project)} && "
+        f"log=$(find {shlex.quote(log_root)} -name 'localhost[[]0[]].log' -type f | sort | tail -1); "
+        "if [ -z \"$log\" ]; then "
+        f"log=$(find {shlex.quote(log_root)} -name 'localhost.log' -type f | sort | tail -1); "
+        "fi; "
+        "[ -n \"$log\" ] || exit 0; "
+        "grep -E 'Curriculum/terrain_levels/target_level' \"$log\" | tail -40"
+    )
+    try:
+        output = _remote_shell(args, command, timeout=60)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"[local-watch] could not infer stair target level from remote log: {exc}")
+        return None
+
+    target_levels: list[int] = []
+    for line in output.splitlines():
+        match = _TARGET_LEVEL_RE.search(line)
+        if match:
+            target_levels.append(round(float(match.group(1))))
+    if not target_levels:
+        print("[local-watch] stair target level not found in remote log")
+        return None
+
+    target_level = max(0, target_levels[-1])
+    print(f"[local-watch] inferred stair target level: {target_level}")
+    return target_level
+
+
 def _launch_viewer(args: argparse.Namespace, checkpoint: Path) -> subprocess.Popen:
     viewer_task = _viewer_task(args)
     env = os.environ.copy()
@@ -193,14 +279,25 @@ def _launch_viewer(args: argparse.Namespace, checkpoint: Path) -> subprocess.Pop
         env[_WATCH_USE_TRAIN_ENV_ENV] = "1"
         print(f"[local-watch] {_WATCH_USE_TRAIN_ENV_ENV}=1")
     if args.train_env or viewer_task.endswith("-TrainView"):
-        view_iter = str(_checkpoint_iteration_from_path(checkpoint))
+        checkpoint_iter = _checkpoint_iteration_from_path(checkpoint)
+        view_iter_value = checkpoint_iter + int(args.watch_iter_offset or 0)
+        view_iter = str(view_iter_value)
         env[_WATCH_ITER_ENV] = view_iter
         env[_TRAIN_VIEW_ITER_ENV] = view_iter
-        print(f"[local-watch] {_WATCH_ITER_ENV}={view_iter}")
+        env[_WARM_START_ITER_ENV] = view_iter
+        env[_WARM_START_STEPS_PER_ITER_ENV] = "64"
+        print(
+            f"[local-watch] {_WATCH_ITER_ENV}={view_iter} "
+            f"(checkpoint_iter={checkpoint_iter}, offset={int(args.watch_iter_offset or 0)})"
+        )
+        print(f"[local-watch] {_WARM_START_ITER_ENV}={view_iter}")
     if args.terrain_level is not None:
         env[_WATCH_TERRAIN_LEVEL_ENV] = str(args.terrain_level)
         env[_TRAIN_VIEW_TERRAIN_LEVEL_ENV] = str(args.terrain_level)
         print(f"[local-watch] {_WATCH_TERRAIN_LEVEL_ENV}={args.terrain_level}")
+    elif args.watch_target_level is not None:
+        env[_STAIR_INITIAL_TARGET_LEVEL_ENV] = str(args.watch_target_level)
+        print(f"[local-watch] {_STAIR_INITIAL_TARGET_LEVEL_ENV}={args.watch_target_level}")
     if args.command_height is not None:
         env[_WATCH_COMMAND_HEIGHT_ENV] = str(args.command_height)
         env[_TRAIN_VIEW_COMMAND_HEIGHT_ENV] = str(args.command_height)
@@ -300,6 +397,34 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--watch-iter-offset",
+        type=int,
+        default=None,
+        help=(
+            "本地 viewer 使用的课程迭代偏移。warm-start 训练时 checkpoint 文件名会从 0 "
+            "重新计数，但课程通常应继续沿用 base_model 轮数；默认从远端日志自动推断。"
+        ),
+    )
+    parser.add_argument(
+        "--watch-target-level",
+        type=int,
+        default=None,
+        help=(
+            "本地 Stair viewer 的初始 mastery target level；默认从远端日志自动推断。"
+            "如果同时传 --terrain-level，则 --terrain-level 作为固定地形覆盖它。"
+        ),
+    )
+    parser.add_argument(
+        "--no-auto-watch-iter-offset",
+        action="store_true",
+        help="关闭从远端 localhost[0].log 自动推断 watch 课程迭代偏移。",
+    )
+    parser.add_argument(
+        "--no-auto-watch-target-level",
+        action="store_true",
+        help="关闭从远端 localhost[0].log 自动推断 Stair target level。",
+    )
+    parser.add_argument(
         "--stability-seconds",
         type=float,
         default=2.0,
@@ -324,6 +449,8 @@ def main() -> None:
     run_dir = _resolve_run_dir(args)
     print(f"[local-watch] remote run: {run_dir}")
     print(f"[local-watch] viewer task: {_viewer_task(args)}")
+    args.watch_iter_offset = _resolve_watch_iter_offset(args, run_dir)
+    args.watch_target_level = _resolve_watch_target_level(args, run_dir)
 
     last_iter = -1
     viewer_proc: subprocess.Popen | None = None
