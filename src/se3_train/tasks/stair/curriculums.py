@@ -8,7 +8,7 @@ import torch
 
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.curriculums import commands_height, commands_vel, push_disturbance
-from se3_train.tasks.stair.rewards import stair_wheel_support_rise
+from se3_train.tasks.stair.rewards import stair_success_components, stair_wheel_support_rise
 from se3_train.tasks.stair.terrain_curriculum import (
     DEFAULT_BUCKET_WEIGHT_STAGES,
     DEFAULT_LEVEL_BUCKETS,
@@ -85,7 +85,7 @@ def stair_terrain_levels(
     valid_episode = (env.episode_length_buf[ids] > 0) & (~newly_entered)
     stair_mask = _terrain_type_mask(terrain, ids, terrain_type_names, env.device)
 
-    del standing_height, upright_threshold, support_duration_s, hold_height_tolerance_m
+    del standing_height
     height_gain_all = stair_wheel_support_rise(
         env,
         height_sensor_name=height_sensor_name,
@@ -164,6 +164,40 @@ def stair_terrain_levels(
         posinf=0.0,
         neginf=0.0,
     )
+    strict_success_all = stair_success_components(
+        env,
+        step_height_range=step_height_range,
+        min_success_steps=move_up_min_steps,
+        success_height_tolerance_m=hold_height_tolerance_m,
+        forward_progress_m=move_up_distance,
+        hold_duration_s=support_duration_s,
+        upright_threshold=upright_threshold,
+        height_sensor_name=height_sensor_name,
+        contact_sensor_name=contact_sensor_name,
+        terrain_type_names=terrain_type_names,
+        contact_force_threshold_n=contact_force_threshold_n,
+        wheel_radius_m=wheel_radius_m,
+        wheel_clearance_tol_m=wheel_clearance_tol_m,
+        record=False,
+        use_recorded_hold=True,
+    )
+    strict_current_all = stair_success_components(
+        env,
+        step_height_range=step_height_range,
+        min_success_steps=move_up_min_steps,
+        success_height_tolerance_m=hold_height_tolerance_m,
+        forward_progress_m=move_up_distance,
+        hold_duration_s=support_duration_s,
+        upright_threshold=upright_threshold,
+        height_sensor_name=height_sensor_name,
+        contact_sensor_name=contact_sensor_name,
+        terrain_type_names=terrain_type_names,
+        contact_force_threshold_n=contact_force_threshold_n,
+        wheel_radius_m=wheel_radius_m,
+        wheel_clearance_tol_m=wheel_clearance_tol_m,
+        record=False,
+        use_recorded_hold=False,
+    )
 
     move_up = stair_mask & (terrain.terrain_levels[ids] < target_level)
     move_down = stair_mask & (terrain.terrain_levels[ids] > target_level)
@@ -188,6 +222,38 @@ def stair_terrain_levels(
             valid_stair,
         ),
         "support_duration_mean": _masked_mean(support_duration, valid_stair),
+        "strict_success_rate": _masked_mean(
+            strict_success_all["success"][ids].float(),
+            valid_stair,
+        ),
+        "strict_current_success_rate": _masked_mean(
+            strict_current_all["success"][ids].float(),
+            valid_stair,
+        ),
+        "strict_candidate_rate": _masked_mean(
+            strict_current_all["candidate"][ids].float(),
+            valid_stair,
+        ),
+        "strict_height_cond_rate": _masked_mean(
+            strict_current_all["height_ok"][ids].float(),
+            valid_stair,
+        ),
+        "strict_forward_cond_rate": _masked_mean(
+            strict_current_all["forward_ok"][ids].float(),
+            valid_stair,
+        ),
+        "strict_upright_cond_rate": _masked_mean(
+            strict_current_all["upright_ok"][ids].float(),
+            valid_stair,
+        ),
+        "strict_contact_cond_rate": _masked_mean(
+            strict_current_all["legal_contact_ok"][ids].float(),
+            valid_stair,
+        ),
+        "strict_riser_clear_rate": _masked_mean(
+            strict_current_all["riser_clear"][ids].float(),
+            valid_stair,
+        ),
         "distance_mean": _masked_mean(distance, valid_stair),
         "move_up_distance": torch.tensor(float(move_up_distance), device=env.device),
         "move_down_distance": torch.tensor(float(move_down_distance), device=env.device),
@@ -338,6 +404,14 @@ def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
         "current_height_gain_mean": zero,
         "support_drop_mean": zero,
         "support_duration_mean": zero,
+        "strict_success_rate": zero,
+        "strict_current_success_rate": zero,
+        "strict_candidate_rate": zero,
+        "strict_height_cond_rate": zero,
+        "strict_forward_cond_rate": zero,
+        "strict_upright_cond_rate": zero,
+        "strict_contact_cond_rate": zero,
+        "strict_riser_clear_rate": zero,
         "distance_mean": zero,
         "move_up_distance": zero,
         "move_down_distance": zero,

@@ -85,6 +85,14 @@ class StairClimbState:
         self._max_wheel_supported_both_steps = torch.zeros(
             num_envs, dtype=torch.long, device=device
         )
+        self._stair_success_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self._max_stair_success_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self._stair_success_record_step = torch.full(
+            (num_envs,),
+            -1,
+            dtype=torch.long,
+            device=device,
+        )
         self._kff: float = 1.0
         self._iter: int = 0
         self._iter_origin: int | None = None
@@ -389,6 +397,48 @@ class StairClimbState:
         """返回 episode 内双轮真实支撑地形抬升的最长持续时间。"""
         return self._max_wheel_supported_both_steps.float() * float(self.control_dt)
 
+    def record_stair_success_candidate(
+        self,
+        success_candidate: torch.Tensor,
+        *,
+        step_index: int | None = None,
+    ) -> torch.Tensor:
+        """记录 strict stair success 候选条件的连续满足时长。"""
+        success_candidate = success_candidate.to(device=self.device).bool()
+        if success_candidate.ndim != 1 or success_candidate.shape[0] != self.num_envs:
+            success_candidate = success_candidate.reshape(self.num_envs)
+        if step_index is None:
+            new_step = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            step_value = int(step_index)
+            new_step = self._stair_success_record_step != step_value
+
+        updated_steps = torch.where(
+            success_candidate,
+            self._stair_success_steps + 1,
+            torch.zeros_like(self._stair_success_steps),
+        )
+        self._stair_success_steps = torch.where(
+            new_step,
+            updated_steps,
+            self._stair_success_steps,
+        )
+        self._max_stair_success_steps = torch.maximum(
+            self._max_stair_success_steps,
+            self._stair_success_steps,
+        )
+        if step_index is not None:
+            self._stair_success_record_step[new_step] = int(step_index)
+        return self.stair_success_duration()
+
+    def stair_success_duration(self) -> torch.Tensor:
+        """返回当前 strict stair success 连续满足时长。"""
+        return self._stair_success_steps.float() * float(self.control_dt)
+
+    def max_stair_success_duration(self) -> torch.Tensor:
+        """返回 episode 内 strict stair success 最长连续满足时长。"""
+        return self._max_stair_success_steps.float() * float(self.control_dt)
+
     def riser_stall_active(self, min_duration_s: float) -> torch.Tensor:
         min_steps = max(1, round(float(min_duration_s) / self.control_dt))
         return self._riser_contact_steps >= min_steps
@@ -409,6 +459,9 @@ class StairClimbState:
         self._wheel_support_record_step[env_ids] = -1
         self._wheel_supported_both_steps[env_ids] = 0
         self._max_wheel_supported_both_steps[env_ids] = 0
+        self._stair_success_steps[env_ids] = 0
+        self._max_stair_success_steps[env_ids] = 0
+        self._stair_success_record_step[env_ids] = -1
 
     @property
     def kff(self) -> float:
@@ -452,6 +505,10 @@ class StairClimbState:
                 self._complete_ff_cycle_count.float().mean().item()
             ),
             "Stair/diag_riser_stall_rate": self.riser_stall_active(0.25).float().mean().item(),
+            "Stair/diag_strict_success_duration_s": self.stair_success_duration().mean().item(),
+            "Stair/diag_strict_success_max_duration_s": (
+                self.max_stair_success_duration().mean().item()
+            ),
             "Stair/diag_ctbc_kff": self._kff,
             "Stair/diag_ctbc_local_iter": float(self._iter),
             "Stair/diag_ctbc_ff_rise_steps": float(self.ff_rise_steps),

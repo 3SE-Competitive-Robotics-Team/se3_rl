@@ -74,6 +74,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pass-support-duration-s", type=float, default=0.10)
     parser.add_argument("--pass-wheel-contact-n", type=float, default=1.0)
     parser.add_argument("--pass-wheel-clearance-tol-m", type=float, default=0.035)
+    parser.add_argument("--strict-min-success-steps", type=float, default=1.0)
+    parser.add_argument("--strict-height-tolerance-m", type=float, default=0.015)
+    parser.add_argument("--strict-forward-progress-m", type=float, default=None)
+    parser.add_argument("--strict-step-depth-m", type=float, default=0.50)
+    parser.add_argument("--strict-forward-progress-step-fraction", type=float, default=0.75)
+    parser.add_argument("--strict-hold-duration-s", type=float, default=0.20)
+    parser.add_argument("--strict-upright-threshold", type=float, default=-0.90)
+    parser.add_argument("--strict-max-vertical-speed-mps", type=float, default=1.0)
+    parser.add_argument("--strict-illegal-contact-force-n", type=float, default=5.0)
+    parser.add_argument("--strict-riser-stall-duration-s", type=float, default=0.15)
     parser.add_argument(
         "--start-x-offset-m",
         type=float,
@@ -295,7 +305,7 @@ def _override_ctbc_cfg(cfg, args: argparse.Namespace) -> None:
     cfg.events["init_stair_climb_state"] = replace(term, params=params)
 
 
-def _fix_scene_for_feedforward(cfg) -> None:
+def _fix_scene_for_feedforward(cfg, args: argparse.Namespace) -> None:
     """固定诊断场景，避免随机化掩盖前馈效果。"""
     cfg.curriculum = dict(getattr(cfg, "curriculum", {}) or {})
     for name in ("command_vel", "command_height", "terrain_levels", "push_disturbance"):
@@ -313,6 +323,26 @@ def _fix_scene_for_feedforward(cfg) -> None:
         "push_robots",
     ):
         cfg.events.pop(name, None)
+
+    if "reset_root_state" in cfg.events:
+        params = dict(cfg.events["reset_root_state"].params or {})
+        params["recovery_prob"] = 0.0
+        params["recovery_state_cache_prob"] = 0.0
+        cfg.events["reset_root_state"] = replace(cfg.events["reset_root_state"], params=params)
+    if "sample_stair_task_mode" in cfg.events:
+        params = dict(cfg.events["sample_stair_task_mode"].params or {})
+        params["stair_prob"] = 1.0
+        params["recovery_prob"] = 0.0
+        if args.terrain_level is not None:
+            level = max(0, int(args.terrain_level))
+            params["max_level_stages"] = ((0, level),)
+            params["level_buckets"] = ((level, level),)
+            params["bucket_weight_stages"] = ((0, (1.0,)),)
+        cfg.events["sample_stair_task_mode"] = replace(
+            cfg.events["sample_stair_task_mode"],
+            params=params,
+        )
+    cfg.events.pop("enforce_recovery_active_commands", None)
 
 
 def _maybe_manual_trigger(
@@ -404,6 +434,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     from mjlab.utils.torch import configure_torch_backends
 
     import se3_train  # noqa: F401
+    from se3_train.tasks.stair.rewards import stair_success_components
 
     configure_torch_backends()
     torch.manual_seed(int(args.seed))
@@ -412,7 +443,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     cfg.seed = int(args.seed)
     cfg.scene.num_envs = int(args.num_envs)
     if args.fixed_scene:
-        _fix_scene_for_feedforward(cfg)
+        _fix_scene_for_feedforward(cfg, args)
     _override_ctbc_cfg(cfg, args)
     command_cfg = cfg.commands.get("velocity_height")
     if command_cfg is not None:
@@ -513,6 +544,25 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     )
     upper_support_any_sum = 0.0
     upper_support_both_sum = 0.0
+    strict_success_sum = 0.0
+    strict_candidate_sum = 0.0
+    strict_height_sum = 0.0
+    strict_forward_sum = 0.0
+    strict_upright_sum = 0.0
+    strict_vertical_speed_sum = 0.0
+    strict_legal_contact_sum = 0.0
+    strict_riser_clear_sum = 0.0
+    strict_wheel_contact_sum = 0.0
+    strict_near_support_height_sum = 0.0
+    strict_valid_sum = 0.0
+    strict_duration_sum = 0.0
+    strict_duration_max = 0.0
+    strict_current_both_rise_sum = 0.0
+    strict_current_both_rise_max = 0.0
+    strict_radial_sum = 0.0
+    strict_radial_max = 0.0
+    strict_height_target_sum = 0.0
+    strict_forward_target_sum = 0.0
     contact_any_sum = 0.0
     contact_both_sum = 0.0
     wheel_height_sum = 0.0
@@ -642,6 +692,45 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         )
         upper_support_any_sum += _mean(upper_support_any.float())
         upper_support_both_sum += _mean(upper_support_both.float())
+        strict = stair_success_components(
+            base_env,
+            step_height_range=_STAIR_STEP_HEIGHT_RANGE,
+            min_success_steps=float(args.strict_min_success_steps),
+            success_height_tolerance_m=float(args.strict_height_tolerance_m),
+            forward_progress_m=args.strict_forward_progress_m,
+            step_depth_m=float(args.strict_step_depth_m),
+            forward_progress_step_fraction=float(args.strict_forward_progress_step_fraction),
+            hold_duration_s=float(args.strict_hold_duration_s),
+            upright_threshold=float(args.strict_upright_threshold),
+            max_vertical_speed_mps=float(args.strict_max_vertical_speed_mps),
+            illegal_contact_force_threshold_n=float(args.strict_illegal_contact_force_n),
+            wheel_radius_m=float(_WHEEL_RADIUS_M),
+            wheel_clearance_tol_m=float(args.pass_wheel_clearance_tol_m),
+            riser_stall_duration_s=float(args.strict_riser_stall_duration_s),
+            record=True,
+        )
+        strict_success_sum += _mean(strict["success"].float())
+        strict_candidate_sum += _mean(strict["candidate"].float())
+        strict_height_sum += _mean(strict["height_ok"].float())
+        strict_forward_sum += _mean(strict["forward_ok"].float())
+        strict_upright_sum += _mean(strict["upright_ok"].float())
+        strict_vertical_speed_sum += _mean(strict["vertical_speed_ok"].float())
+        strict_legal_contact_sum += _mean(strict["legal_contact_ok"].float())
+        strict_riser_clear_sum += _mean(strict["riser_clear"].float())
+        strict_wheel_contact_sum += _mean(strict["wheel_contact"].float())
+        strict_near_support_height_sum += _mean(strict["near_support_height"].float())
+        strict_valid_sum += _mean(strict["valid"].float())
+        strict_duration_sum += _mean(strict["duration"])
+        strict_duration_max = max(strict_duration_max, _max(strict["duration"]))
+        strict_current_both_rise_sum += _mean(strict["current_both_rise"])
+        strict_current_both_rise_max = max(
+            strict_current_both_rise_max,
+            _max(strict["current_both_rise"]),
+        )
+        strict_radial_sum += _mean(strict["radial_distance"])
+        strict_radial_max = max(strict_radial_max, _max(strict["radial_distance"]))
+        strict_height_target_sum += _mean(strict["height_target"])
+        strict_forward_target_sum += _mean(strict["forward_target"])
         contact_any_sum += _mean(wheel_contact.any(dim=1).float())
         contact_both_sum += _mean(wheel_contact.all(dim=1).float())
         wheel_height_sum += _mean(wheel_heights)
@@ -777,6 +866,15 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     tilt_pass_env_ids = (
         torch.nonzero(pass_by_tilt, as_tuple=False).flatten().detach().cpu().tolist()
     )
+    state = getattr(base_env, "stair_climb_state", None)
+    if state is not None:
+        strict_max_duration = _finite(state.max_stair_success_duration())
+    else:
+        strict_max_duration = torch.zeros(base_env.num_envs, device=base_env.device)
+    strict_episode_success = strict_max_duration >= float(args.strict_hold_duration_s)
+    strict_episode_success_env_ids = (
+        torch.nonzero(strict_episode_success, as_tuple=False).flatten().detach().cpu().tolist()
+    )
     result: dict[str, Any] = {
         "checkpoint": str(args.checkpoint),
         "task": args.task,
@@ -837,6 +935,42 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "pass_support_required_steps": int(required_support_steps),
         "pass_wheel_contact_n": float(args.pass_wheel_contact_n),
         "pass_wheel_clearance_tol_m": float(args.pass_wheel_clearance_tol_m),
+        "strict_min_success_steps": float(args.strict_min_success_steps),
+        "strict_height_tolerance_m": float(args.strict_height_tolerance_m),
+        "strict_forward_progress_m": args.strict_forward_progress_m,
+        "strict_step_depth_m": float(args.strict_step_depth_m),
+        "strict_forward_progress_step_fraction": float(args.strict_forward_progress_step_fraction),
+        "strict_hold_duration_s": float(args.strict_hold_duration_s),
+        "strict_upright_threshold": float(args.strict_upright_threshold),
+        "strict_max_vertical_speed_mps": float(args.strict_max_vertical_speed_mps),
+        "strict_illegal_contact_force_n": float(args.strict_illegal_contact_force_n),
+        "strict_riser_stall_duration_s": float(args.strict_riser_stall_duration_s),
+        "strict_pass_rate": _mean(strict_episode_success.float()),
+        "strict_episode_success_rate": _mean(strict_episode_success.float()),
+        "strict_episode_success_env_ids": [
+            int(env_id) for env_id in strict_episode_success_env_ids
+        ],
+        "strict_success_rate_per_step": strict_success_sum / denom,
+        "strict_candidate_rate_per_step": strict_candidate_sum / denom,
+        "strict_height_cond_rate_per_step": strict_height_sum / denom,
+        "strict_forward_cond_rate_per_step": strict_forward_sum / denom,
+        "strict_upright_cond_rate_per_step": strict_upright_sum / denom,
+        "strict_vertical_speed_cond_rate_per_step": strict_vertical_speed_sum / denom,
+        "strict_legal_contact_cond_rate_per_step": strict_legal_contact_sum / denom,
+        "strict_riser_clear_rate_per_step": strict_riser_clear_sum / denom,
+        "strict_wheel_contact_rate_per_step": strict_wheel_contact_sum / denom,
+        "strict_near_support_height_rate_per_step": strict_near_support_height_sum / denom,
+        "strict_valid_rate_per_step": strict_valid_sum / denom,
+        "strict_success_duration_mean_s": strict_duration_sum / denom,
+        "strict_success_duration_max_s": strict_duration_max,
+        "strict_success_max_duration_mean_s": _mean(strict_max_duration),
+        "strict_success_max_duration_max_s": _max(strict_max_duration),
+        "strict_current_both_rise_mean_m": strict_current_both_rise_sum / denom,
+        "strict_current_both_rise_max_m": strict_current_both_rise_max,
+        "strict_radial_distance_mean_m": strict_radial_sum / denom,
+        "strict_radial_distance_max_m": strict_radial_max,
+        "strict_height_target_mean_m": strict_height_target_sum / denom,
+        "strict_forward_target_mean_m": strict_forward_target_sum / denom,
         "pass_rate": _mean(passed.float()),
         "legacy_pass_rate": _mean(legacy_passed.float()),
         "legacy_minus_strict_pass_rate": _mean(legacy_passed.float()) - _mean(passed.float()),

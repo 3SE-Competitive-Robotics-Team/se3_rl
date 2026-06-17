@@ -144,6 +144,38 @@ def _wheel_contact_force(env: ManagerBasedRlEnv, contact_sensor_name: str) -> to
     return force_mag[:, :2]
 
 
+def _contact_force_max(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+    try:
+        sensor: ContactSensor = env.scene[sensor_name]
+    except KeyError:
+        return torch.zeros(env.num_envs, device=env.device)
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    force_mag = torch.linalg.vector_norm(_finite(data.force), dim=-1)
+    while force_mag.ndim > 1:
+        force_mag = force_mag.amax(dim=-1)
+    return _finite(force_mag)
+
+
+def _contact_mask(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold_n: float,
+) -> torch.Tensor:
+    return _contact_force_max(env, sensor_name) > float(force_threshold_n)
+
+
+def _radial_distance(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    origins = getattr(env.scene, "env_origins", None)
+    if not isinstance(origins, torch.Tensor):
+        return torch.zeros(env.num_envs, device=env.device)
+    root_pos = _finite(robot.data.root_link_pos_w[:, :2])
+    radial = root_pos - origins[:, :2].to(device=env.device)
+    return _finite(torch.linalg.vector_norm(radial, dim=1))
+
+
 def stair_wheel_support_rise(
     env: ManagerBasedRlEnv,
     height_sensor_name: str = "wheel_height_sensor",
@@ -194,6 +226,142 @@ def stair_wheel_support_rise(
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
     support_rise = torch.where(terrain_mask, support_rise, torch.zeros_like(support_rise))
     return _finite(support_rise)
+
+
+def stair_success_components(
+    env: ManagerBasedRlEnv,
+    step_height_range: tuple[float, float] = (0.05, 0.20),
+    min_success_steps: float = 1.0,
+    success_height_tolerance_m: float = 0.015,
+    forward_progress_m: float | None = None,
+    step_depth_m: float = 0.50,
+    forward_progress_step_fraction: float = 0.75,
+    hold_duration_s: float = 0.20,
+    upright_threshold: float = -0.90,
+    max_vertical_speed_mps: float | None = 1.0,
+    height_sensor_name: str = "wheel_height_sensor",
+    contact_sensor_name: str = "wheel_sensor",
+    leg_contact_sensor_name: str = "leg_contact_sensor",
+    base_contact_sensor_name: str = "collision_sensor",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+    contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
+    illegal_contact_force_threshold_n: float = 1.0,
+    wheel_radius_m: float = _WHEEL_RADIUS_M,
+    wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_stall_duration_s: float = 0.15,
+    record: bool = True,
+    use_recorded_hold: bool = False,
+) -> dict[str, torch.Tensor]:
+    """返回台阶 strict success 及其子条件，避免瞬时高度和竖面卡住被误判。"""
+    rise, wheel_heights = _wheel_terrain_measurements(env, height_sensor_name, asset_cfg)
+    wheel_force = _wheel_contact_force(env, contact_sensor_name)
+    wheel_contact = (wheel_force >= float(contact_force_threshold_n)).all(dim=1)
+    near_support_height = (
+        wheel_heights <= float(wheel_radius_m) + float(wheel_clearance_tol_m)
+    ).all(dim=1)
+    support_mask = (wheel_force >= float(contact_force_threshold_n)) & (
+        wheel_heights <= float(wheel_radius_m) + float(wheel_clearance_tol_m)
+    )
+    supported_rise = torch.where(support_mask, torch.clamp(rise, min=0.0), torch.zeros_like(rise))
+    current_both_rise = _finite(torch.min(supported_rise, dim=1).values)
+
+    step_height = torch.clamp(_step_height_for_envs(env, step_height_range), min=1.0e-6)
+    height_target = step_height * float(min_success_steps) - float(success_height_tolerance_m)
+    height_ok = current_both_rise >= torch.clamp(height_target, min=0.0)
+
+    if forward_progress_m is None:
+        forward_target = (
+            float(step_depth_m) * float(min_success_steps) * float(forward_progress_step_fraction)
+        )
+    else:
+        forward_target = float(forward_progress_m)
+    radial_distance = _radial_distance(env, asset_cfg)
+    forward_ok = radial_distance >= max(0.0, forward_target)
+
+    robot = env.scene[asset_cfg.name]
+    projected_gravity_z = _finite(robot.data.projected_gravity_b[:, 2])
+    upright_ok = projected_gravity_z <= float(upright_threshold)
+    if max_vertical_speed_mps is None:
+        vertical_speed_ok = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    else:
+        vertical_speed_ok = torch.abs(_finite(robot.data.root_link_lin_vel_w[:, 2])) <= float(
+            max_vertical_speed_mps
+        )
+
+    leg_contact = _contact_mask(env, leg_contact_sensor_name, illegal_contact_force_threshold_n)
+    base_contact = _contact_mask(env, base_contact_sensor_name, illegal_contact_force_threshold_n)
+    legal_contact_ok = ~(leg_contact | base_contact)
+
+    state = _get_stair_state(env)
+    if state is not None:
+        riser_clear = ~state.riser_stall_active(riser_stall_duration_s)
+    else:
+        riser_clear = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    terrain_mask = _terrain_type_mask(env, terrain_type_names)
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
+    valid = terrain_mask & stair_mode
+    candidate = (
+        valid
+        & wheel_contact
+        & near_support_height
+        & height_ok
+        & forward_ok
+        & upright_ok
+        & vertical_speed_ok
+        & legal_contact_ok
+        & riser_clear
+    )
+
+    if state is not None and record:
+        duration = state.record_stair_success_candidate(
+            candidate,
+            step_index=int(getattr(env, "common_step_counter", 0)),
+        )
+    elif state is not None:
+        duration = state.stair_success_duration()
+    else:
+        duration = torch.zeros(env.num_envs, device=env.device)
+
+    hold_duration = max(0.0, float(hold_duration_s))
+    if use_recorded_hold and state is not None:
+        held = state.max_stair_success_duration() >= hold_duration
+    elif hold_duration > 0.0:
+        held = duration >= hold_duration
+    else:
+        held = candidate
+    success = valid & held
+
+    return {
+        "success": success,
+        "candidate": candidate,
+        "height_ok": height_ok & valid,
+        "forward_ok": forward_ok & valid,
+        "upright_ok": upright_ok & valid,
+        "vertical_speed_ok": vertical_speed_ok & valid,
+        "legal_contact_ok": legal_contact_ok & valid,
+        "riser_clear": riser_clear & valid,
+        "wheel_contact": wheel_contact & valid,
+        "near_support_height": near_support_height & valid,
+        "current_both_rise": current_both_rise,
+        "radial_distance": radial_distance,
+        "duration": duration,
+        "step_height": step_height,
+        "height_target": torch.clamp(height_target, min=0.0),
+        "forward_target": torch.full((env.num_envs,), forward_target, device=env.device),
+        "valid": valid,
+    }
+
+
+def stair_success_mask(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """返回 strict stair success 布尔 mask。"""
+    return stair_success_components(env, **kwargs)["success"]
+
+
+def stair_success(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """strict stair success 奖励，只在双轮上台面、前进并稳定保持后给正反馈。"""
+    return stair_success_mask(env, **kwargs).float()
 
 
 def _ctbc_trigger_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -928,12 +1096,25 @@ def recovery_stagnation_penalty(
 def stair_diagnostics(
     env: ManagerBasedRlEnv,
     command_name: str | None = "velocity_height",
+    step_height_range: tuple[float, float] = (0.05, 0.20),
+    min_success_steps: float = 1.0,
+    success_height_tolerance_m: float = 0.015,
+    forward_progress_m: float | None = None,
+    step_depth_m: float = 0.50,
+    forward_progress_step_fraction: float = 0.75,
+    hold_duration_s: float = 0.20,
+    upright_threshold: float = -0.90,
+    max_vertical_speed_mps: float | None = 1.0,
     height_sensor_name: str = "wheel_height_sensor",
     contact_sensor_name: str = "wheel_sensor",
+    leg_contact_sensor_name: str = "leg_contact_sensor",
+    base_contact_sensor_name: str = "collision_sensor",
     terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
+    illegal_contact_force_threshold_n: float = 1.0,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_stall_duration_s: float = 0.15,
 ) -> torch.Tensor:
     """把台阶关键指标写入训练日志，不直接改变奖励。"""
     support_params = {
@@ -988,6 +1169,30 @@ def stair_diagnostics(
         max_support_duration = (
             state.max_wheel_supported_both_duration().mean().item() if state is not None else 0.0
         )
+        success_components = stair_success_components(
+            env,
+            step_height_range=step_height_range,
+            min_success_steps=min_success_steps,
+            success_height_tolerance_m=success_height_tolerance_m,
+            forward_progress_m=forward_progress_m,
+            step_depth_m=step_depth_m,
+            forward_progress_step_fraction=forward_progress_step_fraction,
+            hold_duration_s=hold_duration_s,
+            upright_threshold=upright_threshold,
+            max_vertical_speed_mps=max_vertical_speed_mps,
+            height_sensor_name=height_sensor_name,
+            contact_sensor_name=contact_sensor_name,
+            leg_contact_sensor_name=leg_contact_sensor_name,
+            base_contact_sensor_name=base_contact_sensor_name,
+            terrain_type_names=terrain_type_names,
+            contact_force_threshold_n=contact_force_threshold_n,
+            illegal_contact_force_threshold_n=illegal_contact_force_threshold_n,
+            wheel_radius_m=wheel_radius_m,
+            wheel_clearance_tol_m=wheel_clearance_tol_m,
+            riser_stall_duration_s=riser_stall_duration_s,
+            record=True,
+        )
+        valid_success = success_components["valid"]
         action_term = env.action_manager.get_term("delayed_action")
         ctbc_delta = getattr(action_term, "ctbc_action_delta", None)
         if not isinstance(ctbc_delta, torch.Tensor):
@@ -1003,6 +1208,46 @@ def stair_diagnostics(
                 "Stair/diag_wheel_support_drop": support_drop.mean().item(),
                 "Stair/obs_wheel_terrain_rise_raw": raw_wheel_rise.mean().item(),
                 "Stair/diag_wheel_support_both_duration_s": max_support_duration,
+                "Stair/strict_success_rate": _masked_mean(
+                    success_components["success"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_candidate_rate": _masked_mean(
+                    success_components["candidate"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_height_cond_rate": _masked_mean(
+                    success_components["height_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_forward_cond_rate": _masked_mean(
+                    success_components["forward_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_upright_cond_rate": _masked_mean(
+                    success_components["upright_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_contact_cond_rate": _masked_mean(
+                    success_components["legal_contact_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_riser_clear_rate": _masked_mean(
+                    success_components["riser_clear"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_duration_s": _masked_mean(
+                    success_components["duration"],
+                    valid_success,
+                ),
+                "Stair/strict_success_height_target_m": _masked_mean(
+                    success_components["height_target"],
+                    valid_success,
+                ),
+                "Stair/strict_success_forward_target_m": _masked_mean(
+                    success_components["forward_target"],
+                    valid_success,
+                ),
                 "Stair/obs_terrain_level": terrain_level.mean().item(),
                 "Stair/diag_stair_env_rate": terrain_mask.float().mean().item(),
                 "Stair/diag_task_mode_recovery_rate": recovery_mode.float().mean().item(),
@@ -1038,6 +1283,9 @@ __all__ = [
     "stair_radial_velocity",
     "stair_riser_stall",
     "stair_steps_climbed",
+    "stair_success",
+    "stair_success_components",
+    "stair_success_mask",
     "stair_support_descent",
     "stair_support_height",
     "stair_terrain_level",
