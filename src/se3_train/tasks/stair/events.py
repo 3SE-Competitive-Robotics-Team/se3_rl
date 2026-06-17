@@ -274,14 +274,17 @@ def apply_stair_task_mode_commands(
     recovery_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
     recovery_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
     recovery_height_range: tuple[float, float] = (0.195, 0.390),
-    flat_lin_vel_x_range: tuple[float, float] = (0.0, 0.8),
+    flat_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
     flat_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
     flat_height_range: tuple[float, float] = (0.22, 0.30),
+    flat_zero_command_prob: float = 0.25,
 ) -> None:
     """reset 后按 recovery mode 重采样倒地自起指令。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
     task_mode = _ensure_long_buffer(env, "_stair_task_mode")
+    flat_zero_mask = _ensure_bool_buffer(env, "_stair_flat_zero_command_mask")
+    flat_zero_mask[env_ids] = False
     recovery_ids = env_ids[task_mode[env_ids] == _TASK_MODE_RECOVERY]
     flat_ids = env_ids[task_mode[env_ids] == _TASK_MODE_FLAT]
     _apply_command_ranges(
@@ -300,6 +303,11 @@ def apply_stair_task_mode_commands(
         flat_ang_vel_yaw_range,
         flat_height_range,
     )
+    zero_prob = max(0.0, min(1.0, float(flat_zero_command_prob)))
+    if flat_ids.numel() > 0 and zero_prob > 0.0:
+        zero_ids = flat_ids[torch.rand(flat_ids.numel(), device=env.device) < zero_prob]
+        flat_zero_mask[zero_ids] = True
+        _apply_flat_zero_commands(env, zero_ids, command_name)
 
 
 def _clamp_command_ranges(
@@ -339,6 +347,22 @@ def _clamp_command_ranges(
     update_policy_default_from_height_cache(env, command_name, env_ids=env_ids, command=cmd)
 
 
+def _apply_flat_zero_commands(env, env_ids: torch.Tensor, command_name: str) -> None:
+    """保持一部分 flat rehearsal env 使用零速指令。"""
+    if env_ids.numel() == 0 or not hasattr(env, "command_manager"):
+        return
+    cmd = env.command_manager.get_command(command_name)
+    cmd[env_ids, 0] = 0.0
+    if cmd.shape[1] > 1:
+        cmd[env_ids, 1] = 0.0
+    if cmd.shape[1] > 2:
+        cmd[env_ids, 2:4] = 0.0
+    if cmd.shape[1] >= 8:
+        cmd[env_ids, 5] = 0.0
+        cmd[env_ids, 7] = 0.0
+    update_policy_default_from_height_cache(env, command_name, env_ids=env_ids, command=cmd)
+
+
 def enforce_recovery_active_commands(
     env,
     env_ids: torch.Tensor | None,
@@ -346,12 +370,13 @@ def enforce_recovery_active_commands(
     recovery_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
     recovery_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
     recovery_height_range: tuple[float, float] = (0.195, 0.390),
-    flat_lin_vel_x_range: tuple[float, float] = (0.0, 0.8),
+    flat_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
     flat_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
     flat_height_range: tuple[float, float] = (0.22, 0.30),
+    flat_zero_command_prob: float = 0.25,
 ) -> None:
     """每步把 recovery active 指令限制在 recovery_finetune 最难课程范围内。"""
-    del env_ids
+    del env_ids, flat_zero_command_prob
     active = getattr(env, "_recovery_reset_mask", None)
     if isinstance(active, torch.Tensor) and active.shape[0] == env.num_envs:
         _clamp_command_ranges(
@@ -378,6 +403,10 @@ def enforce_recovery_active_commands(
             flat_ang_vel_yaw_range,
             flat_height_range,
         )
+        flat_zero_mask = getattr(env, "_stair_flat_zero_command_mask", None)
+        if isinstance(flat_zero_mask, torch.Tensor) and flat_zero_mask.shape[0] == env.num_envs:
+            zero_ids = flat_ids[flat_zero_mask[flat_ids].to(device=env.device, dtype=torch.bool)]
+            _apply_flat_zero_commands(env, zero_ids, command_name)
 
 
 def init_stair_climb_state(

@@ -76,9 +76,10 @@ _TRAIN_VIEW_TERRAIN_LEVEL_ENV = "SE3_TRAIN_VIEW_TERRAIN_LEVEL"
 _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
 _STAIR_LEVEL_MAX_STAGES = (
     (0, 2),
-    (600, 4),
-    (1200, 6),
-    (2200, 9),
+    (800, 3),
+    (1300, 5),
+    (2000, 7),
+    (2600, 9),
 )
 _STAIR_LEVEL_BUCKETS = (
     (0, 2),
@@ -86,12 +87,12 @@ _STAIR_LEVEL_BUCKETS = (
     (7, 9),
 )
 _STAIR_BUCKET_WEIGHT_STAGES = (
-    (0, (0.80, 0.20, 0.00)),
-    (600, (0.60, 0.35, 0.05)),
-    (1200, (0.35, 0.50, 0.15)),
-    (1800, (0.25, 0.45, 0.30)),
-    (2400, (0.18, 0.37, 0.45)),
-    (2700, (0.15, 0.35, 0.50)),
+    (0, (0.90, 0.10, 0.00)),
+    (800, (0.75, 0.25, 0.00)),
+    (1300, (0.55, 0.40, 0.05)),
+    (1900, (0.35, 0.50, 0.15)),
+    (2400, (0.25, 0.45, 0.30)),
+    (2800, (0.18, 0.37, 0.45)),
 )
 
 
@@ -796,9 +797,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "recovery_lin_vel_x_range": (-1.5, 1.5),
                 "recovery_ang_vel_yaw_range": (-1.0, 1.0),
                 "recovery_height_range": (0.195, 0.390),
-                "flat_lin_vel_x_range": (0.0, 0.8),
+                "flat_lin_vel_x_range": (-1.5, 1.5),
                 "flat_ang_vel_yaw_range": (-1.0, 1.0),
                 "flat_height_range": (0.22, 0.30),
+                "flat_zero_command_prob": 0.25,
             },
         )
         for event_name, event_term in cfg.events.items():
@@ -849,9 +851,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "recovery_lin_vel_x_range": (-1.5, 1.5),
             "recovery_ang_vel_yaw_range": (-1.0, 1.0),
             "recovery_height_range": (0.195, 0.390),
-            "flat_lin_vel_x_range": (0.0, 0.8),
+            "flat_lin_vel_x_range": (-1.5, 1.5),
             "flat_ang_vel_yaw_range": (-1.0, 1.0),
             "flat_height_range": (0.22, 0.30),
+            "flat_zero_command_prob": 0.25,
         },
     )
     cfg.events["reset_stair_climb_state"] = EventTermCfg(

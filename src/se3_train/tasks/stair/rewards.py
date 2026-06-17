@@ -1468,6 +1468,11 @@ def stair_diagnostics(
         if not isinstance(ctbc_delta, torch.Tensor):
             ctbc_delta = torch.zeros(env.num_envs, 6, device=env.device)
         ctbc_delta = _finite(ctbc_delta)
+        flat_zero_mask = getattr(env, "_stair_flat_zero_command_mask", None)
+        if isinstance(flat_zero_mask, torch.Tensor) and flat_zero_mask.shape[0] == env.num_envs:
+            flat_zero_rate = _masked_mean(flat_zero_mask.float(), flat_mode)
+        else:
+            flat_zero_rate = 0.0
         env.extras["log"].update(
             {
                 "Stair/obs_steps_climbed": steps.mean().item(),
@@ -1525,6 +1530,7 @@ def stair_diagnostics(
                 "Stair/diag_task_mode_stair_rate": (
                     _task_mode_mask(env, (_TASK_MODE_STAIR,)).float().mean().item()
                 ),
+                "Stair/diag_flat_zero_command_rate": flat_zero_rate,
                 "Stair/diag_body_vx": body_vx.mean().item(),
                 "Stair/diag_radial_vx": radial_vx.mean().item(),
                 "Stair/diag_radial_retreat_rate": (radial_vx < -0.05).float().mean().item(),
