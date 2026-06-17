@@ -38,9 +38,19 @@ def run(
     return result.stdout if capture else ""
 
 
+def ssh_args(args: argparse.Namespace, command: str) -> list[str]:
+    """生成单跳或两跳 SSH 命令。"""
+    if args.inner_host:
+        encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
+        inner_command = f"echo {shlex.quote(encoded)} | base64 -d | bash"
+        nested = f"ssh {shlex.quote(args.inner_host)} {shlex.quote(inner_command)}"
+        return ["ssh", args.entry_host, nested]
+    return ["ssh", args.entry_host, command]
+
+
 def pod_bash(
+    args: argparse.Namespace,
     *,
-    entry_host: str,
     namespace: str,
     pod: str,
     script: str,
@@ -53,8 +63,24 @@ def pod_bash(
         f"echo {payload} | base64 -d | "
         f"kubectl exec -i -n {shlex.quote(namespace)} {shlex.quote(pod)} -- bash -s"
     )
-    display = f"ssh {entry_host} kubectl exec -n {namespace} {pod} -- bash -s  # {label}"
-    return run(["ssh", entry_host, remote_command], capture=capture, display=display)
+    route = f"{args.entry_host}->{args.inner_host}" if args.inner_host else args.entry_host
+    display = f"ssh {route} kubectl exec -n {namespace} {pod} -- bash -s  # {label}"
+    return run(ssh_args(args, remote_command), capture=capture, display=display)
+
+
+def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path: str) -> None:
+    """把本地文件复制到执行 kubectl 的远端主机。"""
+    if not args.inner_host:
+        run(["scp", str(local_path), f"{args.entry_host}:{remote_path}"])
+        return
+    entry_tmp = f"/tmp/{Path(remote_path).name}.entry"
+    try:
+        run(["scp", str(local_path), f"{args.entry_host}:{entry_tmp}"])
+        nested = f"scp {shlex.quote(entry_tmp)} {shlex.quote(args.inner_host + ':' + remote_path)}"
+        run(["ssh", args.entry_host, nested])
+    finally:
+        cleanup = f"Remove-Item -Force -ErrorAction SilentlyContinue '{entry_tmp}'"
+        run(["ssh", args.entry_host, cleanup])
 
 
 def build_code_archive(archive: Path, *, exclude_base_model: bool = False) -> None:
@@ -82,8 +108,13 @@ def build_code_archive(archive: Path, *, exclude_base_model: bool = False) -> No
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync local code and start remote stair training.")
     parser.add_argument("--entry-host", default="target-via-phone")
+    parser.add_argument(
+        "--inner-host",
+        default=None,
+        help="两跳 SSH 的内层主机，例如从 laptop 再 ssh 到 a800。",
+    )
     parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="gpu-8-b6994457c-kv2rj")
+    parser.add_argument("--pod", default="abbtask")
     parser.add_argument(
         "--remote-project",
         default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
@@ -158,6 +189,13 @@ def parse_args() -> argparse.Namespace:
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
     """生成与本次远端训练参数对应的本地 watcher 指令。"""
     run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
+    route_args = (
+        f"  --host {args.inner_host} `\n"
+        f"  --entry-host {args.entry_host} `\n"
+        f"  --inner-host {args.inner_host} `\n"
+        if args.inner_host
+        else f"  --host {args.entry_host} `\n"
+    )
     command_height_arg = (
         f"  --command-height {args.watch_command_height:g} `\n"
         if args.watch_command_height is not None
@@ -165,7 +203,7 @@ def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -
     )
     return (
         "uv run python scripts/watch_remote_train_local.py `\n"
-        f"  --host {args.entry_host} `\n"
+        f"{route_args}"
         f"  --namespace {args.namespace} `\n"
         f"  --pod {args.pod} `\n"
         f"  --remote-project {args.remote_project} `\n"
@@ -244,7 +282,7 @@ test -d {shlex.quote(args.cuda_toolkit_lib_dir)}
 nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader
 """
     pod_bash(
-        entry_host=args.entry_host,
+        args,
         namespace=args.namespace,
         pod=args.pod,
         script=precheck_script,
@@ -252,17 +290,16 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
     )
 
     build_code_archive(archive, exclude_base_model=args.from_scratch)
-    run(["scp", str(archive), f"{args.entry_host}:{remote_archive}"])
+    copy_to_remote_host(args, archive, remote_archive)
     run(
-        [
-            "ssh",
-            args.entry_host,
+        ssh_args(
+            args,
             (
                 f"kubectl cp {shlex.quote(remote_archive)} "
                 f"{shlex.quote(args.namespace)}/{shlex.quote(args.pod)}:"
                 f"{shlex.quote(remote_archive)} -n {shlex.quote(args.namespace)}"
             ),
-        ]
+        )
     )
 
     sync_script = f"""
@@ -279,7 +316,7 @@ compile_targets=(src scripts)
 ./.venv/bin/python -m compileall -q "${{compile_targets[@]}}"
 """
     pod_bash(
-        entry_host=args.entry_host,
+        args,
         namespace=args.namespace,
         pod=args.pod,
         script=sync_script,
@@ -358,7 +395,7 @@ echo "TRAIN_LOG={log_path}"
 echo "TRAIN_RUN_DIR=$run_dir"
 """
     launch_output = pod_bash(
-        entry_host=args.entry_host,
+        args,
         namespace=args.namespace,
         pod=args.pod,
         script=launch_script,

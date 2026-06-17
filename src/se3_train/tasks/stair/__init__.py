@@ -6,7 +6,7 @@ import os
 
 from mjlab.tasks.registry import register_mjlab_task
 
-from se3_train.tasks.common import Se3WarmStartRunner
+from se3_train.tasks.common import Se3StairWarmStartRunner
 
 from .env_cfg import env_cfg
 from .rl_cfg import rl_cfg
@@ -29,14 +29,14 @@ def register() -> None:
         env_cfg=env_cfg(),
         play_env_cfg=task_play_env_cfg,
         rl_cfg=rl_cfg(),
-        runner_cls=Se3WarmStartRunner,
+        runner_cls=Se3StairWarmStartRunner,
     )
     register_mjlab_task(
         task_id=TRAIN_VIEW_TASK_ID,
         env_cfg=env_cfg(),
         play_env_cfg=env_cfg(),
         rl_cfg=rl_cfg(),
-        runner_cls=Se3WarmStartRunner,
+        runner_cls=Se3StairWarmStartRunner,
     )
 
 

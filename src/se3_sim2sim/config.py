@@ -13,7 +13,7 @@ from se3_shared import ActionDelayConfig, Termination
 
 from .course import CourseConfig
 
-ViewerMode = Literal["rerun", "mujoco", "none"]
+ViewerMode = Literal["rerun", "mujoco", "viser", "none"]
 RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
@@ -200,6 +200,16 @@ class RobotConfig(BaseModel):
     model_path: Path = model_path_for_variant(DEFAULT_SIM_MODEL_VARIANT)
     task: str = "wheel_legged_joint_pos"
     seed: int = 0
+    stair_terrain: bool = False
+    """是否在原生 MuJoCo sim2sim 中添加台阶碰撞地形。"""
+    stair_terrain_level: Annotated[int, Field(ge=0, le=9)] = 0
+    """台阶课程等级，0 对应 5cm，9 对应 20cm。"""
+    stair_step_height_range: tuple[float, float] = (0.05, 0.20)
+    """台阶高度范围，与训练端 stair terrain 课程保持一致。"""
+    stair_step_count: Annotated[int, Field(ge=1, le=20)] = 6
+    stair_step_depth_m: Annotated[float, Field(gt=0.0)] = 0.5
+    stair_start_x_m: float = 1.0
+    stair_half_width_m: Annotated[float, Field(gt=0.0)] = 2.0
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height

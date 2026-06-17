@@ -101,7 +101,7 @@ class WheelLeggedRobot:
         self.model_path = Path(cfg.model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
-        self.model = self._build_model(str(self.model_path))
+        self.model = self._build_model(str(self.model_path), cfg)
         # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -709,7 +709,7 @@ class WheelLeggedRobot:
         return int(idx)
 
     @staticmethod
-    def _build_model(xml_path: str) -> mujoco.MjModel:
+    def _build_model(xml_path: str, cfg: RobotConfig) -> mujoco.MjModel:
         """加载 MJCF 并程序化添加 motor actuator（与训练端 DcMotorActuatorCfg 一致）。
 
         PD 控制在 Python 层计算，T-N 包络 clamp 也在 Python 层执行。
@@ -717,6 +717,8 @@ class WheelLeggedRobot:
         训练端 actuator 顺序: 先 leg（4个），再 wheel（2个）。
         """
         spec = mujoco.MjSpec.from_file(xml_path)
+        if cfg.stair_terrain:
+            WheelLeggedRobot._add_stair_terrain_geoms(spec, cfg)
 
         joint_names = tuple(joint.name for joint in spec.joints if joint.name)
         site_names = tuple(site.name for site in spec.sites if site.name)
@@ -759,6 +761,35 @@ class WheelLeggedRobot:
         model = spec.compile()
         WheelLeggedRobot._assign_ground_geom_group(model)
         return model
+
+    @staticmethod
+    def _add_stair_terrain_geoms(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
+        """在原生 MuJoCo sim2sim 中添加与训练课程同尺度的台阶碰撞体。"""
+
+        low, high = (float(v) for v in cfg.stair_step_height_range)
+        level = max(0, min(9, int(cfg.stair_terrain_level)))
+        step_height = low + (float(level) / 9.0) * (high - low)
+        step_depth = float(cfg.stair_step_depth_m)
+        half_width = float(cfg.stair_half_width_m)
+        start_x = float(cfg.stair_start_x_m)
+        for idx in range(int(cfg.stair_step_count)):
+            height = step_height * float(idx + 1)
+            spec.worldbody.add_geom(
+                name=f"stair_terrain_step_{idx}",
+                type=int(mujoco.mjtGeom.mjGEOM_BOX),
+                pos=[
+                    start_x + idx * step_depth + 0.5 * step_depth,
+                    0.0,
+                    0.5 * height,
+                ],
+                size=[0.5 * step_depth, half_width, 0.5 * height],
+                contype=2,
+                conaffinity=1,
+                condim=3,
+                group=_GROUND_GEOM_GROUP,
+                friction=[0.8, 0.005, 0.0001],
+                rgba=[0.35, 0.37, 0.33, 1.0],
+            )
 
     @staticmethod
     def _assign_ground_geom_group(model: mujoco.MjModel) -> None:

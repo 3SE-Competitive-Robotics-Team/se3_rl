@@ -384,6 +384,8 @@ class LegContactDelayed:
         sensor_name: str,
         force_threshold: float = 80.0,
         max_steps: int = 50,
+        recovery_grace_steps: int = 0,
+        recovery_terminate: bool = True,
     ) -> torch.Tensor:
         if (
             self._fail_count is None
@@ -399,9 +401,19 @@ class LegContactDelayed:
 
         force_mag = finite_contact_force_norm(data.force)
         has_contact = force_mag.max(dim=1).values > float(force_threshold)
+        counted_contact = has_contact
+        recovery_mask = _recovery_reset_mask(env)
+        in_recovery_grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        if not recovery_terminate:
+            counted_contact = counted_contact & ~recovery_mask
+        if recovery_grace_steps > 0:
+            in_recovery_grace = recovery_mask & (
+                env.episode_length_buf <= int(recovery_grace_steps)
+            )
+            counted_contact = counted_contact & ~in_recovery_grace
 
-        self._fail_count[has_contact] += 1
-        self._fail_count[~has_contact] = 0
+        self._fail_count[counted_contact] += 1
+        self._fail_count[~counted_contact] = 0
         self._fail_count[env.episode_length_buf <= 1] = 0
         terminated = self._fail_count > int(max_steps)
 
@@ -411,6 +423,16 @@ class LegContactDelayed:
                     "Stair/diag_leg_heavy_contact_rate": has_contact.float().mean().item(),
                     "Stair/diag_leg_contact_delayed_termination_rate": (
                         terminated.float().mean().item()
+                    ),
+                    "Recovery/leg_contact_grace_rate": (
+                        in_recovery_grace[recovery_mask].float().mean().item()
+                        if recovery_mask.any()
+                        else 0.0
+                    ),
+                    "Recovery/leg_contact_delayed_termination_rate": (
+                        terminated[recovery_mask].float().mean().item()
+                        if recovery_mask.any()
+                        else 0.0
                     ),
                 }
             )

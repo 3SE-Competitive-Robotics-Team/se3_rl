@@ -8,6 +8,8 @@ local ``se3-play`` with one environment using the training-scene task alias.
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
 import os
 import re
 import shlex
@@ -44,6 +46,18 @@ _TRAIN_VIEW_ITER_ENV = "SE3_TRAIN_VIEW_ITER"
 _TRAIN_VIEW_TERRAIN_LEVEL_ENV = "SE3_TRAIN_VIEW_TERRAIN_LEVEL"
 _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
 _MODEL_RE = re.compile(r"^model_(\d+)\.pt$")
+_SSH_STABILITY_OPTS = [
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=6",
+    "-o",
+    "TCPKeepAlive=yes",
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ConnectionAttempts=3",
+]
 
 
 @dataclass(frozen=True)
@@ -55,22 +69,110 @@ class RemoteCheckpoint:
 
 
 def _run(cmd: list[str], *, capture: bool = False, timeout: int | None = None) -> str:
-    result = subprocess.run(
-        cmd,
-        check=True,
-        capture_output=capture,
-        text=capture,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=capture,
+            text=capture,
+            timeout=timeout,
+        )
+    except subprocess.CalledProcessError as exc:
+        if capture and exc.stdout:
+            sys.stderr.write(exc.stdout)
+        if capture and exc.stderr:
+            sys.stderr.write(exc.stderr)
+        raise
     return result.stdout if capture else ""
 
 
-def _remote_shell(args: argparse.Namespace, command: str, *, timeout: int = 60) -> str:
+def _run_with_retries(
+    cmd: list[str],
+    *,
+    capture: bool = False,
+    timeout: int | None = None,
+    attempts: int = 3,
+) -> str:
+    last_exc: subprocess.CalledProcessError | subprocess.TimeoutExpired | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run(cmd, capture=capture, timeout=timeout)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            last_exc = exc
+            if attempt == attempts:
+                raise
+            time.sleep(min(5 * attempt, 15))
+    assert last_exc is not None
+    raise last_exc
+
+
+def _ssh_options_for_shell() -> str:
+    return " ".join(shlex.quote(part) for part in _SSH_STABILITY_OPTS)
+
+
+def _host_ssh_args(args: argparse.Namespace, command: str) -> list[str]:
+    encoded = base64.b64encode(command.encode()).decode()
+    remote_command = f"echo {shlex.quote(encoded)} | base64 -d | bash"
+    if args.entry_host and args.inner_host:
+        inner = (
+            f"ssh {_ssh_options_for_shell()} "
+            f"{shlex.quote(args.inner_host)} {shlex.quote(remote_command)}"
+        )
+        return ["ssh", *_SSH_STABILITY_OPTS, args.entry_host, inner]
+    return ["ssh", *_SSH_STABILITY_OPTS, args.host, remote_command]
+
+
+def _cleanup_entry_tmp(args: argparse.Namespace, entry_tmp: str) -> None:
+    if not args.entry_host:
+        return
+    command = f"Remove-Item -Force -ErrorAction SilentlyContinue '{entry_tmp}'"
+    with contextlib.suppress(subprocess.CalledProcessError):
+        _run(["ssh", *_SSH_STABILITY_OPTS, args.entry_host, command], capture=True, timeout=120)
+
+
+def _copy_host_file_to_local(
+    args: argparse.Namespace,
+    *,
+    host_path: str,
+    local_path: Path,
+    entry_tmp: str,
+) -> None:
+    if not (args.entry_host and args.inner_host):
+        _run_with_retries(
+            ["scp", *_SSH_STABILITY_OPTS, f"{args.host}:{host_path}", str(local_path)],
+            timeout=300,
+        )
+        return
+
+    _cleanup_entry_tmp(args, entry_tmp)
+    try:
+        _run_with_retries(
+            [
+                "ssh",
+                *_SSH_STABILITY_OPTS,
+                args.entry_host,
+                (
+                    f"scp {_ssh_options_for_shell()} "
+                    f"{shlex.quote(args.inner_host + ':' + host_path)} "
+                    f"{shlex.quote(entry_tmp)}"
+                ),
+            ],
+            timeout=300,
+        )
+        _run_with_retries(
+            ["scp", *_SSH_STABILITY_OPTS, f"{args.entry_host}:{entry_tmp}", str(local_path)],
+            timeout=300,
+        )
+    finally:
+        _cleanup_entry_tmp(args, entry_tmp)
+
+
+def _remote_shell(args: argparse.Namespace, command: str, *, timeout: int = 180) -> str:
     remote = (
         f"kubectl exec -n {shlex.quote(args.namespace)} {shlex.quote(args.pod)} "
         f"-- bash -lc {shlex.quote(command)}"
     )
-    return _run(["ssh", args.host, remote], capture=True, timeout=timeout)
+    return _run_with_retries(_host_ssh_args(args, remote), capture=True, timeout=timeout)
 
 
 def _resolve_run_dir(args: argparse.Namespace) -> str:
@@ -142,23 +244,30 @@ def _copy_checkpoint(args: argparse.Namespace, run_dir: str, ckpt: RemoteCheckpo
     local_run_dir = args.local_log_dir / run_dir
     local_run_dir.mkdir(parents=True, exist_ok=True)
     local_path = local_run_dir / ckpt.name
-    tmp_path = local_run_dir / f"{ckpt.name}.tmp"
+    tmp_path = local_run_dir / f"{ckpt.name}.{os.getpid()}.tmp"
     if local_path.exists() and local_path.stat().st_size == ckpt.size:
         return local_path
 
     remote_path = f"{args.remote_project}/{args.remote_log_dir}/{run_dir}/{ckpt.name}"
     safe_run = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_dir)
-    host_tmp = f"/tmp/se3_remote_watch_{safe_run}_{ckpt.name}"
+    host_tmp = f"/tmp/se3_remote_watch_{safe_run}_{ckpt.name}.{os.getpid()}"
+    entry_tmp = f"/tmp/se3_remote_watch_entry_{safe_run}_{ckpt.name}.{os.getpid()}"
     copy_cmd = (
         f"kubectl cp -n {shlex.quote(args.namespace)} "
         f"{shlex.quote(args.pod + ':' + remote_path)} {shlex.quote(host_tmp)}"
     )
-    if tmp_path.exists():
-        tmp_path.unlink()
-    _run(["ssh", args.host, f"rm -f {shlex.quote(host_tmp)}"], timeout=30)
+    with contextlib.suppress(OSError):
+        if tmp_path.exists():
+            tmp_path.unlink()
+    _run_with_retries(_host_ssh_args(args, f"rm -f {shlex.quote(host_tmp)}"), timeout=120)
     try:
-        _run(["ssh", args.host, copy_cmd], timeout=180)
-        _run(["scp", f"{args.host}:{host_tmp}", str(tmp_path)], timeout=180)
+        _run_with_retries(_host_ssh_args(args, copy_cmd), timeout=180)
+        _copy_host_file_to_local(
+            args,
+            host_path=host_tmp,
+            local_path=tmp_path,
+            entry_tmp=entry_tmp,
+        )
         copied_size = tmp_path.stat().st_size
         if copied_size != ckpt.size:
             raise RuntimeError(
@@ -167,10 +276,27 @@ def _copy_checkpoint(args: argparse.Namespace, run_dir: str, ckpt: RemoteCheckpo
             )
         tmp_path.replace(local_path)
     finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        _run(["ssh", args.host, f"rm -f {shlex.quote(host_tmp)}"], timeout=30)
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
+        _run_with_retries(_host_ssh_args(args, f"rm -f {shlex.quote(host_tmp)}"), timeout=120)
     return local_path
+
+
+def _latest_local_checkpoint(args: argparse.Namespace, run_dir: str) -> Path | None:
+    local_run_dir = args.local_log_dir / run_dir
+    if not local_run_dir.exists():
+        return None
+    checkpoints = [
+        checkpoint
+        for checkpoint in local_run_dir.glob("model_*.pt")
+        if _checkpoint_iteration_from_path(checkpoint) >= 0
+        and checkpoint.is_file()
+        and checkpoint.stat().st_size > 0
+    ]
+    if not checkpoints:
+        return None
+    return max(checkpoints, key=_checkpoint_iteration_from_path)
 
 
 def _viewer_task(args: argparse.Namespace) -> str:
@@ -254,8 +380,18 @@ def main() -> None:
         description="Copy remote checkpoints and view the real training scene locally."
     )
     parser.add_argument("--host", default="target-via-phone")
+    parser.add_argument(
+        "--entry-host",
+        default=None,
+        help="两跳 SSH 的入口机；设置后需同时设置 --inner-host。",
+    )
+    parser.add_argument(
+        "--inner-host",
+        default=None,
+        help="两跳 SSH 的训练机别名，例如从入口机再 ssh 到 a800。",
+    )
     parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="gpu-8-b6994457c-kv2rj")
+    parser.add_argument("--pod", default="abbtask")
     parser.add_argument(
         "--remote-project",
         default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
@@ -320,16 +456,47 @@ def main() -> None:
         help="Resolve and copy the latest checkpoint, then exit without opening a viewer.",
     )
     args = parser.parse_args()
+    if (args.entry_host is None) != (args.inner_host is None):
+        parser.error("--entry-host 和 --inner-host 必须同时设置")
 
     run_dir = _resolve_run_dir(args)
     print(f"[local-watch] remote run: {run_dir}")
+    if args.entry_host and args.inner_host:
+        print(f"[local-watch] ssh route: {args.entry_host} -> {args.inner_host}")
     print(f"[local-watch] viewer task: {_viewer_task(args)}")
 
     last_iter = -1
     viewer_proc: subprocess.Popen | None = None
     try:
         while True:
-            latest = _latest_checkpoint(args, run_dir)
+            try:
+                latest = _latest_checkpoint(args, run_dir)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                local_ckpt = None if args.dry_run else _latest_local_checkpoint(args, run_dir)
+                if local_ckpt is not None:
+                    local_iter = _checkpoint_iteration_from_path(local_ckpt)
+                    should_launch_local = (
+                        last_iter < 0 or local_iter - last_iter >= args.interval_iters
+                    )
+                    if viewer_proc is not None and viewer_proc.poll() is not None:
+                        print(f"[local-watch] viewer exited with code {viewer_proc.returncode}")
+                        viewer_proc = None
+                        should_launch_local = True
+                    if should_launch_local:
+                        print(
+                            "[local-watch] remote checkpoint query failed; "
+                            f"using local checkpoint model_{local_iter}.pt"
+                        )
+                        _stop_viewer(viewer_proc)
+                        viewer_proc = _launch_viewer(args, local_ckpt)
+                        last_iter = local_iter
+                print(
+                    "[local-watch] remote checkpoint query failed; "
+                    f"retrying in {args.poll_seconds}s: {exc}",
+                    file=sys.stderr,
+                )
+                time.sleep(args.poll_seconds)
+                continue
             if latest is None:
                 print("[local-watch] no stable checkpoint yet; waiting...")
                 time.sleep(args.poll_seconds)
@@ -341,7 +508,20 @@ def main() -> None:
                 viewer_proc = None
                 should_launch = True
             if should_launch:
-                local_ckpt = _copy_checkpoint(args, run_dir, latest)
+                try:
+                    local_ckpt = _copy_checkpoint(args, run_dir, latest)
+                except (
+                    subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired,
+                    RuntimeError,
+                ) as exc:
+                    print(
+                        "[local-watch] checkpoint copy failed; "
+                        f"retrying in {args.poll_seconds}s: {exc}",
+                        file=sys.stderr,
+                    )
+                    time.sleep(args.poll_seconds)
+                    continue
                 print(f"[local-watch] checkpoint model_{iteration}.pt -> {local_ckpt}")
                 if args.dry_run:
                     raise SystemExit(0)

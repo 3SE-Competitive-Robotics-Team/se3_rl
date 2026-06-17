@@ -7,6 +7,12 @@ import math
 from datetime import datetime
 from pathlib import Path
 
+from se3_deploy.export_npz import (
+    DEFAULT_OUTPUT as DEFAULT_DEPLOY_NPZ,
+)
+from se3_deploy.export_npz import (
+    DEFAULT_RECOVERY_CHECKPOINT as DEFAULT_DEPLOY_SOURCE_CHECKPOINT,
+)
 from se3_shared import RECOVERY_COMMAND_HEIGHT_RANGE_M
 
 from .cli import build_parser as build_sim2sim_parser
@@ -15,8 +21,12 @@ from .course import CourseType
 from .teleop_input import DEFAULT_COMMAND_LIN_VEL_X, DEFAULT_COMMAND_YAW_RATE, KeyboardTeleopSource
 from .workflow import run_sim2sim
 
-# teleop 默认跟随当前 NX recovery runtime 的部署权重，避免误选本地 smoke checkpoint。
-DEFAULT_TELEOP_CHECKPOINT: Path | None = Path("logs/deploy/model_4999_recovery_obs34_gru.npz")
+# teleop 默认跟随当前部署用 obs34 recovery 模型，不自动切到本地最新 smoke checkpoint。
+DEFAULT_TELEOP_CHECKPOINTS = (
+    DEFAULT_DEPLOY_NPZ,
+    DEFAULT_DEPLOY_NPZ.with_suffix(".onnx"),
+    DEFAULT_DEPLOY_SOURCE_CHECKPOINT,
+)
 DEFAULT_MIN_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[0]
 DEFAULT_MAX_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[1]
 DEFAULT_COMMAND_LIN_ACCEL = 0.8
@@ -56,12 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
         rc_start_off=True,
         rerun_app_id="se3_sim2sim_teleop",
         print_every=25,
-        checkpoint=DEFAULT_TELEOP_CHECKPOINT,
+        checkpoint=None,
         viewer="mujoco",
     )
     _set_checkpoint_help(
         parser,
-        "Policy checkpoint. Defaults to logs/deploy/model_4999_recovery_obs34_gru.npz.",
+        "Policy checkpoint. 默认使用当前部署用 obs34 recovery 模型：优先 logs/deploy/*.npz 或 *.onnx，"
+        "缺失时使用对应源 checkpoint logs/rsl_rl/se3_wheel_leg/2026-06-13_21-35-38/model_4999.pt。",
     )
     parser.add_argument(
         "--teleop-vx",
@@ -162,6 +173,7 @@ def _set_checkpoint_help(parser: argparse.ArgumentParser, help_text: str) -> Non
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    _apply_default_checkpoint(args, parser)
     if args.course != CourseType.NONE.value:
         parser.error("teleop 模式由键盘接管 command[0:2]，不能同时使用 --course")
     if args.jump_interval_s is not None and args.jump_script:
@@ -202,6 +214,23 @@ def main() -> int:
 
     _print_summary(summary, cfg.viewer.record_to_rrd)
     return 0
+
+
+def _apply_default_checkpoint(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """选择当前部署用 obs34 recovery 模型。"""
+    if args.checkpoint is not None:
+        return
+    for checkpoint in DEFAULT_TELEOP_CHECKPOINTS:
+        if checkpoint.exists():
+            args.checkpoint = checkpoint
+            if checkpoint != DEFAULT_TELEOP_CHECKPOINTS[0]:
+                print(f"[teleop] 默认部署导出文件不存在，使用部署源 checkpoint: {checkpoint}")
+            return
+    candidates = ", ".join(str(path) for path in DEFAULT_TELEOP_CHECKPOINTS)
+    parser.error(
+        "未找到当前部署用 obs34 recovery 模型；请先导出部署权重，或用 --checkpoint 指定。"
+        f" 已检查: {candidates}"
+    )
 
 
 def _default_rerun_record_path(record_dir: Path) -> Path:

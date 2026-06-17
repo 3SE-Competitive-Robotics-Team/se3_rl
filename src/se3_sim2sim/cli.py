@@ -149,6 +149,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="sim2sim runtime task id.",
     )
     parser.add_argument(
+        "--stair-terrain",
+        action="store_true",
+        help="在原生 MuJoCo sim2sim 中添加台阶碰撞地形，用于台阶训练值守。",
+    )
+    parser.add_argument(
+        "--stair-terrain-level",
+        type=int,
+        default=robot_defaults.stair_terrain_level,
+        choices=range(10),
+        help="台阶课程等级，0=5cm，9=20cm。",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
@@ -174,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=robot_defaults.control_decimation,
         help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
     )
-    parser.add_argument("--viewer", choices=["rerun", "mujoco", "none"], default="rerun")
+    parser.add_argument("--viewer", choices=["rerun", "mujoco", "viser", "none"], default="rerun")
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
@@ -593,6 +605,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             model_path=model_path,
             task=str(args.task),
             seed=int(args.seed),
+            stair_terrain=bool(args.stair_terrain),
+            stair_terrain_level=int(args.stair_terrain_level),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
             initial_roll_rad=initial_roll_rad,

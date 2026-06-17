@@ -752,6 +752,7 @@ def reset_root_state_full(
     recovery_grace_steps: int = 400,
     recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
     recovery_zero_velocity_command: bool = True,
+    recovery_mask_attr: str | None = None,
 ) -> None:
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
@@ -821,6 +822,10 @@ def reset_root_state_full(
     env._recovery_stage_cache_prob = float(recovery_state_cache_prob)
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
+    if recovery_mask_attr:
+        preset_mask = getattr(env, recovery_mask_attr, None)
+        if isinstance(preset_mask, torch.Tensor) and preset_mask.shape[0] == env.num_envs:
+            recovery_mask = preset_mask[env_ids].to(device=env.device, dtype=torch.bool)
     recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
     init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
     init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
@@ -2088,8 +2093,17 @@ def push_robots(
     env_ids: torch.Tensor,
     velocity_range: dict[str, tuple[float, float]],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    skip_recovery_active: bool = False,
 ) -> None:
     """随机速度扰动机器人根节点。"""
+    if skip_recovery_active:
+        recovery_active = getattr(env, "_recovery_reset_mask", None)
+        if isinstance(recovery_active, torch.Tensor) and recovery_active.shape[0] == env.num_envs:
+            env_ids = env_ids[~recovery_active[env_ids].to(device=env.device, dtype=torch.bool)]
+            if env_ids.numel() == 0:
+                env.extras.setdefault("log", {})
+                env.extras["log"]["PushDisturbance/skipped_recovery_active_rate"] = 1.0
+                return
     asset: Entity = env.scene[asset_cfg.name]
     vel_w = asset.data.root_link_vel_w[env_ids]
     active_velocity_range = getattr(env, "_push_velocity_range", velocity_range)

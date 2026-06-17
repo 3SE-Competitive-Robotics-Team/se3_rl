@@ -20,6 +20,7 @@ from .rerun_viewer import RerunViewer
 from .robot import WheelLeggedRobot
 from .runtime_spec import RuntimeSpec
 from .teleop_input import CommandInputSource
+from .viser_viewer import ViserViewer
 
 
 class Sim2SimWorkflow:
@@ -67,7 +68,9 @@ class Sim2SimWorkflow:
             )
             obs = self.robot.observation()
         initial_policy_io = self._policy_io_diagnostics(obs)
+        max_steps = int(self.cfg.max_steps)
         samples: list[dict[str, float]] = []
+        collect_samples = not (max_steps == 0 and self.cfg.viewer.mode == "viser")
         model_diag = self.robot.diagnostics()
 
         rc_sched = self.cfg.robot.rc_switch
@@ -92,7 +95,6 @@ class Sim2SimWorkflow:
                 self.robot.model, self.robot.data, step=0, telemetry=initial_telemetry
             )
 
-        max_steps = int(self.cfg.max_steps)
         step_iter = range(1, max_steps + 1) if max_steps > 0 else itertools.count(1)
         done_reason = "max_steps" if max_steps > 0 else "interrupted"
 
@@ -159,11 +161,122 @@ class Sim2SimWorkflow:
                 )
 
         try:
+            episode_step_offset = 0
+            viewer_step_offset = 0
             for step in step_iter:
                 if self._viewer_is_closed(self.viewer):
                     done_reason = "viewer_closed"
                     break
-                sim_time_s = (step - 1) * control_dt
+                checkpoint_request = self._consume_viewer_checkpoint_request(self.viewer)
+                if checkpoint_request is not None:
+                    try:
+                        next_policy = PolicyRuntime(
+                            checkpoint=checkpoint_request,
+                            device=self.cfg.policy.device,
+                            runtime=self.runtime,
+                        )
+                    except Exception as exc:
+                        self._notify_viewer_checkpoint_failed(
+                            self.viewer,
+                            checkpoint_request,
+                            str(exc),
+                        )
+                    else:
+                        self.policy = next_policy
+                        self.cfg.policy.checkpoint = next_policy.checkpoint_path
+                        self._notify_viewer_checkpoint_loaded(
+                            self.viewer,
+                            next_policy.checkpoint_path,
+                            next_policy.iteration,
+                        )
+                        print(
+                            "[viser] loaded checkpoint "
+                            f"{next_policy.checkpoint_path.name} iter={next_policy.iteration}"
+                        )
+                        episode_step_offset = step
+                        viewer_step_offset = step
+                        obs = self.robot.reset(
+                            fixed=self.cfg.fixed_reset,
+                            randomize_root=self.cfg.randomize_root,
+                        )
+                        self.robot.command[:] = np.asarray(
+                            self.cfg.robot.command,
+                            dtype=np.float64,
+                        )
+                        self.policy.reset()
+                        self.robot.reset_policy_io_state()
+                        obs = self.robot.observation()
+                        _next_rc_event = 0
+                        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                        _policy_memory_clean = True
+                        _interval_steps_remaining = (
+                            max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                        )
+                        _next_script_event = 0
+                        _traj_step = 0
+                        _traj_steps = self._trajectory_steps_for_height(
+                            float(self.robot.command[6])
+                        )
+                        _jump_active = self.robot.command[5] > 0.5
+                        _prev_action = None
+                        _prev_applied_action = None
+                        self._notify_viewer_reset(self.viewer)
+                        if self.viewer is not None:
+                            reset_telemetry = self.robot.telemetry(reward=0.0)
+                            reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["rc_switch_event"] = 0.0
+                            reset_telemetry["rc_policy_reset"] = 1.0
+                            reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                            reset_telemetry["target_mode"] = "checkpoint_switch"
+                            self.viewer.log_state(
+                                self.robot.model,
+                                self.robot.data,
+                                step=0,
+                                telemetry=reset_telemetry,
+                            )
+                        continue
+                if self._consume_viewer_reset_requested(self.viewer):
+                    episode_step_offset = step
+                    viewer_step_offset = step
+                    obs = self.robot.reset(
+                        fixed=self.cfg.fixed_reset,
+                        randomize_root=self.cfg.randomize_root,
+                    )
+                    self.robot.command[:] = np.asarray(self.cfg.robot.command, dtype=np.float64)
+                    self.policy.reset()
+                    self.robot.reset_policy_io_state()
+                    obs = self.robot.observation()
+                    _next_rc_event = 0
+                    _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                    _policy_memory_clean = True
+                    _interval_steps_remaining = (
+                        max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                    )
+                    _next_script_event = 0
+                    _traj_step = 0
+                    _traj_steps = self._trajectory_steps_for_height(float(self.robot.command[6]))
+                    _jump_active = self.robot.command[5] > 0.5
+                    _prev_action = None
+                    _prev_applied_action = None
+                    self._notify_viewer_reset(self.viewer)
+                    if self.viewer is not None:
+                        reset_telemetry = self.robot.telemetry(reward=0.0)
+                        reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                        reset_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                        reset_telemetry["rc_switch_event"] = 0.0
+                        reset_telemetry["rc_policy_reset"] = 1.0
+                        reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                        reset_telemetry["target_mode"] = "reset"
+                        self.viewer.log_state(
+                            self.robot.model,
+                            self.robot.data,
+                            step=0,
+                            telemetry=reset_telemetry,
+                        )
+                    continue
+                episode_step = max(0, step - 1 - episode_step_offset)
+                sim_time_s = episode_step * control_dt
                 if self.command_source is not None:
                     self.command_source.pace(sim_time_s)
                 # --- jump_phase 更新（对齐训练端参考轨迹）---
@@ -353,10 +466,12 @@ class Sim2SimWorkflow:
                         info.get("closed_chain_reset_velocity_residual", 0.0)
                     ),
                 }
-                samples.append(sample)
+                if collect_samples:
+                    samples.append(sample)
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
+                    viewer_step = max(0, step - viewer_step_offset)
                     self.viewer.log_state(
-                        self.robot.model, self.robot.data, step=step, telemetry=info
+                        self.robot.model, self.robot.data, step=viewer_step, telemetry=info
                     )
                     if self._viewer_is_closed(self.viewer):
                         done_reason = "viewer_closed"
@@ -467,9 +582,33 @@ class Sim2SimWorkflow:
             self.viewer.close()
         return summary
 
-    def _make_viewer(self) -> RerunViewer | MujocoViewer | CompositeViewer | None:
+    def _make_viewer(self) -> RerunViewer | MujocoViewer | ViserViewer | CompositeViewer | None:
         if self.cfg.viewer.mode == "none":
             return None
+        if self.cfg.viewer.mode == "viser":
+            viewers: list[object] = []
+            if self.cfg.viewer.record_to_rrd is not None:
+                viewers.append(
+                    RerunViewer(
+                        app_id=self.cfg.viewer.app_id,
+                        spawn=False,
+                        address=self.cfg.viewer.address,
+                        record_to_rrd=self.cfg.viewer.record_to_rrd,
+                        memory_limit=self.cfg.viewer.memory_limit,
+                        follow_body=self.cfg.viewer.follow_body,
+                        geom_view=self.cfg.viewer.geom_view,
+                    )
+                )
+            viewers.append(
+                ViserViewer(
+                    model=self.robot.model,
+                    control_dt=self.cfg.robot.sim_dt * self.cfg.robot.control_decimation,
+                    geom_view=self.cfg.viewer.geom_view,
+                    checkpoint_path=self.policy.checkpoint_path,
+                    policy_iteration=self.policy.iteration,
+                )
+            )
+            return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
         if self.cfg.viewer.mode == "mujoco":
             key_callback = getattr(self.command_source, "key_callback", None)
             if not callable(key_callback):
@@ -507,6 +646,95 @@ class Sim2SimWorkflow:
             follow_body=self.cfg.viewer.follow_body,
             geom_view=self.cfg.viewer.geom_view,
         )
+
+    @staticmethod
+    def _consume_viewer_reset_requested(viewer: object | None) -> bool:
+        """从 viewer 或组合 viewer 中消费 reset 请求。"""
+        if viewer is None:
+            return False
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            return any(Sim2SimWorkflow._consume_viewer_reset_requested(child) for child in children)
+        consume = getattr(viewer, "consume_reset_requested", None)
+        if callable(consume):
+            return bool(consume())
+        return False
+
+    @staticmethod
+    def _consume_viewer_checkpoint_request(viewer: object | None) -> Path | None:
+        """从 viewer 或组合 viewer 中消费 checkpoint 切换请求。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_checkpoint_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume = getattr(viewer, "consume_checkpoint_request", None)
+        if callable(consume):
+            requested = consume()
+            return None if requested is None else Path(requested)
+        return None
+
+    @staticmethod
+    def _notify_viewer_reset(viewer: object | None) -> None:
+        """通知 viewer 主线程已经完成 reset。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_reset(child)
+            return
+        notify = getattr(viewer, "notify_reset", None)
+        if callable(notify):
+            notify()
+
+    @staticmethod
+    def _notify_viewer_checkpoint_loaded(
+        viewer: object | None,
+        checkpoint_path: Path,
+        policy_iteration: object,
+    ) -> None:
+        """通知 viewer 主线程已经完成 checkpoint 切换。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_checkpoint_loaded(
+                    child,
+                    checkpoint_path,
+                    policy_iteration,
+                )
+            return
+        notify = getattr(viewer, "notify_checkpoint_loaded", None)
+        if callable(notify):
+            notify(checkpoint_path, policy_iteration)
+
+    @staticmethod
+    def _notify_viewer_checkpoint_failed(
+        viewer: object | None,
+        checkpoint_path: Path,
+        message: str,
+    ) -> None:
+        """通知 viewer 主线程 checkpoint 切换失败。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_checkpoint_failed(
+                    child,
+                    checkpoint_path,
+                    message,
+                )
+            return
+        notify = getattr(viewer, "notify_checkpoint_failed", None)
+        if callable(notify):
+            notify(checkpoint_path, message)
 
     @staticmethod
     def _viewer_is_closed(viewer: object | None) -> bool:

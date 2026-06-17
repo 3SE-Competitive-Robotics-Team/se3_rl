@@ -19,13 +19,14 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         resume = False
     else:
         # 直接从台阶 level 0 开始训练；保持源仓库 stair GRU 的 64-step rollout。
-        # CTBC 从第 0 轮满幅启用，300->1000 轮退火，之后保留约 2800 轮适应期。
-        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3800"))
+        # CTBC 从第 0 轮满幅启用，500->700 轮退火，1000 轮结束训练。
+        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "1000"))
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
 
-    learning_rate = float(os.environ.get("SE3_STAIR_LEARNING_RATE", "6.5e-4"))
-    init_std = float(os.environ.get("SE3_STAIR_INIT_STD", "0.25"))
+    # 从低 std 的 34 维 GRU 基模 warm-start 时，3e-4 的首个 Adam step 会让 KL 爆炸。
+    learning_rate = float(os.environ.get("SE3_STAIR_LEARNING_RATE", "1.0e-5"))
+    init_std = float(os.environ.get("SE3_STAIR_INIT_STD", "0.5"))
     entropy_coef = float(os.environ.get("SE3_STAIR_ENTROPY_COEF", "0.00516"))
 
     return RslRlOnPolicyRunnerCfg(
@@ -63,7 +64,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
             schedule="adaptive",
             gamma=0.99,
             lam=0.95,
-            desired_kl=0.01,
+            desired_kl=0.008,
             max_grad_norm=1.0,
         ),
         experiment_name="se3_wheel_leg",

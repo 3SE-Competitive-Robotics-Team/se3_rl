@@ -8,6 +8,13 @@ import torch
 
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.curriculums import commands_height, commands_vel, push_disturbance
+from se3_train.tasks.stair.rewards import stair_wheel_support_rise
+from se3_train.tasks.stair.terrain_curriculum import (
+    DEFAULT_BUCKET_WEIGHT_STAGES,
+    DEFAULT_LEVEL_BUCKETS,
+    DEFAULT_LEVEL_MAX_STAGES,
+    sample_levels,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -20,16 +27,31 @@ def stair_terrain_levels(
     env_ids: torch.Tensor | slice | None,
     asset_name: str = "robot",
     standing_height: float = _DEFAULT_STANDING_HEIGHT,
-    move_up_distance_ratio: float = 0.35,
-    move_down_distance_ratio: float = 0.12,
+    move_up_distance_ratio: float = 0.10,
+    move_down_distance_ratio: float = 0.06,
+    move_up_min_steps: float = 2.0,
+    hold_height_tolerance_m: float = 0.02,
+    step_height_range: tuple[float, float] = (0.05, 0.20),
+    height_sensor_name: str = "wheel_height_sensor",
+    contact_sensor_name: str = "wheel_sensor",
+    contact_force_threshold_n: float = 1.0,
+    wheel_radius_m: float = 0.060,
+    wheel_clearance_tol_m: float = 0.035,
+    support_duration_s: float = 0.10,
     upright_threshold: float = -0.5,
     terrain_type_names: tuple[str, ...] = ("inv_pyramid_stairs",),
     walking_phase_iterations: int = 0,
     flat_terrain_type_name: str = "flat",
     steps_per_policy_iter: int = 64,
     fixed_iteration: int | None = None,
+    max_level_stages: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_MAX_STAGES,
+    level_buckets: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_BUCKETS,
+    bucket_weight_stages: tuple[
+        tuple[int, tuple[float, ...]],
+        ...,
+    ] = DEFAULT_BUCKET_WEIGHT_STAGES,
 ) -> dict[str, torch.Tensor]:
-    """仅根据倒金字塔完整出坑表现升降地形 row。"""
+    """按训练迭代数开放最高 row，并在低/中/高 bucket 中持续采样。"""
     terrain = env.scene.terrain
     if terrain is None or getattr(terrain, "terrain_origins", None) is None:
         return _zero_log(env)
@@ -57,27 +79,95 @@ def stair_terrain_levels(
         return logs
 
     newly_entered = _restore_training_terrain_types(env, terrain, ids)
-    robot = env.scene[asset_name]
     origins = env.scene.env_origins[ids]
+    robot = env.scene[asset_name]
     root_pos = robot.data.root_link_pos_w[ids]
-    pg_z = robot.data.projected_gravity_b[ids, 2]
     valid_episode = (env.episode_length_buf[ids] > 0) & (~newly_entered)
     stair_mask = _terrain_type_mask(terrain, ids, terrain_type_names, env.device)
 
-    height_gain = (root_pos[:, 2] - origins[:, 2]) - float(standing_height)
-    distance = torch.norm(root_pos[:, :2] - origins[:, :2], dim=1)
+    del standing_height, upright_threshold, support_duration_s, hold_height_tolerance_m
+    height_gain_all = stair_wheel_support_rise(
+        env,
+        height_sensor_name=height_sensor_name,
+        contact_sensor_name=contact_sensor_name,
+        terrain_type_names=terrain_type_names,
+        support_mode="both",
+        contact_force_threshold_n=contact_force_threshold_n,
+        wheel_radius_m=wheel_radius_m,
+        wheel_clearance_tol_m=wheel_clearance_tol_m,
+        use_episode_max=True,
+    )
+    current_height_gain_all = stair_wheel_support_rise(
+        env,
+        height_sensor_name=height_sensor_name,
+        contact_sensor_name=contact_sensor_name,
+        terrain_type_names=terrain_type_names,
+        support_mode="both",
+        contact_force_threshold_n=contact_force_threshold_n,
+        wheel_radius_m=wheel_radius_m,
+        wheel_clearance_tol_m=wheel_clearance_tol_m,
+        use_episode_max=False,
+    )
+    height_gain = torch.nan_to_num(
+        height_gain_all[ids],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    current_height_gain = torch.nan_to_num(
+        current_height_gain_all[ids],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    distance = torch.nan_to_num(
+        torch.norm(root_pos[:, :2] - origins[:, :2], dim=1),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
     terrain_size_x = float(
         getattr(getattr(terrain.cfg, "terrain_generator", None), "size", (8.0, 8.0))[0]
     )
     move_up_distance = terrain_size_x * float(move_up_distance_ratio)
     move_down_distance = terrain_size_x * float(move_down_distance_ratio)
+    target_level = terrain.terrain_levels[ids].clone()
+    sampled_logs = {
+        "max_allowed_level": torch.tensor(0.0, device=env.device),
+        "sampled_max_level": torch.tensor(0.0, device=env.device),
+        "bucket_low_rate": torch.tensor(0.0, device=env.device),
+        "bucket_mid_rate": torch.tensor(0.0, device=env.device),
+        "bucket_high_rate": torch.tensor(0.0, device=env.device),
+    }
+    if torch.any(stair_mask):
+        sampled_levels, sampled_logs = sample_levels(
+            env,
+            terrain,
+            int(stair_mask.sum().item()),
+            iteration,
+            max_level_stages=max_level_stages,
+            level_buckets=level_buckets,
+            bucket_weight_stages=bucket_weight_stages,
+        )
+        target_level[stair_mask] = sampled_levels
+    target_levels_float = target_level.float()
+    step_height = _step_height_for_levels(terrain, target_levels_float, step_height_range)
+    move_up_height = step_height * float(move_up_min_steps)
+    state = getattr(env, "stair_climb_state", None)
+    if state is not None:
+        support_duration_all = state.max_wheel_supported_both_duration()
+    else:
+        support_duration_all = torch.zeros(env.num_envs, device=env.device)
+    support_duration = torch.nan_to_num(
+        support_duration_all[ids],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
 
-    upright = pg_z < float(upright_threshold)
-    move_up = stair_mask & valid_episode & upright & (distance > move_up_distance)
-    move_down = stair_mask & valid_episode & ((~upright) | (distance < move_down_distance))
-    move_down &= ~move_up
-
-    _update_env_origins(terrain, ids, move_up=move_up, move_down=move_down)
+    move_up = stair_mask & (terrain.terrain_levels[ids] < target_level)
+    move_down = stair_mask & (terrain.terrain_levels[ids] > target_level)
+    _set_env_levels(terrain, ids, target_level=target_level, active_mask=stair_mask)
 
     levels = terrain.terrain_levels[ids].float()
     valid_stair = stair_mask & valid_episode
@@ -92,7 +182,22 @@ def stair_terrain_levels(
         "move_up_rate": _masked_mean(move_up.float(), valid_stair),
         "move_down_rate": _masked_mean(move_down.float(), valid_stair),
         "height_gain_mean": _masked_mean(height_gain, valid_stair),
+        "current_height_gain_mean": _masked_mean(current_height_gain, valid_stair),
+        "support_drop_mean": _masked_mean(
+            torch.clamp(height_gain - current_height_gain, min=0.0),
+            valid_stair,
+        ),
+        "support_duration_mean": _masked_mean(support_duration, valid_stair),
         "distance_mean": _masked_mean(distance, valid_stair),
+        "move_up_distance": torch.tensor(float(move_up_distance), device=env.device),
+        "move_down_distance": torch.tensor(float(move_down_distance), device=env.device),
+        "move_up_height_mean": _masked_mean(move_up_height, valid_stair),
+        "target_level": _masked_mean(target_level.float(), stair_mask),
+        "target_level_max_allowed": sampled_logs["max_allowed_level"],
+        "target_level_sampled_max": sampled_logs["sampled_max_level"],
+        "bucket_low_rate": sampled_logs["bucket_low_rate"],
+        "bucket_mid_rate": sampled_logs["bucket_mid_rate"],
+        "bucket_high_rate": sampled_logs["bucket_high_rate"],
         "stair_env_rate": torch.mean(stair_mask.float()),
         "walking_phase": torch.tensor(0.0, device=env.device),
         "iteration": torch.tensor(float(iteration), device=env.device),
@@ -150,25 +255,31 @@ def _terrain_type_index(terrain, terrain_type_name: str) -> int:
     return terrain_names.index(terrain_type_name)
 
 
-def _update_env_origins(
+def _step_height_for_levels(
+    terrain,
+    levels: torch.Tensor,
+    step_height_range: tuple[float, float],
+) -> torch.Tensor:
+    """按 terrain row 估算当前台阶高度。"""
+    generator_cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    num_rows = max(1, int(getattr(generator_cfg, "num_rows", 10)) - 1)
+    min_height, max_height = (float(step_height_range[0]), float(step_height_range[1]))
+    alpha = torch.clamp(levels, min=0.0, max=float(num_rows)) / float(num_rows)
+    return min_height + alpha * (max_height - min_height)
+
+
+def _set_env_levels(
     terrain,
     ids: torch.Tensor,
     *,
-    move_up: torch.Tensor,
-    move_down: torch.Tensor,
+    target_level: torch.Tensor,
+    active_mask: torch.Tensor,
 ) -> None:
-    if hasattr(terrain, "update_env_origins"):
-        terrain.update_env_origins(ids, move_up=move_up, move_down=move_down)
-        return
-
-    num_rows = int(terrain.terrain_origins.shape[0])
-    selected = ids[move_up | move_down]
+    """把本次 reset 的台阶环境放到由 iter 决定的地形 row。"""
+    selected = ids[active_mask]
     if selected.numel() == 0:
         return
-    levels = terrain.terrain_levels[selected]
-    levels[move_up[move_up | move_down]] += 1
-    levels[move_down[move_up | move_down]] -= 1
-    terrain.terrain_levels[selected] = torch.clamp(levels, 0, num_rows - 1)
+    terrain.terrain_levels[selected] = target_level[active_mask]
     terrain.env_origins[selected] = terrain.terrain_origins[
         terrain.terrain_levels[selected],
         terrain.terrain_types[selected],
@@ -207,7 +318,13 @@ def _terrain_type_mask(
 def _masked_mean(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     if not torch.any(mask):
         return torch.tensor(0.0, device=value.device)
-    return value[mask].float().mean()
+    selected = torch.nan_to_num(
+        value[mask].float(),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    return selected.mean()
 
 
 def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
@@ -218,7 +335,19 @@ def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
         "move_up_rate": zero,
         "move_down_rate": zero,
         "height_gain_mean": zero,
+        "current_height_gain_mean": zero,
+        "support_drop_mean": zero,
+        "support_duration_mean": zero,
         "distance_mean": zero,
+        "move_up_distance": zero,
+        "move_down_distance": zero,
+        "move_up_height_mean": zero,
+        "target_level": zero,
+        "target_level_max_allowed": zero,
+        "target_level_sampled_max": zero,
+        "bucket_low_rate": zero,
+        "bucket_mid_rate": zero,
+        "bucket_high_rate": zero,
         "stair_env_rate": zero,
         "walking_phase": zero,
         "iteration": zero,
