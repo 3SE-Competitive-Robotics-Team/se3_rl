@@ -375,6 +375,18 @@ def _ctbc_trigger_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
     return weight
 
 
+def _ctbc_phase_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """CTBC 相位奖励使用真实触发状态，不随物理前馈退火一起消失。"""
+    state = _get_stair_state(env)
+    if state is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    weight = state.contact_triggered().float()
+    recovery_active = recovery_state.recovery_active_mask(env)
+    if recovery_active.shape[0] == env.num_envs:
+        weight = torch.where(recovery_active, torch.zeros_like(weight), weight)
+    return weight
+
+
 def _ctbc_active_side_mask(env: ManagerBasedRlEnv, width: int) -> torch.Tensor:
     """返回当前 CTBC 相位要求摆动的轮侧 mask。"""
     state = _get_stair_state(env)
@@ -583,6 +595,9 @@ def stair_support_height(
     env: ManagerBasedRlEnv,
     step_height_range: tuple[float, float] = (0.05, 0.20),
     max_steps: float = 3.0,
+    target_steps: float = 1.0,
+    success_height_tolerance_m: float = 0.015,
+    shaping_power: float = 2.0,
     height_sensor_name: str = "wheel_height_sensor",
     contact_sensor_name: str = "wheel_sensor",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -591,7 +606,7 @@ def stair_support_height(
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
 ) -> torch.Tensor:
-    """按当前双轮真实支撑高度持续奖励，避免只奖励瞬时新增高度。"""
+    """按目标台阶高度给持续奖励，压低低高度支撑的局部最优。"""
     current_rise = stair_wheel_support_rise(
         env,
         height_sensor_name=height_sensor_name,
@@ -605,8 +620,18 @@ def stair_support_height(
         use_episode_max=False,
     )
     step_height = torch.clamp(_step_height_for_envs(env, step_height_range), min=1.0e-6)
+    target_rise = torch.clamp(
+        step_height * float(target_steps) - float(success_height_tolerance_m),
+        min=1.0e-6,
+    )
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
-    steps = torch.clamp(current_rise / step_height, min=0.0, max=float(max_steps))
+    progress = torch.clamp(current_rise / target_rise, min=0.0)
+    shaped_below_target = torch.pow(
+        torch.clamp(progress, min=0.0, max=1.0),
+        max(1.0, float(shaping_power)),
+    )
+    above_target = torch.clamp(progress - 1.0, min=0.0, max=max(0.0, float(max_steps) - 1.0))
+    steps = torch.clamp(shaped_below_target + above_target, min=0.0, max=float(max_steps))
     return _finite(steps * terrain_mask.float() * _upright_gate(env))
 
 
@@ -694,7 +719,7 @@ def stair_feet_clearance(
         wheel_heights = wheel_heights.unsqueeze(-1)
     in_range = ((wheel_heights > h_min) & (wheel_heights < h_max)).float()
     active = _ctbc_active_side_mask(env, in_range.shape[-1]).float()
-    return (in_range * active).sum(dim=-1) * _ctbc_trigger_weight(env)
+    return (in_range * active).sum(dim=-1) * _ctbc_phase_weight(env)
 
 
 def stair_feet_air_time(
@@ -715,7 +740,7 @@ def stair_feet_air_time(
     in_air = (force_mag < 1.0).float()
     active = _ctbc_active_side_mask(env, in_air.shape[-1]).float()
     air_time = torch.clamp(in_air * active * float(env.step_dt), max=0.5)
-    return air_time.sum(dim=-1) * _ctbc_trigger_weight(env)
+    return air_time.sum(dim=-1) * _ctbc_phase_weight(env)
 
 
 def stair_contact_number(
@@ -747,7 +772,7 @@ def stair_contact_number(
     swing_penalty = swing_mismatch.float().sum(dim=-1)
     reward = swing_reward + support_reward - 1.3 * (swing_penalty + support_penalty)
     reward = torch.where(has_support_side, reward, -2.0 * torch.ones_like(reward))
-    return reward * _ctbc_trigger_weight(env)
+    return reward * _ctbc_phase_weight(env)
 
 
 def stair_wheel_swing_zero_vel(
@@ -765,7 +790,7 @@ def stair_wheel_swing_zero_vel(
     wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
     ff_active = _ctbc_active_side_mask(env, wheel_vel.shape[-1]).float()
     reward = torch.exp(-(ff_active * wheel_vel**2).sum(dim=-1))
-    return reward * _ctbc_trigger_weight(env)
+    return reward * _ctbc_phase_weight(env)
 
 
 def stair_wheel_fore_aft_offset_penalty(
@@ -1158,6 +1183,11 @@ def stair_diagnostics(
             if state is not None
             else torch.zeros(env.num_envs, device=env.device)
         )
+        ctbc_phase_active = (
+            state.contact_triggered().float()
+            if state is not None
+            else torch.zeros(env.num_envs, device=env.device)
+        )
         support_drop = torch.clamp(max_wheel_support_rise - wheel_support_rise, min=0.0)
         raw_wheel_rise = stair_wheel_support_rise(
             env,
@@ -1257,6 +1287,7 @@ def stair_diagnostics(
                 "Stair/diag_ctbc_delta_abs_mean": torch.abs(ctbc_delta).mean().item(),
                 "Stair/diag_ctbc_leg_delta_abs_mean": torch.abs(ctbc_delta[:, :4]).mean().item(),
                 "Stair/diag_ctbc_wheel_delta_abs_mean": torch.abs(ctbc_delta[:, 4:6]).mean().item(),
+                "Stair/diag_ctbc_phase_active_rate": ctbc_phase_active.mean().item(),
             }
         )
     return torch.zeros(env.num_envs, device=env.device)

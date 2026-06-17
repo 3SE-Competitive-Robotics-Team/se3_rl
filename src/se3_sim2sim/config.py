@@ -204,8 +204,8 @@ class StairCtbcConfig(BaseModel):
     ff_rise_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
     ff_hold_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
     ff_wheel_action: float = 0.22
-    ann_start_iter: Annotated[int, Field(ge=0)] = 500
-    ann_end_iter: Annotated[int, Field(ge=0)] = 700
+    ann_start_iter: Annotated[int, Field(ge=0)] = 900
+    ann_end_iter: Annotated[int, Field(ge=0)] = 1800
     fixed_iter: Annotated[int, Field(ge=0)] | None = None
     obs_scale: Annotated[float, Field(gt=0.0)] = 0.01
     allow_bilateral_trigger: bool = False

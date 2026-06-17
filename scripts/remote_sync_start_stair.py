@@ -144,7 +144,7 @@ def parse_args() -> argparse.Namespace:
         help="完整恢复 checkpoint 的 optimizer、iteration 和 env_state；默认仍为 warm-start.",
     )
     parser.add_argument("--envs", type=int, default=8192)
-    parser.add_argument("--iterations", type=int, default=2000)
+    parser.add_argument("--iterations", type=int, default=3000)
     parser.add_argument(
         "--gpu-ids",
         default="all",

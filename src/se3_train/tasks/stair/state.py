@@ -38,8 +38,8 @@ class StairClimbState:
         ff_wheel_action: float = 0.0,
         control_dt: float = 0.02,
         ff_start_iter: int = 0,
-        ann_start_iter: int = 200,
-        ann_end_iter: int = 800,
+        ann_start_iter: int = 900,
+        ann_end_iter: int = 1800,
         phantom_trigger_iter: int = 0,
         allow_bilateral_trigger: bool = True,
     ) -> None:
