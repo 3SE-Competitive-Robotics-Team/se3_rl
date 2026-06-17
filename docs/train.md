@@ -68,9 +68,9 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
 ### Viser 训练值守（必开）
 
-当前 `codex/xyh` 台阶远程训练以 [Laptop Viser Play 值守](laptop_viser_play.md) 为准：A800/abbtask 只负责训练，Windows laptop 跑 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`，本机只转发 laptop 的 8080 端口。值守验收必须确认 Viser 中台阶是真实 MuJoCo 碰撞地形，机器人不会穿模。
+当前 `codex/xyh` 台阶远程训练以 [Laptop Viser Play 值守](laptop_viser_play.md) 为准：A800/abbtask 只负责训练，值守侧跑 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`。当 laptop 8080/2224 隧道不稳定时，优先使用本机 native Viser + GitHub Release checkpoint exchange 数据通道，不再把 Viser HTTP/WebSocket 交互放在 SSH tunnel 上。值守验收必须确认 Viser 中台阶是真实 MuJoCo 碰撞地形，机器人不会穿模。
 
-非台阶任务或本地临时调试仍可用 `se3-play --viewer viser` 打开对应 task/checkpoint。不要只看 W&B 或终端日志，也不要依赖 `--viewer auto`；没有可见 Viser 窗口或 laptop 值守未通过验收，本次训练视为没有完成启动值守检查。
+非台阶任务或本地临时调试仍可用 `se3-play --viewer viser` 打开对应 task/checkpoint。不要只看 W&B 或终端日志，也不要依赖 `--viewer auto`；没有可见 Viser 窗口，或本机/laptop 值守未通过验收，本次训练视为没有完成启动值守检查。
 
 已有 checkpoint 时，非台阶任务可用 trained policy 打开：
 
@@ -86,7 +86,7 @@ uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 
 uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --agent zero --viewer viser --num-envs 1
 ```
 
-台阶远程训练不要在 A800/abbtask 上开 MJLab Viser；具体路径、Scheduled Task、E 盘缓存要求、台阶碰撞地形约束和验收命令见 [Laptop Viser Play 值守](laptop_viser_play.md)。
+台阶远程训练不要在 A800/abbtask 上开 MJLab Viser；具体路径、GitHub Release checkpoint exchange、Scheduled Task、E 盘缓存要求、台阶碰撞地形约束和验收命令见 [Laptop Viser Play 值守](laptop_viser_play.md)。
 
 ### 本地/单卡 GPU 训练
 
@@ -158,7 +158,7 @@ logs/rsl_rl/se3_wheel_leg/2026-05-05_23-13-57/
 
 ## 评估/回放
 
-当前 `codex/xyh` 台阶远程训练的实时值守用 laptop 侧 `se3-sim2sim --viewer viser --model-variant closedchain --stair-terrain`，让浏览器里的 `Actual RT` 对应 closedchain policy-step RT，并让台阶在 native MuJoCo 里真实参与碰撞。非台阶任务的临时值守可继续用 `se3-play --viewer viser`。正式 sim2sim 回放和验证仍走 `se3-sim2sim`，Rerun 负责记录轨迹、控制量曲线和可复查的 `.rrd` 文件：
+当前 `codex/xyh` 台阶远程训练的实时值守用本机或 laptop 侧 `se3-sim2sim --viewer viser --model-variant closedchain --stair-terrain`，让浏览器里的 `Actual RT` 对应 closedchain policy-step RT，并让台阶在 native MuJoCo 里真实参与碰撞。当前推荐本机 native Viser 直接监听 `127.0.0.1:8080`，checkpoint 通过 GitHub Release exchange 更新。非台阶任务的临时值守可继续用 `se3-play --viewer viser`。正式 sim2sim 回放和验证仍走 `se3-sim2sim`，Rerun 负责记录轨迹、控制量曲线和可复查的 `.rrd` 文件：
 
 ```bash
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000
