@@ -415,6 +415,64 @@ def _radial_distance(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch
     return _finite(torch.linalg.vector_norm(radial, dim=1))
 
 
+def _signed_x_progress(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """返回相对 terrain origin 的世界系 +x 进度，和 sim2sim 直线台阶方向对齐。"""
+    robot = env.scene[asset_cfg.name]
+    origins = getattr(env.scene, "env_origins", None)
+    if not isinstance(origins, torch.Tensor):
+        return torch.zeros(env.num_envs, device=env.device)
+    root_x = _finite(robot.data.root_link_pos_w[:, 0])
+    origin_x = origins[:, 0].to(device=env.device)
+    return _finite(root_x - origin_x)
+
+
+def _lateral_y_offset(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """返回相对 terrain origin 的世界系 y 偏移，用于排除侧向绕台阶。"""
+    robot = env.scene[asset_cfg.name]
+    origins = getattr(env.scene, "env_origins", None)
+    if not isinstance(origins, torch.Tensor):
+        return torch.zeros(env.num_envs, device=env.device)
+    root_y = _finite(robot.data.root_link_pos_w[:, 1])
+    origin_y = origins[:, 1].to(device=env.device)
+    return _finite(root_y - origin_y)
+
+
+def _signed_x_velocity(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """返回世界系 +x 速度，避免把径向侧移误当成上台阶前进。"""
+    robot = env.scene[asset_cfg.name]
+    return _finite(robot.data.root_link_lin_vel_w[:, 0])
+
+
+def _wheel_riser_contact_mask(
+    env: ManagerBasedRlEnv,
+    sensor_name: str | None,
+    force_threshold_n: float,
+    normal_z_max: float,
+) -> torch.Tensor:
+    """返回左右轮是否正在接触台阶立面；立面接触不能当作上表面支撑。"""
+    mask = torch.zeros(env.num_envs, 2, device=env.device, dtype=torch.bool)
+    if not sensor_name:
+        return mask
+    try:
+        sensor: ContactSensor = env.scene[sensor_name]
+    except KeyError:
+        return mask
+    data = sensor.data
+    if data.force is None or data.normal is None:
+        return mask
+
+    force = _finite(data.force).reshape(env.num_envs, 2, -1, 3)
+    normal = _finite(data.normal).reshape(env.num_envs, 2, -1, 3)
+    force_mag = torch.linalg.vector_norm(force, dim=-1)
+    valid = (force_mag >= float(force_threshold_n)) & (
+        torch.abs(normal[..., 2]) <= float(normal_z_max)
+    )
+    if data.found is not None:
+        found = data.found.reshape(env.num_envs, 2, -1) > 0
+        valid &= found
+    return valid.any(dim=-1)
+
+
 def stair_wheel_support_rise(
     env: ManagerBasedRlEnv,
     height_sensor_name: str = "wheel_height_sensor",
@@ -425,6 +483,9 @@ def stair_wheel_support_rise(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
     require_contact_support: bool = True,
     use_episode_max: bool = False,
 ) -> torch.Tensor:
@@ -437,6 +498,13 @@ def stair_wheel_support_rise(
             float(wheel_radius_m) + float(wheel_clearance_tol_m)
         )
         support_mask = wheel_contact & near_support_height
+        riser_contact = _wheel_riser_contact_mask(
+            env,
+            riser_sensor_name,
+            riser_contact_force_threshold_n,
+            riser_normal_z_max,
+        )
+        support_mask &= ~riser_contact
         rise = torch.where(support_mask, rise, torch.zeros_like(rise))
         rise = torch.clamp(rise, min=0.0)
         state = _get_stair_state(env)
@@ -478,16 +546,23 @@ def stair_success_components(
     hold_duration_s: float = 0.20,
     upright_threshold: float = -0.90,
     max_vertical_speed_mps: float | None = 1.0,
+    min_signed_x_velocity_mps: float | None = -0.10,
+    max_ang_vel_radps: float | None = 2.5,
+    max_lateral_offset_m: float | None = 0.55,
+    max_support_drop_steps: float | None = 0.20,
     height_sensor_name: str = "wheel_height_sensor",
     contact_sensor_name: str = "wheel_sensor",
     leg_contact_sensor_name: str = "leg_contact_sensor",
     base_contact_sensor_name: str = "collision_sensor",
+    riser_contact_sensor_name: str | None = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     illegal_contact_force_threshold_n: float = 1.0,
+    riser_contact_force_threshold_n: float = 1.0,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_normal_z_max: float = 0.5,
     riser_stall_duration_s: float = 0.15,
     record: bool = True,
     use_recorded_hold: bool = False,
@@ -502,6 +577,13 @@ def stair_success_components(
     support_mask = (wheel_force >= float(contact_force_threshold_n)) & (
         wheel_heights <= float(wheel_radius_m) + float(wheel_clearance_tol_m)
     )
+    riser_contact = _wheel_riser_contact_mask(
+        env,
+        riser_contact_sensor_name,
+        riser_contact_force_threshold_n,
+        riser_normal_z_max,
+    )
+    support_mask &= ~riser_contact
     supported_rise = torch.where(support_mask, torch.clamp(rise, min=0.0), torch.zeros_like(rise))
     current_both_rise = _finite(torch.min(supported_rise, dim=1).values)
 
@@ -516,7 +598,13 @@ def stair_success_components(
     else:
         forward_target = float(forward_progress_m)
     radial_distance = _radial_distance(env, asset_cfg)
-    forward_ok = radial_distance >= max(0.0, forward_target)
+    signed_x_progress = _signed_x_progress(env, asset_cfg)
+    lateral_offset = torch.abs(_lateral_y_offset(env, asset_cfg))
+    forward_ok = signed_x_progress >= max(0.0, forward_target)
+    if max_lateral_offset_m is None:
+        lateral_ok = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    else:
+        lateral_ok = lateral_offset <= float(max_lateral_offset_m)
 
     robot = env.scene[asset_cfg.name]
     projected_gravity_z = _finite(robot.data.projected_gravity_b[:, 2])
@@ -527,6 +615,16 @@ def stair_success_components(
         vertical_speed_ok = torch.abs(_finite(robot.data.root_link_lin_vel_w[:, 2])) <= float(
             max_vertical_speed_mps
         )
+    if min_signed_x_velocity_mps is None:
+        forward_velocity_ok = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    else:
+        forward_velocity_ok = _signed_x_velocity(env, asset_cfg) >= float(min_signed_x_velocity_mps)
+    if max_ang_vel_radps is None:
+        angular_velocity_ok = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    else:
+        angular_velocity_ok = torch.linalg.vector_norm(
+            _finite(robot.data.root_link_ang_vel_b), dim=1
+        ) <= float(max_ang_vel_radps)
 
     leg_contact = _contact_mask(env, leg_contact_sensor_name, illegal_contact_force_threshold_n)
     base_contact = _contact_mask(env, base_contact_sensor_name, illegal_contact_force_threshold_n)
@@ -535,8 +633,17 @@ def stair_success_components(
     state = _get_stair_state(env)
     if state is not None:
         riser_clear = ~state.riser_stall_active(riser_stall_duration_s)
+        max_both_rise = _finite(state.max_wheel_supported_both_rise())
     else:
         riser_clear = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+        max_both_rise = current_both_rise
+    riser_clear &= ~riser_contact.any(dim=1)
+    if max_support_drop_steps is None:
+        support_drop_ok = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    else:
+        support_drop_ok = (max_both_rise - current_both_rise) <= (
+            step_height * float(max_support_drop_steps)
+        )
 
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
     stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
@@ -547,10 +654,14 @@ def stair_success_components(
         & near_support_height
         & height_ok
         & forward_ok
+        & lateral_ok
         & upright_ok
         & vertical_speed_ok
+        & forward_velocity_ok
+        & angular_velocity_ok
         & legal_contact_ok
         & riser_clear
+        & support_drop_ok
     )
 
     if state is not None and record:
@@ -579,12 +690,19 @@ def stair_success_components(
         "forward_ok": forward_ok & valid,
         "upright_ok": upright_ok & valid,
         "vertical_speed_ok": vertical_speed_ok & valid,
+        "forward_velocity_ok": forward_velocity_ok & valid,
+        "angular_velocity_ok": angular_velocity_ok & valid,
+        "lateral_ok": lateral_ok & valid,
+        "support_drop_ok": support_drop_ok & valid,
         "legal_contact_ok": legal_contact_ok & valid,
         "riser_clear": riser_clear & valid,
         "wheel_contact": wheel_contact & valid,
         "near_support_height": near_support_height & valid,
         "current_both_rise": current_both_rise,
         "radial_distance": radial_distance,
+        "signed_x_progress": signed_x_progress,
+        "lateral_offset": lateral_offset,
+        "support_drop": torch.clamp(max_both_rise - current_both_rise, min=0.0),
         "duration": duration,
         "step_height": step_height,
         "height_target": torch.clamp(height_target, min=0.0),
@@ -697,6 +815,9 @@ def stair_steps_climbed(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """按左右轮真实支撑地形抬升量估计每个 env 当前越过的台阶级数。"""
     del step_depth, start_x_offset, standing_height
@@ -710,6 +831,9 @@ def stair_steps_climbed(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
     )
 
     if step_height is None:
@@ -742,20 +866,15 @@ def stair_max_x_progress(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """保留旧指标名；实际记录左右轮共同支撑地形的抬升量。"""
-    gain = stair_wheel_support_rise(
-        env,
-        height_sensor_name=height_sensor_name,
-        contact_sensor_name=contact_sensor_name,
-        asset_cfg=asset_cfg,
-        terrain_type_names=terrain_type_names,
-        support_mode="both",
-        contact_force_threshold_n=contact_force_threshold_n,
-        wheel_radius_m=wheel_radius_m,
-        wheel_clearance_tol_m=wheel_clearance_tol_m,
-    )
-    return _finite(gain * _upright_gate(env))
+    del height_sensor_name, contact_sensor_name, terrain_type_names
+    del contact_force_threshold_n, wheel_radius_m, wheel_clearance_tol_m
+    del riser_sensor_name, riser_contact_force_threshold_n, riser_normal_z_max
+    return _finite(torch.clamp(_signed_x_progress(env, asset_cfg), min=0.0) * _upright_gate(env))
 
 
 def stair_height_gain(
@@ -769,6 +888,9 @@ def stair_height_gain(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """兼容旧目标任务的高度增益指标，实际使用轮端支撑地形抬升。"""
     del command_name, standing_height
@@ -782,6 +904,9 @@ def stair_height_gain(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
     )
     gain = _finite(gain * _upright_gate(env))
     return _finite(torch.clamp(gain, min=0.0))
@@ -800,6 +925,9 @@ def stair_climb_progress(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """奖励左右轮真实支撑地形的新增抬升量。"""
     del max_radial_progress, radial_weight, standing_height
@@ -817,6 +945,9 @@ def stair_climb_progress(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
     )
     radial_progress = torch.zeros_like(height_gain)
     height_delta, radial_delta = state.climb_progress_delta(
@@ -844,6 +975,9 @@ def stair_support_height(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """按目标台阶高度给持续奖励，压低低高度支撑的局部最优。"""
     current_rise = stair_wheel_support_rise(
@@ -856,6 +990,9 @@ def stair_support_height(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
         use_episode_max=False,
     )
     step_height = torch.clamp(_step_height_for_envs(env, step_height_range), min=1.0e-6)
@@ -914,6 +1051,9 @@ def stair_support_descent(
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """惩罚已经双轮支撑到上层后又掉回低台阶。"""
     state = _get_stair_state(env)
@@ -930,6 +1070,9 @@ def stair_support_descent(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
     )
     max_rise = _finite(state.max_wheel_supported_both_rise())
     step_height = torch.clamp(_step_height_for_envs(env, step_height_range), min=1.0e-6)
@@ -1107,23 +1250,13 @@ def stair_forward_progress(
     command = _finite(cmd[:, 0])
     body_score = torch.exp(-((lin_vel - command) ** 2) / sigma)
 
-    origins = getattr(env.scene, "env_origins", None)
-    if not isinstance(origins, torch.Tensor):
-        return _finite(body_score * _upright_gate(env))
-
-    root_pos = _finite(robot.data.root_link_pos_w[:, :2])
-    root_vel = _finite(robot.data.root_link_lin_vel_w[:, :2])
-    radial = root_pos - origins[:, :2].to(device=env.device)
-    radial_distance = torch.linalg.vector_norm(radial, dim=1)
-    radial_dir = radial / torch.clamp(radial_distance, min=1.0e-6).unsqueeze(-1)
-    radial_vel = torch.sum(root_vel * radial_dir, dim=1)
-    radial_command = torch.clamp(command, min=0.0)
-    radial_score = torch.exp(-((radial_vel - radial_command) ** 2) / sigma)
+    del radial_min_distance
+    signed_x_vel = _signed_x_velocity(env, asset_cfg)
+    signed_x_command = torch.clamp(command, min=0.0)
+    signed_x_score = torch.exp(-((signed_x_vel - signed_x_command) ** 2) / sigma)
 
     blend = min(max(float(radial_velocity_blend), 0.0), 1.0)
-    score = (1.0 - blend) * body_score + blend * radial_score
-    near_center = radial_distance < float(radial_min_distance)
-    score = torch.where(near_center, body_score, score)
+    score = (1.0 - blend) * body_score + blend * signed_x_score
     return _finite(score * _upright_gate(env))
 
 
@@ -1159,7 +1292,8 @@ def stair_radial_velocity(
     """奖励沿台阶径向向外前进，后退时给负值。"""
     cmd = env.command_manager.get_command(command_name)
     commanded_forward = cmd[:, 0] > float(command_threshold)
-    radial_vel = _radial_velocity(env, asset_cfg, radial_min_distance)
+    del radial_min_distance
+    radial_vel = _signed_x_velocity(env, asset_cfg)
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
     scaled = torch.clamp(radial_vel / max(float(speed_scale), 1.0e-6), min=-1.0, max=1.0)
     return _finite(scaled * commanded_forward.float() * terrain_mask.float() * _upright_gate(env))
@@ -1178,7 +1312,8 @@ def stair_radial_retreat(
     """惩罚沿台阶径向退回坑底。"""
     cmd = env.command_manager.get_command(command_name)
     commanded_forward = cmd[:, 0] > float(command_threshold)
-    radial_vel = _radial_velocity(env, asset_cfg, radial_min_distance)
+    del radial_min_distance
+    radial_vel = _signed_x_velocity(env, asset_cfg)
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
     retreat = torch.clamp(
         (-radial_vel - float(deadband_mps)) / max(float(speed_scale), 1.0e-6),
@@ -1369,15 +1504,22 @@ def stair_diagnostics(
     hold_duration_s: float = 0.20,
     upright_threshold: float = -0.90,
     max_vertical_speed_mps: float | None = 1.0,
+    min_signed_x_velocity_mps: float | None = -0.10,
+    max_ang_vel_radps: float | None = 2.5,
+    max_lateral_offset_m: float | None = 0.55,
+    max_support_drop_steps: float | None = 0.20,
     height_sensor_name: str = "wheel_height_sensor",
     contact_sensor_name: str = "wheel_sensor",
     leg_contact_sensor_name: str = "leg_contact_sensor",
     base_contact_sensor_name: str = "collision_sensor",
+    riser_contact_sensor_name: str | None = None,
     terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
     contact_force_threshold_n: float = _WHEEL_SUPPORT_FORCE_THRESHOLD_N,
     illegal_contact_force_threshold_n: float = 1.0,
+    riser_contact_force_threshold_n: float = 1.0,
     wheel_radius_m: float = _WHEEL_RADIUS_M,
     wheel_clearance_tol_m: float = _WHEEL_SUPPORT_CLEARANCE_TOL_M,
+    riser_normal_z_max: float = 0.5,
     riser_stall_duration_s: float = 0.15,
 ) -> torch.Tensor:
     """把台阶关键指标写入训练日志，不直接改变奖励。"""
@@ -1388,6 +1530,9 @@ def stair_diagnostics(
         "contact_force_threshold_n": contact_force_threshold_n,
         "wheel_radius_m": wheel_radius_m,
         "wheel_clearance_tol_m": wheel_clearance_tol_m,
+        "riser_sensor_name": riser_contact_sensor_name,
+        "riser_contact_force_threshold_n": riser_contact_force_threshold_n,
+        "riser_normal_z_max": riser_normal_z_max,
     }
     steps = stair_steps_climbed(env, **support_params)
     height_gain = stair_height_gain(
@@ -1450,15 +1595,22 @@ def stair_diagnostics(
             hold_duration_s=hold_duration_s,
             upright_threshold=upright_threshold,
             max_vertical_speed_mps=max_vertical_speed_mps,
+            min_signed_x_velocity_mps=min_signed_x_velocity_mps,
+            max_ang_vel_radps=max_ang_vel_radps,
+            max_lateral_offset_m=max_lateral_offset_m,
+            max_support_drop_steps=max_support_drop_steps,
             height_sensor_name=height_sensor_name,
             contact_sensor_name=contact_sensor_name,
             leg_contact_sensor_name=leg_contact_sensor_name,
             base_contact_sensor_name=base_contact_sensor_name,
+            riser_contact_sensor_name=riser_contact_sensor_name,
             terrain_type_names=terrain_type_names,
             contact_force_threshold_n=contact_force_threshold_n,
             illegal_contact_force_threshold_n=illegal_contact_force_threshold_n,
+            riser_contact_force_threshold_n=riser_contact_force_threshold_n,
             wheel_radius_m=wheel_radius_m,
             wheel_clearance_tol_m=wheel_clearance_tol_m,
+            riser_normal_z_max=riser_normal_z_max,
             riser_stall_duration_s=riser_stall_duration_s,
             record=True,
         )
@@ -1499,8 +1651,24 @@ def stair_diagnostics(
                     success_components["forward_ok"].float(),
                     valid_success,
                 ),
+                "Stair/strict_success_lateral_cond_rate": _masked_mean(
+                    success_components["lateral_ok"].float(),
+                    valid_success,
+                ),
                 "Stair/strict_success_upright_cond_rate": _masked_mean(
                     success_components["upright_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_forward_velocity_cond_rate": _masked_mean(
+                    success_components["forward_velocity_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_ang_vel_cond_rate": _masked_mean(
+                    success_components["angular_velocity_ok"].float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_drop_cond_rate": _masked_mean(
+                    success_components["support_drop_ok"].float(),
                     valid_success,
                 ),
                 "Stair/strict_success_contact_cond_rate": _masked_mean(
@@ -1521,6 +1689,14 @@ def stair_diagnostics(
                 ),
                 "Stair/strict_success_forward_target_m": _masked_mean(
                     success_components["forward_target"],
+                    valid_success,
+                ),
+                "Stair/strict_success_signed_x_progress_m": _masked_mean(
+                    success_components["signed_x_progress"],
+                    valid_success,
+                ),
+                "Stair/strict_success_lateral_offset_m": _masked_mean(
+                    success_components["lateral_offset"],
                     valid_success,
                 ),
                 "Stair/obs_terrain_level": terrain_level.mean().item(),

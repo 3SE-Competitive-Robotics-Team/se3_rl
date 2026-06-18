@@ -13,6 +13,7 @@ from se3_train.tasks.stair.terrain_curriculum import (
     DEFAULT_BUCKET_WEIGHT_STAGES,
     DEFAULT_LEVEL_BUCKETS,
     DEFAULT_LEVEL_MAX_STAGES,
+    max_level_for_iteration,
     sample_levels,
 )
 
@@ -50,6 +51,15 @@ def stair_terrain_levels(
         tuple[int, tuple[float, ...]],
         ...,
     ] = DEFAULT_BUCKET_WEIGHT_STAGES,
+    riser_contact_sensor_name: str | None = None,
+    riser_contact_force_threshold_n: float = 1.0,
+    riser_normal_z_max: float = 0.5,
+    gate_success_rate_threshold: float = 0.45,
+    gate_support_rate_threshold: float = 0.60,
+    gate_no_drop_rate_threshold: float = 0.80,
+    gate_drop_tolerance_steps: float = 0.20,
+    gate_min_eval_envs: int = 64,
+    gate_consecutive_passes: int = 1,
 ) -> dict[str, torch.Tensor]:
     """按训练迭代数开放最高 row，并在低/中/高 bucket 中持续采样。"""
     terrain = env.scene.terrain
@@ -66,6 +76,14 @@ def stair_terrain_levels(
         )
     else:
         iteration = max(0, int(fixed_iteration))
+    if fixed_iteration is None:
+        effective_iteration = getattr(env, "_stair_curriculum_effective_iteration", None)
+        if not isinstance(effective_iteration, int):
+            effective_iteration = 0
+        effective_iteration = min(max(0, effective_iteration), iteration)
+        env._stair_curriculum_effective_iteration = effective_iteration
+    else:
+        effective_iteration = iteration
     if iteration < max(0, int(walking_phase_iterations)):
         _set_walking_phase_terrain(
             env,
@@ -95,6 +113,9 @@ def stair_terrain_levels(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_contact_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
         use_episode_max=True,
     )
     current_height_gain_all = stair_wheel_support_rise(
@@ -106,6 +127,9 @@ def stair_terrain_levels(
         contact_force_threshold_n=contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_sensor_name=riser_contact_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
+        riser_normal_z_max=riser_normal_z_max,
         use_episode_max=False,
     )
     height_gain = torch.nan_to_num(
@@ -176,8 +200,11 @@ def stair_terrain_levels(
         contact_sensor_name=contact_sensor_name,
         terrain_type_names=terrain_type_names,
         contact_force_threshold_n=contact_force_threshold_n,
+        riser_contact_sensor_name=riser_contact_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_normal_z_max=riser_normal_z_max,
         record=False,
         use_recorded_hold=True,
     )
@@ -193,11 +220,69 @@ def stair_terrain_levels(
         contact_sensor_name=contact_sensor_name,
         terrain_type_names=terrain_type_names,
         contact_force_threshold_n=contact_force_threshold_n,
+        riser_contact_sensor_name=riser_contact_sensor_name,
+        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
         wheel_radius_m=wheel_radius_m,
         wheel_clearance_tol_m=wheel_clearance_tol_m,
+        riser_normal_z_max=riser_normal_z_max,
         record=False,
         use_recorded_hold=False,
     )
+
+    support_drop = torch.clamp(height_gain - current_height_gain, min=0.0)
+    current_levels_float = terrain.terrain_levels[ids].float()
+    current_step_height = _step_height_for_levels(
+        terrain,
+        current_levels_float,
+        step_height_range,
+    )
+    support_ok = support_duration >= float(support_duration_s)
+    no_drop_ok = support_drop <= current_step_height * float(gate_drop_tolerance_steps)
+    effective_max_level = max_level_for_iteration(terrain, effective_iteration, max_level_stages)
+    gate_level_floor = max(0, int(effective_max_level) - 1)
+    gate_eval_mask = valid_episode & stair_mask & (terrain.terrain_levels[ids] >= gate_level_floor)
+    gate_success_rate = _masked_mean(
+        strict_current_all["success"][ids].float(),
+        gate_eval_mask,
+    )
+    gate_support_rate = _masked_mean(support_ok.float(), gate_eval_mask)
+    gate_no_drop_rate = _masked_mean(no_drop_ok.float(), gate_eval_mask)
+    gate_eval_count = int(gate_eval_mask.sum().item())
+    gate_pass_now = (
+        fixed_iteration is None
+        and gate_eval_count >= max(1, int(gate_min_eval_envs))
+        and float(gate_success_rate.item()) >= float(gate_success_rate_threshold)
+        and float(gate_support_rate.item()) >= float(gate_support_rate_threshold)
+        and float(gate_no_drop_rate.item()) >= float(gate_no_drop_rate_threshold)
+    )
+    gate_pass_count = int(getattr(env, "_stair_curriculum_gate_pass_count", 0))
+    if gate_pass_now:
+        gate_pass_count += 1
+    else:
+        gate_pass_count = 0
+
+    curriculum_milestones = sorted(
+        {
+            int(stage_iteration)
+            for stage_iteration, _ in tuple(max_level_stages) + tuple(bucket_weight_stages)
+        }
+    )
+    next_milestones = [
+        stage_iteration
+        for stage_iteration in curriculum_milestones
+        if effective_iteration < stage_iteration <= iteration
+    ]
+    gate_released = False
+    if (
+        fixed_iteration is None
+        and next_milestones
+        and gate_pass_count >= max(1, int(gate_consecutive_passes))
+    ):
+        effective_iteration = int(next_milestones[0])
+        env._stair_curriculum_effective_iteration = effective_iteration
+        gate_pass_count = 0
+        gate_released = True
+    env._stair_curriculum_gate_pass_count = gate_pass_count
 
     move_up = stair_mask & (terrain.terrain_levels[ids] < target_level)
     move_down = stair_mask & (terrain.terrain_levels[ids] > target_level)
@@ -217,10 +302,7 @@ def stair_terrain_levels(
         "move_down_rate": _masked_mean(move_down.float(), valid_stair),
         "height_gain_mean": _masked_mean(height_gain, valid_stair),
         "current_height_gain_mean": _masked_mean(current_height_gain, valid_stair),
-        "support_drop_mean": _masked_mean(
-            torch.clamp(height_gain - current_height_gain, min=0.0),
-            valid_stair,
-        ),
+        "support_drop_mean": _masked_mean(support_drop, valid_stair),
         "support_duration_mean": _masked_mean(support_duration, valid_stair),
         "strict_success_rate": _masked_mean(
             strict_success_all["success"][ids].float(),
@@ -261,6 +343,17 @@ def stair_terrain_levels(
         "target_level": _masked_mean(target_level.float(), stair_mask),
         "target_level_max_allowed": sampled_logs["max_allowed_level"],
         "target_level_sampled_max": sampled_logs["sampled_max_level"],
+        "effective_iteration": torch.tensor(float(effective_iteration), device=env.device),
+        "gate_pass": torch.tensor(float(gate_pass_now), device=env.device),
+        "gate_released": torch.tensor(float(gate_released), device=env.device),
+        "gate_eval_count": torch.tensor(float(gate_eval_count), device=env.device),
+        "gate_success_rate": gate_success_rate,
+        "gate_support_rate": gate_support_rate,
+        "gate_no_drop_rate": gate_no_drop_rate,
+        "gate_blocked": torch.tensor(
+            float(bool(next_milestones) and not gate_released),
+            device=env.device,
+        ),
         "bucket_low_rate": sampled_logs["bucket_low_rate"],
         "bucket_mid_rate": sampled_logs["bucket_mid_rate"],
         "bucket_high_rate": sampled_logs["bucket_high_rate"],
@@ -419,6 +512,14 @@ def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
         "target_level": zero,
         "target_level_max_allowed": zero,
         "target_level_sampled_max": zero,
+        "effective_iteration": zero,
+        "gate_pass": zero,
+        "gate_released": zero,
+        "gate_eval_count": zero,
+        "gate_success_rate": zero,
+        "gate_support_rate": zero,
+        "gate_no_drop_rate": zero,
+        "gate_blocked": zero,
         "bucket_low_rate": zero,
         "bucket_mid_rate": zero,
         "bucket_high_rate": zero,

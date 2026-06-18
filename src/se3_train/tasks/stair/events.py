@@ -271,13 +271,13 @@ def apply_stair_task_mode_commands(
     env,
     env_ids: torch.Tensor | None,
     command_name: str = "velocity_height",
-    recovery_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
-    recovery_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
-    recovery_height_range: tuple[float, float] = (0.195, 0.390),
+    recovery_lin_vel_x_range: tuple[float, float] = (0.0, 0.0),
+    recovery_ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0),
+    recovery_height_range: tuple[float, float] = (0.24, 0.30),
     flat_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
-    flat_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
-    flat_height_range: tuple[float, float] = (0.22, 0.30),
-    flat_zero_command_prob: float = 0.25,
+    flat_ang_vel_yaw_range: tuple[float, float] = (-1.5, 1.5),
+    flat_height_range: tuple[float, float] = (0.20, 0.32),
+    flat_zero_command_prob: float = 0.30,
 ) -> None:
     """reset 后按 recovery mode 重采样倒地自起指令。"""
     if env_ids is None:
@@ -367,13 +367,13 @@ def enforce_recovery_active_commands(
     env,
     env_ids: torch.Tensor | None,
     command_name: str = "velocity_height",
-    recovery_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
-    recovery_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
-    recovery_height_range: tuple[float, float] = (0.195, 0.390),
+    recovery_lin_vel_x_range: tuple[float, float] = (0.0, 0.0),
+    recovery_ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0),
+    recovery_height_range: tuple[float, float] = (0.24, 0.30),
     flat_lin_vel_x_range: tuple[float, float] = (-1.5, 1.5),
-    flat_ang_vel_yaw_range: tuple[float, float] = (-1.0, 1.0),
-    flat_height_range: tuple[float, float] = (0.22, 0.30),
-    flat_zero_command_prob: float = 0.25,
+    flat_ang_vel_yaw_range: tuple[float, float] = (-1.5, 1.5),
+    flat_height_range: tuple[float, float] = (0.20, 0.32),
+    flat_zero_command_prob: float = 0.30,
 ) -> None:
     """每步把 recovery active 指令限制在 recovery_finetune 最难课程范围内。"""
     del env_ids, flat_zero_command_prob

@@ -54,16 +54,16 @@ _STAIR_WHEEL_KD = 0.08
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060
 _STAIR_COMMAND_HALF_TRACK = 0.200725
 _STAIR_COMMAND_WHEEL_SPEED_FRACTION = 0.70
-_STAIR_SUPPORT_FORCE_THRESHOLD_N = 1.0
-_STAIR_SUPPORT_CLEARANCE_TOL_M = 0.035
-_STAIR_SUPPORT_DURATION_S = 0.20
+_STAIR_SUPPORT_FORCE_THRESHOLD_N = 5.0
+_STAIR_SUPPORT_CLEARANCE_TOL_M = 0.025
+_STAIR_SUPPORT_DURATION_S = 0.30
 _STAIR_RECOVERY_REPLAY_PROB = 0.30
 _STAIR_RECOVERY_GRACE_STEPS = 400
 _STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
 _RECOVERY_TERRAIN_TYPES = ("flat",)
-_TASK_MIXTURE_STAIR_PROB = 0.55
+_TASK_MIXTURE_STAIR_PROB = 0.50
 _TASK_MIXTURE_RECOVERY_PROB = 0.30
-_TASK_MIXTURE_FLAT_PROB = 0.15
+_TASK_MIXTURE_FLAT_PROB = 0.20
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _INITIAL_STAIR_HEIGHT_RANGE = (0.30, 0.34)
 _WALKING_PHASE_ITERATIONS = 0
@@ -287,7 +287,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         tracking_height_params["ignore_recovery"] = True
         cfg.rewards["tracking_height"] = replace(
             cfg.rewards["tracking_height"],
-            weight=0.5,
+            weight=1.0,
             params=tracking_height_params,
         )
     if "tracking_ang_vel" in cfg.rewards:
@@ -308,11 +308,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         )
     cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
         func=rewards.stair_phase_forward_progress,
-        weight=1.8,
+        weight=2.2,
         params={
             "command_name": "velocity_height",
             "sigma": 0.25,
-            "radial_velocity_blend": 0.90,
+            "radial_velocity_blend": 0.85,
             "radial_min_distance": 0.12,
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
             "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
@@ -321,7 +321,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["flat_tracking_lin_vel"] = RewardTermCfg(
         func=rewards.flat_mode_tracking_lin_vel,
-        weight=3.0,
+        weight=4.0,
         params={
             "command_name": "velocity_height",
             "sigma_move": 0.08,
@@ -333,7 +333,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["flat_wheel_contact"] = RewardTermCfg(
         func=rewards.flat_mode_wheel_contact_penalty,
-        weight=-6.0,
+        weight=-10.0,
         params={
             "command_name": "velocity_height",
             "sensor_name": "wheel_sensor",
@@ -343,7 +343,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["flat_leg_contact"] = RewardTermCfg(
         func=rewards.flat_mode_leg_contact_penalty,
-        weight=-15.0,
+        weight=-25.0,
         params={
             "command_name": "velocity_height",
             "sensor_name": "leg_contact_sensor",
@@ -389,7 +389,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
         func=rewards.stair_climb_progress,
-        weight=8.0,
+        weight=3.0,
         params={
             "max_height_gain": 1.0,
             "max_radial_progress": 4.0,
@@ -401,11 +401,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_sensor_name": "wheel_riser_sensor",
+            "riser_contact_force_threshold_n": 1.0,
+            "riser_normal_z_max": 0.5,
         },
     )
     cfg.rewards["stair_support_height"] = RewardTermCfg(
         func=rewards.stair_support_height,
-        weight=8.0,
+        weight=4.0,
         params={
             "step_height_range": (0.05, 0.20),
             "max_steps": 3.0,
@@ -418,44 +421,57 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_sensor_name": "wheel_riser_sensor",
+            "riser_contact_force_threshold_n": 1.0,
+            "riser_normal_z_max": 0.5,
         },
     )
     cfg.rewards["stair_support_descent"] = RewardTermCfg(
         func=rewards.stair_support_descent,
-        weight=-3.0,
+        weight=-8.0,
         params={
             "step_height_range": (0.05, 0.20),
-            "drop_tolerance_steps": 0.35,
-            "activation_steps": 0.70,
+            "drop_tolerance_steps": 0.15,
+            "activation_steps": 0.55,
             "height_sensor_name": "wheel_height_sensor",
             "contact_sensor_name": "wheel_sensor",
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_sensor_name": "wheel_riser_sensor",
+            "riser_contact_force_threshold_n": 1.0,
+            "riser_normal_z_max": 0.5,
         },
     )
     cfg.rewards["stair_success"] = RewardTermCfg(
         func=rewards.stair_success,
-        weight=8.0,
+        weight=12.0,
         params={
             "step_height_range": (0.05, 0.20),
             "min_success_steps": 1.0,
             "success_height_tolerance_m": 0.015,
             "step_depth_m": 0.50,
-            "forward_progress_step_fraction": 0.75,
+            "forward_progress_step_fraction": 0.85,
             "hold_duration_s": _STAIR_SUPPORT_DURATION_S,
-            "upright_threshold": -0.90,
-            "max_vertical_speed_mps": 1.0,
+            "upright_threshold": -0.93,
+            "max_vertical_speed_mps": 0.60,
+            "min_signed_x_velocity_mps": -0.10,
+            "max_ang_vel_radps": 2.5,
+            "max_lateral_offset_m": 0.55,
+            "max_support_drop_steps": 0.20,
             "height_sensor_name": "wheel_height_sensor",
             "contact_sensor_name": "wheel_sensor",
             "leg_contact_sensor_name": "leg_contact_sensor",
             "base_contact_sensor_name": "collision_sensor",
+            "riser_contact_sensor_name": "wheel_riser_sensor",
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "illegal_contact_force_threshold_n": 5.0,
+            "riser_contact_force_threshold_n": 1.0,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_normal_z_max": 0.5,
             "riser_stall_duration_s": 0.15,
         },
     )
@@ -550,6 +566,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_sensor_name": "wheel_riser_sensor",
+            "riser_contact_force_threshold_n": 1.0,
+            "riser_normal_z_max": 0.5,
         },
     )
     cfg.rewards["obs_x_progress"] = RewardTermCfg(
@@ -562,6 +581,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_sensor_name": "wheel_riser_sensor",
+            "riser_contact_force_threshold_n": 1.0,
+            "riser_normal_z_max": 0.5,
         },
     )
     cfg.rewards["obs_height_gain"] = RewardTermCfg(
@@ -576,6 +598,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_sensor_name": "wheel_riser_sensor",
+            "riser_contact_force_threshold_n": 1.0,
+            "riser_normal_z_max": 0.5,
         },
     )
     cfg.rewards["obs_terrain_level"] = RewardTermCfg(
@@ -591,19 +616,26 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "min_success_steps": 1.0,
             "success_height_tolerance_m": 0.015,
             "step_depth_m": 0.50,
-            "forward_progress_step_fraction": 0.75,
+            "forward_progress_step_fraction": 0.85,
             "hold_duration_s": _STAIR_SUPPORT_DURATION_S,
-            "upright_threshold": -0.90,
-            "max_vertical_speed_mps": 1.0,
+            "upright_threshold": -0.93,
+            "max_vertical_speed_mps": 0.60,
+            "min_signed_x_velocity_mps": -0.10,
+            "max_ang_vel_radps": 2.5,
+            "max_lateral_offset_m": 0.55,
+            "max_support_drop_steps": 0.20,
             "height_sensor_name": "wheel_height_sensor",
             "contact_sensor_name": "wheel_sensor",
             "leg_contact_sensor_name": "leg_contact_sensor",
             "base_contact_sensor_name": "collision_sensor",
+            "riser_contact_sensor_name": "wheel_riser_sensor",
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
             "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
             "illegal_contact_force_threshold_n": 5.0,
+            "riser_contact_force_threshold_n": 1.0,
             "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
             "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+            "riser_normal_z_max": 0.5,
             "riser_stall_duration_s": 0.15,
         },
     )
@@ -794,13 +826,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="reset",
             params={
                 "command_name": "velocity_height",
-                "recovery_lin_vel_x_range": (-1.5, 1.5),
-                "recovery_ang_vel_yaw_range": (-1.0, 1.0),
-                "recovery_height_range": (0.195, 0.390),
+                "recovery_lin_vel_x_range": (0.0, 0.0),
+                "recovery_ang_vel_yaw_range": (0.0, 0.0),
+                "recovery_height_range": (0.24, 0.30),
                 "flat_lin_vel_x_range": (-1.5, 1.5),
-                "flat_ang_vel_yaw_range": (-1.0, 1.0),
-                "flat_height_range": (0.22, 0.30),
-                "flat_zero_command_prob": 0.25,
+                "flat_ang_vel_yaw_range": (-1.5, 1.5),
+                "flat_height_range": (0.20, 0.32),
+                "flat_zero_command_prob": 0.30,
             },
         )
         for event_name, event_term in cfg.events.items():
@@ -848,13 +880,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         interval_range_s=(0.0, 0.0),
         params={
             "command_name": "velocity_height",
-            "recovery_lin_vel_x_range": (-1.5, 1.5),
-            "recovery_ang_vel_yaw_range": (-1.0, 1.0),
-            "recovery_height_range": (0.195, 0.390),
+            "recovery_lin_vel_x_range": (0.0, 0.0),
+            "recovery_ang_vel_yaw_range": (0.0, 0.0),
+            "recovery_height_range": (0.24, 0.30),
             "flat_lin_vel_x_range": (-1.5, 1.5),
-            "flat_ang_vel_yaw_range": (-1.0, 1.0),
-            "flat_height_range": (0.22, 0.30),
-            "flat_zero_command_prob": 0.25,
+            "flat_ang_vel_yaw_range": (-1.5, 1.5),
+            "flat_height_range": (0.20, 0.32),
+            "flat_zero_command_prob": 0.30,
         },
     )
     cfg.events["reset_stair_climb_state"] = EventTermCfg(
@@ -963,8 +995,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "contact_force_threshold_n": _STAIR_SUPPORT_FORCE_THRESHOLD_N,
                 "wheel_radius_m": _STAIR_COMMAND_WHEEL_RADIUS,
                 "wheel_clearance_tol_m": _STAIR_SUPPORT_CLEARANCE_TOL_M,
+                "riser_contact_sensor_name": "wheel_riser_sensor",
+                "riser_contact_force_threshold_n": 1.0,
+                "riser_normal_z_max": 0.5,
                 "support_duration_s": _STAIR_SUPPORT_DURATION_S,
-                "upright_threshold": -0.7,
+                "upright_threshold": -0.85,
                 "terrain_type_names": _STAIR_TERRAIN_TYPES,
                 "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
@@ -972,6 +1007,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "max_level_stages": _STAIR_LEVEL_MAX_STAGES,
                 "level_buckets": _STAIR_LEVEL_BUCKETS,
                 "bucket_weight_stages": _STAIR_BUCKET_WEIGHT_STAGES,
+                "gate_success_rate_threshold": 0.45,
+                "gate_support_rate_threshold": 0.60,
+                "gate_no_drop_rate_threshold": 0.80,
+                "gate_drop_tolerance_steps": 0.20,
+                "gate_min_eval_envs": 64,
+                "gate_consecutive_passes": 1,
             },
         )
         if fixed_watch_command_height:
