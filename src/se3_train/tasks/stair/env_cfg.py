@@ -23,7 +23,6 @@ from mjlab.sensor import (
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import (
     BoxFlatTerrainCfg,
-    BoxInvertedPyramidStairsTerrainCfg,
     TerrainEntityCfg,
     TerrainGeneratorCfg,
 )
@@ -36,6 +35,7 @@ from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import curriculums, events, observations, rewards
+from .forward_stairs import BoxForwardStairsTerrainCfg
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -59,7 +59,7 @@ _STAIR_SUPPORT_CLEARANCE_TOL_M = 0.025
 _STAIR_SUPPORT_DURATION_S = 0.30
 _STAIR_RECOVERY_REPLAY_PROB = 0.30
 _STAIR_RECOVERY_GRACE_STEPS = 400
-_STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
+_STAIR_TERRAIN_TYPES = ("forward_stairs",)
 _RECOVERY_TERRAIN_TYPES = ("flat",)
 _TASK_MIXTURE_STAIR_PROB = 0.50
 _TASK_MIXTURE_RECOVERY_PROB = 0.30
@@ -144,13 +144,15 @@ def _stair_terrain_cfg() -> TerrainGeneratorCfg:
         difficulty_range=(0.0, 1.0),
         add_lights=True,
         sub_terrains={
-            "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
+            "forward_stairs": BoxForwardStairsTerrainCfg(
                 proportion=0.80,
                 size=(8.0, 8.0),
                 step_height_range=(0.05, 0.20),
-                step_width=0.5,
-                platform_width=2.0,
-                border_width=1.0,
+                step_depth=0.50,
+                step_count=6,
+                stair_start_x=1.0,
+                spawn_x=1.0,
+                half_width=2.0,
             ),
             "flat": BoxFlatTerrainCfg(
                 proportion=0.20,

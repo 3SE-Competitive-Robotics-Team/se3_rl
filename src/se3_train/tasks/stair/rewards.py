@@ -19,7 +19,7 @@ from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
-_STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
+_STAIR_TERRAIN_TYPES = ("forward_stairs",)
 _FLAT_TERRAIN_TYPES = ("flat",)
 _DEFAULT_STANDING_HEIGHT = SharedRobotConfig().default_base_height
 _WHEEL_RADIUS_M = 0.060

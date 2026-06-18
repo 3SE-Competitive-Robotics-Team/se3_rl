@@ -46,6 +46,7 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     body_collision_bottom_offset: float = 0.0
     """机体碰撞盒下边缘相对 base_link frame 的 z 偏移(m)。"""
     terrain_step_height_type_names: tuple[str, ...] = (
+        "forward_stairs",
         "inv_pyramid_stairs",
         "random_stairs",
     )

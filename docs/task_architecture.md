@@ -25,7 +25,7 @@
 
 台阶任务的核心差异集中在 `src/se3_train/tasks/stair/`：
 
-- `env_cfg.py` 使用倒金字塔台阶地形 `BoxInvertedPyramidStairsTerrainCfg`，当前训练 MJCF 为 `serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml`。
+- `env_cfg.py` 使用沿世界系 +x 上升的直线台阶地形 `BoxForwardStairsTerrainCfg`，当前训练 MJCF 为 `serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml`。
 - `state.py`、`events.py` 和 `observations.py` 管理 CTBC 前馈状态机；actor 仍为 34 维观测，最后 3 维扩展槽在台阶任务中输出 CTBC 左右摆动相位和触发位。
 - `rewards.py`、`curriculums.py` 提供台阶爬升奖励、地形等级课程和诊断项。
 - `env_cfg.py` 同时接入 recovery replay 状态缓存，用于提升台阶训练中跌倒后的恢复覆盖率。

@@ -40,7 +40,7 @@ def stair_terrain_levels(
     wheel_clearance_tol_m: float = 0.035,
     support_duration_s: float = 0.10,
     upright_threshold: float = -0.5,
-    terrain_type_names: tuple[str, ...] = ("inv_pyramid_stairs",),
+    terrain_type_names: tuple[str, ...] = ("forward_stairs",),
     walking_phase_iterations: int = 0,
     flat_terrain_type_name: str = "flat",
     steps_per_policy_iter: int = 64,

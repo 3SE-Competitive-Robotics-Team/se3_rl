@@ -215,7 +215,7 @@ def sample_stair_task_mode(
     stair_prob: float = 0.70,
     recovery_prob: float = 0.30,
     flat_prob: float = 0.0,
-    stair_terrain_type_name: str = "inv_pyramid_stairs",
+    stair_terrain_type_name: str = "forward_stairs",
     recovery_terrain_type_name: str = "flat",
     flat_terrain_type_name: str = "flat",
     max_level_stages: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_MAX_STAGES,
@@ -457,7 +457,7 @@ def set_fixed_stair_terrain(
     env,
     env_ids: torch.Tensor | None,
     terrain_level: int,
-    terrain_type_name: str = "inv_pyramid_stairs",
+    terrain_type_name: str = "forward_stairs",
 ) -> None:
     """将 viewer 环境固定到指定台阶 row 和地形类型。"""
     terrain = env.scene.terrain
