@@ -753,6 +753,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "recovery_grace_steps": _STAIR_RECOVERY_GRACE_STEPS,
             "recovery_terminate": False,
         }
+    if "catastrophic_state" in cfg.terminations:
+        catastrophic_params = dict(cfg.terminations["catastrophic_state"].params or {})
+        catastrophic_params["ignore_recovery_leg_pos_error"] = True
+        cfg.terminations["catastrophic_state"] = replace(
+            cfg.terminations["catastrophic_state"],
+            params=catastrophic_params,
+        )
     cfg.terminations["leg_contact"] = TerminationTermCfg(
         func=terminations.leg_contact_delayed,
         time_out=False,

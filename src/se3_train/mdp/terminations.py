@@ -201,6 +201,7 @@ recovery_stagnation = RecoveryStagnation()
 def catastrophic_state(
     env: ManagerBasedRlEnv,
     max_leg_pos_error: float | None = 3.0,
+    ignore_recovery_leg_pos_error: bool = False,
     max_leg_vel: float = 120.0,
     max_root_lin_vel: float = 80.0,
     max_root_ang_vel: float = 500.0,
@@ -237,6 +238,10 @@ def catastrophic_state(
             else leg_pos - leg_default
         )
         leg_pos_bad = torch.any(torch.abs(leg_error) > float(max_leg_pos_error), dim=1)
+    leg_pos_bad_raw = leg_pos_bad
+    recovery_mask = recovery_state.recovery_active_mask(env)
+    if ignore_recovery_leg_pos_error and recovery_mask.shape[0] == env.num_envs:
+        leg_pos_bad = leg_pos_bad & ~recovery_mask
     leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
     root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
     root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)
@@ -249,6 +254,12 @@ def catastrophic_state(
                 "Episode_Termination/catastrophic_state": terminated.float().mean().item(),
                 "Debug/catastrophic_nonfinite": (~finite).float().mean().item(),
                 "Debug/catastrophic_leg_pos": leg_pos_bad.float().mean().item(),
+                "Debug/catastrophic_leg_pos_raw": leg_pos_bad_raw.float().mean().item(),
+                "Debug/catastrophic_leg_pos_recovery": (
+                    (leg_pos_bad_raw & recovery_mask).float().mean().item()
+                    if recovery_mask.shape[0] == env.num_envs
+                    else 0.0
+                ),
                 "Debug/catastrophic_leg_vel": leg_vel_bad.float().mean().item(),
                 "Debug/catastrophic_root_vel": (root_lin_bad | root_ang_bad).float().mean().item(),
                 "Debug/catastrophic_height": height_bad.float().mean().item(),
