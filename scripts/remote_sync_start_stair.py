@@ -83,7 +83,7 @@ def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path:
         run(["ssh", args.entry_host, cleanup])
 
 
-def build_code_archive(archive: Path, *, exclude_base_model: bool = False) -> None:
+def build_code_archive(archive: Path, *, include_base_model: bool = False) -> None:
     """打包代码并排除训练产物与本地虚拟环境。"""
     if archive.exists():
         archive.unlink()
@@ -99,7 +99,7 @@ def build_code_archive(archive: Path, *, exclude_base_model: bool = False) -> No
         "--exclude=.ruff_cache",
         "--exclude=__pycache__",
     ]
-    if exclude_base_model:
+    if not include_base_model:
         command.append("--exclude=assets/base_model")
     command.append(".")
     run(command, cwd=REPO_ROOT)
@@ -107,14 +107,14 @@ def build_code_archive(archive: Path, *, exclude_base_model: bool = False) -> No
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync local code and start remote stair training.")
-    parser.add_argument("--entry-host", default="target-via-phone")
+    parser.add_argument("--entry-host", default="a800")
     parser.add_argument(
         "--inner-host",
         default=None,
         help="两跳 SSH 的内层主机，例如从 laptop 再 ssh 到 a800。",
     )
     parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask")
+    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
     parser.add_argument(
         "--remote-project",
         default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
@@ -142,6 +142,11 @@ def parse_args() -> argparse.Namespace:
         "--full-resume",
         action="store_true",
         help="完整恢复 checkpoint 的 optimizer、iteration 和 env_state；默认仍为 warm-start.",
+    )
+    parser.add_argument(
+        "--sync-base-model",
+        action="store_true",
+        help="同步 assets/base_model；默认不传基模以减少 A800 同步时间。",
     )
     parser.add_argument("--envs", type=int, default=8192)
     parser.add_argument("--iterations", type=int, default=3000)
@@ -271,13 +276,14 @@ fi
             f"{shlex.quote(args.load_run)}/{shlex.quote(checkpoint_file)}"
         )
     )
+    precheck_checkpoint_check = "" if args.sync_base_model else checkpoint_check
     precheck_script = f"""
 set -euo pipefail
 cd {shlex.quote(args.remote_project)}
 test -d .venv/bin
 test -d {shlex.quote(args.cuda_compat_dir)}
 test -d {shlex.quote(args.cuda_toolkit_lib_dir)}
-{checkpoint_check}
+{precheck_checkpoint_check}
 {active_check}
 nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader
 """
@@ -289,7 +295,7 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
         label="预检查远端环境和训练进程",
     )
 
-    build_code_archive(archive, exclude_base_model=args.from_scratch)
+    build_code_archive(archive, include_base_model=args.sync_base_model)
     copy_to_remote_host(args, archive, remote_archive)
     run(
         ssh_args(
@@ -314,6 +320,7 @@ export MUJOCO_GL=egl
 compile_targets=(src scripts)
 [ -d experiments ] && compile_targets+=(experiments)
 ./.venv/bin/python -m compileall -q "${{compile_targets[@]}}"
+{checkpoint_check}
 """
     pod_bash(
         args,

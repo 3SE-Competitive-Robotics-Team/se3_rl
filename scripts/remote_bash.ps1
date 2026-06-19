@@ -6,6 +6,8 @@
 本脚本把用户提供的 bash 脚本编码成 UTF-8 base64，再通过一个极小的
 远端 bootstrap 解码执行。PowerShell 侧不再直接承载 `&&`、`$()`、管道
 或多层引号，因此适合从 Windows PowerShell 调用远程训练机或 Kubernetes pod。
+当前默认路线是开发机 -> laptop-imgpi2nm-shanghai -> a800，再在 a800 上
+执行普通 bash 或 kubectl exec。
 
 .EXAMPLE
 $bash = @'
@@ -13,15 +15,17 @@ set -x
 date
 grep -R "reward" logs | tail -20
 '@
-.\scripts\remote_bash.ps1 -HostAlias wuyinyun -ScriptText $bash -UseProxy
+.\scripts\remote_bash.ps1 -ScriptText $bash
 
 .EXAMPLE
-.\scripts\remote_bash.ps1 -HostAlias wuyinyun -ScriptPath .\tmp\check_training.sh
+.\scripts\remote_bash.ps1 -KubeNamespace gczx-project06 -KubePod abbtask-79cdb78487-mgx44 -NoWorkdir -ScriptPath .\tmp\check_training.sh
 #>
 
 [CmdletBinding(DefaultParameterSetName = "Text")]
 param(
-    [string]$HostAlias = "wuyinyun",
+    [string]$HostAlias = "laptop-imgpi2nm-shanghai",
+
+    [string]$InnerHost = "a800",
 
     [Parameter(Mandatory = $true, ParameterSetName = "Path")]
     [string]$ScriptPath,
@@ -54,6 +58,11 @@ $ErrorActionPreference = "Stop"
 function ConvertTo-BashSingleQuoted {
     param([string]$Value)
     return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
+function ConvertTo-PowerShellSingleQuoted {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
 }
 
 function ConvertTo-BashPathExpression {
@@ -96,8 +105,9 @@ if (-not $NoWorkdir -and -not [string]::IsNullOrWhiteSpace($Workdir)) {
     $body.Add("cd $(ConvertTo-BashPathExpression $Workdir)")
 }
 
-$body.Add((Get-ScriptBody))
-$payload = ($body -join "`n") + "`n"
+$scriptBody = (Get-ScriptBody).Replace("`r`n", "`n").Replace("`r", "`n")
+$body.Add($scriptBody)
+$payload = (($body -join "`n") + "`n").Replace("`r`n", "`n").Replace("`r", "`n")
 $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
 $encodedPayload = [System.Convert]::ToBase64String($payloadBytes)
 
@@ -124,10 +134,15 @@ if (-not [string]::IsNullOrWhiteSpace($KubePod)) {
     $bootstrap.Add('printf ''%s'' "$payload" | base64 -d | bash -s')
 }
 
-$bootstrapScript = ($bootstrap -join "`n") + "`n"
+$bootstrapScript = (($bootstrap -join "`n") + "`n").Replace("`r`n", "`n").Replace("`r", "`n")
 
 if ($DryRun) {
     Write-Host "host=$HostAlias"
+    if ([string]::IsNullOrWhiteSpace($InnerHost)) {
+        Write-Host "route=$HostAlias"
+    } else {
+        Write-Host "route=$HostAlias->$InnerHost"
+    }
     if ([string]::IsNullOrWhiteSpace($KubePod)) {
         Write-Host "mode=remote-bash"
     } else {
@@ -144,7 +159,23 @@ if ($DryRun) {
     exit 0
 }
 
-$bootstrapScript | & ssh @SshArgs $HostAlias "bash" "-s"
+if ([string]::IsNullOrWhiteSpace($InnerHost)) {
+    $bootstrapScript | & ssh @SshArgs $HostAlias "bash" "-s"
+} else {
+    $encodedBootstrap = [System.Convert]::ToBase64String(
+        [System.Text.Encoding]::UTF8.GetBytes($bootstrapScript)
+    )
+    $innerCommand = "echo $encodedBootstrap | base64 -d | bash"
+    $remotePowerShell = @(
+        "`$innerCommand = $(ConvertTo-PowerShellSingleQuoted $innerCommand)"
+        "& ssh $(ConvertTo-PowerShellSingleQuoted $InnerHost) `$innerCommand"
+        "exit `$LASTEXITCODE"
+    ) -join "`n"
+    $encodedRemotePowerShell = [System.Convert]::ToBase64String(
+        [System.Text.Encoding]::Unicode.GetBytes($remotePowerShell)
+    )
+    & ssh @SshArgs $HostAlias "powershell" "-NoProfile" "-EncodedCommand" $encodedRemotePowerShell
+}
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     exit $exitCode

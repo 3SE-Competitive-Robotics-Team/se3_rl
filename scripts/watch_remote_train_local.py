@@ -379,7 +379,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copy remote checkpoints and view the real training scene locally."
     )
-    parser.add_argument("--host", default="target-via-phone")
+    parser.add_argument("--host", default="a800")
     parser.add_argument(
         "--entry-host",
         default=None,
@@ -391,7 +391,7 @@ def main() -> None:
         help="两跳 SSH 的训练机别名，例如从入口机再 ssh 到 a800。",
     )
     parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask")
+    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
     parser.add_argument(
         "--remote-project",
         default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
@@ -438,7 +438,7 @@ def main() -> None:
     parser.add_argument(
         "--stability-seconds",
         type=float,
-        default=2.0,
+        default=10.0,
         help="Require remote checkpoint size and mtime to stay unchanged for this long.",
     )
     parser.add_argument("--num-envs", type=int, default=1)

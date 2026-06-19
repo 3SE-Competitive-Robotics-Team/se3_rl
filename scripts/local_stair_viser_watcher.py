@@ -644,7 +644,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--viewer-log-root", type=Path, default=Path("logs/local_viser"))
     parser.add_argument("--interval-iters", type=int, default=100)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
-    parser.add_argument("--stability-seconds", type=float, default=2.0)
+    parser.add_argument("--stability-seconds", type=float, default=10.0)
     parser.add_argument("--terrain-level", type=int, default=-1)
     parser.add_argument(
         "--source",
