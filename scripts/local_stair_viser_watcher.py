@@ -122,6 +122,41 @@ def github_token() -> str | None:
     return fields.get("password") or None
 
 
+def github_request_curl(
+    args: argparse.Namespace,
+    url: str,
+    *,
+    headers: dict[str, str],
+    cause: Exception,
+) -> bytes:
+    curl_bin = "curl.exe" if os.name == "nt" else "curl"
+    cmd = [
+        curl_bin,
+        "-L",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        str(max(1, int(float(args.github_timeout_s)))),
+    ]
+    for key, value in headers.items():
+        cmd.extend(["-H", f"{key}: {value}"])
+    cmd.append(url)
+    result = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        timeout=float(args.github_timeout_s) + 30.0,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            "GitHub request failed with urllib "
+            f"({cause}) and curl code={result.returncode}: {stderr}"
+        ) from cause
+    return result.stdout
+
+
 def github_request(args: argparse.Namespace, url: str, *, accept: str) -> bytes:
     headers = {
         "Accept": accept,
@@ -132,8 +167,15 @@ def github_request(args: argparse.Namespace, url: str, *, accept: str) -> bytes:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=float(args.github_timeout_s)) as response:
-        return response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=float(args.github_timeout_s)) as response:
+            return response.read()
+    except Exception as exc:
+        print(
+            f"[local-viser-watch] urllib GitHub request failed; retrying with curl: {exc}",
+            file=sys.stderr,
+        )
+        return github_request_curl(args, url, headers=headers, cause=exc)
 
 
 def github_json(args: argparse.Namespace, url: str) -> object:
