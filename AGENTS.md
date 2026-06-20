@@ -52,35 +52,41 @@
 
 ## 核心命令
 
-本仓库用 [just](https://github.com/casey/just) 统一命令入口（`justfile`）。运行 `just` 查看所有命令。
+本仓库按功能包直接调用对应 CLI，不使用单一任务运行器工作流。
 
 ```bash
-just check       # 环境健康检查（Python / GPU / W&B / prek）
-just setup       # uv sync + prek install
-just smoke       # CPU smoke 验证（5 轮，不上传 W&B）
-just smoke-gpu   # GPU smoke 验证
-just fmt         # ruff 格式化
-just lint        # ruff lint + 自动修复
-just check-code  # 格式化 + lint（提交前执行）
+# Setup / 检查
+uv sync
+uv run prek install
+uv run python --version
+uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
+uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
+
+# 代码质量
+uv run ruff format .
+uv run ruff check . --fix
+uv run prek run --all-files
+
+# Smoke 验证（5 轮，不上传 W&B）
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-just train       # FlowMatch WHEEL 单标签训练，1024 envs
-just train-rough # 崎岖地形训练，1024 envs
-just train-cpu   # CPU 调试训练（极慢）
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # 评估 / sim2sim（纯 MuJoCo CPU + Rerun，macOS 可运行）
-just sim                          # 自动选 checkpoint，Rerun 可视化
-just sim-ckpt <checkpoint>        # 指定 checkpoint
-just sim-headless                 # 无 GUI 快速验证
-just sim-headless-ckpt <ckpt>     # 指定 checkpoint，无 GUI
+uv run se3-sim2sim --max-steps 3000 --course walk-sweep
+uv run se3-sim2sim --checkpoint <checkpoint> --max-steps 3000 --course walk-sweep
+uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+uv run se3-sim2sim --checkpoint <checkpoint> --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 
 # 清理
-just clean       # 清理 logs/ wandb/ replays/
+rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
 ```
 
-如需自定义参数，仍可直接用原始 `uv run` 命令（见 `justfile` 内对应配方）。
-
-跳跃任务专用命令（just 暂未封装，直接用 uv run）：
+跳跃任务专用命令：
 
 ```bash
 # 跳跃训练
@@ -100,7 +106,7 @@ uv run se3-sim2sim --checkpoint <ckpt> --jump-interval-s 5.0 --jump-target-heigh
 **每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
 
 ```bash
-just smoke
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 # 修改了跳跃相关代码时用这条：
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
@@ -340,7 +346,6 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 se3_wheel_leg/
 ├── pyproject.toml          # 项目配置 + ruff 配置
 ├── prek.toml               # pre-commit 钩子（ruff format + check）
-├── justfile                # just 统一命令入口
 ├── .python-version         # 3.11
 ├── .env                    # 环境变量（API keys，不提交）
 ├── .env.example            # 环境变量模板
