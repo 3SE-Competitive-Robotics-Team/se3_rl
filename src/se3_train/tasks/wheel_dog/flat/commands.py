@@ -71,8 +71,9 @@ class DogVelocityCommandTerm(CommandTerm):
         """为指定环境重新采样速度指令。"""
         num_ids = len(env_ids)
         standing_count = int(num_ids * self.cfg.standing_ratio)
-        standing_ids = env_ids[:standing_count]
-        moving_ids = env_ids[standing_count:]
+        shuffled = env_ids[torch.randperm(num_ids, device=self.device)]
+        standing_ids = shuffled[:standing_count]
+        moving_ids = shuffled[standing_count:]
 
         self._standing_mask[standing_ids] = True
         self._standing_mask[moving_ids] = False

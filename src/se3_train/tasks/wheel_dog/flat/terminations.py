@@ -39,7 +39,7 @@ class BadOrientationDelayed:
         self._fail_count[bad] += 1
         self._fail_count[~bad] = 0
         self._fail_count[env.episode_length_buf <= 1] = 0
-        return self._fail_count > int(max_steps)
+        return self._fail_count >= int(max_steps)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """重置指定环境的计数器。"""
@@ -67,7 +67,7 @@ class LowBaseHeightDelayed:
         self._fail_count[low] += 1
         self._fail_count[~low] = 0
         self._fail_count[env.episode_length_buf <= 1] = 0
-        return self._fail_count > int(max_steps)
+        return self._fail_count >= int(max_steps)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """重置指定环境的计数器。"""
