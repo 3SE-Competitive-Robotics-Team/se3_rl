@@ -74,30 +74,6 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 uv --version
 ```
 
-### 安装 just
-
-本仓库用 [just](https://github.com/casey/just) 统一命令入口，免记长命令。你只需要记住几个词：`just setup`、`just smoke`、`just train`、`just sim`。
-
-macOS:
-
-```bash
-brew install just
-```
-
-Ubuntu / Debian (>= 24.04):
-
-```bash
-sudo apt install just
-```
-
-其它 Linux / Windows 以及更多安装方式参考：https://github.com/casey/just?tab=readme-ov-file#installation
-
-确认 just 可用：
-
-```bash
-just --version
-```
-
 ## 2. 克隆仓库
 
 ```bash
@@ -107,21 +83,23 @@ cd se3_wheel_leg
 
 ## 3. 安装项目依赖
 
-一条命令完成依赖安装 + pre-commit hook 配置：
+安装依赖并配置 pre-commit hook：
 
 ```bash
-just setup
+uv sync
+uv run prek install
 ```
-
-这等价于： `uv sync && uv run prek install`。
 
 成功后确认环境就绪：
 
 ```bash
-just check
+uv run python --version
+uv --version
+uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
+uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
 ```
 
-`just check` 会检查 Python、uv、核心依赖、GPU/CUDA、`.env`、prek hook 状态。
+这些命令会检查 Python、uv、核心依赖和 GPU/CUDA 状态。`.env` 与 W&B 在正式训练前单独确认。
 
 之后每次 `git commit` 都会自动运行 ruff format 和 ruff check。
 
@@ -185,8 +163,8 @@ WANDB_MODE=offline
 smoke 只跑 5 轮，不上传 W&B，确认环境、MJCF、依赖和训练入口没有崩。改训练代码后先跑一次。
 
 ```bash
-just smoke       # CPU smoke（任何机器都可以跑）
-just smoke-gpu   # GPU smoke（有 NVIDIA GPU 时）
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
 ```
 
 训练循环正常结束，没有 Python traceback、MuJoCo 报错或 CUDA 报错，就可以进入正式训练。
@@ -194,11 +172,11 @@ just smoke-gpu   # GPU smoke（有 NVIDIA GPU 时）
 ## 6. 开始第一次完整训练
 
 ```bash
-just train       # 平地训练
-just train-rough # 崎岖地形训练
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 ```
 
-`just train` 会自动检查 `.env` 是否存在，没有时会提示。
+运行前确认 `.env` 存在，并已写入 W&B 配置。
 
 第一次建议先跑平地任务。训练会：
 
@@ -249,10 +227,10 @@ ls logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt | sort -V
 sim2sim 用标准 MuJoCo CPU，可以在训练机器或本地电脑上跑。
 
 ```bash
-just sim                          # 自动选最新 checkpoint，Rerun 可视化
-just sim-headless                 # 无 GUI，快速验证（自动选 checkpoint）
-just sim-ckpt logs/.../model_4999.pt  # 指定 checkpoint，Rerun 可视化
-just sim-headless-ckpt logs/.../model_4999.pt  # 指定 checkpoint，无 GUI
+uv run se3-sim2sim --max-steps 3000 --course walk-sweep
+uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+uv run se3-sim2sim --checkpoint logs/.../model_4999.pt --max-steps 3000 --course walk-sweep
+uv run se3-sim2sim --checkpoint logs/.../model_4999.pt --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 ```
 
 sim2sim 默认启用 yaw PID 闭环，目标 yaw 为 0 度。需要开环回放或其它高级参数时，仍可直接用 `uv run`：
@@ -269,24 +247,16 @@ uv run se3-sim2sim \
 
 同时满足以下条件，这次入门实验就算完成：
 
-- `just setup` 成功，`just check` 全部通过。
+- `uv sync` 和环境检查命令全部通过。
 - `uv run prek run --all-files` 通过。
-- `just smoke` 正常结束。
+- CPU smoke 正常结束。
 - W&B 项目页能看到正式训练 run。
 - `logs/rsl_rl/se3_wheel_leg/<timestamp>/` 下生成 checkpoint。
-- `just sim-headless` 能跑完，终端没有 traceback。
+- 无 GUI sim2sim 能跑完，终端没有 traceback。
 
 完成后，你有了修改训练代码、重新训练、再用 sim2sim 验证的完整闭环。
 
 ## 10. 常见问题
-
-### just 是什么？
-
-[just](https://github.com/casey/just) 是一个命令运行器，类似于 Makefile 但更简单。运行 `just` 查看所有可用命令，`just <命令>` 执行。所有命令定义在仓库根目录的 `justfile` 中。
-
-### 找不到 `just`
-
-参考 [安装 just](#安装-just) 一节。已安装但终端找不到时，重新打开终端再试。
 
 ### 找不到 `uv`
 
@@ -313,18 +283,18 @@ git commit
 
 ### W&B 没有新 run
 
-确认 `.env` 存在（`just train` 会检查），`WANDB_API_KEY` 正确，账号已加入团队，训练机器能访问 W&B。
+确认 `.env` 存在，`WANDB_API_KEY` 正确，账号已加入团队，训练机器能访问 W&B。
 
 ### 训练没有 checkpoint
 
-先确认不是 smoke 模式（smoke 不下发 checkpoint）。正式训练必须用 `just train`（会自动带 `--env-file .env`）。如果 W&B 在线初始化失败，训练可能继续跑但 checkpoint 不会保存，网络不稳定时把 `WANDB_MODE=offline` 写入 `.env` 后重新训练。
+先确认不是 smoke 模式（smoke 不下发 checkpoint）。正式训练需要带 `--env-file .env`。如果 W&B 在线初始化失败，训练可能继续跑但 checkpoint 不会保存，网络不稳定时把 `WANDB_MODE=offline` 写入 `.env` 后重新训练。
 
 ### CUDA 或 GPU 报错
 
 确认机器是 Linux + NVIDIA GPU，驱动、CUDA、PyTorch 与项目依赖匹配。只想验证代码入口时，先用 CPU smoke：
 
 ```bash
-just smoke
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
 
 ### sim2sim 找不到 checkpoint
@@ -332,7 +302,7 @@ just smoke
 显式传入 checkpoint 路径：
 
 ```bash
-just sim-ckpt logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt
+uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000 --course walk-sweep
 ```
 
 如果 checkpoint 在远程训练机上，先把对应的 `model_*.pt` 和 `params/` 目录同步到本地。

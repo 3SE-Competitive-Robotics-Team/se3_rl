@@ -32,18 +32,17 @@ uv run prek install
 
 `uv run prek install` 把提交前检查接入 Git，之后每次 `git commit` 自动运行 ruff format 和 ruff check。
 
-## Quick Start（四步跑通）
+## Quick Start
 
-本仓库用 [just](https://github.com/casey/just) 统一命令入口，免记长命令。
+本仓库按功能包直接调用对应 CLI，避免把训练、验证、诊断和工具脚本塞进单一任务入口。
 
 ```bash
-just setup     # 装依赖 + 配置 pre-commit hook
-just smoke     # CPU smoke 验证环境
-just train     # 开始 FlowMatch WHEEL 单标签训练（需要 GPU + .env）
-just sim       # 加载 checkpoint，Rerun 可视化回放
+uv sync
+uv run prek install
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+uv run se3-sim2sim --max-steps 3000 --course walk-sweep
 ```
-
-运行 `just` 查看所有可用命令。
 
 训练指标上传到 W&B 项目：[se3_wheel_leg](https://wandb.ai/3se-competitive-robotics-team/se3_wheel_leg)。
 
@@ -52,8 +51,11 @@ just sim       # 加载 checkpoint，Rerun 可视化回放
 ### Setup & 检查
 
 ```bash
-just setup       # uv sync + prek install
-just check       # 环境健康检查（Python / GPU / W&B / prek）
+uv sync
+uv run prek install
+uv run python --version
+uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
+uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
 ```
 
 ### Smoke 验证
@@ -61,52 +63,40 @@ just check       # 环境健康检查（Python / GPU / W&B / prek）
 修改训练代码后先跑这个，5 轮训练验证环境不崩溃，不上传 W&B。
 
 ```bash
-just smoke       # CPU smoke
-just smoke-gpu   # GPU smoke
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
 ```
 
 ### 训练
 
-需要 `.env` 以上传指标到 W&B。`just train` 会自动检查 `.env` 是否存在。
+需要 `.env` 以上传指标到 W&B。正式训练前先确认 `.env` 存在。
 
 ```bash
-just train       # FlowMatch WHEEL 单标签训练，1024 envs
-just train-rough # Rough 地形，1024 envs
-just train-cpu   # CPU 调试训练（极慢）
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
 
 ### Sim2sim 验证
 
 ```bash
-just sim                          # 自动选最新 checkpoint，Rerun 可视化
-just sim-ckpt logs/.../model_4999.pt  # 指定 checkpoint
-just sim-headless                 # 无 GUI，快速验证
+uv run se3-sim2sim --max-steps 3000 --course walk-sweep
+uv run se3-sim2sim --checkpoint logs/.../model_4999.pt --max-steps 3000 --course walk-sweep
+uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 ```
 
 ### 代码质量
 
 ```bash
-just fmt         # ruff 格式化
-just lint        # ruff lint + 修复
-just check-code  # 格式化 + lint（提交前执行）
+uv run ruff format .
+uv run ruff check . --fix
+uv run prek run --all-files
 ```
 
 ### 清理
 
 ```bash
-just clean       # 清理 logs/ wandb/ replays/
-```
-
-### 原始 uv 命令（备选）
-
-如需自定义参数，仍可直接使用 `uv run`：
-
-```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --max-steps 3000
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<run>/model_4999.pt --viewer none --max-steps 200
+rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
 ```
 
 ## 动作延迟
@@ -132,7 +122,7 @@ uv run se3-sim2sim --no-action-delay
 
 ## 注意事项
 
-- 所有 Python 命令通过 `just` 或 `uv` 执行，不直接用 `python` 或 `pip`。
+- 所有 Python 命令通过 `uv` 执行，不直接用 `python` 或 `pip`。
 - `.env`、`logs/`、`wandb/`、Rerun 回放文件不应提交。
 - 训练 checkpoint 较大，分享仓库时单独传 `model_*.pt`，不要提交到 Git。
 - W&B 初始化或运行期写入失败时，runner 会自动降级到本地 TensorBoard，训练和 checkpoint 保存继续进行；远程长训仍建议先确保代理可用，避免丢在线日志。
