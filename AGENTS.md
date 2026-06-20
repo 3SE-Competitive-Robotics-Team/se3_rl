@@ -288,7 +288,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 - **训练**：仅支持 Linux + NVIDIA GPU（CUDA 12.4+）
 - **评估/sim2sim**：支持 macOS、Linux、Windows (WSL)
-- 推荐环境数：1024（6 DOF 机器人，白天）/ 4096（夜间）
+- 推荐环境数：1024（6 DOF 机器人，白天）/ 2048（wuyinyun 夜间）
 - 推荐 GPU 显存：8GB+（RTX 3090/4090 训练约 2-3 小时）
 
 ## 踩坑记录

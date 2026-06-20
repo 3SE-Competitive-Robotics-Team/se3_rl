@@ -100,7 +100,7 @@ ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && git pull 
 
 | 时段 | num_envs | 说明 |
 |---|---|---|
-| 夜间（22:00-08:00 CST） | **4096** | 无人使用，充分利用 GPU |
+| 夜间（22:00-08:00 CST） | **2048** | wuyinyun 4096 envs 容易触发 MuJoCo-Warp CUDA OOM，夜间默认用 2048 |
 | 白天（08:00-22:00 CST） | **1024** | 保留响应余量 |
 
 启动前先检查远程时间：`ssh wuyinyun "date '+%H:%M %Z'"`

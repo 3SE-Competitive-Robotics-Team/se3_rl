@@ -1,4 +1,4 @@
-"""WheelDog 平地速度跟随奖励。"""
+"""WheelDog 盲爬任务奖励。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from se3_train.tasks.wheel_dog.robot_cfg import (
     DOG_LEG_JOINT_IDS,
     DOG_WHEEL_JOINT_IDS,
 )
+
+from . import terrain_progress
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -43,6 +45,171 @@ def tracking_lin_vel_xy(
     err = torch.sum(torch.square(cmd[:, :2] - robot.data.root_link_lin_vel_b[:, :2]), dim=1)
     gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
     return torch.exp(-err / (float(std) ** 2)) * gate
+
+
+def forward_velocity(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    max_velocity: float = 1.8,
+    max_backward_velocity: float = 1.0,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """按指令方向奖励世界系速度，反向运动会得到负值。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    cmd_x = cmd[:, 0]
+    direction = torch.where(cmd_x < 0.0, -torch.ones_like(cmd_x), torch.ones_like(cmd_x))
+    speed_along_cmd = robot.data.root_link_lin_vel_w[:, 0] * direction
+    speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    facility = terrain_progress.is_facility_terrain(env)
+    return (
+        torch.clamp(
+            speed_along_cmd,
+            min=-float(max_backward_velocity),
+            max=float(max_velocity),
+        )
+        * active.float()
+        * gate
+        * facility.float()
+    )
+
+
+def progress_forward(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE,
+    max_progress_ratio: float = 1.2,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """奖励 episode 内沿设施方向取得的相对进度。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    progress_x = robot.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    target_progress = terrain_progress.current_success_distance(
+        env,
+        final_success_distance=success_distance,
+    )
+    normalized = progress_x / torch.clamp(target_progress, min=1.0e-6)
+    corridor = terrain_progress.corridor_gate(env)
+    facility = terrain_progress.is_facility_terrain(env)
+    return (
+        torch.clamp(normalized, min=0.0, max=float(max_progress_ratio))
+        * active.float()
+        * gate
+        * corridor
+        * facility.float()
+    )
+
+
+def obstacle_lift(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    before_high_edge: float = 0.25,
+    after_high_edge: float = 0.35,
+    max_vertical_velocity: float = 0.7,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """坑边窗口内奖励向上的 base 速度，帮助跨越反坡高边。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    progress_x = robot.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+    vz = torch.nan_to_num(
+        robot.data.root_link_lin_vel_w[:, 2],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    start_progress, end_progress = terrain_progress.obstacle_window(
+        env,
+        before_high_edge=before_high_edge,
+        after_high_edge=after_high_edge,
+    )
+    in_window = (progress_x > start_progress) & (progress_x < end_progress)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    corridor = terrain_progress.corridor_gate(env)
+    facility = terrain_progress.is_facility_terrain(env)
+    return (
+        torch.clamp(vz, min=0.0, max=float(max_vertical_velocity))
+        * active.float()
+        * in_window.float()
+        * gate
+        * corridor
+        * facility.float()
+    )
+
+
+def success_progress(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    success_distance: float = terrain_progress.FINAL_SUCCESS_DISTANCE,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """到达右侧安全区域后的稀疏完成奖励。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    progress_x = robot.data.root_link_pos_w[:, 0] - env.scene.env_origins[:, 0]
+    progress_x = torch.nan_to_num(progress_x, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    target_progress = terrain_progress.current_success_distance(
+        env,
+        final_success_distance=success_distance,
+    )
+    in_corridor = terrain_progress.within_corridor(env)
+    facility = terrain_progress.is_facility_terrain(env)
+    return (
+        (progress_x > target_progress).float()
+        * in_corridor.float()
+        * active.float()
+        * gate
+        * facility.float()
+    )
+
+
+def lateral_corridor(
+    env: ManagerBasedRlEnv,
+    soft_half_width: float = terrain_progress.CORRIDOR_SOFT_HALF_WIDTH,
+    hard_half_width: float = terrain_progress.CORRIDOR_HARD_HALF_WIDTH,
+) -> torch.Tensor:
+    """惩罚偏离中心通道，防止沿全局地面绕开坑坡。"""
+    abs_y = torch.abs(terrain_progress.lateral_offset(env))
+    soft = float(soft_half_width)
+    hard = max(float(hard_half_width), soft + 1.0e-6)
+    excess = torch.clamp(abs_y - soft, min=0.0) / (hard - soft)
+    facility = terrain_progress.is_facility_terrain(env)
+    return torch.clamp(torch.square(excess), max=4.0) * facility.float()
+
+
+def run_stuck(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    min_speed: float = 0.25,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """移动指令下惩罚长期低于最小前向速度。"""
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    cmd_x = cmd[:, 0]
+    direction = torch.where(cmd_x < 0.0, -torch.ones_like(cmd_x), torch.ones_like(cmd_x))
+    speed_along_cmd = robot.data.root_link_lin_vel_w[:, 0] * direction
+    speed_along_cmd = torch.nan_to_num(speed_along_cmd, nan=0.0, posinf=0.0, neginf=0.0)
+    active = torch.linalg.norm(cmd[:, :2], dim=1) > float(command_threshold)
+    gate = _upright_factor(robot.data.projected_gravity_b[:, 2])
+    facility = terrain_progress.is_facility_terrain(env)
+    deficit = (float(min_speed) - speed_along_cmd) / max(float(min_speed), 1.0e-6)
+    return torch.clamp(deficit, min=0.0, max=1.0) * active.float() * gate * facility.float()
 
 
 def tracking_ang_vel_z(
@@ -121,10 +288,9 @@ def bad_tilt(
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-    soft = torch.deg2rad(float(soft_limit_deg))
-    hard = torch.deg2rad(float(hard_limit_deg))
-    denom = max(hard - soft, 1.0e-6)
-    excess = torch.clamp((tilt - soft) / denom, min=0.0)
+    soft = torch.deg2rad(torch.tensor(float(soft_limit_deg), device=env.device))
+    hard = torch.deg2rad(torch.tensor(float(hard_limit_deg), device=env.device))
+    excess = torch.clamp((tilt - soft) / torch.clamp(hard - soft, min=1.0e-6), min=0.0)
     return torch.clamp(torch.square(excess), max=float(max_penalty))
 
 
@@ -284,13 +450,19 @@ __all__ = [
     "dof_pos_limits",
     "feet_contact_without_cmd",
     "flat_orientation_l2",
+    "forward_velocity",
     "is_alive",
     "joint_acc_l2",
     "joint_pos_penalty",
     "joint_power",
     "joint_torques_l2",
+    "lateral_corridor",
     "lin_vel_z_l2",
+    "obstacle_lift",
+    "progress_forward",
+    "run_stuck",
     "stand_still",
+    "success_progress",
     "tracking_ang_vel_z",
     "tracking_lin_vel_xy",
     "undesired_contacts",
