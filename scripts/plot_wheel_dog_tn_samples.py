@@ -399,6 +399,14 @@ def main() -> None:
         "--progress", type=int, default=30, help="每隔多少记录步打印一次进度，0 表示关闭"
     )
     args = parser.parse_args()
+    if args.vx_points <= 0 or args.vy_points <= 0:
+        parser.error("--vx-points 和 --vy-points 必须为正整数")
+    if args.warmup_steps < 0:
+        parser.error("--warmup-steps 不能为负数")
+    if args.record_steps <= 0:
+        parser.error("--record-steps 必须为正整数")
+    if args.progress < 0:
+        parser.error("--progress 不能为负数")
 
     rows, meta = _collect_samples(args)
     _write_csv(rows, args.output_csv)
