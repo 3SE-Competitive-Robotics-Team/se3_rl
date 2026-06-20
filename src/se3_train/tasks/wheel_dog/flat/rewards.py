@@ -121,9 +121,10 @@ def bad_tilt(
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-    soft = torch.deg2rad(torch.tensor(float(soft_limit_deg), device=env.device))
-    hard = torch.deg2rad(torch.tensor(float(hard_limit_deg), device=env.device))
-    excess = torch.clamp((tilt - soft) / torch.clamp(hard - soft, min=1.0e-6), min=0.0)
+    soft = torch.deg2rad(float(soft_limit_deg))
+    hard = torch.deg2rad(float(hard_limit_deg))
+    denom = max(hard - soft, 1.0e-6)
+    excess = torch.clamp((tilt - soft) / denom, min=0.0)
     return torch.clamp(torch.square(excess), max=float(max_penalty))
 
 
