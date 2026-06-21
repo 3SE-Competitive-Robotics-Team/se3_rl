@@ -35,6 +35,44 @@
     <mesh name="visual_r_drive_bar" file="rf_calf_1_link.STL" />
     <mesh name="visual_r_coupler" file="rf_calf_2_link.STL" />
     <mesh name="visual_r_calf" file="rf_calf_3_link.STL" />
+    <mesh name="staircol_lf0_Link_00" file="sw_collision_v3/lf0_Link/lf0_Link_sw_env_00.stl" />
+    <mesh name="staircol_lf0_Link_01" file="sw_collision_v3/lf0_Link/lf0_Link_sw_env_01.stl" />
+    <mesh name="staircol_rf0_Link_00" file="sw_collision_v3/rf0_Link/rf0_Link_sw_env_00.stl" />
+    <mesh name="staircol_rf0_Link_01" file="sw_collision_v3/rf0_Link/rf0_Link_sw_env_01.stl" />
+    <mesh name="staircol_lf1_Link_00" file="sw_collision_v3/lf1_Link/lf1_Link_sw_env_00.stl" />
+    <mesh name="staircol_rf1_Link_00" file="sw_collision_v3/rf1_Link/rf1_Link_sw_env_00.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_00" file="stair_base_visual_coacd_32/base_visual_coacd_part_00.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_01" file="stair_base_visual_coacd_32/base_visual_coacd_part_01.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_02" file="stair_base_visual_coacd_32/base_visual_coacd_part_02.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_03" file="stair_base_visual_coacd_32/base_visual_coacd_part_03.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_04" file="stair_base_visual_coacd_32/base_visual_coacd_part_04.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_05" file="stair_base_visual_coacd_32/base_visual_coacd_part_05.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_06" file="stair_base_visual_coacd_32/base_visual_coacd_part_06.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_07" file="stair_base_visual_coacd_32/base_visual_coacd_part_07.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_08" file="stair_base_visual_coacd_32/base_visual_coacd_part_08.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_09" file="stair_base_visual_coacd_32/base_visual_coacd_part_09.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_10" file="stair_base_visual_coacd_32/base_visual_coacd_part_10.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_11" file="stair_base_visual_coacd_32/base_visual_coacd_part_11.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_12" file="stair_base_visual_coacd_32/base_visual_coacd_part_12.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_13" file="stair_base_visual_coacd_32/base_visual_coacd_part_13.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_14" file="stair_base_visual_coacd_32/base_visual_coacd_part_14.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_15" file="stair_base_visual_coacd_32/base_visual_coacd_part_15.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_16" file="stair_base_visual_coacd_32/base_visual_coacd_part_16.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_17" file="stair_base_visual_coacd_32/base_visual_coacd_part_17.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_18" file="stair_base_visual_coacd_32/base_visual_coacd_part_18.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_19" file="stair_base_visual_coacd_32/base_visual_coacd_part_19.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_20" file="stair_base_visual_coacd_32/base_visual_coacd_part_20.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_21" file="stair_base_visual_coacd_32/base_visual_coacd_part_21.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_22" file="stair_base_visual_coacd_32/base_visual_coacd_part_22.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_23" file="stair_base_visual_coacd_32/base_visual_coacd_part_23.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_24" file="stair_base_visual_coacd_32/base_visual_coacd_part_24.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_25" file="stair_base_visual_coacd_32/base_visual_coacd_part_25.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_26" file="stair_base_visual_coacd_32/base_visual_coacd_part_26.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_27" file="stair_base_visual_coacd_32/base_visual_coacd_part_27.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_28" file="stair_base_visual_coacd_32/base_visual_coacd_part_28.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_29" file="stair_base_visual_coacd_32/base_visual_coacd_part_29.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_30" file="stair_base_visual_coacd_32/base_visual_coacd_part_30.stl" />
+    <mesh name="stair_base_visual_coacd_mesh_31" file="stair_base_visual_coacd_32/base_visual_coacd_part_31.stl" />
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1" />
@@ -55,16 +93,46 @@
       <geom name="base_link_sw_raw_visual_10" type="mesh" mesh="visual_swbase_base_link_10" contype="0" conaffinity="0" group="1" />
       <geom name="base_link_sw_raw_visual_11" type="mesh" mesh="visual_swbase_base_link_11" contype="0" conaffinity="0" group="1" />
       <geom name="base_link_sw_raw_visual_12" type="mesh" mesh="visual_swbase_base_link_12" contype="0" conaffinity="0" group="1" />
-      <geom name="base_link_collision_core" type="box" pos="0 0 -0.045" size="0.190 0.115 0.050" group="0" contype="1" conaffinity="2" />
-      <geom name="base_link_collision_front" type="box" pos="0.230 0 -0.025" size="0.035 0.095 0.065" group="0" contype="1" conaffinity="2" />
-      <geom name="base_link_collision_rear" type="box" pos="-0.230 0 -0.025" size="0.035 0.095 0.065" group="0" contype="1" conaffinity="2" />
+      <geom name="base_link_collision_visual_coacd_00" type="mesh" mesh="stair_base_visual_coacd_mesh_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_01" type="mesh" mesh="stair_base_visual_coacd_mesh_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_02" type="mesh" mesh="stair_base_visual_coacd_mesh_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_03" type="mesh" mesh="stair_base_visual_coacd_mesh_03" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_04" type="mesh" mesh="stair_base_visual_coacd_mesh_04" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_05" type="mesh" mesh="stair_base_visual_coacd_mesh_05" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_06" type="mesh" mesh="stair_base_visual_coacd_mesh_06" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_07" type="mesh" mesh="stair_base_visual_coacd_mesh_07" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_08" type="mesh" mesh="stair_base_visual_coacd_mesh_08" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_09" type="mesh" mesh="stair_base_visual_coacd_mesh_09" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_10" type="mesh" mesh="stair_base_visual_coacd_mesh_10" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_11" type="mesh" mesh="stair_base_visual_coacd_mesh_11" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_12" type="mesh" mesh="stair_base_visual_coacd_mesh_12" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_13" type="mesh" mesh="stair_base_visual_coacd_mesh_13" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_14" type="mesh" mesh="stair_base_visual_coacd_mesh_14" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_15" type="mesh" mesh="stair_base_visual_coacd_mesh_15" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_16" type="mesh" mesh="stair_base_visual_coacd_mesh_16" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_17" type="mesh" mesh="stair_base_visual_coacd_mesh_17" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_18" type="mesh" mesh="stair_base_visual_coacd_mesh_18" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_19" type="mesh" mesh="stair_base_visual_coacd_mesh_19" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_20" type="mesh" mesh="stair_base_visual_coacd_mesh_20" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_21" type="mesh" mesh="stair_base_visual_coacd_mesh_21" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_22" type="mesh" mesh="stair_base_visual_coacd_mesh_22" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_23" type="mesh" mesh="stair_base_visual_coacd_mesh_23" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_24" type="mesh" mesh="stair_base_visual_coacd_mesh_24" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_25" type="mesh" mesh="stair_base_visual_coacd_mesh_25" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_26" type="mesh" mesh="stair_base_visual_coacd_mesh_26" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_27" type="mesh" mesh="stair_base_visual_coacd_mesh_27" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_28" type="mesh" mesh="stair_base_visual_coacd_mesh_28" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_29" type="mesh" mesh="stair_base_visual_coacd_mesh_29" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_30" type="mesh" mesh="stair_base_visual_coacd_mesh_30" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_visual_coacd_31" type="mesh" mesh="stair_base_visual_coacd_mesh_31" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <body name="lf0_Link" pos="0 0.16885 0">
         <joint name="lf0_Joint" type="hinge" axis="0 1 0" armature="0.01" />
         <inertial pos="-0.09968276 0.00404879 0.00282013" mass="0.32242010" fullinertia="0.00013496 0.00177872 0.00170006 0.00007976 0.00009393 -0.00000238" />
         <geom name="lf0_Link_visual" type="mesh" mesh="visual_lf_thigh" contype="0" conaffinity="0" group="1" />
         <site name="lf_thigh_end" pos="-0.17993464 0.0215 0.00489576" size="0.008" rgba="1 0 0 1" />
         <site name="l_spring_p1" pos="0.00705 0.00497702 -0.04678497" group="4" />
-        <geom name="lf0_Link_collision_obb_trim" type="box" pos="-0.0687901 0.0116388 0.00794337" size="0.0210477 0.0475702 0.106286" quat="0.543139 0.444821 -0.45277 -0.549667" group="0" contype="1" conaffinity="2" />
+        <geom name="lf0_Link_stair_col_00" mesh="staircol_lf0_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="lf0_Link_stair_col_01" mesh="staircol_lf0_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="lf1_Link" pos="-0.12990117 0.0215 0.04639203">
           <joint name="lf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 1 0" damping="1" armature="0.02" />
           <inertial pos="-0.04177153 -0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 0.00000296 -0.00076497 0.00001136" />
@@ -72,7 +140,7 @@
           <site name="lf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
           <site name="lf_coupler_closure" pos="0 0 0" size="0.008" rgba="0 0.7 1 1" />
           <site name="l_spring_p2" pos="-0.09034883 -0.01652298 -0.09317700" group="4" />
-          <geom name="lf1_Link_collision_obb_trim" type="box" pos="-0.0968146 -0.00854998 -0.11303" size="0.0191449 0.0319916 0.12124" quat="0.187944 -0.678689 -0.681734 0.198235" group="0" contype="1" conaffinity="2" />
+          <geom name="lf1_Link_stair_col_00" mesh="staircol_lf1_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
           <body name="l_wheel_Link" pos="-0.15699 0.02705 -0.21049">
             <joint name="l_wheel_Joint" type="hinge" axis="0 1 0" armature="0.005" />
             <inertial pos="-0.00007447 -0.00660229 -0.00008940" mass="0.27783378" fullinertia="0.00026503 0.00048080 0.00026516 -0.00000020 0.00000031 -0.00000025" />
@@ -98,7 +166,8 @@
         <geom name="rf0_Link_visual" type="mesh" mesh="visual_rf_thigh" contype="0" conaffinity="0" group="1" />
         <site name="rf_thigh_end" pos="-0.179935 -0.0200 0.004896" size="0.008" rgba="1 0 0 1" />
         <site name="r_spring_p1" pos="0.00705 -0.00497702 -0.04678497" group="4" />
-        <geom name="rf0_Link_collision_obb_trim" type="box" pos="-0.0687901 -0.0116388 0.00794337" size="0.0210477 0.0475702 0.106286" quat="0.549667 0.45277 -0.444821 -0.543139" group="0" contype="1" conaffinity="2" />
+        <geom name="rf0_Link_stair_col_00" mesh="staircol_rf0_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="rf0_Link_stair_col_01" mesh="staircol_rf0_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="rf1_Link" pos="-0.12990153 -0.0200 0.04639227">
           <joint name="rf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 -1 0" damping="1" armature="0.02" />
           <inertial pos="-0.04177153 0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 -0.00000296 -0.00076497 -0.00001136" />
@@ -106,7 +175,7 @@
           <site name="rf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
           <site name="rf_coupler_closure" pos="0 0 0" size="0.008" rgba="0 0.7 1 1" />
           <site name="r_spring_p2" pos="-0.09034883 0.01502298 -0.09317700" group="4" />
-          <geom name="rf1_Link_collision_obb_trim" type="box" pos="-0.0967442 -0.00127326 -0.112917" size="0.0148243 0.0319988 0.121621" quat="0.207012 0.684465 -0.67571 -0.17908" group="0" contype="1" conaffinity="2" />
+          <geom name="rf1_Link_stair_col_00" mesh="staircol_rf1_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
           <body name="r_wheel_Link" pos="-0.15699 -0.02705 -0.21049">
             <joint name="r_wheel_Joint" type="hinge" axis="0 -1 0" armature="0.005" />
             <inertial pos="-0.00007447 0.00660229 -0.00008940" mass="0.27783378" fullinertia="0.00026503 0.00048080 0.00026516 0.00000020 0.00000031 0.00000025" />
