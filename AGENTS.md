@@ -231,17 +231,17 @@ se3_jump_to/
 
 轨迹文件字段：`base_pos`、`base_vel`、`q_ref`、`q_vel`（关节角速度，用于 RSI）、`t_stance`、`dt` 等。
 
-### 观测空间（32 维 actor）
+### 观测空间（34 维 actor）
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
 [6:11]  commands × (2.0, 0.25, 5.0, 5.0, 5.0)
-[11:15] leg_joint_pos（相对默认姿态）
-[15:19] leg_joint_vel × 0.25
-[19:21] wheel_pos
-[21:23] wheel_vel × 0.05
-[23:29] last_actions
-[29:32] jump_commands  [jump_flag, jump_target_height, jump_phase]
+[11:17] leg_joint_pos [sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]
+[17:21] leg_joint_vel × 0.25
+[21:23] wheel_pos_zero（固定 0，保留兼容槽位）
+[23:25] wheel_vel × 0.05
+[25:31] last_actions
+[31:34] jump_commands  [jump_flag, jump_target_height, jump_phase]
                         jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
 
@@ -249,7 +249,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 ### 动作空间（6 维）
 ```
-[lf0, lf1, rf0, rf1, l_wheel, r_wheel]
+[LF0, LB, RF0, RB, L_WHEEL, R_WHEEL]
 腿部：action × 0.25 + default_dof_pos
 轮子：action × 20.0 rad/s
 ```
@@ -332,7 +332,7 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 
 ### 观测维度不对齐
 
-跳跃任务观测为 32 维（行走基模为 31 维）。从行走 checkpoint fine-tune 跳跃任务时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
+所有任务统一为 34 维观测。从行走 checkpoint fine-tune 跳跃任务时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
 
 ## 常见错误手册
 
