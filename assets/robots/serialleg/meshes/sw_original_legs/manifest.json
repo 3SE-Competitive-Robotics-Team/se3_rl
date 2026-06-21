@@ -1,0 +1,714 @@
+[
+  {
+    "target": "lf0_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_lf0_Link_00",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_00.stl",
+        "source": "lf0_Link - 【加工件】大螺栓-1.STL",
+        "vertices": 1980,
+        "faces": 660,
+        "extents": [
+          0.038699,
+          0.0349,
+          0.038699
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_01",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_01.stl",
+        "source": "lf0_Link - 【加工件】大螺母-2.STL",
+        "vertices": 3390,
+        "faces": 1130,
+        "extents": [
+          0.03898,
+          0.03835,
+          0.038941
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_02",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_02.stl",
+        "source": "lf0_Link - 【加工件】腿限位块-1.STL",
+        "vertices": 870,
+        "faces": 290,
+        "extents": [
+          0.030456,
+          0.015,
+          0.032555
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_03",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_03.stl",
+        "source": "lf0_Link - 【打印件】滑环止动件-1.STL",
+        "vertices": 3384,
+        "faces": 1128,
+        "extents": [
+          0.065404,
+          0.018,
+          0.053948
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_04",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_04.stl",
+        "source": "lf0_Link - 【标准件】6-8-5轴套-1.STL",
+        "vertices": 840,
+        "faces": 280,
+        "extents": [
+          0.007998,
+          0.005,
+          0.007991
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_05",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_05.stl",
+        "source": "lf0_Link - 【标准件】四氟垫片1.5mm（碗组轴承内圈压片）-1.STL",
+        "vertices": 900,
+        "faces": 300,
+        "extents": [
+          0.037964,
+          0.0015,
+          0.037959
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_06",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_06.stl",
+        "source": "lf0_Link - 【标准件】塞打螺栓 D5xM4-1.STL",
+        "vertices": 2898,
+        "faces": 966,
+        "extents": [
+          0.008993,
+          0.0275,
+          0.008998
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_07",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_07.stl",
+        "source": "lf0_Link - 【标准件】塞打螺栓 D5xM4-2.STL",
+        "vertices": 2898,
+        "faces": 966,
+        "extents": [
+          0.008988,
+          0.0275,
+          0.008999
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_08",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_08.stl",
+        "source": "lf0_Link - 【标准件】防松螺母 -3.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.007902,
+          0.005,
+          0.00725
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_09",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_09.stl",
+        "source": "lf0_Link - 【标准件】防松螺母 -4.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.00769,
+          0.005,
+          0.007687
+        ]
+      },
+      {
+        "name": "visual_swraw_lf0_Link_10",
+        "file": "sw_original_legs/lf0_Link/lf0_Link_sw_raw_10.stl",
+        "source": "lf0_Link - 【碳板】15mm大腿板-1.STL",
+        "vertices": 6822,
+        "faces": 2274,
+        "extents": [
+          0.242367,
+          0.015,
+          0.097774
+        ]
+      }
+    ]
+  },
+  {
+    "target": "l_drive_bar_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_l_drive_bar_Link_00",
+        "file": "sw_original_legs/l_drive_bar_Link/l_drive_bar_Link_sw_raw_00.stl",
+        "source": "l_drive_bar_Link.STL",
+        "vertices": 3786,
+        "faces": 1262,
+        "extents": [
+          0.049,
+          0.0085,
+          0.0975
+        ]
+      }
+    ]
+  },
+  {
+    "target": "l_coupler_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_l_coupler_Link_00",
+        "file": "sw_original_legs/l_coupler_Link/l_coupler_Link_sw_raw_00.stl",
+        "source": "l_coupler_Link.STL",
+        "vertices": 1872,
+        "faces": 624,
+        "extents": [
+          0.19181,
+          0.009,
+          0.04364
+        ]
+      }
+    ]
+  },
+  {
+    "target": "lf1_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_lf1_Link_00",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_00.stl",
+        "source": "lf1_Link - 【pom】2mm腿组电调保护板-1.STL",
+        "vertices": 2988,
+        "faces": 996,
+        "extents": [
+          0.084656,
+          0.002,
+          0.071552
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_01",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_01.stl",
+        "source": "lf1_Link - 【加工件】碗组轴承41.8 32.7 6-1.STL",
+        "vertices": 3474,
+        "faces": 1158,
+        "extents": [
+          0.041738,
+          0.006,
+          0.041766
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_02",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_02.stl",
+        "source": "lf1_Link - 【加工件】碗组轴承41.8 32.7 6-2.STL",
+        "vertices": 3474,
+        "faces": 1158,
+        "extents": [
+          0.041762,
+          0.006,
+          0.041751
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_03",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_03.stl",
+        "source": "lf1_Link - 【加工件】轴承座-1.STL",
+        "vertices": 2346,
+        "faces": 782,
+        "extents": [
+          0.053985,
+          0.008,
+          0.053941
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_04",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_04.stl",
+        "source": "lf1_Link - 【加工件】轴承座-2.STL",
+        "vertices": 2346,
+        "faces": 782,
+        "extents": [
+          0.05392,
+          0.008,
+          0.053956
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_05",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_05.stl",
+        "source": "lf1_Link - 【垫片】8-12-0.8-1.STL",
+        "vertices": 864,
+        "faces": 288,
+        "extents": [
+          0.01199,
+          0.0008,
+          0.011982
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_06",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_06.stl",
+        "source": "lf1_Link - 【官方物资】C620电调-1.STL",
+        "vertices": 56460,
+        "faces": 18820,
+        "extents": [
+          0.045427,
+          0.0115,
+          0.05078
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_07",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_07.stl",
+        "source": "lf1_Link - 【标准件】MF688ZZ 挡边轴承-3.STL",
+        "vertices": 1200,
+        "faces": 400,
+        "extents": [
+          0.017968,
+          0.005,
+          0.017995
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_08",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_08.stl",
+        "source": "lf1_Link - 【标准件】MF688ZZ 挡边轴承-4.STL",
+        "vertices": 1200,
+        "faces": 400,
+        "extents": [
+          0.017974,
+          0.005,
+          0.017993
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_09",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_09.stl",
+        "source": "lf1_Link - 【标准件】四氟垫片1.5mm（碗组轴承内圈压片）-1.STL",
+        "vertices": 900,
+        "faces": 300,
+        "extents": [
+          0.037964,
+          0.0015,
+          0.037959
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_10",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_10.stl",
+        "source": "lf1_Link - 【标准件】塞打螺栓 D8xM6-1.STL",
+        "vertices": 2910,
+        "faces": 970,
+        "extents": [
+          0.01298,
+          0.04175,
+          0.013
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_11",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_11.stl",
+        "source": "lf1_Link - 【标准件】防松螺母 -1.STL",
+        "vertices": 4434,
+        "faces": 1478,
+        "extents": [
+          0.011312,
+          0.0059,
+          0.010115
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_12",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_12.stl",
+        "source": "lf1_Link - 【标准件】防松螺母 -5.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.0079,
+          0.005,
+          0.007267
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_13",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_13.stl",
+        "source": "lf1_Link - 【标准件】防松螺母 -6.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.007499,
+          0.005,
+          0.007821
+        ]
+      },
+      {
+        "name": "visual_swraw_lf1_Link_14",
+        "file": "sw_original_legs/lf1_Link/lf1_Link_sw_raw_14.stl",
+        "source": "lf1_Link - 【碳板】15mm小腿板-1.STL",
+        "vertices": 8850,
+        "faces": 2950,
+        "extents": [
+          0.213917,
+          0.015,
+          0.238283
+        ]
+      }
+    ]
+  },
+  {
+    "target": "rf0_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_rf0_Link_00",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_00.stl",
+        "source": "rf0_Link - Mirror【加工件】大螺栓-2.STL",
+        "vertices": 1980,
+        "faces": 660,
+        "extents": [
+          0.038699,
+          0.0349,
+          0.038699
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_01",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_01.stl",
+        "source": "rf0_Link - Mirror【加工件】大螺母-3.STL",
+        "vertices": 3390,
+        "faces": 1130,
+        "extents": [
+          0.03898,
+          0.03835,
+          0.038941
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_02",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_02.stl",
+        "source": "rf0_Link - Mirror【加工件】腿限位块-2.STL",
+        "vertices": 870,
+        "faces": 290,
+        "extents": [
+          0.030456,
+          0.015,
+          0.032555
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_03",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_03.stl",
+        "source": "rf0_Link - Mirror【打印件】滑环止动件-2.STL",
+        "vertices": 3384,
+        "faces": 1128,
+        "extents": [
+          0.065404,
+          0.018,
+          0.053948
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_04",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_04.stl",
+        "source": "rf0_Link - Mirror【标准件】6-8-5轴套-2.STL",
+        "vertices": 840,
+        "faces": 280,
+        "extents": [
+          0.007998,
+          0.005,
+          0.007991
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_05",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_05.stl",
+        "source": "rf0_Link - Mirror【标准件】四氟垫片1.5mm（碗组轴承内圈压片）-2.STL",
+        "vertices": 900,
+        "faces": 300,
+        "extents": [
+          0.037964,
+          0.0015,
+          0.037959
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_06",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_06.stl",
+        "source": "rf0_Link - Mirror【标准件】塞打螺栓 D5xM4-5.STL",
+        "vertices": 2898,
+        "faces": 966,
+        "extents": [
+          0.008988,
+          0.0275,
+          0.008999
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_07",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_07.stl",
+        "source": "rf0_Link - Mirror【标准件】塞打螺栓 D5xM4-6.STL",
+        "vertices": 2898,
+        "faces": 966,
+        "extents": [
+          0.008993,
+          0.0275,
+          0.008998
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_08",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_08.stl",
+        "source": "rf0_Link - Mirror【标准件】防松螺母-5.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.00769,
+          0.005,
+          0.007687
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_09",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_09.stl",
+        "source": "rf0_Link - Mirror【标准件】防松螺母-6.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.007902,
+          0.005,
+          0.00725
+        ]
+      },
+      {
+        "name": "visual_swraw_rf0_Link_10",
+        "file": "sw_original_legs/rf0_Link/rf0_Link_sw_raw_10.stl",
+        "source": "rf0_Link - Mirror【碳板】15mm大腿板-2.STL",
+        "vertices": 6828,
+        "faces": 2276,
+        "extents": [
+          0.242367,
+          0.015,
+          0.097774
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_drive_bar_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_r_drive_bar_Link_00",
+        "file": "sw_original_legs/r_drive_bar_Link/r_drive_bar_Link_sw_raw_00.stl",
+        "source": "r_drive_bar_Link.STL",
+        "vertices": 3744,
+        "faces": 1248,
+        "extents": [
+          0.049,
+          0.0085,
+          0.0975
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_coupler_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_r_coupler_Link_00",
+        "file": "sw_original_legs/r_coupler_Link/r_coupler_Link_sw_raw_00.stl",
+        "source": "r_coupler_Link.STL",
+        "vertices": 1872,
+        "faces": 624,
+        "extents": [
+          0.19181,
+          0.009,
+          0.043608
+        ]
+      }
+    ]
+  },
+  {
+    "target": "rf1_Link",
+    "generated": [
+      {
+        "name": "visual_swraw_rf1_Link_00",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_00.stl",
+        "source": "rf1_Link - Mirror【pom】2mm腿组电调保护板-2.STL",
+        "vertices": 2976,
+        "faces": 992,
+        "extents": [
+          0.084656,
+          0.002,
+          0.071552
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_01",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_01.stl",
+        "source": "rf1_Link - Mirror【加工件】碗组轴承41.8 32.7 6-3.STL",
+        "vertices": 3474,
+        "faces": 1158,
+        "extents": [
+          0.041762,
+          0.006,
+          0.041751
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_02",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_02.stl",
+        "source": "rf1_Link - Mirror【加工件】碗组轴承41.8 32.7 6-4.STL",
+        "vertices": 3474,
+        "faces": 1158,
+        "extents": [
+          0.041738,
+          0.006,
+          0.041766
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_03",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_03.stl",
+        "source": "rf1_Link - Mirror【加工件】轴承座-3.STL",
+        "vertices": 2346,
+        "faces": 782,
+        "extents": [
+          0.05392,
+          0.008,
+          0.053956
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_04",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_04.stl",
+        "source": "rf1_Link - Mirror【加工件】轴承座-4.STL",
+        "vertices": 2346,
+        "faces": 782,
+        "extents": [
+          0.053985,
+          0.008,
+          0.053941
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_05",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_05.stl",
+        "source": "rf1_Link - Mirror【垫片】8-12-0.8-2.STL",
+        "vertices": 864,
+        "faces": 288,
+        "extents": [
+          0.01199,
+          0.0008,
+          0.011982
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_06",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_06.stl",
+        "source": "rf1_Link - Mirror【官方物资】C620电调-2.STL",
+        "vertices": 56622,
+        "faces": 18874,
+        "extents": [
+          0.045427,
+          0.0115,
+          0.05078
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_07",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_07.stl",
+        "source": "rf1_Link - Mirror【标准件】MF688ZZ 挡边轴承-5.STL",
+        "vertices": 1200,
+        "faces": 400,
+        "extents": [
+          0.017968,
+          0.005,
+          0.017995
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_08",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_08.stl",
+        "source": "rf1_Link - Mirror【标准件】MF688ZZ 挡边轴承-6.STL",
+        "vertices": 1200,
+        "faces": 400,
+        "extents": [
+          0.017974,
+          0.005,
+          0.017993
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_09",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_09.stl",
+        "source": "rf1_Link - Mirror【标准件】四氟垫片1.5mm（碗组轴承内圈压片）-2.STL",
+        "vertices": 900,
+        "faces": 300,
+        "extents": [
+          0.037964,
+          0.0015,
+          0.037959
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_10",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_10.stl",
+        "source": "rf1_Link - Mirror【标准件】塞打螺栓 D8xM6-2.STL",
+        "vertices": 2910,
+        "faces": 970,
+        "extents": [
+          0.01298,
+          0.04175,
+          0.013
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_11",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_11.stl",
+        "source": "rf1_Link - Mirror【标准件】防松螺母-7.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.007499,
+          0.005,
+          0.007821
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_12",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_12.stl",
+        "source": "rf1_Link - Mirror【标准件】防松螺母-8.STL",
+        "vertices": 4434,
+        "faces": 1478,
+        "extents": [
+          0.011312,
+          0.0059,
+          0.010115
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_13",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_13.stl",
+        "source": "rf1_Link - Mirror【标准件】防松螺母-9.STL",
+        "vertices": 4374,
+        "faces": 1458,
+        "extents": [
+          0.0079,
+          0.005,
+          0.007267
+        ]
+      },
+      {
+        "name": "visual_swraw_rf1_Link_14",
+        "file": "sw_original_legs/rf1_Link/rf1_Link_sw_raw_14.stl",
+        "source": "rf1_Link - Mirror【碳板】15mm小腿板-2.STL",
+        "vertices": 8688,
+        "faces": 2896,
+        "extents": [
+          0.213898,
+          0.015,
+          0.238283
+        ]
+      }
+    ]
+  }
+]
