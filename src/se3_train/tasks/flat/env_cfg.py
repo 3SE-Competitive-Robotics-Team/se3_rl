@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from functools import lru_cache
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -24,39 +23,15 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
-from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_shared.grounded_pose import solve_grounded_pose
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.robot_cfg import get_serialleg_cfg
 
 from . import commands, curriculums, events, observations, rewards, terminations
 
-_DEFAULT_STANDING_HEIGHT = 0.22
+_ROBOT_DEFAULTS = SharedRobotConfig()
+_DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
-_SHARED_ROBOT = SharedRobotConfig()
-_ALL_JOINT_NAMES = JointGroup.joint_names()
-
-
-@lru_cache(maxsize=8)
-def _grounded_pose_for_height(base_height: float):
-    """缓存同一高度下的触地 IK，避免注册多个任务时重复求解。"""
-    return solve_grounded_pose(base_height)
-
-
-def _apply_grounded_reset_pose(cfg: ManagerBasedRlEnvCfg, base_height: float) -> None:
-    """让 reset 初始姿态与指定机身高度下的轮子触地 IK 一致。"""
-    grounded_pose = _grounded_pose_for_height(base_height)
-    if not grounded_pose.success:
-        raise ValueError(
-            f"无法求解默认触地姿态: base_height={base_height}, message={grounded_pose.message}"
-        )
-    robot = cfg.scene.entities["robot"]
-    x, y, _ = robot.init_state.pos
-    robot.init_state.pos = (x, y, base_height)
-    for joint_name, joint_pos in zip(_ALL_JOINT_NAMES, grounded_pose.q6, strict=True):
-        robot.init_state.joint_pos[joint_name] = joint_pos
-    cfg.events["reset_root_state"].params["base_height"] = base_height
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -70,7 +45,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     cfg = ManagerBasedRlEnvCfg(
-        decimation=_SHARED_ROBOT.control_decimation,
+        decimation=_ROBOT_DEFAULTS.control_decimation,
         scene=scene,
     )
 
@@ -172,7 +147,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=observations.leg_joint_vel_obs,
             noise=Unoise(n_min=-1.5, n_max=1.5),
         ),
-        "wheel_pos": ObservationTermCfg(func=observations.wheel_pos_obs),
+        "wheel_pos_zero": ObservationTermCfg(func=observations.wheel_pos_obs),
         "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),
         "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
         "jump_commands": ObservationTermCfg(func=observations.jump_commands_obs),
@@ -212,6 +187,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "velocity_height": commands.JumpCommandCfg(
             resampling_time_range=(5.0, 5.0),
             jump_prob=0.0,  # 行走任务不触发跳跃
+            lin_vel_x_range=(-3.0, 3.0),
+            ang_vel_yaw_range=(-13.0, 13.0),
             height_range=_STANDING_HEIGHT_RANGE,
             standing_height_range=_STANDING_HEIGHT_RANGE,
         ),
@@ -220,18 +197,39 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards = {
         "tracking_lin_vel": RewardTermCfg(
             func=rewards.tracking_lin_vel,
-            weight=2.73,
+            weight=4.0,
             params={
                 "command_name": "velocity_height",
-                "sigma_move": 0.25,
+                "sigma_move": 0.08,
                 "sigma_stand": 0.1,
                 "vz_weight": 2.0,
+                "use_upright_gate": False,
             },
         ),
         "tracking_ang_vel": RewardTermCfg(
             func=rewards.tracking_ang_vel,
-            weight=1.73,
-            params={"command_name": "velocity_height", "sigma": 0.25},
+            # 高 yaw 组合命令在大误差时 exp 核梯度会消失,需要保留方向性学习信号。
+            weight=3.0,
+            params={
+                "command_name": "velocity_height",
+                "sigma": 0.25,
+                "sigma_cmd_scale": 0.4,
+                "ratio_blend": 0.2,
+                "use_upright_gate": False,
+            },
+        ),
+        "tracking_lin_yaw_joint": RewardTermCfg(
+            func=rewards.tracking_lin_yaw_joint,
+            # 组合命令必须同时保住线速度和 yaw,避免策略只完成其中一轴。
+            weight=2.0,
+            params={
+                "command_name": "velocity_height",
+                "min_lin_cmd": 0.2,
+                "min_yaw_cmd": 0.5,
+                "lin_error_scale": 0.75,
+                "yaw_error_scale": 2.0,
+                "use_upright_gate": False,
+            },
         ),
         # 姿态相关项只使用惩罚语义:偏离目标姿态扣分,明显倾斜加重扣分。
         "tracking_orientation_l2": RewardTermCfg(
@@ -246,24 +244,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "command_name": "velocity_height",
                 "sigma": 0.05,
                 "height_sensor_name": "base_height_sensor",
-            },
-        ),
-        "flat_base_height": RewardTermCfg(
-            func=rewards.flat_base_height_penalty_no_jump,
-            weight=-8.0,
-            params={
-                "command_name": "velocity_height",
-                "height_sensor_name": "base_height_sensor",
-                "sigma": 0.05,
-            },
-        ),
-        "flat_base_lin_vel_z": RewardTermCfg(
-            func=rewards.flat_base_lin_vel_z_no_jump,
-            weight=-1.5,
-            params={
-                "command_name": "velocity_height",
-                "low_speed_threshold": 0.10,
-                "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
         "bad_tilt": RewardTermCfg(
@@ -320,7 +300,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "collision": RewardTermCfg(
             func=rewards.collision,
-            weight=-2.51,
+            weight=-16.0,
             params={"sensor_name": "collision_sensor", "asset_cfg": SceneEntityCfg("robot")},
         ),
         "contact_forces": RewardTermCfg(
@@ -332,43 +312,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
-        "flat_wheel_ground_slip": RewardTermCfg(
-            func=rewards.flat_wheel_ground_slip_no_jump,
-            weight=-8.0,
+        "flat_wheel_contact": RewardTermCfg(
+            func=rewards.flat_wheel_contact_penalty,
+            weight=-10.0,
             params={
                 "command_name": "velocity_height",
                 "sensor_name": "wheel_sensor",
-                "wheel_radius": 0.059,
-                "contact_force_threshold": 1.0,
-                "longitudinal_scale": 0.28,
-                "lateral_scale": 0.20,
-                "max_penalty": 9.0,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
-        "flat_wheel_center_alignment": RewardTermCfg(
-            func=rewards.flat_wheel_center_alignment_no_jump,
-            weight=-3.0,
-            params={
-                "command_name": "velocity_height",
-                "contact_sensor_name": "wheel_sensor",
-                "contact_force_threshold": 1.0,
-                "low_speed_threshold": 0.10,
-                "center_lead_gain": 0.03,
-                "center_tolerance": 0.05,
-                "max_penalty": 4.0,
-                "asset_cfg": SceneEntityCfg("robot"),
-            },
-        ),
-        "feet_contact_without_cmd": RewardTermCfg(
-            func=rewards.feet_contact_without_cmd,
-            weight=0.386,
-            params={
-                "command_name": "velocity_height",
                 "force_threshold": 1.0,
-                "cmd_threshold": 0.1,
-                "sensor_name": "wheel_sensor",
-                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "flat_leg_contact": RewardTermCfg(
+            func=rewards.flat_leg_contact_penalty,
+            weight=-25.0,
+            params={
+                "command_name": "velocity_height",
+                "sensor_name": "leg_contact_sensor",
+                "force_threshold": 1.0,
             },
         ),
         # 业界标准:移除显式 termination 惩罚,改用 alive reward 隐式机制
@@ -379,6 +338,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),
+        "catastrophic_state": TerminationTermCfg(
+            func=terminations.catastrophic_state,
+            time_out=False,
+            params={
+                "max_leg_pos_error": 3.0,
+                "max_leg_vel": 120.0,
+                "max_root_lin_vel": 80.0,
+                "max_root_ang_vel": 500.0,
+                "min_base_height": -0.5,
+                "max_base_height": 3.0,
+            },
+        ),
         "bad_orientation": TerminationTermCfg(
             func=terminations.bad_orientation_delayed,
             time_out=False,
@@ -387,53 +358,21 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "leg_contact": TerminationTermCfg(
             func=terminations.leg_contact,
             time_out=False,
-            params={"sensor_name": "leg_contact_sensor", "force_threshold": 1.0},
+            params={
+                "sensor_name": "leg_contact_sensor",
+                "force_threshold": 1.0,
+                "command_name": "velocity_height",
+                "terminate": False,
+            },
         ),
     }
 
     if not play:
         cfg.curriculum = {
-            "command_vel": CurriculumTermCfg(
-                func=curriculums.commands_vel,
-                params={
-                    "command_name": "velocity_height",
-                    "velocity_stages": [
-                        {
-                            "step": 0,
-                            "lin_vel_x_range": (0.0, 0.0),
-                            "ang_vel_yaw_range": (0.0, 0.0),
-                        },
-                        {
-                            "step": 500,
-                            "lin_vel_x_range": (-0.5, 0.5),
-                            "ang_vel_yaw_range": (-0.5, 0.5),
-                        },
-                        {
-                            "step": 1500,
-                            "lin_vel_x_range": (-1.0, 1.0),
-                            "ang_vel_yaw_range": (-1.0, 1.0),
-                        },
-                        {
-                            "step": 2500,
-                            "lin_vel_x_range": (-1.5, 1.5),
-                            "ang_vel_yaw_range": (-2.0, 2.0),
-                        },
-                        {
-                            "step": 3500,
-                            "lin_vel_x_range": (-2.0, 2.0),
-                            "ang_vel_yaw_range": (-2.5, 2.5),
-                        },
-                        {
-                            "step": 4500,
-                            "lin_vel_x_range": (-2.5, 2.5),
-                            "ang_vel_yaw_range": (-3.0, 3.0),
-                        },
-                    ],
-                },
-            ),
             "push_disturbance": CurriculumTermCfg(
                 func=curriculums.push_disturbance,
                 params={
+                    "use_iterations": True,
                     "push_stages": [
                         {
                             "step": 0,
@@ -478,11 +417,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "reset_joints": EventTermCfg(
                 func=events.reset_joints,
                 mode="reset",
-                params={"asset_cfg": SceneEntityCfg("robot")},
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "align_root_height_to_wheels": True,
+                    "wheel_clearance": 0.001,
+                },
             ),
         }
         cfg.episode_length_s = 9999.0
-        _apply_grounded_reset_pose(cfg, _DEFAULT_STANDING_HEIGHT)
     else:
         cfg.events = {
             "reset_scene_to_default": EventTermCfg(
@@ -497,7 +439,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "reset_joints": EventTermCfg(
                 func=events.reset_joints,
                 mode="reset",
-                params={"asset_cfg": SceneEntityCfg("robot")},
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "align_root_height_to_wheels": True,
+                    "wheel_clearance": 0.001,
+                },
             ),
             "friction": EventTermCfg(
                 func=events.randomize_friction,
@@ -552,13 +498,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ),
         }
         cfg.episode_length_s = 20.0
-        _apply_grounded_reset_pose(cfg, _DEFAULT_STANDING_HEIGHT)
 
     cfg.scale_rewards_by_dt = True
     cfg.sim = SimulationCfg(
         nconmax=256,
         njmax=1040,
-        mujoco=MujocoCfg(timestep=_SHARED_ROBOT.sim_dt),
+        mujoco=MujocoCfg(timestep=_ROBOT_DEFAULTS.sim_dt),
     )
     cfg.viewer = ViewerConfig()
 

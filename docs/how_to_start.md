@@ -4,7 +4,7 @@
 
 ## 0. 确认机器条件
 
-训练需要 Linux + NVIDIA GPU + CUDA，推荐 8GB 以上显存，常规训练用 1024 个环境。
+训练需要 Linux + NVIDIA GPU + CUDA，推荐 8GB 以上显存。本地/单卡常规训练示例用 1024 个环境；`codex/xyh` 远程正式训练使用 `a800` 四卡每卡 4096 envs，或 `gpufree` L40S 单卡 8192 envs。
 
 macOS 可以跑依赖安装、代码检查、CPU smoke、诊断工具和 sim2sim，但不适合正式训练。CPU 训练只用于调试。
 

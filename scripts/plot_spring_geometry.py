@@ -20,6 +20,9 @@ import mujoco
 import numpy as np
 
 mpl.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei",
+    "SimHei",
+    "SimSun",
     "PingFang HK",
     "Heiti TC",
     "Hiragino Sans GB",
@@ -86,11 +89,30 @@ def _fourbar_solve_phi(
     return float(2 * np.arctan2(q + mode * np.sqrt(disc), p + r))
 
 
+def _set_joint_qpos(
+    model: mujoco.MjModel, data: mujoco.MjData, joint_name: str, value: float
+) -> None:
+    """按关节名写入 qpos，避免受四连杆虚拟关节数量影响。"""
+    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+    if jid < 0:
+        raise KeyError(f"未找到关节: {joint_name}")
+    data.qpos[model.jnt_qposadr[jid]] = value
+
+
 def _mujoco_fk(theta_hip: float, theta_knee: float) -> dict[str, np.ndarray]:
     """用 MuJoCo 计算精确 body 世界坐标，取 XZ 侧视图。"""
     model = mujoco.MjModel.from_xml_path(MJCF_PATH)
     data = mujoco.MjData(model)
-    data.qpos[7:] = [theta_hip, theta_knee, 0.0, theta_hip, theta_knee, 0.0]
+    data.qpos[:] = model.qpos0
+    for joint_name, value in (
+        ("lf0_Joint", theta_hip),
+        ("lf1_Joint", theta_knee),
+        ("l_wheel_Joint", 0.0),
+        ("rf0_Joint", theta_hip),
+        ("rf1_Joint", theta_knee),
+        ("r_wheel_Joint", 0.0),
+    ):
+        _set_joint_qpos(model, data, joint_name, value)
     mujoco.mj_forward(model, data)
 
     def xz(body_name: str) -> np.ndarray:
@@ -129,7 +151,7 @@ def _mujoco_fk(theta_hip: float, theta_knee: float) -> dict[str, np.ndarray]:
     # 验证：BC 连杆长度应等于 L_BC
     bc_err = abs(np.linalg.norm(c - b) - L_BC)
     if bc_err > 1e-4:
-        print(f"⚠️ 四连杆闭合误差: |BC|={np.linalg.norm(c - b):.4f}, 期望={L_BC}, 误差={bc_err:.6f}")
+        print(f"四连杆闭合误差: |BC|={np.linalg.norm(c - b):.4f}, 期望={L_BC}, 误差={bc_err:.6f}")
 
     return {
         "A": a,
@@ -289,7 +311,7 @@ def draw(theta_hip: float, theta_knee: float) -> None:
         fontweight="bold",
     )
     ax.annotate(
-        "P\u2081",
+        "P1",
         p1,
         xytext=(8, -12),
         textcoords="offset points",
@@ -298,7 +320,7 @@ def draw(theta_hip: float, theta_knee: float) -> None:
         fontweight="bold",
     )
     ax.annotate(
-        "P\u2082",
+        "P2",
         p2,
         xytext=(-20, -12),
         textcoords="offset points",
@@ -340,8 +362,8 @@ def draw(theta_hip: float, theta_knee: float) -> None:
         f"大腿 = {thigh_len * 1000:.0f} mm\n"
         f"小腿 = {shank_len * 1000:.0f} mm\n"
         f"轮 R = {WHEEL_RADIUS * 1000:.0f} mm\n"
-        f"hip\u2080 = {np.rad2deg(DEFAULT_HIP):.1f}\u00b0\n"
-        f"knee\u2080 = {np.rad2deg(DEFAULT_KNEE):.1f}\u00b0\n"
+        f"hip0 = {np.rad2deg(DEFAULT_HIP):.1f}\u00b0\n"
+        f"knee0 = {np.rad2deg(DEFAULT_KNEE):.1f}\u00b0\n"
         f"膝范围 [{np.rad2deg(KNEE_RANGE[0]):.0f}\u00b0, {np.rad2deg(KNEE_RANGE[1]):.0f}\u00b0]\n"
         "\n"
         "四连杆 (需 CAD):\n"
@@ -352,10 +374,10 @@ def draw(theta_hip: float, theta_knee: float) -> None:
         f"  ψ_off = {np.rad2deg(PSI_OFFSET):.0f}\u00b0\n"
         "\n"
         "弹簧 (需 CAD):\n"
-        f"  a(P\u2081) = {L_P1 * 1000:.1f} mm\n"
-        f"  b(P\u2082) = {L_P2 * 1000:.1f} mm\n"
+        f"  a(P1) = {L_P1 * 1000:.1f} mm\n"
+        f"  b(P2) = {L_P2 * 1000:.1f} mm\n"
         f"  k = {K_SPRING:.0f} N/m\n"
-        f"  s\u2080 = {S0 * 1000:.1f} mm"
+        f"  s0 = {S0 * 1000:.1f} mm"
     )
     ax.text(
         0.98,
@@ -379,7 +401,8 @@ def draw(theta_hip: float, theta_knee: float) -> None:
     out_path = "scripts/spring_geometry.png"
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"已保存到 {out_path}")
-    plt.show()
+    if mpl.get_backend().lower() != "agg":
+        plt.show()
 
 
 def main() -> None:

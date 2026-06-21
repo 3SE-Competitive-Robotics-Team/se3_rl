@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import mujoco
 import numpy as np
 
 from .math_utils import quat_wxyz_to_xyzw
 
+GeomView = Literal["visual", "collision", "both"]
+
 SIDE_LABELS = ("left", "right")
-ACTION_LABELS = ("left_hip", "left_knee", "right_hip", "right_knee", "left_wheel", "right_wheel")
-CTRL_LABELS = ("left_hip", "left_knee", "left_wheel", "right_hip", "right_knee", "right_wheel")
+ACTION_LABELS = (
+    "left_front",
+    "left_drive",
+    "right_front",
+    "right_drive",
+    "left_wheel",
+    "right_wheel",
+)
+CTRL_LABELS = ACTION_LABELS
 XYZ_LABELS = ("x", "y", "z")
+EULER_LABELS = ("roll", "pitch", "yaw")
 ENTITY_COLORS = {
     "base": (72, 115, 180, 255),
     "left_thigh": (35, 156, 93, 255),
@@ -34,6 +45,7 @@ class RerunViewer:
         record_to_rrd: Path | None = None,
         memory_limit: str = "1GB",
         follow_body: str = "base_link",
+        geom_view: GeomView = "visual",
         manage_recording: bool = True,
     ) -> None:
         import rerun as rr
@@ -41,6 +53,7 @@ class RerunViewer:
 
         self.rr = rr
         self.follow_body = follow_body
+        self.geom_view = geom_view
         self.body_paths: list[str] = []
         self.geom_paths: dict[int, str] = {}
         self.follow_body_id = -1
@@ -67,14 +80,27 @@ class RerunViewer:
             mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.follow_body)
         )
         for geom_id in range(model.ngeom):
-            if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
-                continue
-            if int(model.geom_contype[geom_id]) == 0 and int(model.geom_conaffinity[geom_id]) == 0:
+            if not self._should_log_geom(model, geom_id):
                 continue
             body_id = int(model.geom_bodyid[geom_id])
             path = f"{self.body_paths[body_id]}/geoms/{self._geom_name(model, geom_id)}"
             self.geom_paths[geom_id] = path
             self._log_static_geom(model, geom_id, path)
+
+    def _should_log_geom(self, model: mujoco.MjModel, geom_id: int) -> bool:
+        """按 Rerun 显示模式筛选 MJCF 几何。"""
+        if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
+            return True
+        if self.geom_view == "both":
+            return True
+
+        group = int(model.geom_group[geom_id])
+        has_contact = (
+            int(model.geom_contype[geom_id]) != 0 or int(model.geom_conaffinity[geom_id]) != 0
+        )
+        if self.geom_view == "visual":
+            return group == 1 or not has_contact
+        return has_contact
 
     def log_state(
         self, model: mujoco.MjModel, data: mujoco.MjData, *, step: int, telemetry: dict[str, object]
@@ -104,6 +130,18 @@ class RerunViewer:
         rr.log(
             "/metrics/wheel_clearance_right",
             rr.Scalars(scalars=float(telemetry.get("wheel_clearance_right", 0.0))),
+        )
+        rr.log(
+            "/metrics/leg_clearance",
+            rr.Scalars(scalars=float(telemetry.get("leg_clearance", 0.0))),
+        )
+        rr.log(
+            "/metrics/wheel_contact",
+            rr.Scalars(scalars=float(telemetry.get("wheel_contact", 0.0))),
+        )
+        rr.log(
+            "/metrics/leg_contact",
+            rr.Scalars(scalars=float(telemetry.get("leg_contact", 0.0))),
         )
         rr.log("/metrics/tilt_deg", rr.Scalars(scalars=float(telemetry["tilt_deg"])))
         rr.log("/metrics/reward", rr.Scalars(scalars=float(telemetry["reward"])))
@@ -135,25 +173,93 @@ class RerunViewer:
             "/plots/height/right_wheel_clearance_m",
             telemetry.get("wheel_clearance_right", 0.0),
         )
+        self._log_scalar("/plots/height/leg_clearance_m", telemetry.get("leg_clearance", 0.0))
+        self._log_scalar("/plots/height/base_clearance_m", telemetry.get("base_clearance", 0.0))
 
         self._log_scalar("/plots/state/height_m", telemetry["height"])
         self._log_scalar("/plots/state/wheel_clearance_m", telemetry.get("wheel_clearance", 0.0))
         self._log_scalar("/plots/state/tilt_deg", telemetry["tilt_deg"])
         self._log_scalar("/plots/state/fail_tilt_deg", telemetry["fail_tilt_deg"])
         self._log_scalar("/plots/state/reward", telemetry["reward"])
+        self._log_scalar("/plots/rc/rc_switch_r", telemetry.get("rc_switch_r", 1.0))
+        self._log_scalar("/plots/rc/output_enabled", telemetry.get("output_enabled", 1.0))
+        self._log_scalar("/plots/rc/switch_event", telemetry.get("rc_switch_event", 0.0))
+        self._log_scalar("/plots/rc/policy_reset", telemetry.get("rc_policy_reset", 0.0))
+        target_mode = 1.0 if telemetry.get("target_mode", "policy") == "policy" else 0.0
+        self._log_scalar("/plots/rc/target_mode_policy", target_mode)
+        self._log_scalar("/plots/command/lin_vel_x", telemetry.get("command_lin_vel_x", 0.0))
+        self._log_scalar("/plots/command/yaw_rate", telemetry.get("command_yaw_rate", 0.0))
+        self._log_scalar("/plots/command/height", telemetry.get("command_height", 0.0))
+        self._log_scalar("/plots/velocity/base_lin_vel_x", telemetry.get("base_lin_vel_x", 0.0))
+        self._log_scalar("/plots/velocity/wheel_lin_vel", telemetry.get("wheel_lin_vel", 0.0))
+        self._log_scalar("/plots/tracking/height/command_m", telemetry.get("command_height", 0.0))
+        self._log_scalar("/plots/tracking/height/base_m", telemetry["height"])
+        self._log_scalar(
+            "/plots/tracking/height/wheel_clearance_m", telemetry.get("wheel_clearance", 0.0)
+        )
+        self._log_scalar(
+            "/plots/tracking/forward_velocity/command_x_mps",
+            telemetry.get("command_lin_vel_x", 0.0),
+        )
+        self._log_scalar(
+            "/plots/tracking/forward_velocity/base_x_mps", telemetry.get("base_lin_vel_x", 0.0)
+        )
+        self._log_scalar(
+            "/plots/tracking/forward_velocity/wheel_x_mps", telemetry.get("wheel_lin_vel", 0.0)
+        )
+        base_ang_vel_body = np.asarray(
+            telemetry.get("base_ang_vel_body", (0.0, 0.0, 0.0)), dtype=np.float64
+        ).reshape(-1)
+        base_yaw_rate = float(base_ang_vel_body[2]) if base_ang_vel_body.size >= 3 else 0.0
+        self._log_scalar(
+            "/plots/tracking/yaw_rate/command_rad_s", telemetry.get("command_yaw_rate", 0.0)
+        )
+        self._log_scalar("/plots/tracking/yaw_rate/base_body_z_rad_s", base_yaw_rate)
+        self._log_scalar("/plots/contact/wheel_any", telemetry.get("wheel_contact", 0.0))
+        self._log_scalar("/plots/contact/wheel_full", telemetry.get("wheel_full_contact", 0.0))
+        self._log_scalar("/plots/contact/wheel_left", telemetry.get("wheel_contact_left", 0.0))
+        self._log_scalar("/plots/contact/wheel_right", telemetry.get("wheel_contact_right", 0.0))
+        self._log_scalar("/plots/contact/leg_any", telemetry.get("leg_contact", 0.0))
+        self._log_scalar("/plots/contact/leg_left", telemetry.get("leg_contact_left", 0.0))
+        self._log_scalar("/plots/contact/leg_right", telemetry.get("leg_contact_right", 0.0))
+        self._log_scalar("/plots/contact/base", telemetry.get("base_contact", 0.0))
+        self._log_scalar("/plots/contact/nonwheel", telemetry.get("nonwheel_contact", 0.0))
+        self._log_scalar(
+            "/plots/leg_alignment/wheel_lateral_distance_m",
+            telemetry.get("wheel_lateral_distance", 0.0),
+        )
+        self._log_scalar(
+            "/plots/leg_alignment/wheel_fore_aft_offset_m",
+            telemetry.get("wheel_fore_aft_offset", 0.0),
+        )
+        self._log_scalar(
+            "/plots/leg_alignment/leg_mirror_error_rad",
+            telemetry.get("leg_mirror_error", 0.0),
+        )
         yaw_pid = telemetry.get("yaw_pid")
         if isinstance(yaw_pid, dict):
             self._log_scalar("/plots/yaw_pid/current_yaw", yaw_pid["current_yaw"])
             self._log_scalar("/plots/yaw_pid/target_yaw", yaw_pid["target_yaw"])
             self._log_scalar("/plots/yaw_pid/error", yaw_pid["error"])
             self._log_scalar("/plots/yaw_pid/command", yaw_pid["command"])
+            self._log_scalar("/plots/tracking/yaw_angle/current_rad", yaw_pid["current_yaw"])
+            self._log_scalar("/plots/tracking/yaw_angle/target_rad", yaw_pid["target_yaw"])
+            self._log_scalar("/plots/tracking/yaw_angle/error_rad", yaw_pid["error"])
         self._log_array(
             "/plots/imu/base_ang_vel_body_rad_s", telemetry["base_ang_vel_body"], XYZ_LABELS
         )
         self._log_array(
             "/plots/imu/base_ang_vel_world_rad_s", telemetry["base_ang_vel_world"], XYZ_LABELS
         )
-        self._log_array("/plots/imu/projected_gravity", telemetry["projected_gravity"], XYZ_LABELS)
+        self._log_array(
+            "/plots/imu/euler_deg",
+            (
+                telemetry.get("roll_deg", 0.0),
+                telemetry.get("pitch_deg", 0.0),
+                telemetry.get("yaw_deg", 0.0),
+            ),
+            EULER_LABELS,
+        )
 
         self._log_array("/plots/dof/pos_rad", telemetry["dof_pos"], CTRL_LABELS)
         self._log_array("/plots/dof/vel_rad_s", telemetry["dof_vel"], CTRL_LABELS)
@@ -182,6 +288,14 @@ class RerunViewer:
         size = np.asarray(model.geom_size[geom_id], dtype=np.float32)
         if geom_type == int(mujoco.mjtGeom.mjGEOM_BOX):
             rr.log(path, rr.Boxes3D(half_sizes=size[:3], colors=color), static=True)
+        elif geom_type == int(mujoco.mjtGeom.mjGEOM_PLANE):
+            extent_x = float(size[0]) if float(size[0]) > 0.0 else 5.0
+            extent_y = float(size[1]) if float(size[1]) > 0.0 else 5.0
+            rr.log(
+                path,
+                rr.Boxes3D(half_sizes=[extent_x, extent_y, 0.001], colors=color),
+                static=True,
+            )
         elif geom_type == int(mujoco.mjtGeom.mjGEOM_CYLINDER) and hasattr(rr, "Cylinders3D"):
             rr.log(
                 path,
@@ -216,11 +330,58 @@ class RerunViewer:
         time_panel = rrb.TimePanel(state="collapsed")
         time_series_view = rrb.TimeSeriesView
 
-        overview = rrb.Vertical(
-            time_series_view(origin="/plots/state", contents="/plots/state/**", name="Rollout"),
-            time_series_view(origin="/plots/yaw_pid", contents="/plots/yaw_pid/**", name="Yaw PID"),
+        overview = rrb.Grid(
+            time_series_view(
+                origin="/plots/tracking/forward_velocity",
+                contents="/plots/tracking/forward_velocity/**",
+                name="Velocity Tracking",
+            ),
+            time_series_view(
+                origin="/plots/tracking/height",
+                contents="/plots/tracking/height/**",
+                name="Height Tracking",
+            ),
+            time_series_view(
+                origin="/plots/tracking/yaw_rate",
+                contents="/plots/tracking/yaw_rate/**",
+                name="Yaw Rate Tracking",
+            ),
+            time_series_view(origin="/plots/contact", contents="/plots/contact/**", name="Contact"),
+            time_series_view(
+                origin="/plots/ctrl/torque_nm",
+                contents="/plots/ctrl/torque_nm/**",
+                name="Motor Torque",
+            ),
             time_series_view(origin="/plots/imu", contents="/plots/imu/**", name="IMU"),
+            grid_columns=2,
             name="Overview",
+        )
+        yaw = rrb.Grid(
+            time_series_view(
+                origin="/plots/tracking/yaw_rate",
+                contents="/plots/tracking/yaw_rate/**",
+                name="Yaw Rate Tracking",
+            ),
+            time_series_view(
+                origin="/plots/tracking/yaw_angle",
+                contents="/plots/tracking/yaw_angle/**",
+                name="Yaw Angle Tracking",
+            ),
+            time_series_view(origin="/plots/yaw_pid", contents="/plots/yaw_pid/**", name="Yaw PID"),
+            grid_columns=1,
+            name="Yaw",
+        )
+        raw = rrb.Vertical(
+            time_series_view(origin="/plots/command", contents="/plots/command/**", name="Command"),
+            time_series_view(
+                origin="/plots/velocity", contents="/plots/velocity/**", name="Velocity"
+            ),
+            time_series_view(
+                origin="/plots/leg_alignment",
+                contents="/plots/leg_alignment/**",
+                name="Leg Alignment",
+            ),
+            name="Raw",
         )
         height = time_series_view(
             origin="/plots/height",
@@ -234,7 +395,7 @@ class RerunViewer:
             grid_columns=2,
             name="Control",
         )
-        plots = rrb.Tabs(overview, height, control, active_tab=0, name="Debug")
+        plots = rrb.Tabs(overview, height, yaw, raw, control, active_tab=0, name="Debug")
         layout = rrb.Horizontal(spatial, plots, column_shares=[0.52, 0.48], name="SE3 sim2sim")
         return rrb.Blueprint(
             layout, time_panel, collapse_panels=True, auto_layout=False, auto_views=False

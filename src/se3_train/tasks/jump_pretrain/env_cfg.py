@@ -24,6 +24,7 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 from se3_train.robot_cfg import get_serialleg_cfg
@@ -31,7 +32,8 @@ from se3_train.tasks.flat import events, observations
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.jump_pretrain import commands, curriculums, rewards, terminations
 
-_DEFAULT_STANDING_HEIGHT = 0.22
+_ROBOT_DEFAULTS = SharedRobotConfig()
+_DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
 
 
@@ -59,7 +61,7 @@ def _apply_jump_command(
 def _apply_jump_observations(cfg: ManagerBasedRlEnvCfg) -> None:
     """在观测中追加 3 维跳跃指令(jump_flag, jump_target_height, jump_phase)。
 
-    actor 从 31 维扩展到 32 维(+jump_phase);critic 同步扩展。
+    当前共享 actor contract 为 34 维；critic 同步包含同一跳跃指令 term。
     """
     jump_obs_term = ObservationTermCfg(func=observations.jump_commands_obs)
 

@@ -15,9 +15,20 @@ from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from se3_shared import JointGroup
+from se3_shared import (
+    RobotConfig as SharedRobotConfig,
+)
+from se3_shared import (
+    periodic_policy_action_second_difference_torch,
+    wrap_front_action_value_delta_torch,
+)
 from se3_train.mdp.contact_utils import finite_contact_force_norm
-from se3_train.mdp.jump_commands import ideal_takeoff_vel
+from se3_train.mdp.joint_indices import (
+    active_leg_mirror_diffs,
+    policy_leg_joint_ids,
+    wheel_joint_ids,
+)
+from se3_train.mdp.jump_commands import JumpCommandTerm, ideal_takeoff_vel
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -28,28 +39,13 @@ _PRETRAIN_MAX_WHEEL_HEIGHT_ATTR = "_jump_pretrain_max_wheel_height"
 _PRETRAIN_PREV_JUMP_FLAG_ATTR = "_jump_pretrain_prev_jump_flag"
 _ACTION_SMOOTH_PREV_ATTR = "_jump_action_smooth_prev_action"
 _ACTION_SMOOTH_PREV_PREV_ATTR = "_jump_action_smooth_prev_prev_action"
+_ROBOT_DEFAULTS = SharedRobotConfig()
 
 
-def _is_jump_command_term(term: object) -> bool:
-    """判断指令项是否提供跳跃奖励需要的接口。"""
-    return all(
-        hasattr(term, name)
-        for name in (
-            "jump_stage",
-            "traj_step",
-            "reference_root_velocity",
-            "reference_joint_velocity",
-            "reference_takeoff_started",
-            "reference_preload_active",
-            "reference_takeoff_active",
-        )
-    )
-
-
-def _get_jump_term(env: ManagerBasedRlEnv, command_name: str):
+def _get_jump_term(env: ManagerBasedRlEnv, command_name: str) -> JumpCommandTerm:
     term = env.command_manager.get_term(command_name)
-    assert _is_jump_command_term(term), (
-        f"指令 '{command_name}' 必须提供跳跃接口, 实际为 {type(term)}"
+    assert isinstance(term, JumpCommandTerm), (
+        f"指令 '{command_name}' 必须是 JumpCommandTerm, 实际为 {type(term)}"
     )
     return term
 
@@ -59,6 +55,14 @@ def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
     if mask.any():
         return float(value[mask].mean().item())
     return 0.0
+
+
+def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """返回 recovery reset 标记；普通任务没有该标记时全 False。"""
+    mask = getattr(env, "_recovery_reset_mask", None)
+    if not isinstance(mask, torch.Tensor) or mask.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    return mask.to(device=env.device, dtype=torch.bool)
 
 
 def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
@@ -119,108 +123,6 @@ def _wheel_alignment_error(
     return ideal_x, dist_l, dist_r, mean_dist
 
 
-def _landing_impulse_support_error(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg,
-    wheel_radius: float,
-    target_vxy: torch.Tensor | None = None,
-    height_sensor_name: str = "base_height_sensor",
-    landing_up_speed: float = 0.0,
-    min_down_speed: float = 0.35,
-    min_prediction_time: float = 0.04,
-    max_prediction_time: float = 0.30,
-    max_support_offset: float = 0.35,
-    lateral_weight: float = 0.35,
-) -> dict[str, torch.Tensor]:
-    """计算基于支撑冲量线的落地点误差。
-
-    物理约定：
-    - `j_dir` 表示地面对机身施加的期望支撑冲量方向
-    - `support_xy` 是让该冲量线尽量穿过机身质心时，对应的理想支撑点
-    - 这里比较的是左右轮中心的平面位置；对竖直轮来说，轮心与接地点共享同一组 xy
-
-    为避免极端速度把理想落点拉到很远，支撑点相对预测 COM 的偏移会被限制在
-    `max_support_offset` 范围内。所有中间张量都会做 clamp 和 nan_to_num，避免 NaN。
-    """
-    robot = env.scene[asset_cfg.name]
-    body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_xy = robot.data.body_link_pos_w[:, body_ids, :2]
-    com_xy = robot.data.root_link_pos_w[:, :2]
-    root_z = robot.data.root_link_pos_w[:, 2]
-    vel_w = torch.nan_to_num(robot.data.root_link_lin_vel_w, nan=0.0, posinf=0.0, neginf=0.0)
-
-    base_height = root_z - env.scene.env_origins[:, 2]
-    try:
-        height_sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-        if height_sensor.data.heights is not None:
-            base_height = height_sensor.data.heights[:, 0]
-    except KeyError:
-        pass
-
-    base_height = torch.nan_to_num(base_height, nan=0.0, posinf=0.0, neginf=0.0)
-    lever_height = torch.clamp(base_height, min=1.0e-4)
-    flight_height = torch.clamp(base_height - float(wheel_radius), min=1.0e-4)
-
-    down_speed = torch.clamp(-vel_w[:, 2], min=float(min_down_speed))
-    prediction_time = torch.clamp(
-        flight_height / down_speed,
-        min=float(min_prediction_time),
-        max=float(max_prediction_time),
-    )
-    prediction_time = torch.nan_to_num(
-        prediction_time,
-        nan=float(min_prediction_time),
-        posinf=float(max_prediction_time),
-        neginf=float(min_prediction_time),
-    )
-
-    pred_com_xy = com_xy + vel_w[:, :2] * prediction_time.unsqueeze(1)
-
-    if target_vxy is None:
-        target_vxy = torch.zeros_like(pred_com_xy)
-    else:
-        target_vxy = torch.nan_to_num(target_vxy, nan=0.0, posinf=0.0, neginf=0.0)
-
-    j_xy = -(vel_w[:, :2] - target_vxy)
-    j_z = torch.clamp(float(landing_up_speed) - vel_w[:, 2], min=1.0e-4)
-    # 冲量线投影使用 COM 到支撑平面的高度；触地时间使用轮底到地面的高度。
-    raw_support_offset_xy = -lever_height.unsqueeze(1) * j_xy / j_z.unsqueeze(1)
-    raw_support_offset_xy = torch.nan_to_num(
-        raw_support_offset_xy,
-        nan=0.0,
-        posinf=float(max_support_offset),
-        neginf=-float(max_support_offset),
-    )
-    support_offset_xy = torch.clamp(
-        raw_support_offset_xy,
-        min=-float(max_support_offset),
-        max=float(max_support_offset),
-    )
-    support_xy = pred_com_xy + support_offset_xy
-
-    error_xy = torch.nan_to_num(wheel_xy - support_xy.unsqueeze(1), nan=0.0, posinf=0.0, neginf=0.0)
-    lateral_scale = torch.clamp(
-        torch.tensor(float(lateral_weight), device=env.device, dtype=wheel_xy.dtype),
-        min=0.0,
-    )
-    weighted_sq = error_xy[:, :, 0] ** 2 + lateral_scale * error_xy[:, :, 1] ** 2
-    dist_by_wheel = torch.sqrt(torch.clamp(weighted_sq, min=0.0))
-    mean_dist = dist_by_wheel.mean(dim=1)
-
-    return {
-        "wheel_xy": wheel_xy,
-        "pred_com_xy": pred_com_xy,
-        "support_xy": support_xy,
-        "support_offset_xy": support_offset_xy,
-        "prediction_time": prediction_time,
-        "flight_height": flight_height,
-        "lever_height": lever_height,
-        "error_xy": error_xy,
-        "dist_by_wheel": dist_by_wheel,
-        "mean_dist": mean_dist,
-    }
-
-
 def _update_pretrain_max_heights(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -258,9 +160,18 @@ def _update_pretrain_max_heights(
     return jump_flag, max_base, max_wheel
 
 
-def _fixed_time_mask(env: ManagerBasedRlEnv, term, start_s: float) -> torch.Tensor:
+def _fixed_time_mask(env: ManagerBasedRlEnv, term: JumpCommandTerm, start_s: float) -> torch.Tensor:
     """返回从指定秒数之后开始激活的固定时间窗掩码。"""
-    control_dt = max(float(getattr(env, "step_dt", 0.02)), 1.0e-4)
+    control_dt = getattr(env, "step_dt", None)
+    if control_dt is None:
+        cfg = getattr(env, "cfg", None)
+        decimation = getattr(
+            env,
+            "decimation",
+            getattr(cfg, "decimation", _ROBOT_DEFAULTS.control_decimation),
+        )
+        control_dt = float(getattr(env, "physics_dt", _ROBOT_DEFAULTS.sim_dt)) * int(decimation)
+    control_dt = max(float(control_dt), 1.0e-4)
     start_step = max(0, round(float(start_s) / control_dt))
     return term.traj_step >= start_step
 
@@ -496,13 +407,14 @@ def jump_takeoff_drive(
 
     jump_stage 由 reference motion 时间推进,蹬地辅助项只覆盖上升蹬地段。
     """
+    from se3_train.mdp.jump_commands import JumpCommandTerm
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
     # reference 子相位门控:只在 grounded 内的上升蹬地段激活。
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
     else:
         phase_takeoff = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
@@ -530,12 +442,13 @@ def jump_takeoff_impulse(
 
     参考轨迹进入蹬地伸展段后才激活，让策略明确学习"什么时候伸腿"。
     """
+    from se3_train.mdp.jump_commands import JumpCommandTerm
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
         ref_q_vel = term.reference_joint_velocity()
         ref_knee_vel = ref_q_vel[:, [1, 4]]
@@ -546,7 +459,8 @@ def jump_takeoff_impulse(
 
     robot = env.scene[asset_cfg.name]
 
-    knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
+    leg_ids = policy_leg_joint_ids(robot)
+    knee_indices = [leg_ids[1], leg_ids[3]]
     knee_vel = robot.data.joint_vel[:, knee_indices]
     extension_vel = torch.clamp(-torch.mean(knee_vel, dim=1) - min_knee_extension_vel, min=0.0)
 
@@ -579,13 +493,14 @@ def jump_takeoff_vz_tracking(
     PPO 会逐步把 1.4m/s 起跳收敛成 1.0m/s 稳定弱跳。这里提高阈值并加入
     progress_power,让弱跳仍有梯度,但分数明显低于接近目标起跳速度的样本。
     """
+    from se3_train.mdp.jump_commands import JumpCommandTerm
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
     h_target = cmd[:, 6]
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
     else:
         phase_takeoff = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
@@ -625,8 +540,9 @@ def jump_dof_pos_limits_strict(
     if soft_limits is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    # 只看膝关节:JointGroup.LEGS 中索引 1/3(lf1/rf1)
-    knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
+    # 只看 policy 腿部的第二/第四个主动关节。
+    leg_ids = policy_leg_joint_ids(robot)
+    knee_indices = [leg_ids[1], leg_ids[3]]
     pos = robot.data.joint_pos[:, knee_indices]
     limits = soft_limits[:, knee_indices]
 
@@ -798,7 +714,7 @@ def jump_wheel_counterspin(
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     yaw_drive = wheel_vel[:, 0] + wheel_vel[:, 1]
     return (yaw_drive**2) * jump_flag.float()
 
@@ -834,7 +750,7 @@ def jump_wheel_ground_slip(
     in_contact = force_mag > float(contact_force_threshold)
 
     robot = env.scene[asset_cfg.name]
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -911,7 +827,7 @@ def jump_landing_horizontal_motion_penalty(
     base_vel_b = robot.data.root_link_lin_vel_b
     base_vxy_sq = base_vel_b[:, 0] ** 2 + base_vel_b[:, 1] ** 2
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -952,7 +868,8 @@ def jump_action_mirror(
     jump_flag = cmd[:, 5] > 0.5
     action = env.action_manager.action
 
-    leg_mirror = (action[:, 0] - action[:, 2]) ** 2 + (action[:, 1] - action[:, 3]) ** 2
+    front_mirror = wrap_front_action_value_delta_torch(action[:, 0] - action[:, 2])
+    leg_mirror = front_mirror**2 + (action[:, 1] - action[:, 3]) ** 2
     # 左右轮 joint axis 相反,同号广义轮速更容易制造 yaw 扭转。
     wheel_yaw = (action[:, 4] + action[:, 5]) ** 2
     return (leg_mirror + 0.5 * wheel_yaw) * jump_flag.float()
@@ -1129,14 +1046,13 @@ def jump_joint_mirror(
     jump_flag = cmd[:, 5] > 0.5
 
     q = robot.data.joint_pos
-    diff_hip = q[:, JointGroup.LEGS[0]] - q[:, JointGroup.LEGS[2]]  # lf0 - rf0
-    diff_knee = q[:, JointGroup.LEGS[1]] - q[:, JointGroup.LEGS[3]]  # lf1 - rf1
+    diff_hip, diff_knee = active_leg_mirror_diffs(robot, q)
 
     mirror_penalty = float(hip_weight) * diff_hip**2 + float(knee_weight) * diff_knee**2
 
     term = env.command_manager.get_term(command_name)
     stage_scale = torch.full_like(mirror_penalty, float(grounded_scale))
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         stage_scale = torch.where(
             term.reference_takeoff_active(),
             torch.full_like(stage_scale, float(takeoff_scale)),
@@ -1217,7 +1133,7 @@ def wheel_distance_regularization(
     )
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         jump_scale = torch.full_like(stage_scale, float(grounded_scale))
         jump_scale = torch.where(
             term.reference_takeoff_active(),
@@ -1251,6 +1167,65 @@ def wheel_distance_regularization(
     return penalty * stage_scale
 
 
+def flat_wheel_center_alignment_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    contact_sensor_name: str,
+    contact_force_threshold: float = 1.0,
+    low_speed_threshold: float = 0.10,
+    center_lead_gain: float = 0.03,
+    center_tolerance: float = 0.05,
+    max_penalty: float = 4.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段轮前后对齐惩罚。
+
+    这里和落地稳定性使用同一套几何语法：左右轮分别对齐到
+    ideal_x = COM_x + k * vx。平地只是在低速静站时激活，落地则在
+    landing 相位激活。两者共享同一个几何核，避免一处改动另一处漏掉。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    recovery = _recovery_reset_mask(env)
+    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
+        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
+    )
+
+    sensor: ContactSensor = env.scene[contact_sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+    has_contact = in_contact.any(dim=1)
+
+    _ideal_x, dist_l, dist_r, mean_dist = _wheel_alignment_error(
+        env,
+        asset_cfg,
+        center_lead_gain,
+    )
+    penalty = torch.clamp(
+        (mean_dist / float(center_tolerance)) ** 2,
+        max=float(max_penalty),
+    )
+    active = (~jump_flag) & (~recovery) & low_speed & has_contact
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_center_error_m": _mean_on_mask(mean_dist, active),
+                "Jump/diag_flat_wheel_center_penalty": _mean_on_mask(penalty, active),
+                "Jump/diag_flat_wheel_center_contact_ratio": float(
+                    has_contact.float().mean().item()
+                ),
+                "Jump/diag_flat_wheel_center_left_error_m": _mean_on_mask(dist_l, active),
+                "Jump/diag_flat_wheel_center_right_error_m": _mean_on_mask(dist_r, active),
+            }
+        )
+
+    return penalty * active.float()
+
+
 def jump_wheel_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1272,9 +1247,7 @@ def jump_wheel_vel(
     in_air = term.jump_stage == 1
     active = jump_flag & in_air
 
-    from se3_shared import JointGroup
-
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]  # [num_envs, 2]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     return torch.sum(wheel_vel**2, dim=1) * active.float()
 
 
@@ -1330,12 +1303,7 @@ def standing_joint_mirror_no_jump(
     low_speed_gate = torch.clamp(low_speed_gate, min=float(low_speed_floor), max=1.0)
     low_speed_gate = torch.where(stationary, torch.ones_like(low_speed_gate), low_speed_gate)
 
-    hip_diff = (
-        robot.data.joint_pos[:, JointGroup.LEGS[0]] - robot.data.joint_pos[:, JointGroup.LEGS[2]]
-    )
-    knee_diff = (
-        robot.data.joint_pos[:, JointGroup.LEGS[1]] - robot.data.joint_pos[:, JointGroup.LEGS[3]]
-    )
+    hip_diff, knee_diff = active_leg_mirror_diffs(robot, robot.data.joint_pos)
     penalty = float(hip_weight) * hip_diff**2 + float(knee_weight) * knee_diff**2
     return penalty * low_speed_gate * (~jump_flag).float() * gate
 
@@ -1458,7 +1426,7 @@ def action_rate_no_jump(
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
-    flat = ~jump_flag
+    flat = (~jump_flag) & (~_recovery_reset_mask(env))
     cmd_norm = torch.linalg.norm(cmd[:, :3], dim=1)
     idle = flat & (cmd_norm < float(idle_command_threshold))
 
@@ -1512,7 +1480,7 @@ def idle_wheel_motion_penalty_no_jump(
     base_vel_b = robot.data.root_link_lin_vel_b
     base_vxy_sq = base_vel_b[:, 0] ** 2 + base_vel_b[:, 1] ** 2
 
-    wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
     wheel_forward_speed = torch.stack(
         (
             wheel_vel[:, 0] * float(wheel_radius),
@@ -1536,6 +1504,105 @@ def idle_wheel_motion_penalty_no_jump(
                 "Jump/diag_idle_wheel_motion_raw": _mean_on_mask(penalty, active),
                 "Jump/diag_idle_base_vxy": _mean_on_mask(torch.sqrt(base_vxy_sq), active),
                 "Jump/diag_idle_wheel_speed_abs": _mean_on_mask(torch.sqrt(wheel_speed_sq), active),
+            }
+        )
+
+    return penalty * active.float()
+
+
+def flat_wheel_ground_slip_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    wheel_radius: float = 0.059,
+    contact_force_threshold: float = 1.0,
+    longitudinal_scale: float = 0.28,
+    lateral_scale: float = 0.20,
+    max_penalty: float = 9.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段轮地滑移惩罚。
+
+    直接约束接地轮的滚动速度和机身速度一致，防止策略在平地阶段用
+    "轮子空转 + 机身慢滑" 的方式骗过速度跟踪。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = ~jump_flag
+
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    force_mag = finite_contact_force_norm(data.force)
+    in_contact = force_mag > float(contact_force_threshold)
+
+    robot = env.scene[asset_cfg.name]
+    wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
+    wheel_forward_speed = torch.stack(
+        (
+            wheel_vel[:, 0] * float(wheel_radius),
+            -wheel_vel[:, 1] * float(wheel_radius),
+        ),
+        dim=1,
+    )
+
+    base_vel_b = robot.data.root_link_lin_vel_b
+    forward_slip = wheel_forward_speed - base_vel_b[:, 0].unsqueeze(1)
+    lateral_slip = base_vel_b[:, 1].unsqueeze(1).expand_as(forward_slip)
+
+    penalty_per_wheel = (forward_slip / float(longitudinal_scale)) ** 2 + (
+        lateral_slip / float(lateral_scale)
+    ) ** 2
+    penalty = torch.sum(penalty_per_wheel * in_contact.float(), dim=1)
+    penalty = torch.clamp(penalty, max=float(max_penalty))
+    active = flat & in_contact.any(dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_wheel_ground_slip_raw": _mean_on_mask(penalty, active),
+                "Jump/diag_flat_wheel_ground_slip_contact_ratio": float(
+                    in_contact.any(dim=1).float().mean().item()
+                ),
+            }
+        )
+
+    return penalty * active.float()
+
+
+def flat_base_lin_vel_z_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    low_speed_threshold: float = 0.10,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """平地段基座竖直速度惩罚。
+
+    直接压制 base_link 在 z 方向的小幅上下振荡，避免策略学出“高度大体对
+    但一直抖、偶尔小跳”的平地姿态。只在非跳跃且低速时激活，跳跃阶段完全
+    豁免，避免干扰起跳和落地的竖直动量。
+    """
+    from se3_train.mdp.rewards import lin_vel_z
+
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    recovery = _recovery_reset_mask(env)
+    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
+        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
+    )
+
+    robot = env.scene[asset_cfg.name]
+    vz = robot.data.root_link_lin_vel_b[:, 2]
+    penalty = lin_vel_z(env)
+
+    active = (~jump_flag) & (~recovery) & low_speed
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_base_vz_raw": _mean_on_mask(torch.abs(vz), active),
+                "Jump/diag_flat_base_vz_penalty": _mean_on_mask(penalty, active),
             }
         )
 
@@ -1584,6 +1651,40 @@ def flat_wheel_contact_penalty_no_jump(
     return penalty * idle.float()
 
 
+def flat_base_height_penalty_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    sigma: float = 0.05,
+) -> torch.Tensor:
+    """平地段 base 高度惩罚。
+
+    直接惩罚 base height 偏离当前 command height 的平方误差。
+    这比只靠 tracking_height 的正奖励更明确，方便把平地站高收敛到
+    我们指定的随机区间内。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = (~jump_flag) & (~_recovery_reset_mask(env))
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = sensor.data.heights[:, 0]
+    target_height = cmd[:, 4]
+    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Jump/diag_flat_base_height_error_m": _mean_on_mask(
+                    torch.abs(height - target_height), flat
+                ),
+                "Jump/diag_flat_base_height_penalty": _mean_on_mask(penalty, flat),
+            }
+        )
+
+    return penalty * flat.float()
+
+
 def action_smoothness_no_jump(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1611,7 +1712,8 @@ def action_smoothness_no_jump(
         setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
         return torch.zeros(env.num_envs, device=env.device)
 
-    penalty = torch.sum((action - 2.0 * prev + prev_prev) ** 2, dim=1)
+    action_acc = periodic_policy_action_second_difference_torch(action, prev, prev_prev)
+    penalty = torch.sum(action_acc**2, dim=1)
     setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
     setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
 
@@ -1671,7 +1773,7 @@ def action_rate_jump(
 
     term = env.command_manager.get_term(command_name)
     stage_scale = torch.full_like(result, float(grounded_scale))
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         stage_scale = torch.where(
             term.reference_takeoff_active(),
             torch.full_like(stage_scale, float(takeoff_scale)),
@@ -1721,12 +1823,13 @@ def jump_pre_takeoff_stillness(
     - jump_flag=1 + reference preload(grounded 且参考 vz 尚未上升)
     - 另加 stillness_window_steps 时间窗口限制:jump 窗口开始后的前 N 步才有奖励,超过则决策必须起跳。
     """
+    from se3_train.mdp.jump_commands import JumpCommandTerm
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         phase_preload = term.reference_preload_active(max_ref_preload_vz)
         pre_takeoff_only = term.traj_step <= stillness_window_steps
     else:
@@ -1770,11 +1873,13 @@ def jump_landing_recovery(
     激活阶段:reference landing。真实腿部接触只用于日志留档,不参与奖励阶段判断。
     """
 
+    from se3_train.mdp.jump_commands import JumpCommandTerm
+
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         in_landing = term.jump_stage == 2
     else:
         in_landing = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -1815,7 +1920,7 @@ def jump_landing_base_height_penalty(
     jump_flag = cmd[:, 5] > 0.5
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         in_landing = term.jump_stage == 2
     else:
         in_landing = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -1845,13 +1950,14 @@ def jump_takeoff_horizontal_penalty(
     返回正惩罚值,env_cfg 中使用负权重。
     惩罚形式:1 - exp(-vxy2 / sigma2),水平速度为 0 时惩罚 0,越快惩罚越大。
     """
+    from se3_train.mdp.jump_commands import JumpCommandTerm
 
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
     h_target = cmd[:, 6]
 
     term = env.command_manager.get_term(command_name)
-    if _is_jump_command_term(term):
+    if isinstance(term, JumpCommandTerm):
         phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
     else:
         phase_takeoff = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
@@ -1876,19 +1982,25 @@ def jump_landing_stability_penalty(
     sensor_name: str = "wheel_sensor",
     wheel_radius: float = 0.059,
     contact_force_threshold: float = 1.0,
-    height_sensor_name: str = "base_height_sensor",
+    k_gain: float = 0.03,
     tolerance: float = 0.10,
     max_penalty: float = 9.0,
     min_landing_vz: float = -0.3,
-    landing_up_speed: float = 0.0,
-    min_down_speed: float = 0.35,
-    min_prediction_time: float = 0.04,
-    max_prediction_time: float = 0.30,
-    max_support_offset: float = 0.35,
-    lateral_weight: float = 0.35,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """落地稳定性惩罚：要求触地点接近支撑冲量线对应的理想支撑点。"""
+    """落地稳定性惩罚：左右轮分别计算理想落点。
+
+    物理直觉：落地瞬间若轮子触地点偏离理想位置，地面反力会产生绕 COM 的力矩，
+    迫使轮子滑移来抵消。
+
+    每个轮子独立计算理想落点：
+    - ideal_x = COM_x + k_gain * vx（两个轮子相同的前后方向目标）
+    - ideal_y = 轮子当前侧向位置（几何固定，不可优化）
+    - 轮子只有一个沿矢状面的旋转自由度，侧向位置由机身决定
+
+    激活条件：轮子着地 且 COM 下降段 vz < min_landing_vz 且 jump_flag=1
+    惩罚：|actual_x - ideal_x| 左右轮各自计算后取平均
+    """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
 
@@ -1906,22 +2018,7 @@ def jump_landing_stability_penalty(
     # 只在真正从高处落下时才激活（vz < min_landing_vz）
     landing_active = jump_flag & in_contact & (vz < float(min_landing_vz))
 
-    geom = _landing_impulse_support_error(
-        env,
-        asset_cfg,
-        wheel_radius=wheel_radius,
-        target_vxy=cmd[:, :2],
-        height_sensor_name=height_sensor_name,
-        landing_up_speed=landing_up_speed,
-        min_down_speed=min_down_speed,
-        min_prediction_time=min_prediction_time,
-        max_prediction_time=max_prediction_time,
-        max_support_offset=max_support_offset,
-        lateral_weight=lateral_weight,
-    )
-    dist_l = geom["dist_by_wheel"][:, 0]
-    dist_r = geom["dist_by_wheel"][:, 1]
-    mean_dist = geom["mean_dist"]
+    _, dist_l, dist_r, mean_dist = _wheel_alignment_error(env, asset_cfg, k_gain)
 
     tol = float(tolerance)
     excess = torch.clamp(mean_dist - tol, min=0.0)
@@ -1937,15 +2034,6 @@ def jump_landing_stability_penalty(
                 ),
                 "Jump/diag_landing_left_ideal_dist_m": _mean_on_mask(dist_l, landing_active),
                 "Jump/diag_landing_right_ideal_dist_m": _mean_on_mask(dist_r, landing_active),
-                "Jump/diag_landing_support_offset_x_m": _mean_on_mask(
-                    geom["support_offset_xy"][:, 0], landing_active
-                ),
-                "Jump/diag_landing_support_offset_y_m": _mean_on_mask(
-                    geom["support_offset_xy"][:, 1], landing_active
-                ),
-                "Jump/diag_landing_prediction_time_s": _mean_on_mask(
-                    geom["prediction_time"], landing_active
-                ),
             }
         )
 

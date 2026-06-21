@@ -1,0 +1,43 @@
+"""倒金字塔台阶 GRU 任务。"""
+
+from __future__ import annotations
+
+import os
+
+from mjlab.tasks.registry import register_mjlab_task
+
+from se3_train.tasks.common import Se3StairWarmStartRunner
+
+from .env_cfg import env_cfg
+from .rl_cfg import rl_cfg
+
+TASK_ID = "SE3-WheelLegged-Stair-GRU"
+TRAIN_VIEW_TASK_ID = f"{TASK_ID}-TrainView"
+WATCH_USE_TRAIN_ENV_VAR = "SE3_WATCH_USE_TRAIN_ENV"
+
+
+def _use_training_play_env() -> bool:
+    raw = os.environ.get(WATCH_USE_TRAIN_ENV_VAR, "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def register() -> None:
+    """注册倒金字塔台阶任务。"""
+    task_play_env_cfg = env_cfg() if _use_training_play_env() else env_cfg(play=True)
+    register_mjlab_task(
+        task_id=TASK_ID,
+        env_cfg=env_cfg(),
+        play_env_cfg=task_play_env_cfg,
+        rl_cfg=rl_cfg(),
+        runner_cls=Se3StairWarmStartRunner,
+    )
+    register_mjlab_task(
+        task_id=TRAIN_VIEW_TASK_ID,
+        env_cfg=env_cfg(),
+        play_env_cfg=env_cfg(),
+        rl_cfg=rl_cfg(),
+        runner_cls=Se3StairWarmStartRunner,
+    )
+
+
+__all__ = ["TASK_ID", "TRAIN_VIEW_TASK_ID", "env_cfg", "register", "rl_cfg"]

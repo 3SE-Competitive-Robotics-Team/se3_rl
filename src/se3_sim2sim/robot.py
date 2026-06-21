@@ -2,25 +2,74 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import mujoco
 import numpy as np
-from scipy.optimize import least_squares
 
-from se3_shared import ActionDelayConfig, JointGroup, Termination
+from se3_shared import (
+    FOURBAR_SURROGATE_MARKER,
+    ActionDelayConfig,
+    JointGroup,
+    PolicyActionDecoder,
+    Termination,
+    output_to_policy_pos_np,
+    output_to_policy_vel_np,
+    policy_leg_position_error_np,
+    policy_to_output_torque_np,
+)
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_shared.motor import DM8009P, M3508_HEXROLL
+from se3_shared.motor import DM8009P, M3508_C620_14
 
+from .closed_chain import ClosedChainClosureSolver
 from .config import RobotConfig
 from .diagnostics import model_diagnostics
 from .math_utils import euler_xyz_to_quat_wxyz, extract_yaw, rotate, rotate_inverse, wrap_angle
 from .observation import ObservationBuilder
 from .runtime_spec import RuntimeSpec, as_float64
+from .stair_ctbc import StairCtbcRuntime
 from .yaw_pid import YawPidController
 
 _SHARED_ROBOT = SharedRobotConfig()
-_WHEEL_LOCK_RANGE = (-1.0e-4, 1.0e-4)
+_RESET_FLOOR_CLEARANCE_M = 0.01
+_BASE_CONTACT_PENETRATION_M = 0.001
+_GROUND_GEOM_GROUP = 2
+
+
+def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
+    """读取模型中的非 freejoint 关节名。"""
+    names: list[str] = []
+    for jid in range(model.njnt):
+        if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+def _model_has_joints(model: mujoco.MjModel, names: tuple[str, ...]) -> bool:
+    """判断模型是否包含一组关节。"""
+    available = set(_model_joint_names(model))
+    return all(name in available for name in names)
+
+
+def _model_site_names(model: mujoco.MjModel) -> tuple[str, ...]:
+    """读取模型中的 site 名称。"""
+    names: list[str] = []
+    for sid in range(model.nsite):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SITE, sid)
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+def _policy_joint_names_for_model(model: mujoco.MjModel) -> tuple[str, ...]:
+    """闭链使用主动杆；开链显式回退到旧 lf1/rf1 语义。"""
+    if _model_has_joints(model, JointGroup.POLICY_LEG_NAMES):
+        return JointGroup.POLICY_JOINT_NAMES
+    return (*JointGroup.OPENCHAIN_LEG_NAMES, *JointGroup.WHEEL_NAMES)
 
 
 def _tn_clip(
@@ -54,42 +103,105 @@ class WheelLeggedRobot:
         self.model_path = Path(cfg.model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
-        self.model = self._build_model(
-            str(self.model_path),
-            lock_wheels=bool(cfg.wheel_lock_damping is not None and cfg.wheel_lock_damping <= 0.0),
-        )
+        self.model = self._build_model(str(self.model_path), cfg)
         # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
         self.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
         self.model.opt.iterations = 100
         self.data = mujoco.MjData(self.model)
+        self.fourbar_surrogate = FOURBAR_SURROGATE_MARKER in set(_model_site_names(self.model))
+        (
+            self._ground_geom_ids,
+            self._base_geom_ids,
+            self._leg_geom_ids,
+            self._left_leg_geom_ids,
+            self._right_leg_geom_ids,
+            self._wheel_geom_ids,
+            self._left_wheel_geom_ids,
+            self._right_wheel_geom_ids,
+        ) = self._build_contact_geom_groups()
+        self._stair_geom_ids = self._build_stair_geom_ids()
         self.rng = np.random.default_rng(int(cfg.seed))
         self.sim_dt = float(self.model.opt.timestep)
         self.decimation = int(cfg.control_decimation)
         self.control_dt = self.sim_dt * self.decimation
-        self.obs = ObservationBuilder(robot_cfg=cfg, runtime=runtime)
         self.yaw_pid = YawPidController(cfg.yaw_pid)
+        self.stair_ctbc = (
+            StairCtbcRuntime(cfg.stair_ctbc, control_dt=self.control_dt)
+            if bool(cfg.stair_ctbc.enabled)
+            else None
+        )
 
-        self.joint_ids = [self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in runtime.joint_names]
+        self.policy_joint_names = _policy_joint_names_for_model(self.model)
+        self.joint_ids = [
+            self._id(mujoco.mjtObj.mjOBJ_JOINT, name) for name in self.policy_joint_names
+        ]
         self.joint_qpos = np.asarray(
             [self.model.jnt_qposadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
         self.joint_qvel = np.asarray(
             [self.model.jnt_dofadr[jid] for jid in self.joint_ids], dtype=np.int64
         )
-        self._passive_fourbar_qpos = self._passive_fourbar_qpos_indices()
-        self._fourbar_site_pairs = self._fourbar_site_pair_indices()
-
-        self.default_dof_pos = as_float64(cfg.default_dof_pos)
+        if self.policy_joint_names == JointGroup.POLICY_JOINT_NAMES:
+            self.default_dof_pos = as_float64(cfg.default_dof_pos)
+        else:
+            default_map = _SHARED_ROBOT.default_model_joint_pos
+            self.default_dof_pos = np.asarray(
+                [default_map[name] for name in self.policy_joint_names], dtype=np.float64
+            )
+        self.obs = ObservationBuilder(
+            robot_cfg=cfg,
+            runtime=runtime,
+            default_dof_pos=self.default_dof_pos,
+            fourbar_surrogate=self.fourbar_surrogate,
+        )
         self.action_scale = as_float64(cfg.action_scale)
+        self.active_rod_action_semantics = (
+            self.policy_joint_names == JointGroup.POLICY_JOINT_NAMES or self.fourbar_surrogate
+        )
+        self.action_decoder = PolicyActionDecoder(
+            robot_cfg=_SHARED_ROBOT,
+            action_scale=self.action_scale,
+            height_conditioned_action_default=(
+                bool(cfg.height_conditioned_action_default) and self.active_rod_action_semantics
+            ),
+            active_rod_semantics=self.active_rod_action_semantics,
+            active_rod_target_lower_preload_margin=cfg.active_rod_target_lower_preload_margin,
+            active_rod_target_upper_preload_margin=cfg.active_rod_target_upper_preload_margin,
+            dtype=np.float64,
+        )
+        self.leg_kp = float(cfg.leg_kp)
+        self.leg_kd = float(cfg.leg_kd)
+        self.wheel_kd = float(cfg.wheel_kd)
         self.torque_limits = as_float64(cfg.torque_limits)
+        self.motor_actuator_names = tuple(f"{name}_motor" for name in self.policy_joint_names)
+        self.motor_ctrl_ids = np.asarray(
+            [self._id(mujoco.mjtObj.mjOBJ_ACTUATOR, name) for name in self.motor_actuator_names],
+            dtype=np.int64,
+        )
+        self.output_joint_names = tuple(
+            name
+            for name in JointGroup.OUTPUT_LEG_NAMES
+            if mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0
+        )
+        self.output_joint_qpos = np.asarray(
+            [
+                self.model.jnt_qposadr[self._id(mujoco.mjtObj.mjOBJ_JOINT, name)]
+                for name in self.output_joint_names
+            ],
+            dtype=np.int64,
+        )
         self.command = np.asarray(cfg.command, dtype=np.float64)
         self.last_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_applied_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
+        self.last_ctbc_action_delta = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
+        self.reset_floor_lift_m = 0.0
+        self.closed_chain_reset_position_residual_m = 0.0
+        self.closed_chain_reset_velocity_residual = 0.0
         # 线速度缓存，_refresh_state 更新
         self.base_lin_vel_world = np.zeros(3, dtype=np.float64)
         self.base_lin_vel_body = np.zeros(3, dtype=np.float64)
@@ -103,35 +215,141 @@ class WheelLeggedRobot:
             dtype=np.float64,
         )
         self.step_count = 0
+        self.pre_policy_settle_info: dict[str, object] = {"enabled": False}
         self.reset()
 
     def reset(self, *, fixed: bool = True, randomize_root: bool = False) -> np.ndarray:
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[0:3] = np.asarray([0.0, 0.0, self.cfg.base_height], dtype=np.float64)
-        self.data.qpos[3:7] = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        base_height = (
+            self.cfg.base_height
+            if self.cfg.initial_base_height is None
+            else self.cfg.initial_base_height
+        )
+        self.data.qpos[0:3] = np.asarray([0.0, 0.0, float(base_height)], dtype=np.float64)
+        roll = float(self.cfg.initial_roll_rad)
+        pitch = float(self.cfg.initial_pitch_rad)
+        yaw = float(self.cfg.initial_yaw_rad)
         self.data.qvel[0:6] = 0.0
-        self.data.qpos[self.joint_qpos] = self.default_dof_pos
-        self._project_fourbar_constraints()
-        self.data.qvel[self.joint_qvel] = 0.0
+        self.data.qvel[3:6] = np.asarray(self.cfg.initial_ang_vel_rad_s, dtype=np.float64)
+        self._apply_default_joint_positions()
+        self._apply_initial_wheel_joint_positions()
+        closure_solver = self._close_initial_chain_positions()
+        self.data.qvel[:] = 0.0
+        self.data.qvel[3:6] = np.asarray(self.cfg.initial_ang_vel_rad_s, dtype=np.float64)
+        self._apply_initial_dof_vel()
+        self._close_initial_chain_velocities(closure_solver)
         if (not fixed) or randomize_root:
-            roll, pitch, yaw = self.rng.uniform(-0.25, 0.25, size=3)
-            self.data.qpos[3:7] = euler_xyz_to_quat_wxyz(float(roll), float(pitch), float(yaw))
+            roll_offset, pitch_offset, yaw_offset = self.rng.uniform(-0.25, 0.25, size=3)
+            roll += float(roll_offset)
+            pitch += float(pitch_offset)
+            yaw += float(yaw_offset)
+        self.data.qpos[3:7] = euler_xyz_to_quat_wxyz(roll, pitch, yaw)
         mujoco.mj_forward(self.model, self.data)
+        self._lift_root_to_clear_floor()
         self._refresh_state()
         self.last_action.fill(0.0)
         self.last_applied_action.fill(0.0)
         self.last_policy_action.fill(0.0)
         self.last_clipped_policy_action.fill(0.0)
+        self.last_ctbc_action_delta.fill(0.0)
         self.action_fifo.fill(0.0)
         self.action_delay_steps = self._sample_action_delay_steps()
         self.last_ctrl.fill(0.0)
+        if self.stair_ctbc is not None:
+            self.stair_ctbc.reset()
+        self._apply_initial_policy_io_state()
         yaw_rate_cmd = self.yaw_pid.reset(self.base_yaw)
         if self.cfg.yaw_pid.enabled:
             self.command[1] = yaw_rate_cmd
         self.step_count = 0
-        if self.runtime.policy.is_task_mode:
-            return np.zeros(self.runtime.policy.num_obs, dtype=np.float32)
+        self.pre_policy_settle_info = {"enabled": False}
         return self.observation()
+
+    def reset_policy_io_state(self) -> None:
+        """清空 policy 输入输出历史，用于模拟真机 output disabled 时的 GRU reset。"""
+        self.last_action.fill(0.0)
+        self.last_applied_action.fill(0.0)
+        self.last_policy_action.fill(0.0)
+        self.last_clipped_policy_action.fill(0.0)
+        self.last_ctbc_action_delta.fill(0.0)
+        self.action_fifo.fill(0.0)
+        self.last_ctrl.fill(0.0)
+
+    def update_stair_ctbc(self, *, iteration: int | None) -> None:
+        """用当前轮-台阶立面接触更新 stair CTBC 状态机。"""
+
+        if self.stair_ctbc is None:
+            return
+        self.stair_ctbc.update(
+            self._stair_riser_wheel_contact_score(),
+            iteration=iteration,
+        )
+
+    def settle_base_before_policy(
+        self,
+        *,
+        max_s: float,
+        contact_steps: int,
+    ) -> dict[str, object]:
+        """policy 推理前用零控制推进物理，直到 base_link 连续接地。"""
+        base_clearance_before = float(self._min_collision_geom_z_for(self._base_geom_ids))
+        base_snap_down_m = 0.0
+        if self._base_geom_ids and base_clearance_before > -_BASE_CONTACT_PENETRATION_M:
+            base_snap_down_m = base_clearance_before + _BASE_CONTACT_PENETRATION_M
+            self.data.qpos[2] -= base_snap_down_m
+            mujoco.mj_forward(self.model, self.data)
+            self._refresh_state()
+        base_clearance_after_snap = float(self._min_collision_geom_z_for(self._base_geom_ids))
+        max_steps = max(0, round(float(max_s) / self.sim_dt))
+        required_contact_steps = max(1, int(contact_steps))
+        consecutive_contact_steps = 0
+        steps = 0
+        base_touching = bool(self._base_geom_ids) and base_clearance_after_snap <= 0.0
+        base_contact = bool(self._ground_contact_state()["base_contact"])
+        if max_steps > 0:
+            for _ in range(max_steps + 1):
+                contact = self._ground_contact_state()
+                base_contact = bool(contact["base_contact"])
+                if base_contact:
+                    consecutive_contact_steps += 1
+                    if consecutive_contact_steps >= required_contact_steps:
+                        break
+                else:
+                    consecutive_contact_steps = 0
+                if steps >= max_steps:
+                    break
+                self.data.ctrl[:] = 0.0
+                mujoco.mj_step(self.model, self.data)
+                steps += 1
+                self._refresh_state()
+
+        settle_time_s = float(steps * self.sim_dt)
+        info = {
+            "enabled": True,
+            "success": bool(base_touching or consecutive_contact_steps >= required_contact_steps),
+            "steps": int(steps),
+            "time_s": settle_time_s,
+            "base_touching": bool(base_touching),
+            "base_contact": bool(base_contact),
+            "base_clearance_before_snap": base_clearance_before,
+            "base_snap_down_m": float(base_snap_down_m),
+            "base_clearance_after_snap": base_clearance_after_snap,
+            "base_clearance": float(self._min_collision_geom_z_for(self._base_geom_ids)),
+            "required_contact_steps": int(required_contact_steps),
+            "consecutive_contact_steps": int(consecutive_contact_steps),
+        }
+        self.pre_policy_settle_info = info
+        self.data.time = 0.0
+        self.step_count = 0
+        self.last_action.fill(0.0)
+        self.last_applied_action.fill(0.0)
+        self.last_policy_action.fill(0.0)
+        self.last_clipped_policy_action.fill(0.0)
+        self.last_ctbc_action_delta.fill(0.0)
+        self.action_fifo.fill(0.0)
+        self.last_ctrl.fill(0.0)
+        self._refresh_state()
+        return info
 
     def update_yaw_command(self) -> float:
         """按当前 yaw 更新 policy command 中的 yaw 维度。"""
@@ -142,32 +360,40 @@ class WheelLeggedRobot:
         self.command[1] = self.yaw_pid.update(self.base_yaw, self.control_dt)
         return float(self.command[1])
 
-    def step(
-        self, action: np.ndarray, *, task_mode_obs: np.ndarray | None = None
-    ) -> tuple[np.ndarray, float, bool, dict[str, object]]:
+    def _apply_stair_ctbc(self, action: np.ndarray) -> np.ndarray:
+        """对最终执行 action 注入 stair CTBC，保持 last_action 为策略原始输出。"""
+
+        self.last_ctbc_action_delta.fill(0.0)
+        if self.stair_ctbc is None:
+            return np.asarray(action, dtype=np.float64).reshape(6)
+        execution_action = self.stair_ctbc.apply(self, action)
+        self.last_ctbc_action_delta[:] = self.stair_ctbc.action_delta
+        return execution_action
+
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict[str, object]]:
         action = np.asarray(action, dtype=np.float64).reshape(-1)
         if action.shape != (self.runtime.policy.num_actions,):
             expected = (self.runtime.policy.num_actions,)
             raise ValueError(f"action shape mismatch: expected {expected}, got {action.shape}")
         self.last_policy_action[:] = action
-        action = np.clip(action, -100.0, 100.0)
+        if self.cfg.action_clip is not None:
+            clip = float(self.cfg.action_clip)
+            action = np.clip(action, -clip, clip)
         self.last_clipped_policy_action[:] = action
         self.last_action[:] = action
+        execution_action = self._apply_stair_ctbc(action)
         for _ in range(self.decimation):
             self._refresh_state()
             self.action_fifo[1:] = self.action_fifo[:-1].copy()
-            self.action_fifo[0] = action
+            self.action_fifo[0] = execution_action
             applied_action = self.action_fifo[self.action_delay_steps]
             self.last_applied_action[:] = applied_action
             ctrl = self._compute_pd_torques(applied_action)
-            self.data.ctrl[:] = ctrl
+            self.data.ctrl[self.motor_ctrl_ids] = ctrl
             mujoco.mj_step(self.model, self.data)
-            if self.cfg.freeze_wheels:
-                self.data.qpos[self.joint_qpos[JointGroup.CTRL_WHEELS]] = 0.0
-                self.data.qvel[self.joint_qvel[JointGroup.CTRL_WHEELS]] = 0.0
         self._refresh_state()
         self.step_count += 1
-        obs = self.observation(task_mode_obs=task_mode_obs)
+        obs = self.observation()
         reward = -abs(float(self.projected_gravity[2]) + 1.0)
         done, done_reason, fall_detected = self._termination_status()
         info = self.telemetry(reward=reward)
@@ -175,17 +401,60 @@ class WheelLeggedRobot:
         info["fall_detected"] = fall_detected
         return obs, reward, done, info
 
-    def observation(self, *, task_mode_obs: np.ndarray | None = None) -> np.ndarray:
+    def step_hold_current(self) -> tuple[np.ndarray, float, bool, dict[str, object]]:
+        """按 deploy hold_current 语义推进一步：保持当前腿部目标，轮速目标为 0。"""
+        self.reset_policy_io_state()
         self._refresh_state()
-        return self.obs.build(
+        leg_hold_target = self.dof_pos[JointGroup.CTRL_LEGS].copy()
+        for _ in range(self.decimation):
+            self._refresh_state()
+            ctrl = self._compute_hold_current_torques(leg_hold_target)
+            self.data.ctrl[self.motor_ctrl_ids] = ctrl
+            mujoco.mj_step(self.model, self.data)
+        self._refresh_state()
+        self.step_count += 1
+        obs = self.observation()
+        reward = -abs(float(self.projected_gravity[2]) + 1.0)
+        done, done_reason, fall_detected = self._termination_status()
+        info = self.telemetry(reward=reward)
+        info["done_reason"] = done_reason
+        info["fall_detected"] = fall_detected
+        info["target_mode"] = "hold_current"
+        return obs, reward, done, info
+
+    def step_no_torque(self) -> tuple[np.ndarray, float, bool, dict[str, object]]:
+        """按真机 output disabled 语义推进一步：电机失能，不输出力矩。"""
+        self.reset_policy_io_state()
+        self._refresh_state()
+        for _ in range(self.decimation):
+            self.data.ctrl[self.motor_ctrl_ids] = 0.0
+            self.last_ctrl.fill(0.0)
+            mujoco.mj_step(self.model, self.data)
+        self._refresh_state()
+        self.step_count += 1
+        obs = self.observation()
+        reward = -abs(float(self.projected_gravity[2]) + 1.0)
+        done, done_reason, fall_detected = self._termination_status()
+        info = self.telemetry(reward=reward)
+        info["done_reason"] = done_reason
+        info["fall_detected"] = fall_detected
+        info["target_mode"] = "no_torque"
+        return obs, reward, done, info
+
+    def observation(self) -> np.ndarray:
+        self._refresh_state()
+        obs = self.obs.build(
             base_quat_wxyz=self.base_quat,
             base_ang_vel_world=self.base_ang_vel_world,
             dof_pos=self.dof_pos,
             dof_vel=self.dof_vel,
             command=self.command,
             action_obs=self.last_action,
-            task_mode_obs=task_mode_obs,
         )
+        if self.stair_ctbc is not None:
+            obs = obs.copy()
+            obs[self.runtime.observation_slices["jump_commands"]] = self.stair_ctbc.obs()
+        return obs
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
         wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
@@ -195,19 +464,57 @@ class WheelLeggedRobot:
 
         # 轮子最低点离地高度：轮子中心 z - 轮子半径
         # 反映实际离地间隙，跳跃时比 baselink 高度更直观
-        l_wheel_z = float(self.data.body("l_wheel_Link").xpos[2])
-        r_wheel_z = float(self.data.body("r_wheel_Link").xpos[2])
+        l_wheel_pos = np.asarray(self.data.body("l_wheel_Link").xpos, dtype=np.float64).copy()
+        r_wheel_pos = np.asarray(self.data.body("r_wheel_Link").xpos, dtype=np.float64).copy()
+        l_wheel_z = float(l_wheel_pos[2])
+        r_wheel_z = float(r_wheel_pos[2])
         wheel_clearance_l = l_wheel_z - wheel_radius  # 左轮最低点离地高度
         wheel_clearance_r = r_wheel_z - wheel_radius  # 右轮最低点离地高度
         wheel_clearance = min(wheel_clearance_l, wheel_clearance_r)  # 取两轮最低
+        wheel_delta_b = rotate_inverse(self.base_quat, l_wheel_pos - r_wheel_pos)
+        wheel_lateral_distance = abs(float(wheel_delta_b[1]))
+        wheel_fore_aft_offset = abs(float(wheel_delta_b[0]))
+        dof_pos = self.dof_pos
+        output_leg_pos = self.output_leg_pos
+        leg_mirror_error = max(
+            abs(float(dof_pos[0] - dof_pos[2])),
+            abs(float(dof_pos[1] - dof_pos[3])),
+        )
+        output_leg_mirror_error = (
+            max(
+                abs(float(output_leg_pos[0] - output_leg_pos[2])),
+                abs(float(output_leg_pos[1] - output_leg_pos[3])),
+            )
+            if output_leg_pos.shape == (4,)
+            else 0.0
+        )
+        contact = self._ground_contact_state()
+        leg_clearance = self._min_collision_geom_z_for(self._leg_geom_ids)
+        base_clearance = self._min_collision_geom_z_for(self._base_geom_ids)
 
         telemetry = {
             "step": int(self.step_count),
             "time": float(self.data.time),
             "height": float(self.data.qpos[2]),  # baselink z 高度
+            "reset_floor_lift_m": float(self.reset_floor_lift_m),
             "wheel_clearance": float(wheel_clearance),  # 轮子最低点离地高度
             "wheel_clearance_left": float(wheel_clearance_l),  # 左轮最低点离地高度
             "wheel_clearance_right": float(wheel_clearance_r),  # 右轮最低点离地高度
+            "leg_clearance": float(leg_clearance),  # 腿部碰撞几何最低点离地高度
+            "base_clearance": float(base_clearance),  # base 碰撞几何最低点离地高度
+            "wheel_lateral_distance": float(wheel_lateral_distance),
+            "wheel_fore_aft_offset": float(wheel_fore_aft_offset),
+            "leg_mirror_error": float(leg_mirror_error),
+            "output_leg_mirror_error": float(output_leg_mirror_error),
+            "wheel_contact": float(contact["wheel_contact"]),
+            "wheel_full_contact": float(contact["wheel_full_contact"]),
+            "wheel_contact_left": float(contact["wheel_contact_left"]),
+            "wheel_contact_right": float(contact["wheel_contact_right"]),
+            "leg_contact": float(contact["leg_contact"]),
+            "leg_contact_left": float(contact["leg_contact_left"]),
+            "leg_contact_right": float(contact["leg_contact_right"]),
+            "base_contact": float(contact["base_contact"]),
+            "nonwheel_contact": float(contact["nonwheel_contact"]),
             "tilt_deg": float(self.tilt_deg),
             "roll_rad": float(np.arctan2(-self.projected_gravity[1], -self.projected_gravity[2])),
             "pitch_rad": float(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2])),
@@ -220,16 +527,27 @@ class WheelLeggedRobot:
             ),
             "yaw_deg": float(np.degrees(self.base_yaw)),
             "reward": float(0.0 if reward is None else reward),
+            "command": self.command.copy().tolist(),
+            "command_lin_vel_x": float(self.command[0]),
+            "command_yaw_rate": float(self.command[1]),
+            "command_height": float(self.command[4]),
+            "leg_kp": float(self.leg_kp),
+            "leg_kd": float(self.leg_kd),
+            "wheel_kd": float(self.wheel_kd),
             "base_lin_vel_x": float(self.base_lin_vel_body[0]),
             "wheel_lin_vel": wheel_lin_vel,
             "base_ang_vel_body": self.base_ang_vel_body.copy().tolist(),
             "base_ang_vel_world": self.base_ang_vel_world.copy().tolist(),
             "projected_gravity": self.projected_gravity.copy().tolist(),
-            "dof_pos": self.dof_pos.copy().tolist(),
+            "dof_pos": dof_pos.copy().tolist(),
             "dof_vel": self.dof_vel.copy().tolist(),
+            "policy_joint_names": list(self.policy_joint_names),
+            "output_leg_pos": output_leg_pos.copy().tolist(),
+            "output_joint_names": list(self.output_joint_names),
             "policy_action_raw": self.last_policy_action.copy().tolist(),
             "policy_action_clipped": self.last_clipped_policy_action.copy().tolist(),
             "last_action": self.last_action.copy().tolist(),
+            "ctbc_action_delta": self.last_ctbc_action_delta.copy().tolist(),
             "applied_action": self.last_applied_action.copy().tolist(),
             "last_ctrl": self.last_ctrl.copy().tolist(),
             "action_delay_steps": int(self.action_delay_steps),
@@ -238,16 +556,223 @@ class WheelLeggedRobot:
             ),
             "action_delay_config": self.action_delay_cfg.model_dump(),
             "fail_tilt_deg": float(self.termination.fail_tilt_deg),
+            "closed_chain_reset_position_residual_m": float(
+                self.closed_chain_reset_position_residual_m
+            ),
+            "closed_chain_reset_velocity_residual": float(
+                self.closed_chain_reset_velocity_residual
+            ),
         }
         if self.cfg.yaw_pid.enabled:
             yaw_pid = self.yaw_pid.telemetry()
             yaw_pid["current_yaw"] = float(self.base_yaw)
             yaw_pid["error"] = float(wrap_angle(yaw_pid["target_yaw"] - float(self.base_yaw)))
             telemetry["yaw_pid"] = yaw_pid
+        if self.stair_ctbc is not None:
+            telemetry.update(self.stair_ctbc.telemetry())
         return telemetry
 
     def diagnostics(self) -> dict[str, object]:
         return model_diagnostics(self.model)
+
+    def _lift_root_to_clear_floor(self) -> None:
+        """如果 reset 姿态穿地，则整体上抬到可碰撞几何体离地。"""
+        min_z = self._min_collision_geom_z()
+        self.reset_floor_lift_m = 0.0
+        if min_z < _RESET_FLOOR_CLEARANCE_M:
+            lift = float(_RESET_FLOOR_CLEARANCE_M - min_z)
+            self.data.qpos[2] += lift
+            self.reset_floor_lift_m = lift
+            mujoco.mj_forward(self.model, self.data)
+
+    def _min_collision_geom_z(self) -> float:
+        return self._min_collision_geom_z_for(set(range(self.model.ngeom)))
+
+    def _min_collision_geom_z_for(self, geom_ids: set[int]) -> float:
+        """计算一组可碰撞几何体最低点离地高度。"""
+        min_z = float("inf")
+        for geom_id in geom_ids:
+            if (
+                self.model.geom_type[geom_id]
+                in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_HFIELD)
+                or self.model.geom_contype[geom_id] == 0
+            ):
+                continue
+            min_z = min(min_z, self._geom_min_z(geom_id))
+        return 0.0 if min_z == float("inf") else float(min_z)
+
+    def _build_contact_geom_groups(
+        self,
+    ) -> tuple[set[int], set[int], set[int], set[int], set[int], set[int], set[int], set[int]]:
+        """按 body/geom 名称缓存接地诊断需要的碰撞几何体分组。"""
+        ground: set[int] = set()
+        base: set[int] = set()
+        legs: set[int] = set()
+        left_legs: set[int] = set()
+        right_legs: set[int] = set()
+        wheels: set[int] = set()
+        left_wheels: set[int] = set()
+        right_wheels: set[int] = set()
+
+        for geom_id in range(self.model.ngeom):
+            if (
+                int(self.model.geom_contype[geom_id]) == 0
+                and int(self.model.geom_conaffinity[geom_id]) == 0
+            ):
+                continue
+            body_id = int(self.model.geom_bodyid[geom_id])
+            body_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id) or ""
+            geom_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            name = f"{body_name}/{geom_name}".lower()
+            geom_type = int(self.model.geom_type[geom_id])
+
+            if (
+                body_id == 0
+                or geom_type
+                in (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
+                or "terrain" in name
+                or "floor" in name
+                or "ground" in name
+            ):
+                ground.add(int(geom_id))
+            if "base_link" in name:
+                base.add(int(geom_id))
+            if "l_wheel" in name:
+                wheels.add(int(geom_id))
+                left_wheels.add(int(geom_id))
+                continue
+            if "r_wheel" in name:
+                wheels.add(int(geom_id))
+                right_wheels.add(int(geom_id))
+                continue
+            if "lf0" in name or "lf1" in name:
+                legs.add(int(geom_id))
+                left_legs.add(int(geom_id))
+            elif "rf0" in name or "rf1" in name:
+                legs.add(int(geom_id))
+                right_legs.add(int(geom_id))
+
+        return ground, base, legs, left_legs, right_legs, wheels, left_wheels, right_wheels
+
+    def _build_stair_geom_ids(self) -> set[int]:
+        """缓存程序化台阶几何 id，用于 CTBC 立面触发。"""
+
+        stair_geoms: set[int] = set()
+        for geom_id in range(self.model.ngeom):
+            geom_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            if geom_name.startswith("stair_terrain_step_"):
+                stair_geoms.add(int(geom_id))
+        return stair_geoms
+
+    def _stair_riser_wheel_contact_score(self) -> np.ndarray:
+        """估计左右轮撞到台阶立面的接触强度。"""
+
+        score = np.zeros(2, dtype=np.float64)
+        if self.stair_ctbc is None or not self._stair_geom_ids:
+            return score
+
+        fallback_score = float(self.cfg.stair_ctbc.force_threshold_n) + 1.0
+        for contact_idx in range(int(self.data.ncon)):
+            contact = self.data.contact[contact_idx]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            if geom1 in self._stair_geom_ids:
+                wheel_geom = geom2
+            elif geom2 in self._stair_geom_ids:
+                wheel_geom = geom1
+            else:
+                continue
+
+            if wheel_geom in self._left_wheel_geom_ids:
+                side = 0
+            elif wheel_geom in self._right_wheel_geom_ids:
+                side = 1
+            else:
+                continue
+
+            normal = np.asarray(contact.frame[:3], dtype=np.float64)
+            if normal.shape != (3,) or not np.isfinite(normal).all():
+                continue
+            if abs(float(normal[2])) > 0.5:
+                continue
+
+            contact_force = np.zeros(6, dtype=np.float64)
+            mujoco.mj_contactForce(self.model, self.data, contact_idx, contact_force)
+            contact_score = abs(float(contact_force[0]))
+            if not math.isfinite(contact_score) or contact_score <= 0.0:
+                contact_score = fallback_score
+            score[side] += contact_score
+        return score
+
+    def _ground_contact_state(self) -> dict[str, bool]:
+        """返回轮子、腿和 base 是否正在与地面接触。"""
+        left_wheel = False
+        right_wheel = False
+        left_leg = False
+        right_leg = False
+        base = False
+
+        for contact_idx in range(int(self.data.ncon)):
+            contact = self.data.contact[contact_idx]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            if geom1 in self._ground_geom_ids:
+                other = geom2
+            elif geom2 in self._ground_geom_ids:
+                other = geom1
+            else:
+                continue
+
+            left_wheel = left_wheel or other in self._left_wheel_geom_ids
+            right_wheel = right_wheel or other in self._right_wheel_geom_ids
+            left_leg = left_leg or other in self._left_leg_geom_ids
+            right_leg = right_leg or other in self._right_leg_geom_ids
+            base = base or other in self._base_geom_ids
+
+        leg = left_leg or right_leg
+        wheel = left_wheel or right_wheel
+        return {
+            "wheel_contact": wheel,
+            "wheel_full_contact": left_wheel and right_wheel,
+            "wheel_contact_left": left_wheel,
+            "wheel_contact_right": right_wheel,
+            "leg_contact": leg,
+            "leg_contact_left": left_leg,
+            "leg_contact_right": right_leg,
+            "base_contact": base,
+            "nonwheel_contact": leg or base,
+        }
+
+    def _geom_min_z(self, geom_id: int) -> float:
+        geom_type = self.model.geom_type[geom_id]
+        geom_pos = self.data.geom_xpos[geom_id]
+        geom_mat = self.data.geom_xmat[geom_id].reshape(3, 3)
+        geom_size = self.model.geom_size[geom_id]
+
+        if geom_type == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh_id = int(self.model.geom_dataid[geom_id])
+            vert_adr = int(self.model.mesh_vertadr[mesh_id])
+            vert_num = int(self.model.mesh_vertnum[mesh_id])
+            vertices = self.model.mesh_vert[vert_adr : vert_adr + vert_num]
+            return float(np.min(vertices @ geom_mat[2, :]) + geom_pos[2])
+
+        if geom_type in (mujoco.mjtGeom.mjGEOM_CYLINDER, mujoco.mjtGeom.mjGEOM_CAPSULE):
+            axis_z = abs(float(geom_mat[2, 2]))
+            radial_z = float(np.sqrt(max(0.0, 1.0 - axis_z * axis_z)))
+            half_length = float(geom_size[1])
+            if geom_type == mujoco.mjtGeom.mjGEOM_CAPSULE:
+                half_length += float(geom_size[0])
+            vertical_extent = half_length * axis_z + float(geom_size[0]) * radial_z
+            return float(geom_pos[2] - vertical_extent)
+
+        if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
+            vertical_extent = float(np.dot(np.abs(geom_mat[2, :]), geom_size[:3]))
+            return float(geom_pos[2] - vertical_extent)
+
+        if geom_type == mujoco.mjtGeom.mjGEOM_SPHERE:
+            return float(geom_pos[2] - geom_size[0])
+
+        return float(geom_pos[2])
 
     @property
     def dof_pos(self) -> np.ndarray:
@@ -256,6 +781,10 @@ class WheelLeggedRobot:
     @property
     def dof_vel(self) -> np.ndarray:
         return self.data.qvel[self.joint_qvel].copy()
+
+    @property
+    def output_leg_pos(self) -> np.ndarray:
+        return self.data.qpos[self.output_joint_qpos].copy()
 
     @property
     def tilt_deg(self) -> float:
@@ -272,7 +801,7 @@ class WheelLeggedRobot:
         return int(idx)
 
     @staticmethod
-    def _build_model(xml_path: str, *, lock_wheels: bool = False) -> mujoco.MjModel:
+    def _build_model(xml_path: str, cfg: RobotConfig) -> mujoco.MjModel:
         """加载 MJCF 并程序化添加 motor actuator（与训练端 DcMotorActuatorCfg 一致）。
 
         PD 控制在 Python 层计算，T-N 包络 clamp 也在 Python 层执行。
@@ -280,16 +809,17 @@ class WheelLeggedRobot:
         训练端 actuator 顺序: 先 leg（4个），再 wheel（2个）。
         """
         spec = mujoco.MjSpec.from_file(xml_path)
+        if cfg.stair_terrain:
+            WheelLeggedRobot._add_stair_terrain_geoms(spec, cfg)
 
-        leg_joint_names = ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint")
-        wheel_joint_names = ("l_wheel_Joint", "r_wheel_Joint")
-        if lock_wheels:
-            for joint in spec.joints:
-                if joint.name in wheel_joint_names:
-                    joint.limited = True
-                    joint.range[:] = _WHEEL_LOCK_RANGE
-                    joint.damping[0] = 10.0
-                    joint.frictionloss = 1.0
+        joint_names = tuple(joint.name for joint in spec.joints if joint.name)
+        site_names = tuple(site.name for site in spec.sites if site.name)
+        fourbar_surrogate = FOURBAR_SURROGATE_MARKER in site_names
+        if all(name in joint_names for name in JointGroup.POLICY_LEG_NAMES):
+            leg_joint_names = JointGroup.POLICY_LEG_NAMES
+        else:
+            leg_joint_names = JointGroup.OPENCHAIN_LEG_NAMES
+        wheel_joint_names = JointGroup.WHEEL_NAMES
 
         for jname in leg_joint_names:
             act = spec.add_actuator()
@@ -300,8 +830,9 @@ class WheelLeggedRobot:
             act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
             act.biastype = mujoco.mjtBias.mjBIAS_NONE
             act.gainprm[0] = 1.0
-            act.forcelimited = True
-            act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
+            act.forcelimited = not fourbar_surrogate
+            if act.forcelimited:
+                act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
@@ -315,68 +846,141 @@ class WheelLeggedRobot:
             act.biastype = mujoco.mjtBias.mjBIAS_NONE
             act.gainprm[0] = 1.0
             act.forcelimited = True
-            act.forcerange[:] = np.array([-M3508_HEXROLL.rated_torque, M3508_HEXROLL.rated_torque])
+            act.forcerange[:] = np.array([-M3508_C620_14.rated_torque, M3508_C620_14.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
-        return spec.compile()
+        model = spec.compile()
+        WheelLeggedRobot._assign_ground_geom_group(model)
+        return model
 
-    def _passive_fourbar_qpos_indices(self) -> np.ndarray:
-        """返回四连杆被动关节在 qpos 中的位置。"""
-        names = (
-            "l_drive_bar_Joint",
-            "l_coupler_Joint",
-            "r_drive_bar_Joint",
-            "r_coupler_Joint",
-        )
-        indices: list[int] = []
-        for name in names:
-            jid = self._id(mujoco.mjtObj.mjOBJ_JOINT, name)
-            indices.append(int(self.model.jnt_qposadr[jid]))
-        return np.asarray(indices, dtype=np.int64)
+    @staticmethod
+    def _add_stair_terrain_geoms(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
+        """在原生 MuJoCo sim2sim 中添加与训练课程同尺度的台阶碰撞体。"""
 
-    def _fourbar_site_pair_indices(self) -> tuple[tuple[int, int], tuple[int, int]]:
-        """返回左右四连杆闭环约束的 site 对。"""
-        pairs = (
-            ("l_fourbar_end", "l_fourbar_target"),
-            ("r_fourbar_end", "r_fourbar_target"),
-        )
-        result: list[tuple[int, int]] = []
-        for end_name, target_name in pairs:
-            end_id = self._id(mujoco.mjtObj.mjOBJ_SITE, end_name)
-            target_id = self._id(mujoco.mjtObj.mjOBJ_SITE, target_name)
-            result.append((end_id, target_id))
-        return (result[0], result[1])
+        low, high = (float(v) for v in cfg.stair_step_height_range)
+        level = max(0, min(9, int(cfg.stair_terrain_level)))
+        step_height = low + (float(level) / 9.0) * (high - low)
+        step_depth = float(cfg.stair_step_depth_m)
+        half_width = float(cfg.stair_half_width_m)
+        start_x = float(cfg.stair_start_x_m)
+        for idx in range(int(cfg.stair_step_count)):
+            height = step_height * float(idx + 1)
+            spec.worldbody.add_geom(
+                name=f"stair_terrain_step_{idx}",
+                type=int(mujoco.mjtGeom.mjGEOM_BOX),
+                pos=[
+                    start_x + idx * step_depth + 0.5 * step_depth,
+                    0.0,
+                    0.5 * height,
+                ],
+                size=[0.5 * step_depth, half_width, 0.5 * height],
+                contype=2,
+                conaffinity=1,
+                condim=3,
+                group=_GROUND_GEOM_GROUP,
+                friction=[0.8, 0.005, 0.0001],
+                rgba=[0.35, 0.37, 0.33, 1.0],
+            )
 
-    def _project_fourbar_constraints(self) -> None:
-        """把四连杆被动关节投影到闭环位姿。
+    @staticmethod
+    def _assign_ground_geom_group(model: mujoco.MjModel) -> None:
+        for geom_id in range(model.ngeom):
+            name = (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or "").lower()
+            geom_type = int(model.geom_type[geom_id])
+            if (
+                geom_type in (int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_HFIELD))
+                or "floor" in name
+                or "ground" in name
+            ):
+                model.geom_group[geom_id] = _GROUND_GEOM_GROUP
 
-        MJCF 的被动四连杆关节默认是 0，但受控髋/膝默认位姿不是闭环位姿。
-        如果 reset 后直接 `mj_forward`，MuJoCo equality constraint 会从约 2cm
-        残差开始求解，第一秒就能把机身推成明显倾斜。这里在动力学开始前
-        只调整被动关节，让两个 connect site 对齐。
-        """
-        if self._passive_fourbar_qpos.size == 0:
+    def _apply_default_joint_positions(self) -> None:
+        """把闭链被动输出和 policy 关节一起写到默认站姿。"""
+        default_map = _SHARED_ROBOT.default_model_joint_pos
+        for joint_name, value in default_map.items():
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                continue
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
+        if self.cfg.initial_leg_joint_pos is None:
             return
+        initial_leg_pos = np.asarray(self.cfg.initial_leg_joint_pos, dtype=np.float64).reshape(-1)
+        if initial_leg_pos.shape == (2,):
+            left_front, left_back = initial_leg_pos
+            initial_leg_pos = np.asarray(
+                [left_front, left_back, left_front, left_back],
+                dtype=np.float64,
+            )
+        elif initial_leg_pos.shape != (4,):
+            raise ValueError(
+                "initial_leg_joint_pos must contain 2 mirrored or 4 policy-order values"
+            )
+        if not np.isfinite(initial_leg_pos).all():
+            raise ValueError("initial_leg_joint_pos must be finite")
+        for joint_name, value in zip(self.policy_joint_names[:4], initial_leg_pos, strict=True):
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                raise ValueError(f"missing leg joint in MJCF: {joint_name}")
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
 
-        def residual(values: np.ndarray) -> np.ndarray:
-            self.data.qpos[self._passive_fourbar_qpos] = values
-            mujoco.mj_forward(self.model, self.data)
-            diffs: list[np.ndarray] = []
-            for end_id, target_id in self._fourbar_site_pairs:
-                diffs.append(self.data.site_xpos[end_id] - self.data.site_xpos[target_id])
-            return np.concatenate(diffs)
+    def _apply_initial_wheel_joint_positions(self) -> None:
+        """覆写 deploy telemetry 中记录的轮子连续关节位置。"""
+        if self.cfg.initial_wheel_joint_pos is None:
+            return
+        wheel_pos = np.asarray(self.cfg.initial_wheel_joint_pos, dtype=np.float64).reshape(-1)
+        if wheel_pos.shape != (2,) or not np.isfinite(wheel_pos).all():
+            raise ValueError("initial_wheel_joint_pos must contain 2 finite values")
+        for joint_name, value in zip(JointGroup.WHEEL_NAMES, wheel_pos, strict=True):
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            if jid < 0:
+                raise ValueError(f"missing wheel joint in MJCF: {joint_name}")
+            self.data.qpos[self.model.jnt_qposadr[jid]] = float(value)
 
-        initial = self.data.qpos[self._passive_fourbar_qpos].copy()
-        solution = least_squares(
-            residual,
-            initial,
-            xtol=1.0e-12,
-            ftol=1.0e-12,
-            gtol=1.0e-12,
-            max_nfev=100,
-        )
-        self.data.qpos[self._passive_fourbar_qpos] = solution.x
+    def _apply_initial_dof_vel(self) -> None:
+        """覆写 deploy telemetry 中记录的 6 维 policy-order 关节速度。"""
+        self.data.qvel[self.joint_qvel] = 0.0
+        if self.cfg.initial_dof_vel is None:
+            return
+        dof_vel = np.asarray(self.cfg.initial_dof_vel, dtype=np.float64).reshape(-1)
+        if dof_vel.shape != (6,) or not np.isfinite(dof_vel).all():
+            raise ValueError("initial_dof_vel must contain 6 finite policy-order values")
+        self.data.qvel[self.joint_qvel] = dof_vel
+
+    def _apply_initial_policy_io_state(self) -> None:
+        """覆写 reset 后的 last_action/action FIFO，使初始 obs 与 deploy obs 对齐。"""
+        if self.cfg.initial_last_action is None:
+            return
+        last_action = np.asarray(self.cfg.initial_last_action, dtype=np.float64).reshape(-1)
+        expected = self.runtime.policy.num_actions
+        if last_action.shape != (expected,) or not np.isfinite(last_action).all():
+            raise ValueError(f"initial_last_action must contain {expected} finite values")
+        self.last_action[:] = last_action
+        self.last_applied_action[:] = last_action
+        self.last_policy_action[:] = last_action
+        self.last_clipped_policy_action[:] = last_action
+        self.action_fifo[:] = last_action
+
+    def _close_initial_chain_positions(self) -> ClosedChainClosureSolver | None:
+        """让 deploy 初始主动关节对应的闭链被动关节落在同一机构分支上。"""
+        self.closed_chain_reset_position_residual_m = 0.0
+        if self.cfg.initial_leg_joint_pos is None:
+            return None
+        solver = ClosedChainClosureSolver.try_create(model=self.model, data=self.data)
+        if solver is None:
+            return None
+        self.closed_chain_reset_position_residual_m = solver.solve_positions()
+        return solver
+
+    def _close_initial_chain_velocities(
+        self,
+        solver: ClosedChainClosureSolver | None,
+    ) -> None:
+        """根据主动关节速度反解闭链被动关节速度。"""
+        self.closed_chain_reset_velocity_residual = 0.0
+        if solver is None or self.cfg.initial_dof_vel is None:
+            return
+        self.closed_chain_reset_velocity_residual = solver.solve_velocities()
 
     def _refresh_state(self) -> None:
         self.base_quat = self.data.qpos[3:7].copy()
@@ -392,19 +996,85 @@ class WheelLeggedRobot:
 
         与训练端 DcMotorActuatorCfg 行为一致：
         - 腿部: torque = kp*(pos_target - pos) + kd*(0 - vel), clamp by DM8009P T-N
-        - 轮子: torque = kd*(vel_target - vel), clamp by M3508_HEXROLL T-N
+        - 轮子: torque = kd*(vel_target - vel), clamp by M3508_C620_14 T-N
         """
         action = np.asarray(action, dtype=np.float64)
+
+        decoded_action = self.action_decoder.decode(
+            action,
+            command_height=float(self.command[4]),
+            fallback_default=self.default_dof_pos[JointGroup.CTRL_LEGS],
+        )
+        return self._compute_decoded_target_torques(
+            leg_target=decoded_action.leg_target,
+            wheel_vel_target=decoded_action.wheel_vel_target,
+        )
+
+    def _compute_decoded_target_torques(
+        self,
+        *,
+        leg_target: np.ndarray,
+        wheel_vel_target: np.ndarray,
+    ) -> np.ndarray:
+        """从部署物理目标计算电机力矩。"""
+        leg_target = np.asarray(leg_target, dtype=np.float64).reshape(4)
+        wheel_vel_target = np.asarray(wheel_vel_target, dtype=np.float64).reshape(2)
 
         dof_pos = self.dof_pos
         dof_vel = self.dof_vel
 
-        leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
-        leg_default = self.default_dof_pos[JointGroup.CTRL_LEGS]
-        leg_target = action[:4] * leg_scale + leg_default
-        leg_pos_err = leg_target - dof_pos[JointGroup.CTRL_LEGS]
+        output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
+        output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
+        if self.fourbar_surrogate:
+            policy_pos = output_to_policy_pos_np(output_leg_pos)
+            policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
+            policy_target = leg_target
+            policy_error = policy_leg_position_error_np(policy_target, policy_pos)
+            policy_torque = self.leg_kp * policy_error
+            policy_torque -= self.leg_kd * policy_vel
+            policy_torque = _tn_clip(
+                policy_torque,
+                policy_vel,
+                DM8009P.stall_torque,
+                DM8009P.no_load_speed,
+                DM8009P.rated_torque,
+            )
+            leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
+            leg_vel = policy_vel
+        else:
+            if self.active_rod_action_semantics:
+                leg_pos_err = policy_leg_position_error_np(leg_target, output_leg_pos)
+            else:
+                leg_pos_err = leg_target - output_leg_pos
+            leg_vel = output_leg_vel
+            leg_torque = self.leg_kp * leg_pos_err - self.leg_kd * leg_vel
+        if not self.fourbar_surrogate:
+            leg_torque = _tn_clip(
+                leg_torque,
+                leg_vel,
+                DM8009P.stall_torque,
+                DM8009P.no_load_speed,
+                DM8009P.rated_torque,
+            )
+
+        wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
+        wheel_torque = self.wheel_kd * (wheel_vel_target - wheel_vel)
+        wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)
+
+        # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。
+        ctrl = np.concatenate([leg_torque, wheel_torque])
+        self.last_ctrl[:] = ctrl
+        return ctrl
+
+    def _compute_hold_current_torques(self, leg_hold_target: np.ndarray) -> np.ndarray:
+        """计算 output disabled 时的保持目标力矩。"""
+        dof_pos = self.dof_pos
+        dof_vel = self.dof_vel
+        leg_target = np.asarray(leg_hold_target, dtype=np.float64).reshape(4)
+        leg_pos = dof_pos[JointGroup.CTRL_LEGS]
         leg_vel = dof_vel[JointGroup.CTRL_LEGS]
-        leg_torque = _SHARED_ROBOT.leg_kp * leg_pos_err - _SHARED_ROBOT.leg_kd * leg_vel
+        leg_torque = self.leg_kp * (leg_target - leg_pos)
+        leg_torque -= self.leg_kd * leg_vel
         leg_torque = _tn_clip(
             leg_torque,
             leg_vel,
@@ -413,24 +1083,10 @@ class WheelLeggedRobot:
             DM8009P.rated_torque,
         )
 
-        wheel_scale = self.action_scale[JointGroup.WHEEL_ACTUATORS]
-        wheel_vel_target = action[4:6] * wheel_scale
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
-        wheel_kd = (
-            float(self.cfg.wheel_lock_damping)
-            if np.all(wheel_scale == 0.0) and self.cfg.wheel_lock_damping is not None
-            else _SHARED_ROBOT.wheel_kd
-        )
-        wheel_torque = wheel_kd * (wheel_vel_target - wheel_vel)
-        wheel_torque = _tn_clip(
-            wheel_torque,
-            wheel_vel,
-            M3508_HEXROLL.stall_torque,
-            M3508_HEXROLL.no_load_speed,
-            M3508_HEXROLL.rated_torque,
-        )
+        wheel_torque = self.wheel_kd * (0.0 - wheel_vel)
+        wheel_torque = M3508_C620_14.clip_effort_np(wheel_torque, wheel_vel)
 
-        # MuJoCo actuator 顺序由 _build_model 固定为 legs(4) + wheels(2)。
         ctrl = np.concatenate([leg_torque, wheel_torque])
         self.last_ctrl[:] = ctrl
         return ctrl

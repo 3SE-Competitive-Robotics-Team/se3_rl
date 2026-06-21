@@ -70,18 +70,51 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
             )
             result["wheel_clearance_abs_diff"] = _stats(np.abs(left_clearance - right_clearance))
     for key in (
+        "leg_clearance",
+        "base_clearance",
+        "wheel_lateral_distance",
+        "wheel_fore_aft_offset",
+        "leg_mirror_error",
+    ):
+        if key in samples[0]:
+            values = np.asarray([s[key] for s in samples], dtype=np.float64)
+            result[key] = _stats(values)
+    for key in (
+        "wheel_contact",
+        "wheel_full_contact",
+        "wheel_contact_left",
+        "wheel_contact_right",
+        "leg_contact",
+        "leg_contact_left",
+        "leg_contact_right",
+        "base_contact",
+        "nonwheel_contact",
+    ):
+        if key in samples[0]:
+            values = np.asarray([s[key] for s in samples], dtype=np.float64)
+            result[key] = _stats(values)
+            result[f"{key}_rate"] = float(np.mean(values > 0.5))
+    for key in (
         "roll_deg",
         "pitch_deg",
         "yaw_deg",
         "roll_rate_rad_s",
         "pitch_rate_rad_s",
         "yaw_rate_rad_s",
+        "reset_floor_lift_m",
+        "command_lin_vel_x",
+        "command_yaw_rate",
         "action_delta_l2",
         "action_delta_max_abs",
         "action_delta_sq_sum",
         "applied_action_delta_l2",
         "applied_action_delta_max_abs",
         "applied_action_delta_sq_sum",
+        "rc_switch_r",
+        "output_enabled",
+        "rc_switch_event",
+        "rc_policy_reset",
+        "rc_off_mode_no_torque",
     ):
         if key in samples[0]:
             values = np.asarray([s[key] for s in samples], dtype=np.float64)
@@ -165,13 +198,18 @@ def _wheel_collision_diagnostics(model: mujoco.MjModel) -> dict[str, object]:
 def _model_issues(wheel: dict[str, object]) -> list[DiagnosticIssue]:
     issues: list[DiagnosticIssue] = []
     if wheel.get("mode") != "cylinder":
+        wheel_geoms = [geom for geom in wheel.get("geoms", []) if isinstance(geom, dict)]
+        has_visual_mesh = any(geom.get("mesh_source") == "visual_stl" for geom in wheel_geoms)
+        mesh_description = (
+            "Visual STL wheel meshes" if has_visual_mesh else "Mesh wheel collision geoms"
+        )
         issues.append(
             DiagnosticIssue(
                 severity="warning",
                 code="wheel_collision_not_cylinder",
                 message=(
                     "Wheel collision geoms are not pure cylinders. "
-                    "Visual STL wheel meshes can create unstable MuJoCo contacts and poor standing behavior."
+                    f"{mesh_description} can create unstable MuJoCo contacts and poor standing behavior."
                 ),
             )
         )
