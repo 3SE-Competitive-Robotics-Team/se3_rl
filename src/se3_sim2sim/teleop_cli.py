@@ -13,6 +13,7 @@ from se3_deploy.export_npz import (
 from se3_deploy.export_npz import (
     DEFAULT_RECOVERY_CHECKPOINT as DEFAULT_DEPLOY_SOURCE_CHECKPOINT,
 )
+
 from se3_shared import RECOVERY_COMMAND_HEIGHT_RANGE_M
 
 from .cli import build_parser as build_sim2sim_parser

@@ -6,10 +6,10 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-
 from se3_deploy.numpy_policy import NumpyPolicyRuntime
 from se3_deploy.observation import RecoveryObservationBuilder, synthetic_recovery_state
 from se3_deploy.recovery_runtime import RecoveryActionTargetDecoder
+
 from se3_shared import RECOVERY_COMMAND_HEIGHT_M, JointGroup, PolicyActionDecoder
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_sim2sim.cli import build_parser as build_sim2sim_parser

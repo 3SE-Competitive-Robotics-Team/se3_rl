@@ -26,11 +26,6 @@ se3-train = "se3_train.cli:main"
 se3-play = "se3_train.play:main"
 se3-sim2sim = "se3_sim2sim.cli:main"
 se3-sim2sim-teleop = "se3_sim2sim.teleop_cli:main"
-se3-nx-recovery = "se3_deploy.cli:main"
-se3-export-nx-policy = "se3_deploy.export_npz:main"
-se3-export-nx-policy-onnx = "se3_deploy.export_onnx:main"
-se3-replay-nx-telemetry = "se3_deploy.replay_telemetry:main"
-se3-visualize-cdc-state = "se3_deploy.visualize_cdc_state:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
 se3-recovery-state-cache = "se3_tools.recovery_state_cache:main"
@@ -50,7 +45,6 @@ module-name = [
     "se3_shared",
     "se3_tools",
     "se3_flow_match",
-    "se3_deploy",
 ]
 
 [tool.uv.sources]
@@ -106,7 +100,6 @@ known-first-party = [
     "se3_shared",
     "se3_tools",
     "se3_flow_match",
-    "se3_deploy",
 ]
 
 [tool.ruff.format]
