@@ -7,6 +7,7 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 
 ## 基本原则
 
+- **Pod 隔离**：A800 集群为多用户共享环境。每个 machine 文件只对应一个用户的 pod，严禁操作同集群中其他用户的 pod 内进程（不得 exec、kill、cp、log 到非本文件指定的 pod）。`a800-xyh-am345` 只能操作 `abbtask-*` pod，不得触碰同 namespace 下其他 pod。
 - 当前 `codex/xyh` 只使用 `a800` 与 `gpufree`；`wuyinyun` 只读历史归档，不作为 SSH、代理、训练或 checkpoint 目标。
 - 台阶训练优先使用 `scripts/remote_sync_start_stair.py`，不要重复手写同步和启动流程。
 - 脚本负责远端预检查、checkpoint 检查、代码打包同步、`compileall`、训练启动，并输出日志和 `watch_remote` 指令。
@@ -19,7 +20,7 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 
 ## 资源路由
 
-- A800 细节、CUDA compat、git bundle fallback 和产物拉取边界：读 `machines/a800.md`。
+- A800 细节、CUDA compat、git bundle fallback 和产物拉取边界：读 `machines/a800-xyh-am345.md`。
 - gpufree 单卡训练、smoke 和计费注意事项：读 `machines/gpufree.md`。
 - NX / Jetson 真机部署：读 `machines/nx.md`；不要把 NX 当 MJLab 训练服务器。
 - 台阶 Viser 验收细节、Actual RT 解释和历史 laptop task：读仓库根目录的 `docs/laptop_viser_play.md`。
