@@ -1,3 +1,8 @@
+---
+name: nx-debug-workflow
+description: SerialLeg NX 真机调试流程：启动 CDC relay、MJCF viewer、检查通信状态。当提到 NX 调试、真机回传、CDC viewer、serialleg-nx 时触发。
+---
+
 # SerialLeg NX 调试 Workflow
 
 目标：先启动 NX 侧 CDC relay，再在本机打开 MJCF viewer 看真机回传状态。
