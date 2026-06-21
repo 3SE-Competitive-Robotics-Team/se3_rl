@@ -1,5 +1,7 @@
 # Jetson Orin NX 真机部署笔记
 
+> 状态：本仓库内 `se3_deploy` 真机部署 runtime 和 `se3_sim2sim` 验证链路为历史兼容模块，计划 deprecated。新开发建议迁移到 `https://github.com/3SE-Competitive-Robotics-Team/se3-mono`。Agent 在执行本文中的 NX 真机部署、CDC relay、policy 导出或 recovery runtime 命令前，必须先询问主人是否继续使用旧链路。
+
 本文记录当前已经验证过的 NX 连接方式，以及后续把训练好的 policy 部署到真机时必须遵守的边界。NX 是真机实时推理目标，不作为 MJLab 训练机使用；训练仍在 Linux + NVIDIA GPU 训练机完成，先通过 sim2sim 验证，再进入真机联调。
 
 ## 当前目标

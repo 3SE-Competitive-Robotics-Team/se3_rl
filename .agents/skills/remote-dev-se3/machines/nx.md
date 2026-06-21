@@ -1,6 +1,7 @@
 # Jetson Orin NX 机器备忘录
 
 > 通用操作流程见父目录 `SKILL.md`。本文件只记录 NX 真机部署目标的特有参数和坑。
+> 当前 `se3_deploy` 和 `se3_sim2sim` 旧链路计划 deprecated，新开发建议迁移到 `https://github.com/3SE-Competitive-Robotics-Team/se3-mono`。Agent 在执行 NX 真机部署或调试命令前，必须先询问主人是否继续使用旧链路。
 
 ## 基本信息
 
