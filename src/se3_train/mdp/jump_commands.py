@@ -15,11 +15,20 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import JointGroup
-from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared import (
+    RobotConfig as SharedRobotConfig,
+)
+from se3_shared import (
+    periodic_policy_action_delta_torch,
+)
 from se3_train.mdp import recovery_state
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
+from se3_train.mdp.joint_indices import (
+    active_leg_mirror_diffs,
+    policy_leg_joint_ids,
+    wheel_joint_ids,
+)
 from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
     DEFAULT_JUMP_TRAJ_PATHS,
@@ -250,6 +259,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         finally:
             self._resampling_for_reset = False
 
+        self._log_bad_orientation_diagnostics(env_ids)
         return extras
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
@@ -338,9 +348,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
     def _start_new_jumps(self) -> None:
         """按 step-level 概率启动新跳跃，对齐 mondo 的 jump command 语义。"""
+        if self.cfg.jump_prob <= 0.0:
+            return
         self._jump_cool_down = torch.clamp(self._jump_cool_down - 1, min=0)
         can_start = (self._jump_cool_down == 0) & (self._command[:, 5] <= 0.5)
-        if not can_start.any() or self.cfg.jump_prob <= 0.0:
+        if not can_start.any():
             return
 
         start_mask = can_start & (
@@ -362,7 +374,9 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         recovery_mask = recovery_state.recovery_active_mask(self._env).to(device=self.device)
         if not recovery_mask.any():
             return
-        self._command[recovery_mask, 0:4] = 0.0
+        if bool(getattr(self._env, "_recovery_zero_velocity_command", True)):
+            self._command[recovery_mask, 0:2] = 0.0
+        self._command[recovery_mask, 2:4] = 0.0
         command_height_buf = getattr(self._env, "_recovery_command_height_buf", None)
         if (
             isinstance(command_height_buf, torch.Tensor)
@@ -461,7 +475,8 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         vz_tracking_reward = torch.where(vz_w < vz_tracking_threshold, vz_progress, vz_tracking)
 
         robot = self._env.scene["robot"]
-        knee_indices = [JointGroup.LEGS[1], JointGroup.LEGS[3]]
+        leg_ids = policy_leg_joint_ids(robot)
+        knee_indices = [leg_ids[1], leg_ids[3]]
         knee_vel = robot.data.joint_vel[:, knee_indices]
         extension_vel = torch.clamp(-torch.mean(knee_vel, dim=1), min=0.0)
         ref_q_vel = self.reference_joint_velocity()
@@ -469,10 +484,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         ref_extension_vel = torch.clamp(-torch.mean(ref_knee_vel, dim=1), min=0.05)
         impulse_reward = torch.clamp(extension_vel / ref_extension_vel, min=0.0, max=1.0)
 
-        action_rate = torch.sum(
-            (self._env.action_manager.action - self._env.action_manager.prev_action) ** 2,
-            dim=1,
+        action_delta = periodic_policy_action_delta_torch(
+            self._env.action_manager.action,
+            self._env.action_manager.prev_action,
         )
+        action_rate = torch.sum(action_delta**2, dim=1)
         ang_vel = robot.data.root_link_ang_vel_b
         pg = robot.data.projected_gravity_b
         pitch = torch.atan2(pg[:, 0], -pg[:, 2])
@@ -559,10 +575,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         q = robot.data.joint_pos
         pg = robot.data.projected_gravity_b
         pitch_deg = torch.rad2deg(torch.abs(torch.atan2(pg[:, 0], -pg[:, 2])))
-        hip_abs = torch.abs(q[:, JointGroup.LEGS[0]] - q[:, JointGroup.LEGS[2]])
-        knee_abs = torch.abs(q[:, JointGroup.LEGS[1]] - q[:, JointGroup.LEGS[3]])
+        hip_diff, knee_diff = active_leg_mirror_diffs(robot, q)
+        hip_abs = torch.abs(hip_diff)
+        knee_abs = torch.abs(knee_diff)
         mirror_raw = 4.0 * hip_abs**2 + 1.5 * knee_abs**2
-        wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
+        wheel_vel = robot.data.joint_vel[:, list(wheel_joint_ids(robot))]
         # 左右轮 joint axis 相反，joint 广义速度同号更容易制造 yaw 扭转。
         wheel_yaw_drive_sq = (wheel_vel[:, 0] + wheel_vel[:, 1]) ** 2
         yaw_rate_abs = torch.abs(robot.data.root_link_ang_vel_b[:, 2])
@@ -617,6 +634,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         """
         if not self.cfg.enable_jump_metrics:
             return
+
         jump_flag = self._command[:, 5] > 0.5
 
         ref_grounded_ratio = (self._jump_stage == 0).float().mean().item()

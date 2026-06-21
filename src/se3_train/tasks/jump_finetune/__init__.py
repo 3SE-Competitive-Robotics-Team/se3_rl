@@ -1,4 +1,4 @@
-"""32 维观测跳跃 FineTune GRU 任务。"""
+"""34 维观测跳跃 FineTune GRU 任务。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ TASK_ID = "SE3-WheelLegged-Jump-FineTune-GRU"
 
 
 def register() -> None:
-    """注册 32 维观测跳跃 FineTune 任务。"""
+    """注册 34 维观测跳跃 FineTune 任务。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),

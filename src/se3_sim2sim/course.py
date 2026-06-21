@@ -6,6 +6,7 @@
 当前支持两个历程：
 - walk-sweep：行走速度扫描，vx 从 0.1 到 0.6 m/s 每档 5s，扫完后回到 0
 - jump-sweep：跳跃高度扫描，依次触发 0.1～0.6m 跳跃，每次落地后间隔 5s 跳下一档
+- upright-velocity-sweep：自起策略验收用的直立速度扫描，覆盖零速、正负 vx 和正负 yaw
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ class CourseType(StrEnum):
 
     JUMP_SWEEP = "jump-sweep"
     """跳跃高度扫描：依次触发 0.1～0.6m 跳跃，每次落地后间隔 5s 跳下一档。"""
+
+    UPRIGHT_VELOCITY_SWEEP = "upright-velocity-sweep"
+    """直立速度验收：零速、±0.5/±1.0/±1.5m/s 和 ±0.5rad/s yaw。"""
 
     NONE = "none"
     """禁用历程，使用固定指令（旧行为，与 --command 一致）。"""
@@ -46,6 +50,23 @@ class CourseConfig:
 
     jump_sweep_interval_s: float = 5.0
     """跳跃落地到下一次触发的时间间隔（秒）。"""
+
+    # 自起后 locomotion 验收参数
+    upright_velocity_sweep_commands: tuple[tuple[float, float], ...] = (
+        (0.0, 0.0),
+        (0.5, 0.0),
+        (-0.5, 0.0),
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (1.5, 0.0),
+        (-1.5, 0.0),
+        (0.0, 0.5),
+        (0.0, -0.5),
+    )
+    """验收速度序列，每项为 (vx, yaw_rate)。"""
+
+    upright_velocity_sweep_segment_duration_s: float = 4.0
+    """每个验收速度保持时间（秒）。"""
 
 
 class WalkSpeedSweep:
@@ -126,9 +147,58 @@ class JumpHeightSweep:
         }
 
 
+class UprightVelocitySweep:
+    """自起后直立速度验收历程：按时间推进 command[0:2]。"""
+
+    def __init__(self, config: CourseConfig, control_dt: float) -> None:
+        self._commands = tuple(
+            (float(vx), float(yaw)) for vx, yaw in config.upright_velocity_sweep_commands
+        )
+        segment_steps = max(1, round(config.upright_velocity_sweep_segment_duration_s / control_dt))
+        self._segment_steps = int(segment_steps)
+        self._segment_idx = 0
+        self._step_in_segment = 0
+        self._sweep_done = len(self._commands) == 0
+
+    @property
+    def current_command(self) -> tuple[float, float]:
+        """返回当前控制步应使用的 (vx, yaw_rate)。扫描完成后返回零速。"""
+        if self._sweep_done or self._segment_idx >= len(self._commands):
+            return 0.0, 0.0
+        return self._commands[self._segment_idx]
+
+    def step(self) -> None:
+        """每个控制步调用一次，推进内部计时器。"""
+        if self._sweep_done:
+            return
+        self._step_in_segment += 1
+        if self._step_in_segment >= self._segment_steps:
+            self._step_in_segment = 0
+            self._segment_idx += 1
+            if self._segment_idx >= len(self._commands):
+                self._sweep_done = True
+
+    @property
+    def done(self) -> bool:
+        return self._sweep_done
+
+    def report(self) -> dict[str, object]:
+        """返回当前状态的描述字典，用于打印日志。"""
+        vx, yaw = self.current_command
+        if self._sweep_done:
+            return {"stage": "done", "vx": 0.0, "yaw": 0.0}
+        return {
+            "stage": "sweeping",
+            "vx": vx,
+            "yaw": yaw,
+            "segment": self._segment_idx + 1,
+            "total_segments": len(self._commands),
+        }
+
+
 def create_course(
     config: CourseConfig, control_dt: float
-) -> WalkSpeedSweep | JumpHeightSweep | None:
+) -> WalkSpeedSweep | JumpHeightSweep | UprightVelocitySweep | None:
     """根据 CourseConfig 创建对应的历程对象。
 
     返回 None 表示 CourseType.NONE（不启用历程）。
@@ -137,4 +207,6 @@ def create_course(
         return WalkSpeedSweep(config, control_dt)
     if config.mode == CourseType.JUMP_SWEEP:
         return JumpHeightSweep(config)
+    if config.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+        return UprightVelocitySweep(config, control_dt)
     return None

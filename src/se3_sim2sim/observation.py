@@ -1,25 +1,30 @@
-"""Observation assembly for the joint-space policy input (32D or 42D)."""
+"""Observation assembly for the 34D joint-space policy input."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from se3_shared import JointGroup, ObservationConfig
+from se3_shared import build_policy_observation_np
 
 from .config import RobotConfig
 from .math_utils import rotate_inverse
 from .runtime_spec import RuntimeSpec
 
-_OBS_CFG = ObservationConfig()
-
 
 class ObservationBuilder:
-    def __init__(self, *, robot_cfg: RobotConfig, runtime: RuntimeSpec) -> None:
+    def __init__(
+        self,
+        *,
+        robot_cfg: RobotConfig,
+        runtime: RuntimeSpec,
+        default_dof_pos: np.ndarray,
+        fourbar_surrogate: bool = False,
+    ) -> None:
         self.robot_cfg = robot_cfg
         self.runtime = runtime
+        self.fourbar_surrogate = bool(fourbar_surrogate)
         self.commands_scale = np.asarray(robot_cfg.command_scale, dtype=np.float64)
-        self.default_dof_pos = np.asarray(robot_cfg.default_dof_pos, dtype=np.float64)
-        self._is_task_mode = runtime.policy.is_task_mode
+        self.default_dof_pos = np.asarray(default_dof_pos, dtype=np.float64)
 
     def build(
         self,
@@ -30,54 +35,22 @@ class ObservationBuilder:
         dof_vel: np.ndarray,
         command: np.ndarray,
         action_obs: np.ndarray,
-        task_mode_obs: np.ndarray | None = None,
     ) -> np.ndarray:
-        if self._is_task_mode:
-            if task_mode_obs is None or len(task_mode_obs) != 13:
-                raise ValueError(
-                    f"task_mode policy 需要 13 维 task_mode_obs，实际得到 "
-                    f"{None if task_mode_obs is None else len(task_mode_obs)} 维。"
-                )
-        else:
-            if len(command) not in (7, 8):
-                raise ValueError(
-                    f"command 必须为 7 或 8 维 [vx, oz, pitch, roll, height, jump_flag, jump_target_height, (jump_phase)],"
-                    f" 实际得到 {len(command)} 维。"
-                )
-
-        obs: list[float] = []
         base_ang_vel_body = rotate_inverse(base_quat_wxyz, base_ang_vel_world)
         projected_gravity = rotate_inverse(base_quat_wxyz, np.asarray([0.0, 0.0, -1.0]))
-
-        obs.extend((base_ang_vel_body * _OBS_CFG.ang_vel_scale).tolist())
-        obs.extend(projected_gravity.tolist())
-        obs.extend((np.asarray(command[:5], dtype=np.float64) * self.commands_scale).tolist())
-
-        leg_pos_rel = dof_pos[JointGroup.CTRL_LEGS] - self.default_dof_pos[JointGroup.CTRL_LEGS]
-        obs.extend(leg_pos_rel.tolist())
-
-        leg_vel = dof_vel[JointGroup.CTRL_LEGS] * _OBS_CFG.leg_vel_scale
-        obs.extend(leg_vel.tolist())
-
-        obs.extend(dof_pos[JointGroup.CTRL_WHEELS].tolist())
-        obs.extend((dof_vel[JointGroup.CTRL_WHEELS] * _OBS_CFG.wheel_vel_scale).tolist())
-
-        obs.extend(np.asarray(action_obs, dtype=np.float64).tolist())
-
-        if self._is_task_mode:
-            obs.extend(np.asarray(task_mode_obs, dtype=np.float64).tolist())
-        else:
-            # jump_commands: [jump_flag, jump_target_height, jump_phase]
-            if len(command) >= 8:
-                obs.extend(command[5:8].tolist())
-            else:
-                obs.extend(command[5:7].tolist())
-                obs.append(0.0)
-
-        arr = np.asarray(obs, dtype=np.float32)
         expected = int(self.runtime.policy.num_obs)
-        if arr.shape != (expected,):
-            raise RuntimeError(
-                f"observation shape mismatch: expected {(expected,)}, got {arr.shape}"
-            )
-        return np.clip(arr, -self.runtime.clip_observations, self.runtime.clip_observations)
+        limit = float(self.runtime.clip_observations)
+        result = build_policy_observation_np(
+            base_ang_vel_body=base_ang_vel_body,
+            projected_gravity=projected_gravity,
+            dof_pos=dof_pos,
+            dof_vel=dof_vel,
+            command=command,
+            action_obs=action_obs,
+            default_dof_pos=self.default_dof_pos,
+            command_scale=self.commands_scale,
+            expected_num_obs=expected,
+            clip_value=limit,
+            fourbar_surrogate=self.fourbar_surrogate,
+        )
+        return result.obs

@@ -8,144 +8,99 @@ from pathlib import Path
 
 import numpy as np
 
-from se3_shared import TASK_MODE_SEMANTICS, TaskMode
+from se3_shared import periodic_policy_action_delta_np
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 
-from .config import RunConfig
+from .config import RECOVERY_COMMAND_HEIGHT_M, RECOVERY_POSE_RP_RAD, RunConfig
 from .course import CourseType, create_course
 from .diagnostics import rollout_diagnostics
+from .mujoco_viewer import CompositeViewer, MujocoViewer
 from .policy import PolicyRuntime
 from .rerun_viewer import RerunViewer
 from .robot import WheelLeggedRobot
 from .runtime_spec import RuntimeSpec
-
-
-class _TaskModeState:
-    """Tracks task_mode observation state for TaskMode policies in sim2sim."""
-
-    def __init__(self, mode: TaskMode) -> None:
-        self.mode = mode
-        self.prev_mode = mode
-        self._blend_step = 0
-        self._blend_total = 1
-        self._jump_stage = 0
-
-    @property
-    def mode_blend(self) -> float:
-        return min(float(self._blend_step) / float(self._blend_total), 1.0)
-
-    @property
-    def jump_stage_norm(self) -> float:
-        return float(self._jump_stage) / 2.0
-
-    def step(self, jump_active: bool) -> None:
-        self._blend_step = min(self._blend_step + 1, self._blend_total)
-        if jump_active:
-            self._jump_stage = 1
-        else:
-            if self._jump_stage == 1:
-                self._jump_stage = 2
-            elif self._jump_stage == 2:
-                self._jump_stage = 0
-
-    def set_jump_active(self) -> None:
-        if self.mode != TaskMode.JUMP:
-            self.prev_mode = self.mode
-            self.mode = TaskMode.JUMP
-            self._blend_step = 0
-            self._blend_total = 1
-        self._jump_stage = 1
-
-    def clear_jump(self) -> None:
-        self.prev_mode = TaskMode.JUMP
-        self.mode = TaskMode.WHEEL
-        self._blend_step = 0
-        self._blend_total = 1
-        self._jump_stage = 2
-
-    def build_obs(
-        self, jump_flag: float, jump_target_height: float, jump_phase: float
-    ) -> np.ndarray:
-        """Build the 13D task_mode observation vector."""
-        current_semantic = np.asarray(TASK_MODE_SEMANTICS[int(self.mode)], dtype=np.float64)
-        prev_semantic = np.asarray(TASK_MODE_SEMANTICS[int(self.prev_mode)], dtype=np.float64)
-        return np.concatenate(
-            [
-                current_semantic,
-                prev_semantic,
-                np.array(
-                    [
-                        self.mode_blend,
-                        jump_flag,
-                        jump_target_height,
-                        jump_phase,
-                        self.jump_stage_norm,
-                    ],
-                    dtype=np.float64,
-                ),
-            ]
-        )
+from .teleop_input import CommandInputSource
+from .viser_viewer import ViserViewer
 
 
 class Sim2SimWorkflow:
-    def __init__(self, cfg: RunConfig) -> None:
+    def __init__(self, cfg: RunConfig, *, command_source: CommandInputSource | None = None) -> None:
         self.cfg = cfg.resolved()
+        self.runtime = RuntimeSpec(task=self.cfg.robot.task)
+        self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
         if self.cfg.policy.checkpoint is None:
             raise RuntimeError("启动 workflow 前必须先解析 policy checkpoint")
-
-        num_obs = PolicyRuntime.probe_num_obs(
-            self.cfg.policy.checkpoint, device=self.cfg.policy.device
-        )
-        self.runtime = RuntimeSpec(task=self.cfg.robot.task).with_num_obs(num_obs)
-        self._is_task_mode = self.runtime.policy.is_task_mode
-        self._task_mode_state: _TaskModeState | None = None
-        if self._is_task_mode:
-            print(
-                f"[sim2sim] 检测到 TaskMode checkpoint，mode={self.cfg.robot.task_mode.mode.name}"
-            )
-            self._task_mode_state = _TaskModeState(
-                mode=self.cfg.robot.task_mode.mode,
-            )
-        else:
-            print("[sim2sim] 检测到 32D jump checkpoint")
-
-        self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
         self.policy = PolicyRuntime(
             checkpoint=self.cfg.policy.checkpoint,
             device=self.cfg.policy.device,
             runtime=self.runtime,
         )
-        self.viewer = self._make_viewer()
         control_dt = self.cfg.robot.sim_dt * self.cfg.robot.control_decimation
         self._course = create_course(self.cfg.course, control_dt)
+        self.command_source = command_source
+        self.viewer = self._make_viewer()
+        self._viewer_default_initial_roll_rad = float(self.cfg.robot.initial_roll_rad)
+        self._viewer_default_initial_pitch_rad = float(self.cfg.robot.initial_pitch_rad)
+        self._viewer_default_initial_yaw_rad = float(self.cfg.robot.initial_yaw_rad)
+        self._viewer_default_initial_base_height = self.cfg.robot.initial_base_height
+        self._viewer_default_command = tuple(float(value) for value in self.cfg.robot.command)
+        self._viewer_default_yaw_pid_enabled = bool(self.cfg.robot.yaw_pid.enabled)
 
     def run(self) -> dict[str, object]:
-        # Initialize task_mode state machine for TaskMode policies
-        _tm: _TaskModeState | None = None
-        if self._is_task_mode:
-            _tm = self._task_mode_state
-            assert _tm is not None
-            task_mode_obs_init = _tm.build_obs(0.0, float(self.robot.command[6]), 0.0)
-            obs = self.robot.reset(
-                fixed=self.cfg.fixed_reset,
-                randomize_root=self.cfg.randomize_root,
+        obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
+        deploy_init_obs_check = self._deploy_telemetry_initial_obs_check(obs)
+        if deploy_init_obs_check.get("enabled"):
+            print(
+                "[deploy telemetry init] "
+                f"mode={deploy_init_obs_check.get('mode', '')} "
+                f"sample={deploy_init_obs_check.get('selected_sample_index', '')} "
+                f"max_obs_err={float(deploy_init_obs_check['max_abs_error']):.3e}"
             )
-            # Re-build obs with task_mode — reset() can't know about it
-            obs = self.robot.observation(task_mode_obs=task_mode_obs_init)
-        else:
-            obs = self.robot.reset(
-                fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root
+        pre_policy_settle = {"enabled": False}
+        if self.cfg.robot.settle_base_before_policy:
+            pre_policy_settle = self.robot.settle_base_before_policy(
+                max_s=self.cfg.robot.pre_policy_settle_max_s,
+                contact_steps=self.cfg.robot.pre_policy_settle_contact_steps,
             )
-
+            print(
+                "[pre-policy settle] "
+                f"success={pre_policy_settle['success']} "
+                f"steps={pre_policy_settle['steps']} "
+                f"time={float(pre_policy_settle['time_s']):.3f}s "
+                f"base_touching={pre_policy_settle.get('base_touching', False)} "
+                f"base_contact={pre_policy_settle['base_contact']} "
+                f"snap_down={float(pre_policy_settle.get('base_snap_down_m', 0.0)):.4f}m "
+                f"base_clearance={float(pre_policy_settle['base_clearance']):+.4f}m"
+            )
+            obs = self.robot.observation()
+        initial_policy_io = self._policy_io_diagnostics(obs)
+        max_steps = int(self.cfg.max_steps)
         samples: list[dict[str, float]] = []
+        collect_samples = not (max_steps == 0 and self.cfg.viewer.mode == "viser")
         model_diag = self.robot.diagnostics()
+
+        rc_sched = self.cfg.robot.rc_switch
+        rc_events = tuple(rc_sched.events)
+        _next_rc_event = 0
+        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+        _policy_memory_clean = True
+        if not _rc_output_enabled:
+            self.policy.reset()
+            self.robot.reset_policy_io_state()
+            obs = self.robot.observation()
+
         if self.viewer is not None:
             self.viewer.log_model(self.robot.model)
+            initial_telemetry = self.robot.telemetry()
+            initial_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+            initial_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+            initial_telemetry["rc_switch_event"] = 0.0
+            initial_telemetry["rc_policy_reset"] = 0.0
+            initial_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
             self.viewer.log_state(
-                self.robot.model, self.robot.data, step=0, telemetry=self.robot.telemetry()
+                self.robot.model, self.robot.data, step=0, telemetry=initial_telemetry
             )
 
-        max_steps = int(self.cfg.max_steps)
         step_iter = range(1, max_steps + 1) if max_steps > 0 else itertools.count(1)
         done_reason = "max_steps" if max_steps > 0 else "interrupted"
 
@@ -179,8 +134,6 @@ class Sim2SimWorkflow:
         if sched.enabled:
             _interval_steps_remaining = max(1, round(sched.interval_s / control_dt))
         _jump_active = self.robot.command[5] > 0.5  # 当前是否处于跳跃意图激活状态
-        if _jump_active and _tm is not None:
-            _tm.set_jump_active()
 
         # --- 历程初始化 ---
         if self._course is not None and self.cfg.course.mode == CourseType.JUMP_SWEEP:
@@ -203,25 +156,150 @@ class Sim2SimWorkflow:
                 print(
                     f"[历程] jump-sweep: {heights_str}, 间隔 {self.cfg.course.jump_sweep_interval_s}s"
                 )
+            elif self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+                commands_str = ", ".join(
+                    f"vx={vx:+.1f},yaw={yaw:+.1f}"
+                    for vx, yaw in self.cfg.course.upright_velocity_sweep_commands
+                )
+                print(
+                    "[历程] upright-velocity-sweep: "
+                    f"{commands_str}, 每档 {self.cfg.course.upright_velocity_sweep_segment_duration_s}s"
+                )
 
         try:
+            episode_step_offset = 0
+            viewer_step_offset = 0
             for step in step_iter:
+                if self._viewer_is_closed(self.viewer):
+                    done_reason = "viewer_closed"
+                    break
+                checkpoint_request = self._consume_viewer_checkpoint_request(self.viewer)
+                if checkpoint_request is not None:
+                    try:
+                        next_policy = PolicyRuntime(
+                            checkpoint=checkpoint_request,
+                            device=self.cfg.policy.device,
+                            runtime=self.runtime,
+                        )
+                    except Exception as exc:
+                        self._notify_viewer_checkpoint_failed(
+                            self.viewer,
+                            checkpoint_request,
+                            str(exc),
+                        )
+                    else:
+                        self.policy = next_policy
+                        self.cfg.policy.checkpoint = next_policy.checkpoint_path
+                        self._notify_viewer_checkpoint_loaded(
+                            self.viewer,
+                            next_policy.checkpoint_path,
+                            next_policy.iteration,
+                        )
+                        print(
+                            "[viser] loaded checkpoint "
+                            f"{next_policy.checkpoint_path.name} iter={next_policy.iteration}"
+                        )
+                        episode_step_offset = step
+                        viewer_step_offset = step
+                        self._apply_viewer_reset_mode("normal")
+                        obs = self.robot.reset(
+                            fixed=self.cfg.fixed_reset,
+                            randomize_root=self.cfg.randomize_root,
+                        )
+                        self.robot.command[:] = np.asarray(
+                            self.cfg.robot.command,
+                            dtype=np.float64,
+                        )
+                        self.policy.reset()
+                        self.robot.reset_policy_io_state()
+                        obs = self.robot.observation()
+                        _next_rc_event = 0
+                        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                        _policy_memory_clean = True
+                        _interval_steps_remaining = (
+                            max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                        )
+                        _next_script_event = 0
+                        _traj_step = 0
+                        _traj_steps = self._trajectory_steps_for_height(
+                            float(self.robot.command[6])
+                        )
+                        _jump_active = self.robot.command[5] > 0.5
+                        _prev_action = None
+                        _prev_applied_action = None
+                        self._notify_viewer_reset(self.viewer, "checkpoint_switch")
+                        if self.viewer is not None:
+                            reset_telemetry = self.robot.telemetry(reward=0.0)
+                            reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["rc_switch_event"] = 0.0
+                            reset_telemetry["rc_policy_reset"] = 1.0
+                            reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                            reset_telemetry["target_mode"] = "checkpoint_switch"
+                            self.viewer.log_state(
+                                self.robot.model,
+                                self.robot.data,
+                                step=0,
+                                telemetry=reset_telemetry,
+                            )
+                        continue
+                reset_mode = self._consume_viewer_reset_request(self.viewer)
+                if reset_mode is not None:
+                    episode_step_offset = step
+                    viewer_step_offset = step
+                    applied_reset_mode = self._apply_viewer_reset_mode(reset_mode)
+                    obs = self.robot.reset(
+                        fixed=self.cfg.fixed_reset,
+                        randomize_root=self.cfg.randomize_root,
+                    )
+                    self.robot.command[:] = np.asarray(self.cfg.robot.command, dtype=np.float64)
+                    self.policy.reset()
+                    self.robot.reset_policy_io_state()
+                    obs = self.robot.observation()
+                    _next_rc_event = 0
+                    _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                    _policy_memory_clean = True
+                    _interval_steps_remaining = (
+                        max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                    )
+                    _next_script_event = 0
+                    _traj_step = 0
+                    _traj_steps = self._trajectory_steps_for_height(float(self.robot.command[6]))
+                    _jump_active = self.robot.command[5] > 0.5
+                    _prev_action = None
+                    _prev_applied_action = None
+                    self._notify_viewer_reset(self.viewer, applied_reset_mode)
+                    if self.viewer is not None:
+                        reset_telemetry = self.robot.telemetry(reward=0.0)
+                        reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                        reset_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                        reset_telemetry["rc_switch_event"] = 0.0
+                        reset_telemetry["rc_policy_reset"] = 1.0
+                        reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                        reset_telemetry["target_mode"] = applied_reset_mode
+                        self.viewer.log_state(
+                            self.robot.model,
+                            self.robot.data,
+                            step=0,
+                            telemetry=reset_telemetry,
+                        )
+                    continue
+                episode_step = max(0, step - 1 - episode_step_offset)
+                sim_time_s = episode_step * control_dt
+                if self.command_source is not None:
+                    self.command_source.pace(sim_time_s)
                 # --- jump_phase 更新（对齐训练端参考轨迹）---
                 if _jump_active:
                     self.robot.command[5] = 1.0
                     self.robot.command[7] = float(
                         min(_traj_step, _traj_steps - 1) / max(_traj_steps - 1, 1)
                     )
-                    if _tm is not None and _traj_step == 0:
-                        _tm.set_jump_active()
                     _traj_step += 1
                     if _traj_step >= _traj_steps:
                         _traj_step = 0
                         _jump_active = False
                         self.robot.command[5] = 0.0
                         self.robot.command[7] = 0.0
-                        if _tm is not None:
-                            _tm.clear_jump()
                         if sched.enabled:
                             _interval_steps_remaining = max(1, round(sched.interval_s / control_dt))
                         # 跳跃历程：每次跳跃完成后切换到下一高度
@@ -252,11 +330,8 @@ class Sim2SimWorkflow:
                         _traj_steps = self._trajectory_steps_for_height(
                             float(self.robot.command[6])
                         )
-                        _jump_active = True
-                        if _tm is not None:
-                            _tm.set_jump_active()
+                        _jump_active = True  # 触发下一次跳跃
                 elif script_events and not _jump_active:
-                    sim_time_s = (step - 1) * control_dt
                     if _next_script_event < len(script_events):
                         event = script_events[_next_script_event]
                         if sim_time_s + 1.0e-9 >= float(event.trigger_time_s):
@@ -264,9 +339,7 @@ class Sim2SimWorkflow:
                             _traj_steps = self._trajectory_steps_for_height(
                                 float(self.robot.command[6])
                             )
-                            _jump_active = True
-                            if _tm is not None:
-                                _tm.set_jump_active()
+                            _jump_active = True  # 按脚本触发下一次跳跃
                             _next_script_event += 1
 
                 # --- 行走历程：每步推进 vx ---
@@ -276,31 +349,76 @@ class Sim2SimWorkflow:
 
                 if self.cfg.robot.yaw_pid.enabled:
                     self.robot.update_yaw_command()
-
-                # Build task_mode observation for TaskMode policies
-                _task_mode_obs: np.ndarray | None = None
-                if _tm is not None:
-                    _tm.step(jump_active=_jump_active)
-                    _task_mode_obs = _tm.build_obs(
-                        float(self.robot.command[5]),
-                        float(self.robot.command[6]),
-                        float(self.robot.command[7]),
-                    )
-                    obs = self.robot.observation(task_mode_obs=_task_mode_obs)
-                elif self.cfg.robot.yaw_pid.enabled:
+                    obs = self.robot.observation()
+                if (
+                    self._course is not None
+                    and self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP
+                ):
+                    self._course.step()
+                    vx, yaw = self._course.current_command
+                    self.robot.command[0] = vx
+                    self.robot.command[1] = yaw
                     obs = self.robot.observation()
 
-                action = self.policy.act(obs)
-                obs, reward, done, info = self.robot.step(action, task_mode_obs=_task_mode_obs)
+                rc_switch_event = 0.0
+                while _next_rc_event < len(rc_events):
+                    event = rc_events[_next_rc_event]
+                    if sim_time_s + 1.0e-9 < float(event.trigger_time_s):
+                        break
+                    _rc_output_enabled = bool(event.output_enabled)
+                    _next_rc_event += 1
+                    rc_switch_event = 1.0
+
+                if self.command_source is not None:
+                    command_update = self.command_source.poll(sim_time_s)
+                    if command_update.quit_requested:
+                        done_reason = "user_quit"
+                        break
+                    self.robot.command[0] = float(command_update.lin_vel_x)
+                    self.robot.command[1] = float(command_update.yaw_rate)
+                    self.robot.command[4] = float(command_update.command_height)
+                    if command_update.toggle_output:
+                        _rc_output_enabled = not _rc_output_enabled
+                        rc_switch_event = 1.0
+                    obs = self.robot.observation()
+
+                policy_iteration = self._policy_iteration_int()
+                self.robot.update_stair_ctbc(iteration=policy_iteration)
+                obs = self.robot.observation()
+
+                rc_policy_reset = 0.0
+                if _rc_output_enabled:
+                    action = self.policy.act(obs)
+                    _policy_memory_clean = False
+                    obs, reward, done, info = self.robot.step(action)
+                    info["target_mode"] = "policy"
+                else:
+                    if not _policy_memory_clean:
+                        self.policy.reset()
+                        self.robot.reset_policy_io_state()
+                        obs = self.robot.observation()
+                        _policy_memory_clean = True
+                        rc_policy_reset = 1.0
+                    if rc_sched.off_mode == "hold-current":
+                        obs, reward, done, info = self.robot.step_hold_current()
+                    else:
+                        obs, reward, done, info = self.robot.step_no_torque()
+                info["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                info["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                info["rc_switch_event"] = rc_switch_event
+                info["rc_policy_reset"] = rc_policy_reset
+                info["rc_off_mode"] = str(rc_sched.off_mode)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
                 action_delta = (
-                    np.zeros_like(action_now) if _prev_action is None else action_now - _prev_action
+                    np.zeros_like(action_now)
+                    if _prev_action is None
+                    else periodic_policy_action_delta_np(action_now, _prev_action)
                 )
                 applied_action_delta = (
                     np.zeros_like(applied_action_now)
                     if _prev_applied_action is None
-                    else applied_action_now - _prev_applied_action
+                    else periodic_policy_action_delta_np(applied_action_now, _prev_applied_action)
                 )
                 _prev_action = action_now
                 _prev_applied_action = applied_action_now
@@ -308,9 +426,24 @@ class Sim2SimWorkflow:
                     "step": float(step),
                     "time": float(info["time"]),
                     "height": float(info["height"]),
+                    "reset_floor_lift_m": float(info.get("reset_floor_lift_m", 0.0)),
                     "wheel_clearance": float(info.get("wheel_clearance", 0.0)),
                     "wheel_clearance_left": float(info.get("wheel_clearance_left", 0.0)),
                     "wheel_clearance_right": float(info.get("wheel_clearance_right", 0.0)),
+                    "wheel_lateral_distance": float(info.get("wheel_lateral_distance", 0.0)),
+                    "wheel_fore_aft_offset": float(info.get("wheel_fore_aft_offset", 0.0)),
+                    "leg_mirror_error": float(info.get("leg_mirror_error", 0.0)),
+                    "leg_clearance": float(info.get("leg_clearance", 0.0)),
+                    "base_clearance": float(info.get("base_clearance", 0.0)),
+                    "wheel_contact": float(info.get("wheel_contact", 0.0)),
+                    "wheel_full_contact": float(info.get("wheel_full_contact", 0.0)),
+                    "wheel_contact_left": float(info.get("wheel_contact_left", 0.0)),
+                    "wheel_contact_right": float(info.get("wheel_contact_right", 0.0)),
+                    "leg_contact": float(info.get("leg_contact", 0.0)),
+                    "leg_contact_left": float(info.get("leg_contact_left", 0.0)),
+                    "leg_contact_right": float(info.get("leg_contact_right", 0.0)),
+                    "base_contact": float(info.get("base_contact", 0.0)),
+                    "nonwheel_contact": float(info.get("nonwheel_contact", 0.0)),
                     "tilt_deg": float(info["tilt_deg"]),
                     "roll_deg": float(info.get("roll_deg", 0.0)),
                     "pitch_deg": float(info.get("pitch_deg", 0.0)),
@@ -319,6 +452,9 @@ class Sim2SimWorkflow:
                     "pitch_rate_rad_s": float(info["base_ang_vel_body"][1]),
                     "yaw_rate_rad_s": float(info["base_ang_vel_body"][2]),
                     "reward": float(reward),
+                    "command_lin_vel_x": float(info.get("command_lin_vel_x", 0.0)),
+                    "command_yaw_rate": float(info.get("command_yaw_rate", 0.0)),
+                    "command_height": float(info.get("command_height", 0.0)),
                     "base_lin_vel_x": float(info["base_lin_vel_x"]),
                     "wheel_lin_vel": float(info["wheel_lin_vel"]),
                     "action_delta_l2": float(np.linalg.norm(action_delta)),
@@ -329,12 +465,30 @@ class Sim2SimWorkflow:
                     "applied_action_delta_sq_sum": float(np.sum(np.square(applied_action_delta))),
                     "action_delay_steps": float(info["action_delay_steps"]),
                     "action_delay_s": float(info["action_delay_s"]),
+                    "rc_switch_r": float(info.get("rc_switch_r", 1.0)),
+                    "output_enabled": float(info.get("output_enabled", 1.0)),
+                    "rc_switch_event": float(info.get("rc_switch_event", 0.0)),
+                    "rc_policy_reset": float(info.get("rc_policy_reset", 0.0)),
+                    "rc_off_mode_no_torque": 1.0
+                    if str(info.get("rc_off_mode", "hold-current")) == "no-torque"
+                    else 0.0,
+                    "closed_chain_reset_position_residual_m": float(
+                        info.get("closed_chain_reset_position_residual_m", 0.0)
+                    ),
+                    "closed_chain_reset_velocity_residual": float(
+                        info.get("closed_chain_reset_velocity_residual", 0.0)
+                    ),
                 }
-                samples.append(sample)
+                if collect_samples:
+                    samples.append(sample)
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
+                    viewer_step = max(0, step - viewer_step_offset)
                     self.viewer.log_state(
-                        self.robot.model, self.robot.data, step=step, telemetry=info
+                        self.robot.model, self.robot.data, step=viewer_step, telemetry=info
                     )
+                    if self._viewer_is_closed(self.viewer):
+                        done_reason = "viewer_closed"
+                        break
                 if int(self.cfg.print_every) > 0 and step % int(self.cfg.print_every) == 0:
                     course_info = ""
                     if self._course is not None:
@@ -346,9 +500,27 @@ class Sim2SimWorkflow:
                                 f" jump_h={report.get('height', 0.0):.1f}"
                                 f" ({report.get('index', 0)}/{report.get('total', 0)})"
                             )
+                        elif self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+                            course_info = (
+                                f" course_vx={float(report.get('vx', 0.0)):+.2f}"
+                                f" course_yaw={float(report.get('yaw', 0.0)):+.2f}"
+                            )
+                    rc_info = ""
+                    if (
+                        self.command_source is not None
+                        or rc_events
+                        or not bool(rc_sched.initial_output_enabled)
+                    ):
+                        rc_info = (
+                            f" rc={'on' if _rc_output_enabled else 'off'}"
+                            f" mode={info.get('target_mode', 'policy')}"
+                            f" reset={int(float(info.get('rc_policy_reset', 0.0)))}"
+                        )
                     line = (
                         f"step={step:05d} time={float(info['time']):.3f}"
                         f"{course_info}"
+                        f"{rc_info}"
+                        f" cmd_h={float(info.get('command_height', 0.0)):.3f}"
                         f" base_h={float(info['height']):.3f} "
                         f"wheel_clr={float(info.get('wheel_clearance', 0.0)):.3f} "
                         f"tilt={float(info['tilt_deg']):.2f} "
@@ -389,20 +561,132 @@ class Sim2SimWorkflow:
                 "spec": self.policy.spec.to_dict(),
             },
             "model_diagnostics": model_diag,
+            "pre_policy_settle": pre_policy_settle,
+            "initial_policy_io": initial_policy_io,
+            "deploy_telemetry_init_obs_check": deploy_init_obs_check,
             "rollout": rollout_diagnostics(samples),
             "done_reason": done_reason,
         }
         if script_events:
             summary["jump_events"] = self._jump_event_diagnostics(samples, script_events)
+        if (
+            self.command_source is not None
+            or rc_events
+            or not bool(rc_sched.initial_output_enabled)
+        ):
+            summary["rc_switch"] = self._rc_switch_diagnostics(
+                samples,
+                rc_events,
+                bool(rc_sched.initial_output_enabled),
+            )
+        if self.cfg.course.mode == CourseType.UPRIGHT_VELOCITY_SWEEP:
+            summary["upright_velocity_sweep"] = self._upright_velocity_sweep_diagnostics(
+                samples,
+                self.cfg.course.upright_velocity_sweep_commands,
+            )
+        if self.cfg.course.mode == CourseType.WALK_SWEEP:
+            summary["walk_sweep"] = self._walk_sweep_diagnostics(
+                samples,
+                self.cfg.course.walk_sweep_velocities,
+            )
         if self.cfg.json_output is not None:
             self._write_json(self.cfg.json_output, summary)
         if self.viewer is not None:
             self.viewer.close()
         return summary
 
-    def _make_viewer(self) -> RerunViewer | None:
+    def _apply_viewer_reset_mode(self, mode: str | None) -> str:
+        reset_mode = "normal" if mode is None else str(mode)
+        if reset_mode in RECOVERY_POSE_RP_RAD and reset_mode != "standing":
+            roll, pitch = RECOVERY_POSE_RP_RAD[reset_mode]
+            self.cfg.robot.initial_roll_rad = float(roll)
+            self.cfg.robot.initial_pitch_rad = float(pitch)
+            self.cfg.robot.initial_yaw_rad = self._viewer_default_initial_yaw_rad
+            self.cfg.robot.initial_base_height = 0.16
+            self.cfg.robot.command = (
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                float(RECOVERY_COMMAND_HEIGHT_M),
+                0.0,
+                0.0,
+                0.0,
+            )
+            self.cfg.robot.yaw_pid.enabled = False
+            return f"recovery_reset:{reset_mode}"
+
+        self.cfg.robot.initial_roll_rad = self._viewer_default_initial_roll_rad
+        self.cfg.robot.initial_pitch_rad = self._viewer_default_initial_pitch_rad
+        self.cfg.robot.initial_yaw_rad = self._viewer_default_initial_yaw_rad
+        self.cfg.robot.initial_base_height = self._viewer_default_initial_base_height
+        self.cfg.robot.command = self._viewer_default_command
+        self.cfg.robot.yaw_pid.enabled = self._viewer_default_yaw_pid_enabled
+        return "normal"
+
+    def _policy_iteration_int(self) -> int | None:
+        """返回当前 checkpoint 的迭代数，无法解析时交给 CTBC 使用默认值。"""
+
+        try:
+            return int(self.policy.iteration)
+        except (TypeError, ValueError):
+            return None
+
+    def _make_viewer(self) -> RerunViewer | MujocoViewer | ViserViewer | CompositeViewer | None:
         if self.cfg.viewer.mode == "none":
             return None
+        if self.cfg.viewer.mode == "viser":
+            viewers: list[object] = []
+            if self.cfg.viewer.record_to_rrd is not None:
+                viewers.append(
+                    RerunViewer(
+                        app_id=self.cfg.viewer.app_id,
+                        spawn=False,
+                        address=self.cfg.viewer.address,
+                        record_to_rrd=self.cfg.viewer.record_to_rrd,
+                        memory_limit=self.cfg.viewer.memory_limit,
+                        follow_body=self.cfg.viewer.follow_body,
+                        geom_view=self.cfg.viewer.geom_view,
+                    )
+                )
+            viewers.append(
+                ViserViewer(
+                    model=self.robot.model,
+                    control_dt=self.cfg.robot.sim_dt * self.cfg.robot.control_decimation,
+                    geom_view=self.cfg.viewer.geom_view,
+                    checkpoint_path=self.policy.checkpoint_path,
+                    policy_iteration=self.policy.iteration,
+                )
+            )
+            return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
+        if self.cfg.viewer.mode == "mujoco":
+            key_callback = getattr(self.command_source, "key_callback", None)
+            if not callable(key_callback):
+                key_callback = None
+            viewers: list[object] = []
+            if self.cfg.viewer.record_to_rrd is not None:
+                viewers.append(
+                    RerunViewer(
+                        app_id=self.cfg.viewer.app_id,
+                        spawn=False,
+                        address=self.cfg.viewer.address,
+                        record_to_rrd=self.cfg.viewer.record_to_rrd,
+                        memory_limit=self.cfg.viewer.memory_limit,
+                        follow_body=self.cfg.viewer.follow_body,
+                        geom_view=self.cfg.viewer.geom_view,
+                    )
+                )
+            viewers.append(
+                MujocoViewer(
+                    model=self.robot.model,
+                    data=self.robot.data,
+                    key_callback=key_callback,
+                    pose_joint_names=self.robot.policy_joint_names[:4],
+                    follow_body=self.cfg.viewer.follow_body,
+                    geom_view=self.cfg.viewer.geom_view,
+                )
+            )
+            return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
         return RerunViewer(
             app_id=self.cfg.viewer.app_id,
             spawn=bool(self.cfg.viewer.spawn),
@@ -410,7 +694,134 @@ class Sim2SimWorkflow:
             record_to_rrd=self.cfg.viewer.record_to_rrd,
             memory_limit=self.cfg.viewer.memory_limit,
             follow_body=self.cfg.viewer.follow_body,
+            geom_view=self.cfg.viewer.geom_view,
         )
+
+    @staticmethod
+    def _consume_viewer_reset_request(viewer: object | None) -> str | None:
+        """从 viewer 或组合 viewer 中消费 reset 请求。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_reset_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume_typed = getattr(viewer, "consume_reset_request", None)
+        if callable(consume_typed):
+            requested = consume_typed()
+            return None if requested is None else str(requested)
+        consume = getattr(viewer, "consume_reset_requested", None)
+        if callable(consume):
+            return "normal" if bool(consume()) else None
+        return None
+
+    @staticmethod
+    def _consume_viewer_reset_requested(viewer: object | None) -> bool:
+        """从 viewer 或组合 viewer 中消费 reset 请求。"""
+        if viewer is None:
+            return False
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            return any(Sim2SimWorkflow._consume_viewer_reset_requested(child) for child in children)
+        consume = getattr(viewer, "consume_reset_requested", None)
+        if callable(consume):
+            return bool(consume())
+        return False
+
+    @staticmethod
+    def _consume_viewer_checkpoint_request(viewer: object | None) -> Path | None:
+        """从 viewer 或组合 viewer 中消费 checkpoint 切换请求。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_checkpoint_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume = getattr(viewer, "consume_checkpoint_request", None)
+        if callable(consume):
+            requested = consume()
+            return None if requested is None else Path(requested)
+        return None
+
+    @staticmethod
+    def _notify_viewer_reset(viewer: object | None, mode: str = "normal") -> None:
+        """通知 viewer 主线程已经完成 reset。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_reset(child, mode)
+            return
+        notify = getattr(viewer, "notify_reset", None)
+        if callable(notify):
+            notify(mode)
+
+    @staticmethod
+    def _notify_viewer_checkpoint_loaded(
+        viewer: object | None,
+        checkpoint_path: Path,
+        policy_iteration: object,
+    ) -> None:
+        """通知 viewer 主线程已经完成 checkpoint 切换。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_checkpoint_loaded(
+                    child,
+                    checkpoint_path,
+                    policy_iteration,
+                )
+            return
+        notify = getattr(viewer, "notify_checkpoint_loaded", None)
+        if callable(notify):
+            notify(checkpoint_path, policy_iteration)
+
+    @staticmethod
+    def _notify_viewer_checkpoint_failed(
+        viewer: object | None,
+        checkpoint_path: Path,
+        message: str,
+    ) -> None:
+        """通知 viewer 主线程 checkpoint 切换失败。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_checkpoint_failed(
+                    child,
+                    checkpoint_path,
+                    message,
+                )
+            return
+        notify = getattr(viewer, "notify_checkpoint_failed", None)
+        if callable(notify):
+            notify(checkpoint_path, message)
+
+    @staticmethod
+    def _viewer_is_closed(viewer: object | None) -> bool:
+        """用 duck typing 识别 MuJoCo 窗口关闭状态，兼容 CompositeViewer。"""
+        if viewer is None:
+            return False
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            return any(Sim2SimWorkflow._viewer_is_closed(child) for child in children)
+        is_closed = getattr(viewer, "is_closed", None)
+        if callable(is_closed):
+            return bool(is_closed())
+        closed = getattr(viewer, "closed", None)
+        if closed is not None:
+            return bool(closed)
+        return bool(getattr(viewer, "_closed", False))
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -418,11 +829,118 @@ class Sim2SimWorkflow:
         with path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)
 
+    def _deploy_telemetry_initial_obs_check(self, obs: np.ndarray) -> dict[str, object]:
+        """对比 reset obs 和选中的 deploy telemetry 行。"""
+        reference = self.cfg.deploy_telemetry_reference_obs
+        init_summary = self.cfg.deploy_telemetry_init
+        if reference is None:
+            return {"enabled": False}
+        ref = np.asarray(reference, dtype=np.float64).reshape(-1)
+        got = np.asarray(obs, dtype=np.float64).reshape(-1)
+        if ref.shape != got.shape:
+            return {
+                "enabled": True,
+                "shape_mismatch": True,
+                "reference_shape": list(ref.shape),
+                "obs_shape": list(got.shape),
+            }
+        diff = got - ref
+        slices = self.runtime.observation_slices
+        by_term = {
+            name: float(np.max(np.abs(diff[sl]))) if diff[sl].size else 0.0
+            for name, sl in slices.items()
+        }
+        return {
+            "enabled": True,
+            "shape_mismatch": False,
+            "max_abs_error": float(np.max(np.abs(diff))),
+            "mean_abs_error": float(np.mean(np.abs(diff))),
+            "by_term_max_abs_error": by_term,
+            "mode": "" if init_summary is None else str(init_summary.get("mode", "")),
+            "selected_sample_index": (
+                None if init_summary is None else init_summary.get("selected_sample_index")
+            ),
+            "selected_line_no": None
+            if init_summary is None
+            else init_summary.get("selected_line_no"),
+        }
+
+    def _policy_io_diagnostics(self, obs: np.ndarray) -> dict[str, object]:
+        """记录初始 policy 输入的切片统计，便于定位 obs contract 错位。"""
+        arr = np.asarray(obs, dtype=np.float64).reshape(-1)
+        terms: dict[str, object] = {}
+        for name, sl in self.runtime.observation_slices.items():
+            values = arr[sl]
+            term: dict[str, object] = {
+                "start": int(sl.start),
+                "stop": int(sl.stop),
+                "size": int(values.size),
+                "min": float(np.min(values)) if values.size else 0.0,
+                "max": float(np.max(values)) if values.size else 0.0,
+                "max_abs": float(np.max(np.abs(values))) if values.size else 0.0,
+            }
+            if values.size <= 6:
+                term["values"] = values.tolist()
+            terms[name] = term
+        return {
+            "num_obs": int(arr.size),
+            "expected_num_obs": int(self.runtime.policy.num_obs),
+            "finite": bool(np.isfinite(arr).all()),
+            "terms": terms,
+        }
+
     @staticmethod
     def _fmt(values: object) -> str:
         if not isinstance(values, list):
             return str(values)
         return "[" + ",".join(f"{float(v):+.3f}" for v in values) + "]"
+
+    @staticmethod
+    def _rc_switch_diagnostics(
+        samples: list[dict[str, float]],
+        events: tuple[object, ...],
+        initial_output_enabled: bool,
+    ) -> dict[str, object]:
+        """统计遥控器开关脚本对 policy 输出和 GRU reset 的影响。"""
+        if not samples:
+            return {
+                "initial_output_enabled": bool(initial_output_enabled),
+                "events": [],
+                "samples": 0,
+            }
+        output_enabled = np.asarray([s["output_enabled"] for s in samples], dtype=np.float64)
+        resets = np.asarray([s["rc_policy_reset"] for s in samples], dtype=np.float64)
+        action_delta = np.asarray([s["action_delta_l2"] for s in samples], dtype=np.float64)
+        switch_events = np.asarray([s["rc_switch_event"] for s in samples], dtype=np.float64)
+        event_reports: list[dict[str, object]] = []
+        for event in events:
+            trigger = float(event.trigger_time_s)
+            after = [s for s in samples if trigger <= float(s["time"]) <= trigger + 0.2]
+            event_reports.append(
+                {
+                    "trigger_time_s": trigger,
+                    "output_enabled": bool(event.output_enabled),
+                    "samples_200ms": len(after),
+                    "max_action_delta_l2_200ms": float(
+                        max((s["action_delta_l2"] for s in after), default=0.0)
+                    ),
+                    "max_applied_action_delta_l2_200ms": float(
+                        max((s["applied_action_delta_l2"] for s in after), default=0.0)
+                    ),
+                    "policy_reset_seen_200ms": bool(
+                        any(float(s["rc_policy_reset"]) > 0.5 for s in after)
+                    ),
+                }
+            )
+        return {
+            "initial_output_enabled": bool(initial_output_enabled),
+            "events": event_reports,
+            "samples": len(samples),
+            "enabled_rate": float(np.mean(output_enabled > 0.5)),
+            "switch_count": int(np.sum(switch_events > 0.5)),
+            "policy_reset_count": int(np.sum(resets > 0.5)),
+            "max_action_delta_l2": float(np.max(action_delta)),
+        }
 
     @staticmethod
     def _jump_event_diagnostics(
@@ -473,6 +991,127 @@ class Sim2SimWorkflow:
                     "mean_applied_action_delta_sq_sum": float(np.mean(applied_action_rate)),
                     "max_applied_action_delta_sq_sum": float(np.max(applied_action_rate)),
                     "phases": phase_diagnostics,
+                }
+            )
+        return result
+
+    @staticmethod
+    def _walk_sweep_diagnostics(
+        samples: list[dict[str, float]],
+        velocities: tuple[float, ...],
+    ) -> list[dict[str, object]]:
+        """按 walk-sweep 的速度档位统计稳态跟踪、姿态和接触情况。"""
+        result: list[dict[str, object]] = []
+        for vx_cmd in velocities:
+            window = [
+                s
+                for s in samples
+                if abs(float(s.get("command_lin_vel_x", 0.0)) - float(vx_cmd)) < 1.0e-6
+            ]
+            if not window:
+                result.append(
+                    {
+                        "command_lin_vel_x": float(vx_cmd),
+                        "samples": 0,
+                    }
+                )
+                continue
+            steady = window[max(0, len(window) // 4) :]
+
+            def values(key: str, steady_window: list[dict[str, float]] = steady) -> np.ndarray:
+                return np.asarray([s.get(key, 0.0) for s in steady_window], dtype=np.float64)
+
+            base_vx = values("base_lin_vel_x")
+            wheel_lin = values("wheel_lin_vel")
+            yaw_rate = values("yaw_rate_rad_s")
+            tilt = values("tilt_deg")
+            height = values("height")
+            leg_contact = values("leg_contact")
+            wheel_contact = values("wheel_contact")
+            wheel_full_contact = values("wheel_full_contact")
+            nonwheel_contact = values("nonwheel_contact")
+            leg_clearance = values("leg_clearance")
+            base_clearance = values("base_clearance")
+            velocity_error = np.abs(base_vx - float(vx_cmd))
+            wheel_velocity_error = np.abs(wheel_lin - float(vx_cmd))
+            result.append(
+                {
+                    "command_lin_vel_x": float(vx_cmd),
+                    "samples": len(window),
+                    "steady_samples": len(steady),
+                    "mean_base_lin_vel_x": float(np.mean(base_vx)),
+                    "mean_abs_velocity_error": float(np.mean(velocity_error)),
+                    "mean_wheel_lin_vel": float(np.mean(wheel_lin)),
+                    "mean_abs_wheel_velocity_error": float(np.mean(wheel_velocity_error)),
+                    "mean_abs_yaw_rate_rad_s": float(np.mean(np.abs(yaw_rate))),
+                    "mean_tilt_deg": float(np.mean(tilt)),
+                    "max_tilt_deg": float(np.max(tilt)),
+                    "mean_height": float(np.mean(height)),
+                    "wheel_contact_rate": float(np.mean(wheel_contact > 0.5)),
+                    "wheel_full_contact_rate": float(np.mean(wheel_full_contact > 0.5)),
+                    "leg_contact_rate": float(np.mean(leg_contact > 0.5)),
+                    "nonwheel_contact_rate": float(np.mean(nonwheel_contact > 0.5)),
+                    "min_leg_clearance": float(np.min(leg_clearance)),
+                    "min_base_clearance": float(np.min(base_clearance)),
+                }
+            )
+        return result
+
+    @staticmethod
+    def _upright_velocity_sweep_diagnostics(
+        samples: list[dict[str, float]],
+        commands: tuple[tuple[float, float], ...],
+    ) -> list[dict[str, object]]:
+        """按验收速度分组统计轮式平地运动是否被腿部接触套利。"""
+        result: list[dict[str, object]] = []
+        for vx_cmd, yaw_cmd in commands:
+            window = [
+                s
+                for s in samples
+                if abs(float(s.get("command_lin_vel_x", 0.0)) - float(vx_cmd)) < 1.0e-6
+                and abs(float(s.get("command_yaw_rate", 0.0)) - float(yaw_cmd)) < 1.0e-6
+            ]
+            if not window:
+                result.append(
+                    {
+                        "command_lin_vel_x": float(vx_cmd),
+                        "command_yaw_rate": float(yaw_cmd),
+                        "samples": 0,
+                    }
+                )
+                continue
+            steady = window[max(0, len(window) // 4) :]
+
+            def values(key: str, steady_window: list[dict[str, float]] = steady) -> np.ndarray:
+                return np.asarray([s.get(key, 0.0) for s in steady_window], dtype=np.float64)
+
+            base_vx = values("base_lin_vel_x")
+            yaw_rate = values("yaw_rate_rad_s")
+            wheel_lin = values("wheel_lin_vel")
+            leg_contact = values("leg_contact")
+            wheel_contact = values("wheel_contact")
+            wheel_full_contact = values("wheel_full_contact")
+            nonwheel_contact = values("nonwheel_contact")
+            leg_clearance = values("leg_clearance")
+            velocity_error = np.abs(base_vx - float(vx_cmd))
+            yaw_error = np.abs(yaw_rate - float(yaw_cmd))
+            result.append(
+                {
+                    "command_lin_vel_x": float(vx_cmd),
+                    "command_yaw_rate": float(yaw_cmd),
+                    "samples": len(window),
+                    "steady_samples": len(steady),
+                    "mean_base_lin_vel_x": float(np.mean(base_vx)),
+                    "mean_abs_velocity_error": float(np.mean(velocity_error)),
+                    "mean_yaw_rate": float(np.mean(yaw_rate)),
+                    "mean_abs_yaw_error": float(np.mean(yaw_error)),
+                    "mean_wheel_lin_vel": float(np.mean(wheel_lin)),
+                    "mean_abs_wheel_lin_vel": float(np.mean(np.abs(wheel_lin))),
+                    "wheel_contact_rate": float(np.mean(wheel_contact > 0.5)),
+                    "wheel_full_contact_rate": float(np.mean(wheel_full_contact > 0.5)),
+                    "leg_contact_rate": float(np.mean(leg_contact > 0.5)),
+                    "nonwheel_contact_rate": float(np.mean(nonwheel_contact > 0.5)),
+                    "min_leg_clearance": float(np.min(leg_clearance)),
                 }
             )
         return result
@@ -568,5 +1207,9 @@ class Sim2SimWorkflow:
         return int(data["base_pos"].shape[0])
 
 
-def run_sim2sim(cfg: RunConfig) -> dict[str, object]:
-    return Sim2SimWorkflow(cfg).run()
+def run_sim2sim(
+    cfg: RunConfig,
+    *,
+    command_source: CommandInputSource | None = None,
+) -> dict[str, object]:
+    return Sim2SimWorkflow(cfg, command_source=command_source).run()

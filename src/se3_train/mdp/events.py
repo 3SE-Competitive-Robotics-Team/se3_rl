@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import mujoco
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -19,8 +20,9 @@ from mjlab.utils.lab_api.math import (
 )
 
 from se3_shared import (
-    FourbarRobotConfig,
-    JointGroup,
+    RobotConfig as SharedRobotConfig,
+)
+from se3_shared import (
     output_to_policy_pos_torch,
     policy_to_output_pos_torch,
     policy_to_output_vel_torch,
@@ -30,7 +32,6 @@ from se3_train.mdp.height_default_cache import update_policy_default_from_height
 from se3_train.mdp.joint_indices import (
     is_closedchain_model,
     is_fourbar_surrogate_model,
-    joint_ids,
     policy_leg_joint_ids,
     tensor_ids,
     wheel_joint_ids,
@@ -46,11 +47,19 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
-_SHARED_ROBOT = FourbarRobotConfig()
+_SHARED_ROBOT = SharedRobotConfig()
 _FULL_ANGLE_RESET_BBOX_MIN = (-0.278, -0.242, -0.323)
 _FULL_ANGLE_RESET_BBOX_MAX = (0.278, 0.242, 0.111)
 _FOURBAR_WHEEL_RADIUS_M = 0.060
 _DEFAULT_RESET_WHEEL_CLEARANCE_M = 0.001
+_GEOM_PLANE = int(mujoco.mjtGeom.mjGEOM_PLANE)
+_GEOM_HFIELD = int(mujoco.mjtGeom.mjGEOM_HFIELD)
+_GEOM_SPHERE = int(mujoco.mjtGeom.mjGEOM_SPHERE)
+_GEOM_CAPSULE = int(mujoco.mjtGeom.mjGEOM_CAPSULE)
+_GEOM_ELLIPSOID = int(mujoco.mjtGeom.mjGEOM_ELLIPSOID)
+_GEOM_CYLINDER = int(mujoco.mjtGeom.mjGEOM_CYLINDER)
+_GEOM_BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
+_GEOM_MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
 
 
 def _stage_value(stage: dict, key: str, default):
@@ -133,8 +142,22 @@ def _ensure_recovery_float_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Te
     return values
 
 
+def _np_str_tuple(values) -> tuple[str, ...]:
+    """把 np 字符串/bytes 数组转成普通字符串元组。"""
+    array = values.tolist()
+    if not isinstance(array, list):
+        array = [array]
+    return tuple(
+        item.decode("utf-8") if isinstance(item, bytes | bytearray) else str(item) for item in array
+    )
+
+
 def _load_recovery_state_cache(
-    env: ManagerBasedRlEnv, path: str | None
+    env: ManagerBasedRlEnv,
+    path: str | None,
+    *,
+    asset: Entity,
+    split: str = "train",
 ) -> dict[str, torch.Tensor] | None:
     """懒加载离线生成的倒地稳定状态缓存。"""
     if path is None or path == "":
@@ -144,7 +167,9 @@ def _load_recovery_state_cache(
     if not isinstance(cache_store, dict):
         cache_store = {}
         env._recovery_state_cache_store = cache_store
-    cached = cache_store.get(path)
+    split_key = "" if split is None else str(split).strip().lower()
+    cache_key = (path, split_key, tuple(str(name) for name in asset.joint_names))
+    cached = cache_store.get(cache_key)
     if cached is not None:
         return cached
 
@@ -159,46 +184,91 @@ def _load_recovery_state_cache(
     import numpy as np
 
     data = np.load(cache_path)
+    format_version = int(data["format_version"]) if "format_version" in data else 1
     required = ("root_pos", "root_quat", "root_lin_vel", "root_ang_vel", "joint_pos", "joint_vel")
     missing = [name for name in required if name not in data]
     if missing:
         raise ValueError(f"recovery state cache 缺少字段: {missing}")
 
+    row_indices = np.arange(data["root_pos"].shape[0])
+    if format_version >= 2 and split_key not in {"", "all"}:
+        if "split" not in data:
+            raise ValueError("recovery v2 cache 缺少 split 字段")
+        split_values = np.asarray(data["split"]).astype(str)
+        row_indices = np.flatnonzero(split_values == split_key)
+        if row_indices.size == 0:
+            raise ValueError(f"recovery cache split={split_key!r} 没有样本")
+
+    joint_pos = data["joint_pos"][row_indices]
+    joint_vel = data["joint_vel"][row_indices]
+    if format_version >= 2:
+        if "joint_names" not in data:
+            raise ValueError("recovery v2 cache 缺少 joint_names 字段")
+        cache_joint_names = _np_str_tuple(data["joint_names"])
+        cache_joint_to_idx = {name: idx for idx, name in enumerate(cache_joint_names)}
+        current_joint_names = tuple(str(name) for name in asset.joint_names)
+        missing_current = [name for name in current_joint_names if name not in cache_joint_to_idx]
+        if missing_current:
+            raise ValueError(
+                "recovery v2 cache 和当前 MJCF 关节不匹配，"
+                f"缺少当前模型关节: {missing_current}; cache_joint_names={cache_joint_names}"
+            )
+        remap = np.asarray(
+            [cache_joint_to_idx[name] for name in current_joint_names], dtype=np.int64
+        )
+        joint_pos = joint_pos[:, remap]
+        joint_vel = joint_vel[:, remap]
+
     cache = {
-        name: torch.as_tensor(data[name], device=env.device, dtype=torch.float32)
-        for name in required
+        "root_pos": torch.as_tensor(
+            data["root_pos"][row_indices], device=env.device, dtype=torch.float32
+        ),
+        "root_quat": torch.as_tensor(
+            data["root_quat"][row_indices], device=env.device, dtype=torch.float32
+        ),
+        "root_lin_vel": torch.as_tensor(
+            data["root_lin_vel"][row_indices], device=env.device, dtype=torch.float32
+        ),
+        "root_ang_vel": torch.as_tensor(
+            data["root_ang_vel"][row_indices], device=env.device, dtype=torch.float32
+        ),
+        "joint_pos": torch.as_tensor(joint_pos, device=env.device, dtype=torch.float32),
+        "joint_vel": torch.as_tensor(joint_vel, device=env.device, dtype=torch.float32),
     }
     if "pose_type" in data:
-        cache["pose_type"] = torch.as_tensor(data["pose_type"], device=env.device, dtype=torch.long)
+        cache["pose_type"] = torch.as_tensor(
+            data["pose_type"][row_indices], device=env.device, dtype=torch.long
+        )
     else:
         cache["pose_type"] = torch.zeros(
             cache["root_pos"].shape[0], device=env.device, dtype=torch.long
         )
 
-    cache_store[path] = cache
+    cache_store[cache_key] = cache
     if hasattr(env, "extras"):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/cache_missing": 0.0,
                 "Recovery/cache_size": float(cache["root_pos"].shape[0]),
+                "Recovery/cache_format_version": float(format_version),
             }
         )
     return cache
 
 
-def _pre_resample_jump_command_for_reset(
+def _pre_resample_command_for_reset(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     command_name: str = "velocity_height",
 ) -> None:
-    """在 reset 写状态前预采样跳跃指令，保证 RSI 读取新 episode 的 jump_flag。"""
+    """在 reset 写状态前预采样指令，保证姿态 reset 读取新 episode command。"""
     if not hasattr(env, "command_manager"):
         return
     try:
         term = env.command_manager.get_term(command_name)
     except Exception:
         return
-    if isinstance(term, JumpCommandTerm):
+    if hasattr(term, "pre_resample_for_reset"):
         term.pre_resample_for_reset(env_ids)
 
 
@@ -213,19 +283,6 @@ def _quat_z_row(quat: torch.Tensor) -> torch.Tensor:
         ),
         dim=-1,
     )
-
-
-def _quat_from_horizontal_axis_angle(
-    axis_heading: torch.Tensor, angle: torch.Tensor
-) -> torch.Tensor:
-    """按水平倾倒轴和倾倒角构造四元数。"""
-    half = 0.5 * angle
-    sin_half = torch.sin(half)
-    quat = torch.zeros((*angle.shape, 4), device=angle.device, dtype=angle.dtype)
-    quat[:, 0] = torch.cos(half)
-    quat[:, 1] = torch.cos(axis_heading) * sin_half
-    quat[:, 2] = torch.sin(axis_heading) * sin_half
-    return quat
 
 
 def _full_angle_safe_base_height(
@@ -273,7 +330,7 @@ def reset_root_state_robotlab_full_random(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _pre_resample_jump_command_for_reset(env, env_ids)
+    _pre_resample_command_for_reset(env, env_ids)
     stage, curriculum_progress = _active_curriculum_stage(
         env,
         curriculum_stages,
@@ -497,36 +554,30 @@ def reset_root_state_robotlab_full_random(
         log.update(log_values)
 
 
-def reset_root_state_full_angle_random(
+def reset_root_state_recovery_standard_poses(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    tilt_range: tuple[float, float] = (0.0, torch.pi),
-    tilt_axis_range: tuple[float, float] = (-torch.pi, torch.pi),
-    yaw_range: tuple[float, float] = (-torch.pi, torch.pi),
-    height_range: tuple[float, float] = (0.26, 0.36),
-    clearance_range: tuple[float, float] = (0.02, 0.05),
-    pitch_flip_prob: float = 0.0,
-    pitch_flip_tilt_range: tuple[float, float] = (torch.pi, torch.pi),
-    pitch_flip_axis_jitter_range: tuple[float, float] = (0.0, 0.0),
-    pitch_flip_height_range: tuple[float, float] = (0.10, 0.16),
-    pitch_flip_clearance_range: tuple[float, float] = (0.0, 0.02),
-    pos_xy_range: tuple[float, float] = (-0.1, 0.1),
-    lin_vel_range: tuple[float, float] = (-0.15, 0.15),
-    ang_vel_range: tuple[float, float] = (-0.8, 0.8),
+    pos_xy_range: tuple[float, float] = (-0.15, 0.15),
+    height_offset_range: tuple[float, float] = (0.0, 0.02),
+    yaw_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
+    roll_jitter_range: tuple[float, float] = (-0.08726646259971647, 0.08726646259971647),
+    pitch_jitter_range: tuple[float, float] = (-0.08726646259971647, 0.08726646259971647),
+    lin_vel_range: tuple[float, float] = (0.0, 0.0),
+    ang_vel_range: tuple[float, float] = (0.0, 0.0),
+    clearance_range: tuple[float, float] = (0.001, 0.005),
+    pose_weights: tuple[float, float, float, float, float] = (0.08, 0.17, 0.17, 0.29, 0.29),
     curriculum_stages: list[dict] | None = None,
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
-    mark_recovery_episode: bool = False,
     recovery_command_height: float = _SHARED_ROBOT.default_base_height,
-    recovery_command_height_range: tuple[float, float] | None = None,
 ) -> None:
-    """统一 reset：随机倾倒角和水平倾倒轴，不区分 roll/pitch 来源。"""
+    """按标准站立、侧躺、俯卧和仰卧姿态重置 root。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _pre_resample_jump_command_for_reset(env, env_ids)
+    _pre_resample_command_for_reset(env, env_ids)
     stage, curriculum_progress = _active_curriculum_stage(
         env,
         curriculum_stages,
@@ -534,32 +585,15 @@ def reset_root_state_full_angle_random(
         steps_per_policy_iter=steps_per_policy_iter,
         offset_iter=offset_iter,
     )
-    tilt_range = _stage_value(stage, "tilt_range", tilt_range)
-    tilt_axis_range = _stage_value(stage, "tilt_axis_range", tilt_axis_range)
-    yaw_range = _stage_value(stage, "yaw_range", yaw_range)
-    height_range = _stage_value(stage, "height_range", height_range)
-    clearance_range = _stage_value(stage, "clearance_range", clearance_range)
-    pitch_flip_prob = float(_stage_value(stage, "pitch_flip_prob", pitch_flip_prob))
-    pitch_flip_tilt_range = _stage_value(stage, "pitch_flip_tilt_range", pitch_flip_tilt_range)
-    pitch_flip_axis_jitter_range = _stage_value(
-        stage,
-        "pitch_flip_axis_jitter_range",
-        pitch_flip_axis_jitter_range,
-    )
-    pitch_flip_height_range = _stage_value(
-        stage, "pitch_flip_height_range", pitch_flip_height_range
-    )
-    pitch_flip_clearance_range = _stage_value(
-        stage,
-        "pitch_flip_clearance_range",
-        pitch_flip_clearance_range,
-    )
     pos_xy_range = _stage_value(stage, "pos_xy_range", pos_xy_range)
+    height_offset_range = _stage_value(stage, "height_offset_range", height_offset_range)
+    yaw_range = _stage_value(stage, "yaw_range", yaw_range)
+    roll_jitter_range = _stage_value(stage, "roll_jitter_range", roll_jitter_range)
+    pitch_jitter_range = _stage_value(stage, "pitch_jitter_range", pitch_jitter_range)
     lin_vel_range = _stage_value(stage, "lin_vel_range", lin_vel_range)
     ang_vel_range = _stage_value(stage, "ang_vel_range", ang_vel_range)
-    recovery_command_height_range = _stage_value(
-        stage, "recovery_command_height_range", recovery_command_height_range
-    )
+    clearance_range = _stage_value(stage, "clearance_range", clearance_range)
+    pose_weights = _stage_value(stage, "pose_weights", pose_weights)
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -578,152 +612,116 @@ def reset_root_state_full_angle_random(
     pos = root_states[:, 0:3].clone()
     pos[:, 0] += _sample_range(pos_xy_range, (n,))
     pos[:, 1] += _sample_range(pos_xy_range, (n,))
-    tilt = _sample_range(tilt_range, (n,))
-    tilt_axis = _sample_range(tilt_axis_range, (n,))
-    yaw = _sample_range(yaw_range, (n,))
-    pitch_flip_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
-    if pitch_flip_prob > 0.0:
-        pitch_flip_mask = torch.rand(n, device=env.device) < pitch_flip_prob
-        if pitch_flip_mask.any():
-            n_pitch_flip = int(pitch_flip_mask.sum().item())
-            pitch_flip_sign = torch.where(
-                torch.rand(n_pitch_flip, device=env.device) < 0.5,
-                torch.tensor(-1.0, device=env.device),
-                torch.tensor(1.0, device=env.device),
-            )
-            tilt[pitch_flip_mask] = _sample_range(pitch_flip_tilt_range, (n_pitch_flip,))
-            tilt_axis[pitch_flip_mask] = pitch_flip_sign * (0.5 * torch.pi) + _sample_range(
-                pitch_flip_axis_jitter_range, (n_pitch_flip,)
-            )
-    tilt_quat = _quat_from_horizontal_axis_angle(tilt_axis, tilt)
-    yaw_quat = quat_from_euler_xyz(
-        torch.zeros_like(yaw),
-        torch.zeros_like(yaw),
-        yaw,
+
+    weights = torch.tensor(tuple(float(v) for v in pose_weights), device=env.device)
+    if torch.any(weights < 0.0) or float(weights.sum().item()) <= 0.0:
+        raise ValueError(f"recovery 标准姿态权重非法: {pose_weights}")
+    pose_bins = torch.bucketize(
+        torch.rand(n, device=env.device),
+        torch.cumsum(weights / weights.sum(), dim=0)[:-1],
     )
-    quat_delta = quat_mul(yaw_quat, tilt_quat)
-    z_row = _quat_z_row(quat_delta)
-    sampled_height = _sample_range(height_range, (n,))
-    safe_height = _full_angle_safe_base_height(
+
+    roll = torch.zeros(n, device=env.device)
+    pitch = torch.zeros(n, device=env.device)
+    roll[pose_bins == 1] = 0.5 * torch.pi
+    roll[pose_bins == 2] = -0.5 * torch.pi
+    pitch[pose_bins == 3] = torch.pi
+    pitch[pose_bins == 4] = -torch.pi
+    roll += _sample_range(roll_jitter_range, (n,))
+    pitch += _sample_range(pitch_jitter_range, (n,))
+    yaw = _sample_range(yaw_range, (n,))
+
+    quat_delta = quat_from_euler_xyz(roll, pitch, yaw)
+    new_quat = quat_mul(root_states[:, 3:7], quat_delta)
+    z_row = _quat_z_row(new_quat)
+    base_height = _full_angle_safe_base_height(
         z_row,
         _sample_range(clearance_range, (n,)),
-    )
-    base_height = torch.maximum(sampled_height, safe_height)
-    if pitch_flip_mask.any():
-        n_pitch_flip = int(pitch_flip_mask.sum().item())
-        pitch_flip_safe_height = _full_angle_safe_base_height(
-            z_row[pitch_flip_mask],
-            _sample_range(pitch_flip_clearance_range, (n_pitch_flip,)),
-        )
-        pitch_flip_height = _sample_range(pitch_flip_height_range, (n_pitch_flip,))
-        base_height[pitch_flip_mask] = torch.maximum(
-            pitch_flip_height,
-            pitch_flip_safe_height,
-        )
-    pitch_flip_reset = recovery_state.ensure_bool_buffer(env, "_recovery_pitch_flip_reset_mask")
-    pitch_flip_reset[env_ids] = pitch_flip_mask
+    ) + _sample_range(height_offset_range, (n,))
 
     pos[:, 0:3] += env.scene.env_origins[env_ids]
     pos[:, 2] = base_height + env.scene.env_origins[env_ids, 2]
 
-    new_quat = quat_mul(root_states[:, 3:7], quat_delta)
+    vel = root_states[:, 7:13].clone()
+    vel[:, 0:3] += _sample_range(lin_vel_range, (n, 3))
+    vel[:, 3:6] += _sample_range(ang_vel_range, (n, 3))
 
-    vel = torch.zeros(n, 6, device=env.device)
-    vel[:, 0:3] = _sample_range(lin_vel_range, (n, 3))
-    vel[:, 3:6] = _sample_range(ang_vel_range, (n, 3))
-
-    if mark_recovery_episode:
-        recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
-        recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
-        env._recovery_command_height = float(recovery_command_height)
-        command_height = torch.full(
-            (n,),
-            float(recovery_command_height),
-            device=env.device,
-        )
-        if recovery_command_height_range is not None:
-            command_height = _sample_range(recovery_command_height_range, (n,))
-        command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-        command_height_buf[env_ids] = command_height
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                cmd[env_ids, 4] = command_height
-                update_policy_default_from_height_cache(
-                    env,
-                    "velocity_height",
-                    env_ids=env_ids,
-                    command=cmd,
-                )
-            except Exception:
-                pass
-        init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
-        init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
-        init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
-        init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
-        roll_ref, pitch_ref, yaw_ref = euler_xyz_from_quat(new_quat)
-        init_tilt[env_ids] = tilt
-        init_yaw[env_ids] = yaw_ref
-        init_roll[env_ids] = roll_ref
-        init_pitch[env_ids] = pitch_ref
-    else:
-        # 清空旧 recovery buffer，避免旧实验残留把统一 reset 误判成 recovery active。
-        for name in (
-            "_recovery_reset_mask",
-            "_recovery_episode_mask",
-            "_recovery_cache_reset_mask",
-        ):
-            values = getattr(env, name, None)
-            if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
-                values[env_ids] = False
-
-    asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
-    asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
-
-    # 6DoF base tracking 使用 reset 后的 xy/yaw 作为局部参考零点。
-    if not hasattr(env, "_jump_pose_ref_pos_w"):
-        env._jump_pose_ref_pos_w = torch.zeros((env.num_envs, 3), device=env.device)
-    if not hasattr(env, "_jump_pose_ref_yaw"):
-        env._jump_pose_ref_yaw = torch.zeros(env.num_envs, device=env.device)
-    _, _, yaw_ref = euler_xyz_from_quat(new_quat)
-    env._jump_pose_ref_pos_w[env_ids] = pos
-    env._jump_pose_ref_yaw[env_ids] = yaw_ref
-
-    init_tilt_deg = torch.rad2deg(tilt)
-    bins = torch.bucketize(
-        init_tilt_deg,
-        torch.tensor((30.0, 75.0, 130.0), device=env.device),
+    recovery_state.set_recovery_episode(
+        env,
+        env_ids,
+        torch.ones(n, device=env.device, dtype=torch.bool),
     )
+    env._recovery_command_height = float(recovery_command_height)
+    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
+    command_height_buf[env_ids] = float(recovery_command_height)
+    env._recovery_stage_step = int(stage.get("iteration", stage.get("step", 0)))
+    env._recovery_stage_prob = 1.0
+    env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[0].item() / weights.sum().item())
+    env._recovery_stage_cache_prob = 0.0
+    if hasattr(env, "command_manager"):
+        try:
+            cmd = env.command_manager.get_command("velocity_height")
+            cmd[env_ids, 0:4] = 0.0
+            cmd[env_ids, 4] = float(recovery_command_height)
+            if cmd.shape[1] >= 8:
+                cmd[env_ids, 5] = 0.0
+                cmd[env_ids, 7] = 0.0
+            update_policy_default_from_height_cache(
+                env,
+                "velocity_height",
+                env_ids=env_ids,
+                command=cmd,
+            )
+        except Exception:
+            pass
+
+    init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
+    init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
+    _ensure_recovery_float_buffer(env, "_recovery_init_tilt")[env_ids] = init_tilt
+    _ensure_recovery_float_buffer(env, "_recovery_init_yaw")[env_ids] = init_yaw
+    _ensure_recovery_float_buffer(env, "_recovery_init_roll")[env_ids] = init_roll
+    _ensure_recovery_float_buffer(env, "_recovery_init_pitch")[env_ids] = init_pitch
+
     tilt_bins = getattr(env, "_reset_init_tilt_bin", None)
     if not isinstance(tilt_bins, torch.Tensor) or tilt_bins.shape[0] != env.num_envs:
         tilt_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
         env._reset_init_tilt_bin = tilt_bins
-    tilt_bins[env_ids] = bins
+    tilt_bins[env_ids] = torch.bucketize(
+        torch.rad2deg(init_tilt),
+        torch.tensor((30.0, 75.0, 130.0), device=env.device),
+    )
+
+    pose_buffer = getattr(env, "_reset_pose_bin", None)
+    if not isinstance(pose_buffer, torch.Tensor) or pose_buffer.shape[0] != env.num_envs:
+        pose_buffer = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._reset_pose_bin = pose_buffer
+    pose_buffer[env_ids] = pose_bins
+
+    asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
+    asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
+
+    if not hasattr(env, "_jump_pose_ref_pos_w"):
+        env._jump_pose_ref_pos_w = torch.zeros((env.num_envs, 3), device=env.device)
+    if not hasattr(env, "_jump_pose_ref_yaw"):
+        env._jump_pose_ref_yaw = torch.zeros(env.num_envs, device=env.device)
+    env._jump_pose_ref_pos_w[env_ids] = pos
+    env._jump_pose_ref_yaw[env_ids] = init_yaw
 
     if hasattr(env, "extras"):
         log = env.extras.setdefault("log", {})
+        for idx, name in enumerate(("standing", "left_side", "right_side", "prone", "supine")):
+            log[f"Reset/standard_pose_{name}_ratio"] = (pose_bins == idx).float().mean().item()
         log.update(
             {
-                "Reset/full_angle_random_ratio": 1.0,
-                "Reset/pitch_flip_ratio": pitch_flip_mask.float().mean().item(),
-                "Reset/pitch_flip_mean_height_m": (
-                    base_height[pitch_flip_mask].mean().item() if pitch_flip_mask.any() else 0.0
-                ),
-                "Reset/curriculum_progress": float(curriculum_progress),
-                "Reset/curriculum_tilt_max_deg": float(tilt_range[1]) * 180.0 / 3.141592653589793,
-                "Reset/mean_init_tilt_deg": init_tilt_deg.mean().item(),
-                "Reset/max_init_tilt_deg": init_tilt_deg.max().item(),
-                "Reset/mean_base_height_m": base_height.mean().item(),
-                "Reset/min_base_height_m": base_height.min().item(),
-                "Reset/max_base_height_m": base_height.max().item(),
-                "Reset/safe_height_clamp_ratio": (base_height > sampled_height)
-                .float()
+                "Reset/standard_pose_curriculum_progress": float(curriculum_progress),
+                "Reset/standard_pose_mean_init_tilt_deg": torch.rad2deg(init_tilt).mean().item(),
+                "Reset/standard_pose_mean_base_height_m": base_height.mean().item(),
+                "Reset/standard_pose_root_lin_vel_norm": torch.linalg.norm(vel[:, 0:3], dim=1)
                 .mean()
                 .item(),
-                "Reset/init_tilt_bin_upright_noise_ratio": (bins == 0).float().mean().item(),
-                "Reset/init_tilt_bin_near_fall_ratio": (bins == 1).float().mean().item(),
-                "Reset/init_tilt_bin_hard_tilt_ratio": (bins == 2).float().mean().item(),
-                "Reset/init_tilt_bin_inverted_ratio": (bins == 3).float().mean().item(),
+                "Reset/standard_pose_root_ang_vel_norm": torch.linalg.norm(vel[:, 3:6], dim=1)
+                .mean()
+                .item(),
             }
         )
 
@@ -732,7 +730,6 @@ def reset_root_state_full(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    base_height: float | None = None,
     recovery_prob: float = 0.0,
     recovery_stages: list[dict] | None = None,
     recovery_roll_range: tuple[float, float] = (-0.35, 0.35),
@@ -751,14 +748,17 @@ def reset_root_state_full(
     recovery_fallen_height_range: tuple[float, float] = (0.12, 0.24),
     recovery_state_cache_path: str | None = None,
     recovery_state_cache_prob: float = 0.0,
+    recovery_state_cache_split: str = "train",
     recovery_grace_steps: int = 400,
-    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
+    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
+    recovery_zero_velocity_command: bool = True,
+    recovery_mask_attr: str | None = None,
 ) -> None:
     """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _pre_resample_jump_command_for_reset(env, env_ids)
+    _pre_resample_command_for_reset(env, env_ids)
 
     asset: Entity = env.scene[asset_cfg.name]
     default_root_state = asset.data.default_root_state
@@ -767,8 +767,6 @@ def reset_root_state_full(
 
     n = len(env_ids)
     pos = root_states[:, 0:3].clone()
-    if base_height is not None:
-        pos[:, 2] = float(base_height)
     pos[:, 0] += sample_uniform(
         torch.tensor(-0.1, device=env.device),
         torch.tensor(0.1, device=env.device),
@@ -815,12 +813,19 @@ def reset_root_state_full(
     recovery_state_cache_prob = float(
         _stage_value(stage, "state_cache_prob", recovery_state_cache_prob)
     )
+    recovery_state_cache_split = str(
+        _stage_value(stage, "state_cache_split", recovery_state_cache_split)
+    )
     env._recovery_stage_step = int(stage.get("step", 0))
     env._recovery_stage_prob = float(recovery_prob)
     env._recovery_stage_fallen_pose_prob = float(recovery_fallen_pose_prob)
     env._recovery_stage_cache_prob = float(recovery_state_cache_prob)
 
     recovery_mask = torch.rand(n, device=env.device) < recovery_prob
+    if recovery_mask_attr:
+        preset_mask = getattr(env, recovery_mask_attr, None)
+        if isinstance(preset_mask, torch.Tensor) and preset_mask.shape[0] == env.num_envs:
+            recovery_mask = preset_mask[env_ids].to(device=env.device, dtype=torch.bool)
     recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
     init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
     init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
@@ -831,7 +836,23 @@ def reset_root_state_full(
     init_yaw[env_ids] = 0.0
     init_tilt[env_ids] = 0.0
     env._recovery_grace_steps = int(recovery_grace_steps)
-    env._recovery_command_height = float(recovery_command_height)
+    env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
+    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
+    if recovery_command_height is None:
+        env._recovery_command_height = float("nan")
+        if hasattr(env, "command_manager"):
+            try:
+                cmd = env.command_manager.get_command("velocity_height")
+                command_height_buf[env_ids] = cmd[env_ids, 4].to(
+                    device=env.device, dtype=command_height_buf.dtype
+                )
+            except Exception:
+                command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
+        else:
+            command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
+    else:
+        env._recovery_command_height = float(recovery_command_height)
+        command_height_buf[env_ids] = float(recovery_command_height)
 
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
@@ -848,7 +869,12 @@ def reset_root_state_full(
     if recovery_mask.any():
         n_recovery = int(recovery_mask.sum().item())
         recovery_indices = recovery_mask.nonzero().flatten()
-        cache = _load_recovery_state_cache(env, recovery_state_cache_path)
+        cache = _load_recovery_state_cache(
+            env,
+            recovery_state_cache_path,
+            asset=asset,
+            split=recovery_state_cache_split,
+        )
         if cache is not None and recovery_state_cache_prob > 0.0:
             cache_mask[recovery_indices] = (
                 torch.rand(n_recovery, device=env.device) < recovery_state_cache_prob
@@ -1042,8 +1068,13 @@ def reset_root_state_full(
             try:
                 cmd = env.command_manager.get_command("velocity_height")
                 recovery_env_ids = env_ids[recovery_mask]
-                cmd[recovery_env_ids, 0:4] = 0.0
-                cmd[recovery_env_ids, 4] = float(recovery_command_height)
+                if recovery_zero_velocity_command:
+                    cmd[recovery_env_ids, 0:2] = 0.0
+                cmd[recovery_env_ids, 2:4] = 0.0
+                if recovery_command_height is None:
+                    cmd[recovery_env_ids, 4] = command_height_buf[recovery_env_ids]
+                else:
+                    cmd[recovery_env_ids, 4] = float(recovery_command_height)
                 if cmd.shape[1] >= 8:
                     cmd[recovery_env_ids, 5] = 0.0
                     cmd[recovery_env_ids, 7] = 0.0
@@ -1434,6 +1465,235 @@ def _wheel_center_clearance_from_terrain_sensors(
     return torch.stack(clearances, dim=1).min(dim=1).values
 
 
+def _entity_model_field(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    field_name: str,
+    env_ids: torch.Tensor,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """读取 entity geom 对应的 MuJoCo model 字段，兼容逐 env 和全局字段。"""
+    geom_ids = asset.indexing.geom_ids.to(device=env.device, dtype=torch.long)
+    value = torch.as_tensor(getattr(env.sim.model, field_name), device=env.device)
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    if value.ndim >= 2 and value.shape[0] == env.num_envs:
+        return value[env_ids][:, geom_ids]
+    selected = value[geom_ids]
+    return selected.unsqueeze(0).expand(len(env_ids), *selected.shape)
+
+
+def _entity_model_field_one_env(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    field_name: str,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """读取单个 env 的 entity geom model 字段，用于类型和碰撞属性。"""
+    geom_ids = asset.indexing.geom_ids.to(device=env.device, dtype=torch.long)
+    value = torch.as_tensor(getattr(env.sim.model, field_name), device=env.device)
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    if value.ndim >= 2 and value.shape[0] == env.num_envs:
+        return value[0, geom_ids]
+    return value[geom_ids]
+
+
+def _entity_data_geom_field(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    field_name: str,
+    env_ids: torch.Tensor,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """读取 entity geom 对应的 MuJoCo data 字段。"""
+    geom_ids = asset.indexing.geom_ids.to(device=env.device, dtype=torch.long)
+    value = torch.as_tensor(getattr(asset.data.data, field_name), device=env.device)
+    if dtype is not None:
+        value = value.to(dtype=dtype)
+    return value[env_ids][:, geom_ids]
+
+
+def _entity_collision_geom_local_mask(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+) -> torch.Tensor:
+    """返回 entity 内可碰撞、非地形 geom 的 local mask。"""
+    geom_type = _entity_model_field_one_env(env, asset, "geom_type", dtype=torch.long)
+    contype = _entity_model_field_one_env(env, asset, "geom_contype", dtype=torch.long)
+    conaffinity = _entity_model_field_one_env(env, asset, "geom_conaffinity", dtype=torch.long)
+    finite_geom = (geom_type != _GEOM_PLANE) & (geom_type != _GEOM_HFIELD)
+    collidable = (contype != 0) | (conaffinity != 0)
+    return finite_geom & collidable
+
+
+def _mesh_geom_min_z(
+    env: ManagerBasedRlEnv,
+    geom_pos: torch.Tensor,
+    geom_xmat: torch.Tensor,
+    geom_dataid: torch.Tensor,
+    local_geom_index: int,
+) -> torch.Tensor:
+    """计算 mesh geom 的最低世界 z；默认训练模型主要使用 primitive collision。"""
+    mesh_id = int(geom_dataid[local_geom_index].item())
+    mesh_vertadr = torch.as_tensor(env.sim.model.mesh_vertadr, device=env.device)
+    mesh_vertnum = torch.as_tensor(env.sim.model.mesh_vertnum, device=env.device)
+    vert_adr = int(mesh_vertadr[mesh_id].item())
+    vert_num = int(mesh_vertnum[mesh_id].item())
+    vertices = torch.as_tensor(
+        env.sim.model.mesh_vert,
+        device=env.device,
+        dtype=geom_pos.dtype,
+    )[vert_adr : vert_adr + vert_num]
+    row_z = geom_xmat[:, local_geom_index, 2, :]
+    return geom_pos[:, local_geom_index, 2] + torch.matmul(vertices, row_z.T).amin(dim=0)
+
+
+def _collision_geom_min_z(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    env_ids: torch.Tensor,
+) -> tuple[torch.Tensor, int]:
+    """计算 entity 所有可碰撞 geom 的最低世界 z。"""
+    env.sim.forward()
+    mask = _entity_collision_geom_local_mask(env, asset)
+    if not torch.any(mask):
+        return torch.zeros(len(env_ids), device=env.device), 0
+
+    geom_pos = _entity_data_geom_field(env, asset, "geom_xpos", env_ids, dtype=torch.float32)
+    geom_xmat = _entity_data_geom_field(env, asset, "geom_xmat", env_ids, dtype=torch.float32)
+    if geom_xmat.shape[-1] == 9:
+        geom_xmat = geom_xmat.reshape(*geom_xmat.shape[:-1], 3, 3)
+    geom_size = _entity_model_field(
+        env,
+        asset,
+        "geom_size",
+        env_ids,
+        dtype=geom_pos.dtype,
+    )
+    geom_type = _entity_model_field_one_env(env, asset, "geom_type", dtype=torch.long)
+    geom_dataid = _entity_model_field_one_env(env, asset, "geom_dataid", dtype=torch.long)
+
+    geom_pos = geom_pos[:, mask]
+    geom_xmat = geom_xmat[:, mask]
+    geom_size = geom_size[:, mask]
+    geom_type = geom_type[mask]
+    geom_dataid = geom_dataid[mask]
+
+    min_z = geom_pos[:, :, 2].clone()
+
+    is_sphere = geom_type == _GEOM_SPHERE
+    min_z = torch.where(is_sphere.unsqueeze(0), geom_pos[:, :, 2] - geom_size[:, :, 0], min_z)
+
+    is_capsule = geom_type == _GEOM_CAPSULE
+    is_cylinder = geom_type == _GEOM_CYLINDER
+    is_axial_round = is_capsule | is_cylinder
+    if torch.any(is_axial_round):
+        axis_z = torch.abs(geom_xmat[:, :, 2, 2])
+        radial_z = torch.sqrt(torch.clamp(1.0 - axis_z * axis_z, min=0.0))
+        half_length = geom_size[:, :, 1]
+        half_length = torch.where(
+            is_capsule.unsqueeze(0), half_length + geom_size[:, :, 0], half_length
+        )
+        extent = half_length * axis_z + geom_size[:, :, 0] * radial_z
+        min_z = torch.where(is_axial_round.unsqueeze(0), geom_pos[:, :, 2] - extent, min_z)
+
+    is_box = geom_type == _GEOM_BOX
+    if torch.any(is_box):
+        extent = torch.sum(torch.abs(geom_xmat[:, :, 2, :]) * geom_size[:, :, :3], dim=-1)
+        min_z = torch.where(is_box.unsqueeze(0), geom_pos[:, :, 2] - extent, min_z)
+
+    is_ellipsoid = geom_type == _GEOM_ELLIPSOID
+    if torch.any(is_ellipsoid):
+        extent = torch.linalg.norm(geom_xmat[:, :, 2, :] * geom_size[:, :, :3], dim=-1)
+        min_z = torch.where(is_ellipsoid.unsqueeze(0), geom_pos[:, :, 2] - extent, min_z)
+
+    mesh_indices = torch.nonzero(geom_type == _GEOM_MESH, as_tuple=False).flatten()
+    for mesh_index in mesh_indices.tolist():
+        min_z[:, mesh_index] = _mesh_geom_min_z(
+            env,
+            geom_pos,
+            geom_xmat,
+            geom_dataid,
+            int(mesh_index),
+        )
+
+    return min_z.amin(dim=1), int(mask.sum().item())
+
+
+def snap_root_to_collision_clearance(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    clearance_range: tuple[float, float] = (0.001, 0.005),
+    max_downward_adjustment: float = 0.5,
+    max_upward_adjustment: float = 0.05,
+    command_name: str = "velocity_height",
+) -> None:
+    """把 reset 后机器人整体平移到最低碰撞体接近地面的小间隙。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+    if len(env_ids) == 0:
+        return
+
+    active_local = _non_jump_reset_mask(env, env_ids, command_name)
+    if not active_local.any():
+        return
+    active_env_ids = env_ids[active_local]
+
+    asset: Entity = env.scene[asset_cfg.name]
+    before_min_z, geom_count = _collision_geom_min_z(env, asset, active_env_ids)
+    if geom_count <= 0:
+        if hasattr(env, "extras"):
+            env.extras.setdefault("log", {})["Reset/collision_snap_missing_geom"] = 1.0
+        return
+
+    target_clearance = sample_uniform(
+        torch.tensor(float(clearance_range[0]), device=env.device),
+        torch.tensor(float(clearance_range[1]), device=env.device),
+        (len(active_env_ids),),
+        env.device,
+    )
+    target_min_z = env.scene.env_origins[active_env_ids, 2] + target_clearance
+    adjustment = torch.clamp(
+        target_min_z - before_min_z,
+        min=-float(max_downward_adjustment),
+        max=float(max_upward_adjustment),
+    )
+
+    if adjustment.any():
+        pos = asset.data.root_link_pos_w[active_env_ids].clone()
+        quat = asset.data.root_link_quat_w[active_env_ids].clone()
+        pos[:, 2] += adjustment
+        asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
+        env.sim.forward()
+
+    after_min_z, _ = _collision_geom_min_z(env, asset, active_env_ids)
+    before_clearance = before_min_z - env.scene.env_origins[active_env_ids, 2]
+    after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log["Reset/collision_snap_geom_count"] = float(geom_count)
+        log["Reset/collision_snap_target_clearance_mean_m"] = float(target_clearance.mean().item())
+        log["Reset/collision_snap_before_min_m"] = float(before_clearance.min().item())
+        log["Reset/collision_snap_before_mean_m"] = float(before_clearance.mean().item())
+        log["Reset/collision_snap_after_min_m"] = float(after_clearance.min().item())
+        log["Reset/collision_snap_after_mean_m"] = float(after_clearance.mean().item())
+        log["Reset/collision_snap_adjustment_min_m"] = float(adjustment.min().item())
+        log["Reset/collision_snap_adjustment_max_m"] = float(adjustment.max().item())
+        log["Reset/collision_snap_adjustment_mean_m"] = float(adjustment.mean().item())
+        log["Reset/collision_snap_adjustment_abs_mean_m"] = float(
+            torch.abs(adjustment).mean().item()
+        )
+        log["Reset/collision_snap_adjustment_ratio"] = float(
+            (torch.abs(adjustment) > 1.0e-6).float().mean().item()
+        )
+
+
 def _clamp_policy_leg_pose(
     asset: Entity,
     joint_pos: torch.Tensor,
@@ -1471,8 +1731,6 @@ def reset_joints(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    joint_pos_override: tuple[float, ...] | None = None,
-    update_default_joint_pos: bool = False,
     joint_offset_range: float = 0.0,
     joint_vel_range: tuple[float, float] = (0.0, 0.0),
     wheel_joint_vel_range: tuple[float, float] = (0.0, 0.0),
@@ -1539,33 +1797,9 @@ def reset_joints(
         wheel_joint_randomization_prob = min(max(float(wheel_joint_randomization_prob), 0.0), 1.0)
 
     asset: Entity = env.scene[asset_cfg.name]
-    controlled_joint_ids = tensor_ids(joint_ids(asset, JointGroup.joint_names()), device=env.device)
-    override_joint_ids = controlled_joint_ids
-    override_values = None
-    if joint_pos_override is not None:
-        if len(joint_pos_override) == 4:
-            override_joint_ids = tensor_ids(policy_leg_joint_ids(asset), device=env.device)
-        elif len(joint_pos_override) == len(controlled_joint_ids):
-            override_joint_ids = controlled_joint_ids
-        else:
-            raise ValueError(
-                "joint_pos_override 必须是 4 维腿部关节或 6 维受控关节: "
-                f"got {len(joint_pos_override)}"
-            )
-        override_values = torch.tensor(
-            joint_pos_override,
-            device=env.device,
-            dtype=asset.data.default_joint_pos.dtype,
-        )
-        if update_default_joint_pos:
-            default_joint_pos = asset.data.default_joint_pos.clone()
-            default_joint_pos[env_ids[:, None], override_joint_ids] = override_values
-            asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
 
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
-    if override_values is not None and not update_default_joint_pos:
-        joint_pos[:, override_joint_ids] = override_values
 
     wheel_ids = tensor_ids(wheel_joint_ids(asset), device=env.device)
     joint_pos[:, wheel_ids] = 0.0
@@ -1859,8 +2093,17 @@ def push_robots(
     env_ids: torch.Tensor,
     velocity_range: dict[str, tuple[float, float]],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    skip_recovery_active: bool = False,
 ) -> None:
     """随机速度扰动机器人根节点。"""
+    if skip_recovery_active:
+        recovery_active = getattr(env, "_recovery_reset_mask", None)
+        if isinstance(recovery_active, torch.Tensor) and recovery_active.shape[0] == env.num_envs:
+            env_ids = env_ids[~recovery_active[env_ids].to(device=env.device, dtype=torch.bool)]
+            if env_ids.numel() == 0:
+                env.extras.setdefault("log", {})
+                env.extras["log"]["PushDisturbance/skipped_recovery_active_rate"] = 1.0
+                return
     asset: Entity = env.scene[asset_cfg.name]
     vel_w = asset.data.root_link_vel_w[env_ids]
     active_velocity_range = getattr(env, "_push_velocity_range", velocity_range)
@@ -1873,12 +2116,11 @@ def push_robots(
     vel_w += sample_uniform(ranges[:, 0], ranges[:, 1], vel_w.shape, device=env.device)
     asset.write_root_link_velocity_to_sim(vel_w, env_ids=env_ids)
 
-    if hasattr(env, "extras"):
-        push_max = max(max(abs(low), abs(high)) for low, high in range_list)
-        env.extras.setdefault("log", {})
-        env.extras["log"]["PushDisturbance/active_velocity_max"] = torch.tensor(
-            float(push_max), device=env.device
-        )
+    push_max = max(max(abs(low), abs(high)) for low, high in range_list)
+    env.extras.setdefault("log", {})
+    env.extras["log"]["PushDisturbance/active_velocity_max"] = torch.tensor(
+        float(push_max), device=env.device
+    )
 
 
 def randomize_friction(
@@ -2094,29 +2336,6 @@ def randomize_default_dof_pos(
 
     asset: Entity = env.scene[asset_cfg.name]
     n = len(env_ids)
-
-    if not (is_closedchain_model(asset) or is_fourbar_surrogate_model(asset)):
-        offset = sample_uniform(
-            torch.tensor(offset_range[0], device=env.device),
-            torch.tensor(offset_range[1], device=env.device),
-            (n, len(JointGroup.ALL)),
-            env.device,
-        )
-
-        default_joint_pos = asset.data.default_joint_pos.clone()
-        ctrl_idx = torch.tensor(JointGroup.ALL, device=env.device)
-        default_joint_pos[env_ids[:, None], ctrl_idx] += offset
-
-        soft_limits = asset.data.soft_joint_pos_limits
-        if soft_limits is not None:
-            default_joint_pos[env_ids[:, None], ctrl_idx] = torch.clamp(
-                default_joint_pos[env_ids[:, None], ctrl_idx],
-                soft_limits[env_ids[:, None], ctrl_idx, 0],
-                soft_limits[env_ids[:, None], ctrl_idx, 1],
-            )
-
-        asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
-        return
 
     default_joint_pos = asset.data.default_joint_pos.clone()
 

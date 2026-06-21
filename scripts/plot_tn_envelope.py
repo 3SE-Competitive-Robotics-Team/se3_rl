@@ -1,4 +1,4 @@
-"""可视化 M3508-Hexroll 和 DM-8009P 的 T-N 包络线。
+"""可视化 M3508-C620-14to1 和 DM-8009P 的 T-N 包络线。
 
 用法:
     uv run python scripts/plot_tn_envelope.py
@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import numpy as np
 
-from se3_shared.motor import DM8009P, M3508_HEXROLL, MotorSpec
+from se3_shared.motor import DM8009P, M3508_C620_14, MotorSpec
 
 
 def _tn_envelope(
     motor: MotorSpec,
     vel: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """计算 T-N 包络线上下界 — 与 DcMotorActuatorCfg._clip_effort 一致。"""
+    """计算 T-N 包络线上下界。"""
+    if motor.torque_speed_curve:
+        limit = motor.torque_limit_np(vel)
+        return limit, -limit
+
     sat = motor.stall_torque
     vlim = motor.no_load_speed
     elim = motor.rated_torque
@@ -39,7 +43,7 @@ def main() -> None:
 
     _fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    for ax, motor in zip(axes, [M3508_HEXROLL, DM8009P], strict=True):
+    for ax, motor in zip(axes, [M3508_C620_14, DM8009P], strict=True):
         vel = np.linspace(-motor.no_load_speed * 1.2, motor.no_load_speed * 1.2, 500)
         top, bottom = _tn_envelope(motor, vel)
 

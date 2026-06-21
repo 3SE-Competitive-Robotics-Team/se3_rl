@@ -18,6 +18,8 @@ _KNEE_X = -0.17993464
 _KNEE_Z = 0.00489576
 _CALF_X = 0.05003347
 _CALF_Z = 0.04149627
+_WHEEL_X = -0.15699
+_WHEEL_Z = -0.21049
 _DRIVE_X = 0.04009536
 _DRIVE_Z = 0.04530576
 _COUPLER_LEN = math.hypot(-0.16999653, 0.00108627)
@@ -31,6 +33,11 @@ _TORCH_LUT_CACHE: dict[
     tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ] = {}
 _NP_LUT_CACHE: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+_TORCH_LENGTH_LUT_CACHE: dict[
+    tuple[str, torch.dtype],
+    tuple[torch.Tensor, torch.Tensor],
+] = {}
+_NP_LENGTH_LUT_CACHE: tuple[np.ndarray, np.ndarray] | None = None
 
 
 def is_fourbar_surrogate_name_set(site_names: tuple[str, ...]) -> bool:
@@ -151,6 +158,51 @@ def policy_to_output_torque_torch(
     return out
 
 
+def output_leg_wheel_xz_torch(output_pos: torch.Tensor) -> torch.Tensor:
+    """由输出关节角计算左右轮心相对髋轴的物理 XZ 坐标。"""
+    original_shape = output_pos.shape
+    out = output_pos.reshape(-1, 4)
+    canonical_front = torch.stack((out[:, 0], -out[:, 2]), dim=1)
+    canonical_knee = torch.stack((out[:, 1], -out[:, 3]), dim=1)
+    vec_x, vec_z = _leg_vector_torch(canonical_knee)
+    cos_q = torch.cos(canonical_front)
+    sin_q = torch.sin(canonical_front)
+    wheel_x = cos_q * vec_x + sin_q * vec_z
+    wheel_z = -sin_q * vec_x + cos_q * vec_z
+    return torch.stack((wheel_x, wheel_z), dim=-1).reshape(*original_shape[:-1], 2, 2)
+
+
+def wheel_xz_to_output_pos_torch(wheel_xz: torch.Tensor) -> torch.Tensor:
+    """把左右轮心物理 XZ 目标反解为输出关节角。"""
+    original_shape = wheel_xz.shape
+    target = wheel_xz.reshape(-1, 2, 2)
+    length_grid, active_by_length = _leg_length_lut_torch(target.device, target.dtype)
+    target_length = torch.linalg.vector_norm(target, dim=-1).clamp(
+        min=length_grid[0],
+        max=length_grid[-1],
+    )
+    active = _interp_lut(target_length, length_grid, active_by_length)
+    canonical_knee = output_knee_from_active_angle_torch(active)
+    vec_x, vec_z = _leg_vector_torch(canonical_knee)
+    canonical_front = torch.atan2(vec_x, -vec_z) - torch.atan2(target[..., 0], -target[..., 1])
+
+    output = torch.empty((*target.shape[:-2], 4), device=target.device, dtype=target.dtype)
+    output[:, 0] = canonical_front[:, 0]
+    output[:, 1] = canonical_knee[:, 0]
+    output[:, 2] = -canonical_front[:, 1]
+    output[:, 3] = -canonical_knee[:, 1]
+    return output.reshape(*original_shape[:-2], 4)
+
+
+def output_leg_length_limits_torch(
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回四连杆轮心到髋轴距离的可达范围。"""
+    length_grid, _ = _leg_length_lut_torch(device, dtype)
+    return length_grid[0], length_grid[-1]
+
+
 def policy_to_output_pos_np(policy_pos: np.ndarray) -> np.ndarray:
     """NumPy 版本：把 policy 主动杆语义映射为开树输出关节。"""
     arr = np.asarray(policy_pos, dtype=np.float64)
@@ -266,6 +318,45 @@ def policy_to_output_torque_np(policy_pos: np.ndarray, policy_torque: np.ndarray
     return out.reshape(original_shape)
 
 
+def output_leg_wheel_xz_np(output_pos: np.ndarray) -> np.ndarray:
+    """NumPy 版本：由输出关节角计算左右轮心相对髋轴的物理 XZ 坐标。"""
+    arr = np.asarray(output_pos, dtype=np.float64)
+    original_shape = arr.shape
+    out = arr.reshape(-1, 4)
+    canonical_front = np.stack((out[:, 0], -out[:, 2]), axis=1)
+    canonical_knee = np.stack((out[:, 1], -out[:, 3]), axis=1)
+    vec_x, vec_z = _leg_vector_np(canonical_knee)
+    cos_q = np.cos(canonical_front)
+    sin_q = np.sin(canonical_front)
+    wheel_x = cos_q * vec_x + sin_q * vec_z
+    wheel_z = -sin_q * vec_x + cos_q * vec_z
+    return np.stack((wheel_x, wheel_z), axis=-1).reshape(*original_shape[:-1], 2, 2)
+
+
+def wheel_xz_to_output_pos_np(wheel_xz: np.ndarray) -> np.ndarray:
+    """NumPy 版本：把左右轮心物理 XZ 目标反解为输出关节角。"""
+    arr = np.asarray(wheel_xz, dtype=np.float64)
+    original_shape = arr.shape
+    target = arr.reshape(-1, 2, 2)
+    length_grid, active_by_length = _leg_length_lut_np()
+    target_length = np.clip(
+        np.linalg.norm(target, axis=-1),
+        length_grid[0],
+        length_grid[-1],
+    )
+    active = np.interp(target_length, length_grid, active_by_length)
+    canonical_knee = output_knee_from_active_angle_np_array(active)
+    vec_x, vec_z = _leg_vector_np(canonical_knee)
+    canonical_front = np.arctan2(vec_x, -vec_z) - np.arctan2(target[..., 0], -target[..., 1])
+
+    output = np.empty((*target.shape[:-2], 4), dtype=np.float64)
+    output[:, 0] = canonical_front[:, 0]
+    output[:, 1] = canonical_knee[:, 0]
+    output[:, 2] = -canonical_front[:, 1]
+    output[:, 3] = -canonical_knee[:, 1]
+    return output.reshape(*original_shape[:-2], 4)
+
+
 def _fourbar_lut(
     device: torch.device | str,
     dtype: torch.dtype,
@@ -354,6 +445,38 @@ def _fourbar_lut_np() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, n
     return _NP_LUT_CACHE
 
 
+def _leg_length_lut_torch(
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    key = (str(torch.device(device)), dtype)
+    cached = _TORCH_LENGTH_LUT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    active_grid, knee_grid, _, _, _ = _fourbar_lut(device, dtype)
+    vec_x, vec_z = _leg_vector_torch(knee_grid)
+    length = torch.sqrt(torch.clamp(vec_x * vec_x + vec_z * vec_z, min=1.0e-12))
+    order = torch.argsort(length)
+    cached = (length[order], active_grid[order])
+    _TORCH_LENGTH_LUT_CACHE[key] = cached
+    return cached
+
+
+def _leg_length_lut_np() -> tuple[np.ndarray, np.ndarray]:
+    global _NP_LENGTH_LUT_CACHE
+
+    if _NP_LENGTH_LUT_CACHE is not None:
+        return _NP_LENGTH_LUT_CACHE
+
+    active_grid, knee_grid, _, _, _ = _fourbar_lut_np()
+    vec_x, vec_z = _leg_vector_np(knee_grid)
+    length = np.hypot(vec_x, vec_z)
+    order = np.argsort(length)
+    _NP_LENGTH_LUT_CACHE = (length[order], active_grid[order])
+    return _NP_LENGTH_LUT_CACHE
+
+
 def _inverse_lut_grids_np(
     knee_grid: np.ndarray,
     alpha_grid: np.ndarray,
@@ -398,3 +521,32 @@ def _wrap_angle_np(angle: float) -> float:
 
 def _wrap_angle_np_array(angle: np.ndarray) -> np.ndarray:
     return np.remainder(angle + math.pi, 2.0 * math.pi) - math.pi
+
+
+def _leg_vector_torch(output_knee: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    calf_x = torch.as_tensor(_CALF_X, device=output_knee.device, dtype=output_knee.dtype)
+    calf_z = torch.as_tensor(_CALF_Z, device=output_knee.device, dtype=output_knee.dtype)
+    wheel_x = torch.as_tensor(_WHEEL_X, device=output_knee.device, dtype=output_knee.dtype)
+    wheel_z = torch.as_tensor(_WHEEL_Z, device=output_knee.device, dtype=output_knee.dtype)
+    cos_q = torch.cos(output_knee)
+    sin_q = torch.sin(output_knee)
+    rot_calf_x = cos_q * calf_x + sin_q * calf_z
+    rot_calf_z = -sin_q * calf_x + cos_q * calf_z
+    rot_wheel_x = cos_q * wheel_x + sin_q * wheel_z
+    rot_wheel_z = -sin_q * wheel_x + cos_q * wheel_z
+    x = _KNEE_X + rot_calf_x + rot_wheel_x
+    z = _KNEE_Z + rot_calf_z + rot_wheel_z
+    return x, z
+
+
+def _leg_vector_np(output_knee: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    knee = np.asarray(output_knee, dtype=np.float64)
+    cos_q = np.cos(knee)
+    sin_q = np.sin(knee)
+    rot_calf_x = cos_q * _CALF_X + sin_q * _CALF_Z
+    rot_calf_z = -sin_q * _CALF_X + cos_q * _CALF_Z
+    rot_wheel_x = cos_q * _WHEEL_X + sin_q * _WHEEL_Z
+    rot_wheel_z = -sin_q * _WHEEL_X + cos_q * _WHEEL_Z
+    x = _KNEE_X + rot_calf_x + rot_wheel_x
+    z = _KNEE_Z + rot_calf_z + rot_wheel_z
+    return x, z

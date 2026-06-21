@@ -4,9 +4,9 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 6 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching 基础组件）
-- 机器人：6 DOF（左腿 lf0/lf1/l_wheel + 右腿 rf0/rf1/r_wheel）
-- 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
+- 5 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）
+- 机器人：6 维 policy 动作（`[LF, LB, RF, RB, l_wheel, r_wheel]`），默认 MJCF 为解析四连杆等效开树 `serialleg_fourbar_surrogate_train.xml`；默认站姿为 `[-0.275422946189, -1.592100148957, 0.275422946189, 1.592100148957, 0, 0]`、base 高度约 `0.22 m`；真实闭链 OBB 裁剪模型保留为显式 `closedchain` A/B 对照
+- 控制方式：腿部主动杆位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
 ## 术语表 (Glossary)
 
@@ -52,44 +52,44 @@
 
 ## 核心命令
 
-本仓库按功能包直接调用对应 CLI，不使用单一任务运行器工作流。
+本仓库用 [just](https://github.com/casey/just) 统一命令入口（`justfile`）。运行 `just` 查看所有命令。
 
 ```bash
-# Setup / 检查
-uv sync
-uv run prek install
-uv run python --version
-uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
-uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
+just check       # 环境健康检查（Python / GPU / W&B / prek）
+just setup       # uv sync + prek install
+just smoke       # CPU smoke 验证（5 轮，不上传 W&B）
+just smoke-gpu   # GPU smoke 验证
+just fmt         # ruff 格式化
+just lint        # ruff lint + 自动修复
+just check-code  # 格式化 + lint（提交前执行）
 
-# 代码质量
-uv run ruff format .
-uv run ruff check . --fix
-uv run prek run --all-files
-
-# Smoke 验证（5 轮，不上传 W&B）
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
-
-# 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+# 本地/单卡训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练；xyh 远程档位见下方远程训练机运维）
+just train       # 平地训练，本地默认 1024 envs
+just train-rough # 崎岖地形训练，本地默认 1024 envs
+just train-cpu   # CPU 调试训练（极慢）
 
 # 评估 / sim2sim（纯 MuJoCo CPU + Rerun，macOS 可运行）
-uv run se3-sim2sim --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --checkpoint <checkpoint> --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
-uv run se3-sim2sim --checkpoint <checkpoint> --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+just sim                          # 自动选 checkpoint，Rerun 可视化
+just sim-ckpt <checkpoint>        # 指定 checkpoint
+just sim-headless                 # 无 GUI 快速验证
+just sim-headless-ckpt <ckpt>     # 指定 checkpoint，无 GUI
 
 # 清理
-rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
+just clean       # 清理 logs/ wandb/ replays/
 ```
 
-跳跃任务专用命令：
+如需自定义参数，仍可直接用原始 `uv run` 命令（见 `justfile` 内对应配方）。
+
+### Viser 训练值守（必开）
+
+当前 `codex/xyh` 台阶训练的值守方案以 `docs/laptop_viser_play.md` 为准：A800/abbtask 只负责训练，Windows laptop 运行 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`，开发机只转发 laptop 的 8080 端口并打开浏览器。台阶值守必须确认 Viser 里真实台阶参与 MuJoCo 接触，不能用显示层 overlay 代替碰撞地形。
+
+非台阶任务或本地临时调试仍可用 `se3-play --viewer viser` 打开对应 task/checkpoint，但当前台阶远程训练不要在 A800/abbtask 上启动 MJLab Viser。没有可见 Viser 窗口或 laptop 值守未通过 `docs/laptop_viser_play.md` 的验收项，本次训练视为未完成启动检查。
+
+跳跃任务专用命令（just 暂未封装，直接用 uv run）：
 
 ```bash
-# 跳跃训练
+# 跳跃训练（本地/单卡示例；xyh 远程档位：A800 每卡 4096，gpufree L40S 单卡 8192）
 uv run --env-file .env se3-train SE3-WheelLegged-Jump-PreTrain-GRU --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1024
 
@@ -106,7 +106,7 @@ uv run se3-sim2sim --checkpoint <ckpt> --jump-interval-s 5.0 --jump-target-heigh
 **每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+just smoke
 # 修改了跳跃相关代码时用这条：
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
@@ -168,6 +168,7 @@ Smoke 模式特点：
 
 ### 可视化
 - **动态日志/回放**（sim2sim 轨迹、训练曲线、实时诊断）：必须使用 `rerun-sdk`，禁止 matplotlib
+- **训练值守**：当前台阶远程训练按 `docs/laptop_viser_play.md` 值守，A800/abbtask 只训练，Windows laptop 用 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain` 可视化并提供 8080；非台阶本地调试可继续用 `se3-play --viewer viser`。
 - **静态分析小工具**（参数曲线、几何示意图、包络线等一次性绘图脚本）：允许使用 matplotlib，放在 `scripts/` 目录，参考 `scripts/plot_tn_envelope.py`
 - 可视化是仓库长期建设的一部分，必须严肃对待
 
@@ -178,14 +179,16 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 - 膝关节通过**四连杆机构**（驱动杆 AB → 连杆 BC → 小腿上段 CD）传动
 - 膝关节安装有**气弹簧**，P₁ 在驱动杆对侧（A 下方），P₂ 在小腿对侧（D 下方）
 
+当前训练实验先禁用气弹簧常力，只验证闭链机构本身；重新启用气弹簧前必须重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
+
 运行 `scripts/plot_spring_geometry.py` 可生成带真实 MuJoCo FK 的机构示意图，理解四连杆拓扑和弹簧挂点位置关系。详细方案见 `docs/plan/knee_spring_modeling.md`。
 
 ## 架构关键点
 
 ### 共享配置（核心设计决策）
-`se3_shared` 是训练端和 sim2sim 的单一参数来源，覆盖关节语义、默认姿态、PD 增益、动作缩放、任务级观测契约、控制频率和动作延迟。这样设计的原因：
+`se3_shared` 是训练端和 sim2sim 的单一参数来源，覆盖关节语义、默认姿态、PD 增益、动作缩放、观测维度、控制频率和动作延迟。这样设计的原因：
 1. 训练端和验证端使用同一套机器人常量
-2. 避免动作缩放、默认姿态、观测布局、控制频率或延迟参数漂移导致 sim2sim gap
+2. 避免动作缩放、默认姿态、控制频率或延迟参数漂移导致 sim2sim gap
 3. 后续添加 GRU、恢复任务或部署导出时，有明确的 runtime contract
 
 ### MJLab 环境结构
@@ -197,11 +200,15 @@ se3_train/
 ├── tasks/           # 每个训练任务的最小独立单元
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-GRU
+│   ├── recovery/    # SE3-WheelLegged-Recovery-GRU
+│   ├── recovery_discovery/ # 倒地自启 discovery 阶段
+│   ├── recovery_finetune/  # 倒地自启 fine-tune 阶段
+│   ├── stair/       # SE3-WheelLegged-Stair-GRU，CTBC 倒金字塔台阶任务
 │   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
 │   └── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
-    ├── observations.py     # 32 维 actor 观测（含跳跃扩展）
+    ├── observations.py     # 34 维 actor 观测（含跳跃/台阶扩展槽）
     ├── rewards.py          # 行走奖励函数
     ├── jump_rewards.py     # 跳跃专属奖励函数
     ├── commands.py         # 速度+高度指令生成器
@@ -228,28 +235,37 @@ se3_jump_to/
 
 轨迹文件字段：`base_pos`、`base_vel`、`q_ref`、`q_vel`（关节角速度，用于 RSI）、`t_stance`、`dt` 等。
 
-### 观测空间（32 维 actor）
+### 观测空间（34 维 actor）
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
 [6:11]  commands × (2.0, 0.25, 5.0, 5.0, 5.0)
-[11:15] leg_joint_pos（相对默认姿态）
-[15:19] leg_joint_vel × 0.25
-[19:21] wheel_pos
-[21:23] wheel_vel × 0.05
-[23:29] last_actions
-[29:32] jump_commands  [jump_flag, jump_target_height, jump_phase]
+[11:17] leg_joint_pos [sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]
+[17:21] leg_joint_vel × 0.25
+[21:23] wheel_pos_zero（固定为 0；轮子连续转角不进入 policy）
+[23:25] wheel_vel × 0.05
+[25:31] last_actions
+[31:34] jump_commands  [jump_flag, jump_target_height, jump_phase]
                         jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
+
+台阶任务复用最后 3 维扩展槽输出 CTBC 左右摆动相位和触发位，实际观测项由 `src/se3_train/tasks/stair/observations.py` 定义。
 
 critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和 base height 特权观测。
 
 ### 动作空间（6 维）
 ```
-[lf0, lf1, rf0, rf1, l_wheel, r_wheel]
-腿部：action × 0.25 + default_dof_pos
-轮子：action × 20.0 rad/s
+[LF, LB, RF, RB, l_wheel, r_wheel]
+LF/RF：lf0_Joint/rf0_Joint 主动前杆
+LB/RB：l_drive_bar_Joint/r_drive_bar_Joint 主动后驱动杆
+lf1_Joint/rf1_Joint：被动输出小腿角，不进 actor 腿部观测和 action
+腿部：action × (0.35, 0.25, 0.35, 0.25) + default_dof_pos
+轮子：action × 45.0 rad/s
 ```
+
+当前无气弹簧默认姿态使用 base 高度约 0.22 m 的中等腿长分支：`default_dof_pos=(-0.275422946189, -1.592100148957, 0.275422946189, 1.592100148957, 0, 0)`，`default_output_knee_pos=(-1.242259649307, 1.242259649307)`，`default_coupler_pos=(1.40126634, -1.40126941)`，`default_base_height=0.22`。该点用于 reset 几何和质心投影对齐；两轮倒立平衡仍依赖策略的轮子反馈，不应把零 action 开环自稳当成验收条件。
+
+默认控制频率配置在 `se3_shared.RobotConfig` 中：`sim_dt=0.005`（物理仿真 200 Hz）、`control_decimation=4`，因此 policy/action 更新周期为 `0.02 s`（50 Hz）。该基准对齐 Unitree 官方 RL 仓库常用的 50 Hz policy；修改频率时必须同步训练端、sim2sim、真机 runtime 和所有按秒换算 step 的奖励/课程逻辑。详细记录见 `docs/control_frequency.md`。
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 
@@ -273,7 +289,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
 **触发条件**（满足其一即加载）：
-- 提到远程训练机、GPU 机器、云机器、wuyinyun、无影云、阿里云、腾讯云
+- 提到远程训练机、GPU 机器、云机器、gpufree、a800、NX、Jetson、真机部署、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
 - 需要启动、停止、监控训练进程
 - 需要查看训练日志、wandb 数据
@@ -282,13 +298,20 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 - 询问 tmux 会话管理
 
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
-当前已注册：`wuyinyun`（无影云 RTX 5880）。
+
+**codex/xyh 个人工作分支当前只使用两台远程训练服务器：**
+- `a800`：4 * NVIDIA A800，局域网 Kubernetes 容器，主力多卡训练；默认每卡 `4096 envs`（全局约 `16384 envs`）。
+- `gpufree`：1 * NVIDIA L40S，按量计费单卡训练 / smoke / 备用；默认单卡 `8192 envs`。
+
+`wuyinyun` 不属于当前 `codex/xyh` 分支的可用远程训练服务器；相关文档仅作历史归档，不要把它作为默认 SSH、代理、训练或 checkpoint 拉取目标。`serialleg-nx` 是 Jetson Orin NX 真机部署目标，不是 MJLab 训练服务器。
+
+Windows PowerShell 调远端 bash 时，默认使用 `scripts/remote_bash.ps1` 或 `.agents/skills/remote-dev-se3/SKILL.md` 里的单引号 here-string 模板。禁止把含 `&&`、`$()`、`$变量` 或管道的复杂 bash 直接塞进 PowerShell 双引号字符串里。
 
 ## 环境限制
 
 - **训练**：仅支持 Linux + NVIDIA GPU（CUDA 12.4+）
 - **评估/sim2sim**：支持 macOS、Linux、Windows (WSL)
-- 推荐环境数：1024（6 DOF 机器人，白天）/ 2048（wuyinyun 夜间）
+- 远程主线环境数：A800 四卡每卡 4096 envs；gpufree L40S 单卡 8192 envs。本地 smoke / 调试命令按对应示例显式设置。
 - 推荐 GPU 显存：8GB+（RTX 3090/4090 训练约 2-3 小时）
 
 ## 踩坑记录
@@ -308,11 +331,11 @@ pkill -f "se3-train"
 
 ### wandb 保存依赖
 
-**历史问题**：旧版 RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，会导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
+**问题**：RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
 
 **解决方案**：
-- 当前 `Se3OnPolicyRunner` 已给 W&B 初始化和写入加超时保护，失败后自动降级到本地 TensorBoard，并继续保存 checkpoint
-- 远程长时间训练仍应先确认代理可用，避免丢失在线日志与模型上传
+- 有代理时设置代理环境变量，或用 `boring` 确保隧道存活
+- **绝对不要**依赖 wandb 在线模式在网络不稳定的环境跑长时间训练
 
 ### checkpoint 文件名排序
 
@@ -327,9 +350,18 @@ ls model_*.pt | sort -V
 find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 ```
 
+### A800 pod 同步和回放入口
+
+**问题**：A800 pod 访问 GitHub 可能在 TLS 阶段报 `gnutls_handshake() failed: Error in the pull function`；非交互 shell 里 `uv` 也可能不在 PATH，裸 `uv run` 还可能触发联网下载依赖。
+
+**正确做法**：
+- GitHub 拉取失败时改用 git bundle：本地 `git bundle create <name>.bundle HEAD`，传到宿主机和 pod 后在 pod 内 `git fetch /tmp/<name>.bundle HEAD`，仍保持源码走 git。
+- A800 pod 自动化脚本使用 `/root/.local/bin/uv` 或 `.venv/bin/<entrypoint>` 绝对路径；Rerun 录制优先 `.venv/bin/se3-sim2sim`，避免 `uv run` 临时下载依赖。
+- `kubectl cp` / tar 拉可选 `.done` / `.failed` marker 时，缺少其中一个的 `Cannot stat` warning 通常无害；以主产物存在且 `.done`/`.failed` 至少一个存在为准。
+
 ### 观测维度不对齐
 
-跳跃任务观测为 32 维（行走基模为 31 维）。从行走 checkpoint fine-tune 跳跃任务时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
+当前 actor 观测统一为 34 维。旧的 31/32 维 checkpoint 只能作为权重迁移来源；从旧 checkpoint fine-tune 到当前任务时，需要 `strict=False` 加载，输入层按当前 34 维观测随机初始化，其余权重复用。
 
 ## 常见错误手册
 
@@ -346,6 +378,7 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 se3_wheel_leg/
 ├── pyproject.toml          # 项目配置 + ruff 配置
 ├── prek.toml               # pre-commit 钩子（ruff format + check）
+├── justfile                # just 统一命令入口
 ├── .python-version         # 3.11
 ├── .env                    # 环境变量（API keys，不提交）
 ├── .env.example            # 环境变量模板
@@ -355,7 +388,6 @@ se3_wheel_leg/
 │   ├── base_model/         # 训练完成的基模（_gru.pt / _mlp.pt）
 │   └── trajectories/       # 跳跃参考轨迹（jump_0.4m.npz 等）
 ├── src/
-│   ├── se3_flow_match/    # Flow Matching 基础组件
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
 │   ├── se3_sim2sim/        # sim2sim 验证

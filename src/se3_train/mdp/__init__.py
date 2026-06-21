@@ -16,9 +16,6 @@ from . import leg_alignment as leg_alignment
 from . import observations as observations
 from . import recovery_state as recovery_state
 from . import rewards as rewards
-from . import task_mode_commands as task_mode_commands
-from . import task_mode_rewards as task_mode_rewards
-from . import task_modes as task_modes
 from . import terminations as terminations
 
 __all__ = [
@@ -34,8 +31,5 @@ __all__ = [
     "observations",
     "recovery_state",
     "rewards",
-    "task_mode_commands",
-    "task_mode_rewards",
-    "task_modes",
     "terminations",
 ]

@@ -6,12 +6,13 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import FourbarRobotConfig, policy_default_from_height_torch
+from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared import policy_default_from_height_torch
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
-_FOURBAR_ROBOT = FourbarRobotConfig()
+_SHARED_ROBOT = SharedRobotConfig()
 _CACHE_POSE_ATTR = "_se3_height_conditioned_policy_default"
 _CACHE_HEIGHT_ATTR = "_se3_height_conditioned_policy_default_height"
 
@@ -42,20 +43,20 @@ def update_policy_default_from_height_cache(
     )
 
     if cache_invalid or height_cache_invalid:
-        cache = policy_default_from_height_torch(heights, _FOURBAR_ROBOT)
+        cache = policy_default_from_height_torch(heights, _SHARED_ROBOT)
         height_cache = heights.clone()
         setattr(env, _CACHE_POSE_ATTR, cache)
         setattr(env, _CACHE_HEIGHT_ATTR, height_cache)
         return cache
 
     if env_ids is None:
-        cache[:] = policy_default_from_height_torch(heights, _FOURBAR_ROBOT)
+        cache[:] = policy_default_from_height_torch(heights, _SHARED_ROBOT)
         height_cache[:] = heights
     else:
         if len(env_ids) == 0:
             return cache
         env_ids = env_ids.to(device=heights.device, dtype=torch.long)
-        cache[env_ids] = policy_default_from_height_torch(heights[env_ids], _FOURBAR_ROBOT)
+        cache[env_ids] = policy_default_from_height_torch(heights[env_ids], _SHARED_ROBOT)
         height_cache[env_ids] = heights[env_ids]
     return cache
 
