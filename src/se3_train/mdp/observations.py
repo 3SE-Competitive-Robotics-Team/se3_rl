@@ -35,12 +35,108 @@ _OBS_CFG = ObservationConfig()
 _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR = "_wheel_contact_force_nonfinite_total"
 _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR = "_wheel_contact_force_sample_total"
 _DEFAULT_CONTACT_DEBUG_LOG_INTERVAL_STEPS = 256
+_LEG_ENCODER_BIAS_ATTR = "_se3_leg_encoder_bias"
 
 
 def _finite_clamp(value: torch.Tensor, limit: float | None = None) -> torch.Tensor:
     """把观测限制在有限范围内，避免单个发散 env 污染整批 PPO。"""
     bound = float(_OBS_CFG.clip_value if limit is None else limit)
     return torch.nan_to_num(value, nan=0.0, posinf=bound, neginf=-bound).clamp(-bound, bound)
+
+
+def _iteration_progress(
+    env: ManagerBasedRlEnv,
+    iteration_range: tuple[int, int],
+    steps_per_policy_iter: int,
+) -> float:
+    """Return 0..1 progress through an iteration interval."""
+    start, end = int(iteration_range[0]), int(iteration_range[1])
+    if end <= start:
+        return 1.0
+    iteration = int(getattr(env, "common_step_counter", 0)) // max(1, int(steps_per_policy_iter))
+    return min(max((iteration - start) / float(end - start), 0.0), 1.0)
+
+
+def _interpolate_range(
+    low_range: tuple[float, float],
+    high_range: tuple[float, float],
+    alpha: float,
+) -> tuple[float, float]:
+    low_a, high_a = float(low_range[0]), float(low_range[1])
+    low_b, high_b = float(high_range[0]), float(high_range[1])
+    return (
+        low_a + (low_b - low_a) * float(alpha),
+        high_a + (high_b - high_a) * float(alpha),
+    )
+
+
+def _uniform_like_pos(pos: torch.Tensor, value_range: tuple[float, float]) -> torch.Tensor:
+    low, high = float(value_range[0]), float(value_range[1])
+    if high <= low:
+        return torch.full_like(pos, low)
+    return torch.empty_like(pos).uniform_(low, high)
+
+
+def resample_leg_encoder_bias(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    bias_range: tuple[float, float] = (-0.01, 0.01),
+    attr_name: str = _LEG_ENCODER_BIAS_ATTR,
+) -> None:
+    """Sample per-episode policy-joint encoder bias for [LF, LB, RF, RB]."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long).reshape(-1)
+    if env_ids.numel() == 0:
+        return
+    bias = getattr(env, attr_name, None)
+    if (
+        not isinstance(bias, torch.Tensor)
+        or bias.shape != (env.num_envs, 4)
+        or bias.device != env.device
+    ):
+        bias = torch.zeros(env.num_envs, 4, device=env.device)
+        setattr(env, attr_name, bias)
+    low, high = float(bias_range[0]), float(bias_range[1])
+    bias[env_ids] = torch.empty((env_ids.numel(), 4), device=env.device).uniform_(low, high)
+
+
+def _apply_leg_encoder_error(
+    env: ManagerBasedRlEnv,
+    policy_pos: torch.Tensor,
+    *,
+    bias_range: tuple[float, float] | None,
+    noise_range: tuple[float, float] | None,
+    late_noise_range: tuple[float, float] | None,
+    noise_ramp_iteration_range: tuple[int, int],
+    steps_per_policy_iter: int,
+    attr_name: str,
+) -> torch.Tensor:
+    """Apply encoder-level bias and white noise before sin/cos leg encoding."""
+    noisy_pos = policy_pos
+    if bias_range is not None:
+        bias = getattr(env, attr_name, None)
+        if (
+            not isinstance(bias, torch.Tensor)
+            or bias.shape != (env.num_envs, 4)
+            or bias.device != policy_pos.device
+        ):
+            resample_leg_encoder_bias(env, None, bias_range=bias_range, attr_name=attr_name)
+            bias = getattr(env, attr_name)
+        noisy_pos = noisy_pos + bias.to(device=policy_pos.device, dtype=policy_pos.dtype)
+
+    if noise_range is not None:
+        active_noise_range = noise_range
+        if late_noise_range is not None:
+            alpha = _iteration_progress(
+                env,
+                noise_ramp_iteration_range,
+                steps_per_policy_iter,
+            )
+            active_noise_range = _interpolate_range(noise_range, late_noise_range, alpha)
+        noisy_pos = noisy_pos + _uniform_like_pos(noisy_pos, active_noise_range)
+    return noisy_pos
 
 
 def base_ang_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -66,19 +162,37 @@ def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     return _finite_clamp(cmd[:, :5] * scale)
 
 
-def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+def leg_joint_pos_obs(
+    env: ManagerBasedRlEnv,
+    encoder_bias_range: tuple[float, float] | None = None,
+    encoder_noise_range: tuple[float, float] | None = None,
+    late_encoder_noise_range: tuple[float, float] | None = None,
+    noise_ramp_iteration_range: tuple[int, int] = (800, 1800),
+    steps_per_policy_iter: int = 64,
+    encoder_bias_attr: str = _LEG_ENCODER_BIAS_ATTR,
+) -> torch.Tensor:
     """腿部主动杆相位和主动杆夹角观测，6D。"""
     robot = env.scene["robot"]
     leg_ids = policy_leg_joint_ids(robot)
     if is_fourbar_surrogate_model(robot):
         pos = output_to_policy_pos_torch(robot.data.joint_pos[:, leg_ids])
         default_pos = output_to_policy_pos_torch(robot.data.default_joint_pos[:, leg_ids])
-        return _finite_clamp(policy_leg_phase_active_obs_torch(pos, default_pos))
-    return _finite_clamp(
-        policy_leg_phase_active_obs_torch(
-            robot.data.joint_pos[:, leg_ids],
-            robot.data.default_joint_pos[:, leg_ids],
+    else:
+        pos = robot.data.joint_pos[:, leg_ids]
+        default_pos = robot.data.default_joint_pos[:, leg_ids]
+    if encoder_bias_range is not None or encoder_noise_range is not None:
+        pos = _apply_leg_encoder_error(
+            env,
+            pos,
+            bias_range=encoder_bias_range,
+            noise_range=encoder_noise_range,
+            late_noise_range=late_encoder_noise_range,
+            noise_ramp_iteration_range=noise_ramp_iteration_range,
+            steps_per_policy_iter=steps_per_policy_iter,
+            attr_name=encoder_bias_attr,
         )
+    return _finite_clamp(
+        policy_leg_phase_active_obs_torch(pos, default_pos)
     )
 
 

@@ -46,6 +46,7 @@ _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
 _STAIR_INITIAL_TARGET_LEVEL_ENV = "SE3_STAIR_INITIAL_TARGET_LEVEL"
 _WARM_START_ITER_ENV = "SE3_WARM_START_ITERATION"
 _WARM_START_STEPS_PER_ITER_ENV = "SE3_WARM_START_STEPS_PER_ITER"
+_ROBOT_MJCF_VARIANT_ENV = "SE3_ROBOT_MJCF_VARIANT"
 _MODEL_RE = re.compile(r"^model_(\d+)\.pt$")
 _LEARNING_ITER_RE = re.compile(r"Learning iteration\s+(\d+)\s*/")
 _CURRICULUM_ITER_RE = re.compile(r"Curriculum/terrain_levels/iteration:\s+([-+]?\d+(?:\.\d+)?)")
@@ -275,6 +276,9 @@ def _resolve_watch_target_level(args: argparse.Namespace, run_dir: str) -> int |
 def _launch_viewer(args: argparse.Namespace, checkpoint: Path) -> subprocess.Popen:
     viewer_task = _viewer_task(args)
     env = os.environ.copy()
+    if args.robot_mjcf_variant:
+        env[_ROBOT_MJCF_VARIANT_ENV] = args.robot_mjcf_variant
+        print(f"[local-watch] {_ROBOT_MJCF_VARIANT_ENV}={args.robot_mjcf_variant}")
     if args.train_env and not args.legacy_train_view_alias:
         env[_WATCH_USE_TRAIN_ENV_ENV] = "1"
         print(f"[local-watch] {_WATCH_USE_TRAIN_ENV_ENV}=1")
@@ -360,6 +364,14 @@ def main() -> None:
     parser.add_argument("--remote-log-dir", default="logs/rsl_rl/se3_wheel_leg")
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--local-log-dir", type=Path, default=Path("logs/remote_watch"))
+    parser.add_argument(
+        "--robot-mjcf-variant",
+        default=None,
+        help=(
+            "本地 viewer 使用的 SE3_ROBOT_MJCF_VARIANT，例如 closedchain；"
+            "必须与远端训练模型一致。"
+        ),
+    )
     parser.add_argument("--task", default=_RECOVERY_STAND_TASK)
     parser.add_argument(
         "--viewer-task",

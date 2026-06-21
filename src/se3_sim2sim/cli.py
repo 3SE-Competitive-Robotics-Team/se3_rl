@@ -136,7 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-variant",
         choices=SIM_MODEL_VARIANT_CHOICES,
         default=DEFAULT_SIM_MODEL_VARIANT,
-        help="选择内置 MJCF 模型变体：closedchain 为 sim2sim 默认真实闭链 OBB 模型，fourbar-surrogate 为等效开树模型，openchain 为旧开链模型。",
+        help=(
+            "选择内置 MJCF 模型变体：closedchain 为 sim2sim 默认真实闭链 OBB 模型，"
+            "fourbar-surrogate 为训练用等效开树模型，openchain 为旧开链模型。"
+        ),
     )
     parser.add_argument(
         "--model",

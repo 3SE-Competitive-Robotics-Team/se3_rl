@@ -114,3 +114,94 @@
 - NaN log diagnosis: `Stair/target_progress_mean`, `Stair/target_speed_mean`, and related stair/curriculum diagnostics became `nan` only on iterations with nonzero `Episode_Termination/catastrophic_state`. A few physically divergent envs produced non-finite root pose/velocity, and the diagnostic mean propagated those NaNs before reset.
 - NaN log fix: `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/curriculums.py` now use finite-safe means for diagnostics, skipping NaN/Inf samples and returning `0` if no finite sample exists. This does not hide the underlying divergence; `Episode_Termination/catastrophic_state` remains the signal for that.
 - Validation: `compileall` passed for `watch_remote_train_local.py`, `diagnose_stair_rollout.py`, `play.py`, `rewards.py`, and `curriculums.py`. A finite-mean check on `[1, nan, 3, inf]` returned `2.0`.
+
+## 2026-06-17 - Encoder-level leg observation noise
+
+- Change: moved leg position observation noise from the final 6D `[sin, cos, active]` output into the policy joint encoder layer `[LF, LB, RF, RB]`, preserving the sin/cos unit-circle structure and making active-rod noise arise from the underlying encoder readings.
+- Added per-episode encoder bias sampled on reset with range `[-0.01, 0.01] rad` for the four policy leg encoders. The bias is actor-only and is not applied in `play/watch`.
+- Added per-step encoder white noise starting at `[-0.01, 0.01] rad` and linearly ramping to `[-0.025, 0.025] rad` from PPO iter `800` to `1800` using `64` policy steps per iteration.
+- Critic leg position observations remain clean; only the actor `leg_joint_pos` term uses the encoder bias/noise parameters. Existing leg velocity observation noise is unchanged.
+- Validation: `compileall` passed for the modified observation/config files. Config checks confirmed flat/stair training actors receive the encoder noise parameters and `leg_encoder_bias` reset event, while flat/stair play configs and critic terms remain clean.
+
+## 2026-06-18 - CTBC per-side outcome rewards and scratch restart
+
+- Observation: in `remote_watch`, trained stair policies could climb but often preferred to square up to the step before climbing. Even with yaw-PID targets that made the robot approach the stair at an angle, many robots waited or shuffled until both sides contacted the riser, then climbed front-on.
+- Observation: when only one side reached the stair first, the policy often did not immediately use that side's CTBC trigger to lift/retract and advance. This behavior did not match the desired asymmetric climbing behavior where the first side to hit the step should climb first.
+- Diagnosis: the previous CTBC reward shaping mostly measured global/no-progress behavior after a trigger, so it did not strongly credit the specific triggered side for gaining wheel height or making target-direction progress. This likely allowed the policy to solve stairs by synchronized/front-on climbing instead of per-side obstacle negotiation.
+- Change: removed the old `stair_ctbc_no_progress` reward term.
+- Added per-side CTBC outcome terms keyed to the actually triggered side: `stair_ctbc_side_height_gain`, `stair_ctbc_side_forward_progress`, and `stair_ctbc_side_no_outcome`. They track the triggered side wheel height/progress from the CTBC trigger start and reward/penalize concrete outcome instead of global no-progress behavior.
+- Validation: `compileall` passed for `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/env_cfg.py`; config checks confirmed the three new CTBC terms are active and `stair_ctbc_no_progress` is absent.
+- Remote restart: synced current code into `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_pr24_review_walk800_obs34_v18_20260615` and launched a from-scratch `SE3-WheelLegged-Stair-GRU` run with `8192` envs, `3800` iterations, and `CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7`.
+- Run: `2026-06-17_16-54-53_pr24_obs34_ctbc_sideoutcome_scratch_total3800_8192_gpu1to7_20260618`; log path `/tmp/train_pr24_obs34_ctbc_sideoutcome_scratch_total3800_20260618.log`; PID `2063710`.
+- Verification: the remote command uses `--agent.resume False`; logs show `Learning iteration 0/3800`, `Curriculum/terrain_levels/walking_phase=1`, `Stair/diag_ctbc_kff=0.0`, `Stair/diag_ctbc_local_iter=0.0156`, actor `GRU(34, 512)`, and GPU 0 unused.
+
+## 2026-06-18 - CTBC contact-gated time-decay reward cleanup
+
+- Change: removed the conflicting active CTBC shape rewards `stair_feet_clearance`, `stair_feet_air_time`, `stair_contact_number`, and `stair_wheel_swing_zero_vel` from the stair task. The first two rewarded wheel lift/air time, and `stair_contact_number` treated triggered-side no-contact as a match, which conflicted with the desired side-wall-contact climbing behavior.
+- Change: deleted those four reward functions from `src/se3_train/tasks/stair/rewards.py` and removed them from `__all__`.
+- Change: `stair_ctbc_side_height_gain` and `stair_ctbc_side_forward_progress` now require triggered-side contact with terrain through `wheel_riser_sensor` before paying reward. The gate no longer filters for side-face normals, so low-stair top/edge contact is valid while wheel air time is still not rewarded. Both rewards also multiply by a 0.30 s CTBC-window decay weight with power `2.0`, so outcome achieved late in the trigger window is worth less.
+- Change: `stair_ctbc_side_no_outcome` now checks an early window from `0.06 s` to `0.18 s` and penalizes a triggered side unless it has terrain contact plus either at least `0.025 m` height gain or `0.035 m` target-direction progress.
+- Active CTBC outcome weights: `stair_ctbc_side_height_gain=0.25`, `stair_ctbc_side_forward_progress=0.8`, and `stair_ctbc_side_no_outcome=-1.5`.
+- Validation: `compileall` and `ruff check` passed for `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/env_cfg.py`; static search confirmed the four removed reward names no longer exist in `src/se3_train/tasks/stair`, and config checks confirmed the CTBC outcome rewards no longer carry `contact_normal_z_max`.
+
+## 2026-06-18 - Stair height range 0.04-0.22 and model_800 warm start
+
+- Change: widened the stair terrain height curriculum range from `(0.05, 0.20)` to `(0.04, 0.22)`. The task now uses a single `_STAIR_STEP_HEIGHT_RANGE` constant for both `BoxInvertedPyramidStairsTerrainCfg.step_height_range` and the `obs_steps_climbed` diagnostic reward's `step_height_range`.
+- Validation: `compileall` and `ruff check` passed for `src/se3_train/tasks/stair/env_cfg.py` and `src/se3_train/tasks/stair/rewards.py`; config checks printed terrain `step_height_range=(0.04, 0.22)` and `obs_steps_range=(0.04, 0.22)`.
+- Remote source checkpoint: reused `model_800.pt` from `2026-06-17_16-54-53_pr24_obs34_ctbc_sideoutcome_scratch_total3800_8192_gpu1to7_20260618`.
+- Remote start: synced current code into `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_pr24_review_walk800_obs34_v18_20260615` and launched warm-start training with `--warm-start-iteration 800` and `--stair-local-iter-offset 800`, so both terrain/command curriculum and CTBC local iteration start at `800`.
+- Run: `2026-06-18_09-22-10_pr24_obs34_h004022_ctbc_terraincontact_m800_warm_total3800_8192_gpu1to7_20260618`; log path `/tmp/train_pr24_obs34_h004022_ctbc_terraincontact_m800_20260618.log`; PID `3492057`; GPUs `1-7`.
+- Verification note: the launch command confirmed `--agent.load-run 2026-06-17_16-54-53_pr24_obs34_ctbc_sideoutcome_scratch_total3800_8192_gpu1to7_20260618 --agent.load-checkpoint model_800.pt`. Follow-up log inspection was blocked by an SSH timeout to `target-via-phone`.
+
+## 2026-06-18 - Stronger stair body collision and posture penalties
+
+- Change: removed the CTBC discount from the stair wheel contact-force penalty. `contact_forces` now uses `contact_forces_stair`, which keeps the same wheel-force penalty during CTBC feedforward triggers instead of multiplying it by `1 - 0.5 * kff`.
+- Change: strengthened base body terrain collision penalty for the stair task: `collision` weight `-16.0 -> -32.0`, with `use_recovery_gate=False` so `base_link` terrain contact is penalized directly.
+- Change: strengthened body posture control for stair training: `tracking_orientation_l2` weight `-12.0 -> -18.0`; `bad_tilt` weight `-6.0 -> -10.0`, soft limit `10 deg -> 8 deg`, hard limit `30 deg -> 25 deg`, and max penalty `4.0 -> 6.0`.
+- Validation: `compileall` and `ruff check` passed for `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/env_cfg.py`; config export confirmed `contact_forces_stair`, `collision=-32.0`, `tracking_orientation_l2=-18.0`, and `bad_tilt=-10.0`.
+
+## 2026-06-18 - Stronger left-right leg symmetry penalty
+
+- Change: added a stair-task override for `joint_mirror`, increasing the left-right hip/knee symmetry penalty from the inherited flat weight `-0.179` to `-0.35`.
+- Change: wrapped the stair `joint_mirror` term with `joint_mirror_no_ctbc`, so the strengthened symmetry penalty is disabled during the CTBC trigger window and does not suppress the desired short single-side climbing motion.
+- Change: the mirror shutdown gate is based on `StairClimbState.contact_triggered()` rather than `kff`, so it stays tied to the active CTBC phase window even when feedforward amplitude is annealed.
+- Validation: `compileall` and `ruff check` passed for `src/se3_train/tasks/stair/rewards.py` and `src/se3_train/tasks/stair/env_cfg.py`; config export confirmed `joint_mirror=-0.35` and `func=joint_mirror_no_ctbc`.
+
+## 2026-06-18 - Stair body height 0.385 and walking random vx profile
+
+- Change: raised the stair command body-height curriculum maximum from `0.37` to `0.385` using `_STAIR_BODY_HEIGHT_RANGE=(0.24, 0.385)`. The height curriculum reaches this range at PPO iter `600` and keeps it at stair-phase entry iter `800`.
+- Change: added a walking-phase `lin_vel_profile` to `VelocityHeightCommandTerm`. During PPO iters `0-800`, moving envs keep a randomly sampled `vx` for `0.6-2.0 s`, then resample a new random `vx` from the current walking curriculum range. The profile is disabled after iter `800`, so the stair phase keeps the normal positive speed curriculum.
+- Change: raised the stair-phase speed curriculum maximum to `1.5 m/s`: iter `800` starts at `vx=(0.6, 1.0)`, then iters `1050`, `1300`, and `1600` use `vx=(0.6, 1.5)`.
+- Validation: `compileall` and `ruff check` passed for `src/se3_train/mdp/commands.py` and `src/se3_train/tasks/stair/env_cfg.py`; config export confirmed `lin_vel_profile_iteration_range=(0, 800)`, `lin_vel_profile_resampling_time_range_s=(0.6, 2.0)`, velocity stages ending at `(0.6, 1.5)`, and height stages ending at `(0.24, 0.385)`.
+- Remote note: an interrupted pre-`1.5 m/s` scratch launch named `pr24_obs34_h0385_randvx_scratch_total3800_8192_gpu1to7_20260618` had already started; it was stopped before the corrected run was launched.
+- Remote restart: synced the corrected code into `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_pr24_review_walk800_obs34_v18_20260615` and launched scratch training with `8192` envs, `3800` iterations, and `CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7`.
+- Run: `2026-06-18_15-47-03_pr24_obs34_h0385_randvx_v15_scratch_total3800_8192_gpu1to7_20260618`; log path `/tmp/train_pr24_obs34_h0385_randvx_v15_scratch_20260618.log`; PID `4005886`.
+- Verification: remote source grep confirmed `_STAIR_BODY_HEIGHT_RANGE=(0.24, 0.385)`, `lin_vel_profile_resampling_time_range_s=(0.6, 2.0)`, and stair velocity stages `(0.6, 1.5)`. Training logs show `--agent.resume False`, `Learning iteration 0/3800`, `Curriculum/terrain_levels/walking_phase=1`, `Curriculum/command_height/height_max=0.2200`, `Stair/diag_ctbc_local_iter=0.0156`, and GPU 0 unused.
+  关键对比在 rc_on 的瞬间：
+ 
+ 
+  closedchain，t=1.00s：
+ 
+ 
+  - x≈0.001, z≈0.140, vx≈-0.041, tilt≈4.4deg
+  - active angle [1.459, 1.457]
+  - output/front 状态约 [2.935, -1.370, -1.995, 1.374]
+ 
+ 
+  fourbar_visualbase，t=1.00s：
+ 
+ 
+  - x≈0.046, z≈0.138, vx≈0.254, tilt≈0.9deg
+  - active angle [1.231, 1.263]
+  - output/front 状态约 [0.703, -1.172, -0.707, 1.198]
+ 
+ 
+  active angle 都还在范围内，但 front 杆绝对相位完全不是一个分支。closedchain no-torque 时前杆能甩到另一个相位，policy obs 里的 sin/cos(front_delta) 和 GRU 状态就变成训练没覆盖的分布。之后接管时：
+ 
+ 
+  - closedchain t=1.5s：z≈0.293, vx≈0.17，还在恢复
+  - fourbar t=1.5s：z≈0.381, vx≈1.10，已经站高并冲向台阶
+ 
+ 
+  低层同 action step response 也能看到差异：同样给 action=[0,-1,0,-1,0,0]，fourbar 约 0.2s active angle 就接近 0；closedchain 到 0.2s 还在 0.4rad 左右，约 0.5s 才接近 0。
+ 

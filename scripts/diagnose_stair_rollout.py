@@ -36,6 +36,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--command-yaw", type=float, default=None)
     parser.add_argument("--command-height", type=float, default=None)
     parser.add_argument("--no-terminations", action="store_true")
+    parser.add_argument(
+        "--terminal-outcomes",
+        action="store_true",
+        help="在每次终止前按台阶课程的三阶判据记录成功、姿态和高度结果。",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", type=Path, default=None)
     return parser.parse_args()
@@ -140,6 +145,34 @@ def _state_snapshot(base_env) -> dict[str, Any]:
     }
 
 
+def _terminal_stair_outcomes(base_env, robot, env_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Evaluate the exact height-based mastery condition before an automatic reset."""
+    from se3_train.tasks.stair.curriculums import _step_height_for_levels, _wheel_ground_height
+
+    terrain = base_env.scene.terrain
+    if terrain is None:
+        return {}
+
+    terrain_levels = terrain.terrain_levels[env_ids].to(device=base_env.device)
+    step_height = _step_height_for_levels(terrain, terrain_levels, (0.04, 0.22))
+    wheel_ground_z = _wheel_ground_height(base_env, robot, env_ids, "wheel_height_sensor")
+    origins = base_env.scene.env_origins[env_ids]
+    steps_climbed = torch.clamp(
+        (wheel_ground_z - origins[:, 2]) / step_height.clamp_min(1.0e-6), min=0.0
+    )
+    upright = robot.data.projected_gravity_b[env_ids, 2] < -0.5
+    height_pass = steps_climbed >= 3.0
+    return {
+        "success": height_pass & upright,
+        "height_pass": height_pass,
+        "upright": upright,
+        "steps_climbed": steps_climbed,
+        "height_gain": wheel_ground_z - origins[:, 2],
+        "timeout": base_env.reset_time_outs[env_ids],
+        "terminated": base_env.reset_terminated[env_ids],
+    }
+
+
 def _run(args: argparse.Namespace) -> dict[str, Any]:
     _set_watch_env(args)
 
@@ -154,6 +187,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
 
     cfg = load_env_cfg(args.task, play=False)
+    cfg.seed = int(args.seed)
     cfg.scene.num_envs = int(args.num_envs)
     command_cfg = cfg.commands.get("velocity_height")
     if command_cfg is not None:
@@ -165,6 +199,8 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         cfg.curriculum.pop("command_vel", None)
     if args.no_terminations:
         cfg.terminations = {}
+    if args.terminal_outcomes:
+        cfg.auto_reset = False
 
     base_env = ManagerBasedRlEnv(cfg=cfg, device=args.device, render_mode=None)
     env = RslRlVecEnvWrapper(base_env)
@@ -197,12 +233,39 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     done_sum = 0.0
     reward_sum = 0.0
     samples = 0
+    terminal_count = 0
+    terminal_success_count = 0
+    terminal_height_pass_count = 0
+    terminal_upright_count = 0
+    terminal_timeout_count = 0
+    terminal_terminated_count = 0
+    terminal_steps: list[torch.Tensor] = []
+    terminal_height_gains: list[torch.Tensor] = []
 
     for _ in range(steps):
         with torch.no_grad():
             obs = env.get_observations()
             action = policy(obs)
             _, reward, dones, _ = env.step(action)
+
+        if args.terminal_outcomes:
+            done_mask = dones.bool()
+            if torch.any(done_mask):
+                done_ids = done_mask.nonzero(as_tuple=False).squeeze(-1)
+                outcomes = _terminal_stair_outcomes(base_env, robot, done_ids)
+                terminal_count += int(done_ids.numel())
+                terminal_success_count += int(outcomes["success"].sum().item())
+                terminal_height_pass_count += int(outcomes["height_pass"].sum().item())
+                terminal_upright_count += int(outcomes["upright"].sum().item())
+                terminal_timeout_count += int(outcomes["timeout"].sum().item())
+                terminal_terminated_count += int(outcomes["terminated"].sum().item())
+                terminal_steps.append(outcomes["steps_climbed"].detach().cpu())
+                terminal_height_gains.append(outcomes["height_gain"].detach().cpu())
+
+                # auto_reset=False preserves terminal data above; reset only after recording it.
+                base_env.reset(env_ids=done_ids)
+                if reset_fn is not None:
+                    reset_fn(done_mask)
 
         state = getattr(base_env, "stair_climb_state", None)
         if state is not None:
@@ -270,6 +333,24 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     result.update(_command_stats(base_env))
     result.update(_terrain_stats(base_env))
     result.update(_state_snapshot(base_env))
+    if terminal_count > 0:
+        all_terminal_steps = torch.cat(terminal_steps)
+        all_terminal_height_gains = torch.cat(terminal_height_gains)
+        result.update(
+            {
+                "terminal_episode_count": terminal_count,
+                "terminal_success_rate": terminal_success_count / terminal_count,
+                "terminal_height_pass_rate": terminal_height_pass_count / terminal_count,
+                "terminal_upright_rate": terminal_upright_count / terminal_count,
+                "terminal_timeout_rate": terminal_timeout_count / terminal_count,
+                "terminal_terminated_rate": terminal_terminated_count / terminal_count,
+                "terminal_steps_mean": _mean(all_terminal_steps),
+                "terminal_steps_p10": float(torch.quantile(all_terminal_steps, 0.1).item()),
+                "terminal_steps_p50": float(torch.quantile(all_terminal_steps, 0.5).item()),
+                "terminal_steps_p90": float(torch.quantile(all_terminal_steps, 0.9).item()),
+                "terminal_height_gain_mean_m": _mean(all_terminal_height_gains),
+            }
+        )
     env.close()
     return result
 

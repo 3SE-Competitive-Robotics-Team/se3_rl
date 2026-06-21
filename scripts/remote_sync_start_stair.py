@@ -162,6 +162,14 @@ def parse_args() -> argparse.Namespace:
         help="限制本次训练可见的物理 GPU, 例如 1,2,3,4,5,6,7; 为空则保持原来的 unset 行为.",
     )
     parser.add_argument(
+        "--robot-mjcf-variant",
+        default=None,
+        help=(
+            "远端训练使用的 SE3_ROBOT_MJCF_VARIANT，例如 fourbar-surrogate 或 closedchain；"
+            "省略则使用训练代码默认值。"
+        ),
+    )
+    parser.add_argument(
         "--gpu-memory-busy-threshold-mib",
         type=int,
         default=1000,
@@ -217,6 +225,11 @@ def parse_args() -> argparse.Namespace:
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
     """生成与本次远端训练参数对应的本地 watcher 指令。"""
     run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
+    robot_mjcf_variant_arg = (
+        f"  --robot-mjcf-variant {args.robot_mjcf_variant} `\n"
+        if args.robot_mjcf_variant
+        else ""
+    )
     command_height_arg = (
         f"  --command-height {args.watch_command_height:g} `\n"
         if args.watch_command_height is not None
@@ -230,6 +243,7 @@ def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -
         f"  --remote-project {args.remote_project} `\n"
         f"{run_dir_arg}"
         f"  --task {args.task} `\n"
+        f"{robot_mjcf_variant_arg}"
         f"  --terrain-level {args.watch_terrain_level} `\n"
         f"{command_height_arg}"
         f"  --interval-iters {args.watch_interval_iters} `\n"
@@ -246,10 +260,13 @@ def main() -> None:
     pid_path = f"/tmp/train_{args.job_name}.pid"
     checkpoint_file = args.load_checkpoint.replace(r"\.", ".").strip("^$")
     cuda_visible_devices = (args.cuda_visible_devices or "").strip()
+    robot_mjcf_variant = (args.robot_mjcf_variant or "").strip()
     if "/" in checkpoint_file or "\\" in checkpoint_file:
         raise ValueError("--load-checkpoint 必须是 checkpoint 文件名或其转义形式")
     if cuda_visible_devices and not re.fullmatch(r"\d+(,\d+)*", cuda_visible_devices):
         raise ValueError("--cuda-visible-devices 必须是逗号分隔的 GPU 编号, 例如 1,2,3")
+    if robot_mjcf_variant and not re.fullmatch(r"[A-Za-z0-9_.-]+", robot_mjcf_variant):
+        raise ValueError("--robot-mjcf-variant 只能包含字母、数字、下划线、点和短横线")
 
     if cuda_visible_devices:
         active_check = f"""
@@ -374,6 +391,11 @@ compile_targets=(src scripts)
         if cuda_visible_devices
         else "unset CUDA_VISIBLE_DEVICES"
     )
+    robot_mjcf_variant_line = (
+        f"export SE3_ROBOT_MJCF_VARIANT={shlex.quote(robot_mjcf_variant)}"
+        if robot_mjcf_variant
+        else "unset SE3_ROBOT_MJCF_VARIANT"
+    )
     stair_offset_line = (
         f"export SE3_STAIR_LOCAL_ITER_OFFSET={args.stair_local_iter_offset}"
         if args.stair_local_iter_offset is not None
@@ -404,6 +426,7 @@ export SE3_FULL_RESUME={full_resume_value}
 {stair_offset_line}
 {stair_target_level_line}
 {warm_start_iteration_line}
+{robot_mjcf_variant_line}
 export SE3_WARM_START_STEPS_PER_ITER=64
 export PYTHONUNBUFFERED=1
 {cuda_visible_line}

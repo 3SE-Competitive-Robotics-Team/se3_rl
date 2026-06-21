@@ -6,36 +6,34 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.curriculums import commands_height, commands_vel, push_disturbance
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
-
-_DEFAULT_STANDING_HEIGHT = SharedRobotConfig().default_base_height
 
 
 def stair_terrain_levels(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | slice | None,
     asset_name: str = "robot",
-    standing_height: float = _DEFAULT_STANDING_HEIGHT,
-    command_name: str = "velocity_height",
-    move_up_distance_ratio: float = 0.35,
-    move_down_distance_ratio: float = 0.12,
     upright_threshold: float = -0.5,
     terrain_type_names: tuple[str, ...] = ("inv_pyramid_stairs",),
     walking_phase_iterations: int = 0,
     flat_terrain_type_name: str = "flat",
     steps_per_policy_iter: int = 64,
     fixed_iteration: int | None = None,
-    success_threshold: float = 0.8,
+    step_height_range: tuple[float, float] = (0.04, 0.22),
+    success_steps: int = 3,
+    height_sensor_name: str = "wheel_height_sensor",
+    success_threshold: float = 0.7,
     low_stair_ratio: float = 0.20,
     flat_ratio: float = 0.05,
-    min_success_samples: int = 128,
+    mastery_window_iterations: int = 16,
+    mastery_evaluation_interval_iterations: int = 4,
+    min_success_samples: int = 4096,
     initial_target_level: int = 0,
 ) -> dict[str, torch.Tensor]:
-    """全局台阶难度课程：达标后升一级，不回退。"""
+    """按终止 episode 的三阶爬升结果推进全局台阶难度，不回退。"""
     terrain = env.scene.terrain
     if terrain is None or getattr(terrain, "terrain_origins", None) is None:
         return _zero_log(env)
@@ -67,41 +65,43 @@ def stair_terrain_levels(
         env,
         terrain,
         initial_target_level=initial_target_level,
+        iteration=iteration,
     )
     robot = env.scene[asset_name]
     origins = env.scene.env_origins[ids]
-    root_pos = robot.data.root_link_pos_w[ids]
     pg_z = robot.data.projected_gravity_b[ids, 2]
     valid_episode = (env.episode_length_buf[ids] > 0) & (~newly_entered)
     stair_mask = _terrain_type_mask(terrain, ids, terrain_type_names, env.device)
 
-    height_gain = (root_pos[:, 2] - origins[:, 2]) - float(standing_height)
-    target_direction = _target_direction_w(env, ids, command_name=command_name)
-    offset_xy = root_pos[:, :2] - origins[:, :2]
-    distance = torch.sum(offset_xy * target_direction, dim=1)
-    terrain_size_x = float(
-        getattr(getattr(terrain.cfg, "terrain_generator", None), "size", (8.0, 8.0))[0]
+    terrain_levels = terrain.terrain_levels[ids].to(device=env.device)
+    step_height = _step_height_for_levels(terrain, terrain_levels, step_height_range)
+    wheel_ground_z = _wheel_ground_height(env, robot, ids, height_sensor_name)
+    height_gain = wheel_ground_z - origins[:, 2]
+    steps_climbed = torch.clamp(height_gain / step_height.clamp_min(1.0e-6), min=0.0)
+    radial_distance = torch.linalg.vector_norm(
+        robot.data.root_link_pos_w[ids, :2] - origins[:, :2], dim=1
     )
-    move_up_distance = terrain_size_x * float(move_up_distance_ratio)
-    move_down_distance = terrain_size_x * float(move_down_distance_ratio)
-
     upright = pg_z < float(upright_threshold)
-    target_episode = (
-        stair_mask
-        & valid_episode
-        & (terrain.terrain_levels[ids].to(device=env.device) == int(target_level))
-    )
-    success = target_episode & upright & (distance > move_up_distance)
-    failure = target_episode & ((~upright) | (distance < move_down_distance))
+    target_episode = stair_mask & valid_episode & (terrain_levels == int(target_level))
+    success = target_episode & upright & (steps_climbed >= max(1, int(success_steps)))
     current_success_count = int(success.sum().item())
-    current_failure_count = int(failure.sum().item())
     current_target_count = int(target_episode.sum().item())
-    window_success_count = _mastery_window_count(env, "success") + current_success_count
-    window_failure_count = _mastery_window_count(env, "failure") + current_failure_count
-    window_target_count = _mastery_window_count(env, "target") + current_target_count
-    env._stair_mastery_success_count = window_success_count
-    env._stair_mastery_failure_count = window_failure_count
-    env._stair_mastery_target_count = window_target_count
+    _record_mastery_outcomes(
+        env,
+        iteration=iteration,
+        success_count=current_success_count,
+        target_count=current_target_count,
+    )
+
+    level_start_iteration = _mastery_level_start_iteration(env)
+    completed_iteration = iteration - 1
+    window_success_count, window_target_count, window_elapsed = _mastery_window_counts(
+        env,
+        level_start_iteration=level_start_iteration,
+        completed_iteration=completed_iteration,
+        window_iterations=mastery_window_iterations,
+    )
+    window_failure_count = max(0, window_target_count - window_success_count)
     success_rate = window_success_count / max(1, window_target_count)
     failure_rate = window_failure_count / max(1, window_target_count)
 
@@ -109,14 +109,29 @@ def stair_terrain_levels(
     evaluated = False
     num_rows = int(terrain.terrain_origins.shape[0])
     max_target_level = max(0, num_rows - 1)
-    if window_target_count >= max(1, int(min_success_samples)):
+    evaluation_due = (
+        window_elapsed >= max(1, int(mastery_window_iterations))
+        and completed_iteration - _mastery_last_evaluation_iteration(env)
+        >= max(1, int(mastery_evaluation_interval_iterations))
+        and window_target_count >= max(1, int(min_success_samples))
+    )
+    if evaluation_due:
         evaluated = True
-        if success_rate >= float(success_threshold) and target_level < max_target_level:
+        passed = success_rate >= float(success_threshold)
+        _set_last_mastery_evaluation(
+            env,
+            iteration=completed_iteration,
+            target_level=target_level,
+            success_rate=success_rate,
+            sample_count=window_target_count,
+            passed=passed,
+        )
+        if passed and target_level < max_target_level:
             target_level += 1
             env._stair_mastery_target_level = target_level
             env._stair_mastery_upgrade_count = _mastery_upgrade_count(env) + 1
+            _reset_mastery_window(env, level_start_iteration=iteration)
             upgraded = True
-        _reset_mastery_window(env)
 
     assignment = _assign_mastery_terrain(
         env,
@@ -140,9 +155,9 @@ def stair_terrain_levels(
         "level_mean": _masked_mean(levels, assigned_stair),
         "level_max": level_max,
         "move_up_rate": torch.tensor(float(success_rate), device=env.device),
-        "move_down_rate": torch.tensor(0.0, device=env.device),
+        "move_down_rate": torch.tensor(float(failure_rate), device=env.device),
         "height_gain_mean": _masked_mean(height_gain, target_episode),
-        "distance_mean": _masked_mean(distance, target_episode),
+        "distance_mean": _masked_mean(radial_distance, target_episode),
         "stair_env_rate": torch.mean(assigned_stair.float()),
         "walking_phase": torch.tensor(0.0, device=env.device),
         "iteration": torch.tensor(float(iteration), device=env.device),
@@ -151,6 +166,22 @@ def stair_terrain_levels(
         "target_failure_rate": torch.tensor(float(failure_rate), device=env.device),
         "target_sample_count": torch.tensor(float(window_target_count), device=env.device),
         "target_window_evaluated": torch.tensor(float(evaluated), device=env.device),
+        "target_window_elapsed_iterations": torch.tensor(float(window_elapsed), device=env.device),
+        "target_required_steps": torch.tensor(float(success_steps), device=env.device),
+        "target_steps_mean": _masked_mean(steps_climbed, target_episode),
+        "target_step_height_mean": _masked_mean(step_height, target_episode),
+        "target_last_evaluation_success_rate": torch.tensor(
+            _mastery_last_evaluation_value(env, "success_rate"), device=env.device
+        ),
+        "target_last_evaluation_sample_count": torch.tensor(
+            _mastery_last_evaluation_value(env, "sample_count"), device=env.device
+        ),
+        "target_last_evaluation_passed": torch.tensor(
+            _mastery_last_evaluation_value(env, "passed"), device=env.device
+        ),
+        "target_last_evaluation_level": torch.tensor(
+            _mastery_last_evaluation_value(env, "target_level"), device=env.device
+        ),
         "upgraded": torch.tensor(float(upgraded), device=env.device),
         "upgrade_count": torch.tensor(float(_mastery_upgrade_count(env)), device=env.device),
         "target_sample_rate": assignment["target_rate"],
@@ -200,29 +231,43 @@ def _terrain_type_index(terrain, terrain_type_name: str) -> int:
     return terrain_names.index(terrain_type_name)
 
 
-def _yaw_from_quat_wxyz(quat: torch.Tensor) -> torch.Tensor:
-    w, x, y, z = quat.unbind(dim=-1)
-    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-def _target_direction_w(
-    env: ManagerBasedRlEnv,
-    ids: torch.Tensor,
-    *,
-    command_name: str,
+def _step_height_for_levels(
+    terrain,
+    terrain_levels: torch.Tensor,
+    step_height_range: tuple[float, float],
 ) -> torch.Tensor:
-    try:
-        term = env.command_manager.get_term(command_name)
-        direction = getattr(term, "target_direction_w", None)
-    except Exception:
-        direction = None
-    if isinstance(direction, torch.Tensor) and direction.shape == (env.num_envs, 2):
-        result = direction.to(device=env.device, dtype=torch.float32)[ids]
-    else:
-        robot = env.scene["robot"]
-        yaw = _yaw_from_quat_wxyz(robot.data.root_link_quat_w[ids])
-        result = torch.stack((torch.cos(yaw), torch.sin(yaw)), dim=1)
-    return result / torch.linalg.norm(result, dim=1, keepdim=True).clamp_min(1.0e-6)
+    """按 terrain row 复用倒金字塔的单阶高度插值。"""
+    terrain_generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    num_rows = max(1, int(getattr(terrain_generator, "num_rows", 10)) - 1)
+    height_min, height_max = (float(value) for value in step_height_range)
+    difficulty = torch.clamp(terrain_levels.float(), min=0.0, max=float(num_rows))
+    return height_min + difficulty / float(num_rows) * (height_max - height_min)
+
+
+def _wheel_ground_height(
+    env: ManagerBasedRlEnv, robot, ids: torch.Tensor, sensor_name: str
+) -> torch.Tensor:
+    """返回两侧轮下方较低地面的世界 z，避免 body-height 指令污染爬阶判据。"""
+    cached_ids = getattr(env, "_stair_mastery_wheel_body_ids", None)
+    if not isinstance(cached_ids, list) or len(cached_ids) != 2:
+        cached_ids, body_names = robot.find_bodies(
+            ("l_wheel_Link", "r_wheel_Link"), preserve_order=True
+        )
+        if len(cached_ids) != 2:
+            raise RuntimeError(f"台阶课程必须找到左右轮 body，实际找到: {body_names}")
+        env._stair_mastery_wheel_body_ids = cached_ids
+
+    sensor = env.scene[sensor_name]
+    clearances = sensor.data.heights.reshape(env.num_envs, -1)[ids]
+    if clearances.shape[1] != 2:
+        raise RuntimeError(
+            f"{sensor_name} 必须按左右轮返回两个 frame，高度 shape={tuple(clearances.shape)}"
+        )
+    clearances = torch.where(
+        torch.isfinite(clearances), clearances, torch.full_like(clearances, float("inf"))
+    )
+    wheel_z = robot.data.body_link_pos_w[ids][:, cached_ids, 2]
+    return (wheel_z - clearances).min(dim=1).values
 
 
 def _assign_mastery_terrain(
@@ -254,9 +299,7 @@ def _assign_mastery_terrain(
     nonflat_mask = ~flat_mask
     low_prob_inside_stairs = low_stair_ratio / max(1.0e-6, 1.0 - flat_ratio)
     low_mask = (
-        nonflat_mask
-        & (target_level > 0)
-        & (torch.rand(n, device=device) < low_prob_inside_stairs)
+        nonflat_mask & (target_level > 0) & (torch.rand(n, device=device) < low_prob_inside_stairs)
     )
     target_mask = nonflat_mask & (~low_mask)
 
@@ -296,6 +339,7 @@ def _ensure_mastery_state(
     terrain,
     *,
     initial_target_level: int,
+    iteration: int,
 ) -> int:
     current = getattr(env, "_stair_mastery_target_level", None)
     num_rows = int(terrain.terrain_origins.shape[0])
@@ -303,7 +347,7 @@ def _ensure_mastery_state(
         current = max(0, min(int(initial_target_level), max(0, num_rows - 1)))
         env._stair_mastery_target_level = current
         env._stair_mastery_upgrade_count = 0
-        _reset_mastery_window(env)
+        _reset_mastery_window(env, level_start_iteration=iteration)
     return int(current)
 
 
@@ -311,14 +355,88 @@ def _mastery_upgrade_count(env: ManagerBasedRlEnv) -> int:
     return int(getattr(env, "_stair_mastery_upgrade_count", 0))
 
 
-def _mastery_window_count(env: ManagerBasedRlEnv, name: str) -> int:
-    return int(getattr(env, f"_stair_mastery_{name}_count", 0))
+def _record_mastery_outcomes(
+    env: ManagerBasedRlEnv,
+    *,
+    iteration: int,
+    success_count: int,
+    target_count: int,
+) -> None:
+    buckets = getattr(env, "_stair_mastery_buckets", None)
+    if not isinstance(buckets, dict):
+        buckets = {}
+        env._stair_mastery_buckets = buckets
+    bucket = buckets.setdefault(int(iteration), [0, 0])
+    bucket[0] += int(success_count)
+    bucket[1] += int(target_count)
 
 
-def _reset_mastery_window(env: ManagerBasedRlEnv) -> None:
-    env._stair_mastery_success_count = 0
-    env._stair_mastery_failure_count = 0
-    env._stair_mastery_target_count = 0
+def _mastery_window_counts(
+    env: ManagerBasedRlEnv,
+    *,
+    level_start_iteration: int,
+    completed_iteration: int,
+    window_iterations: int,
+) -> tuple[int, int, int]:
+    if completed_iteration < level_start_iteration:
+        return 0, 0, 0
+
+    window_iterations = max(1, int(window_iterations))
+    window_start = max(level_start_iteration, completed_iteration - window_iterations + 1)
+    buckets = getattr(env, "_stair_mastery_buckets", {})
+    if not isinstance(buckets, dict):
+        return 0, 0, 0
+
+    for stale_iteration in tuple(buckets):
+        if stale_iteration < window_start:
+            del buckets[stale_iteration]
+
+    success_count = 0
+    target_count = 0
+    for bucket_iteration, counts in buckets.items():
+        if window_start <= bucket_iteration <= completed_iteration:
+            success_count += int(counts[0])
+            target_count += int(counts[1])
+    return success_count, target_count, completed_iteration - level_start_iteration + 1
+
+
+def _mastery_level_start_iteration(env: ManagerBasedRlEnv) -> int:
+    return int(getattr(env, "_stair_mastery_level_start_iteration", 0))
+
+
+def _mastery_last_evaluation_iteration(env: ManagerBasedRlEnv) -> int:
+    return int(getattr(env, "_stair_mastery_last_evaluation_iteration", -1))
+
+
+def _set_last_mastery_evaluation(
+    env: ManagerBasedRlEnv,
+    *,
+    iteration: int,
+    target_level: int,
+    success_rate: float,
+    sample_count: int,
+    passed: bool,
+) -> None:
+    env._stair_mastery_last_evaluation_iteration = int(iteration)
+    env._stair_mastery_last_evaluation = {
+        "success_rate": float(success_rate),
+        "sample_count": float(sample_count),
+        "passed": float(passed),
+        "target_level": float(target_level),
+    }
+
+
+def _mastery_last_evaluation_value(env: ManagerBasedRlEnv, name: str) -> float:
+    values = getattr(env, "_stair_mastery_last_evaluation", None)
+    if not isinstance(values, dict):
+        return 0.0
+    return float(values.get(name, 0.0))
+
+
+def _reset_mastery_window(env: ManagerBasedRlEnv, *, level_start_iteration: int) -> None:
+    env._stair_mastery_buckets = {}
+    env._stair_mastery_level_start_iteration = int(level_start_iteration)
+    env._stair_mastery_last_evaluation_iteration = int(level_start_iteration) - 1
 
 
 def _env_ids_tensor(env: ManagerBasedRlEnv, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
@@ -374,6 +492,14 @@ def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
         "target_failure_rate": zero,
         "target_sample_count": zero,
         "target_window_evaluated": zero,
+        "target_window_elapsed_iterations": zero,
+        "target_required_steps": zero,
+        "target_steps_mean": zero,
+        "target_step_height_mean": zero,
+        "target_last_evaluation_success_rate": zero,
+        "target_last_evaluation_sample_count": zero,
+        "target_last_evaluation_passed": zero,
+        "target_last_evaluation_level": zero,
         "upgraded": zero,
         "upgrade_count": zero,
         "target_sample_rate": zero,

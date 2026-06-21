@@ -26,12 +26,9 @@ _TRAINING_COLLECT_PATTERN = re.compile(r"Collection time:\s+([0-9.]+)s")
 _TRAINING_LEARNING_PATTERN = re.compile(r"Learning time:\s+([0-9.]+)s")
 _TRAINING_ITER_TIME_PATTERN = re.compile(r"Iteration time:\s+([0-9.]+)s")
 _TRAINING_ITER_UPDATE_INTERVAL_S = 2.0
-_CTBC_UPDATE_INTERVAL_S = 0.25
-_CTBC_LOG_INTERVAL_S = 2.0
 _LOG_TAIL_BYTES = 256 * 1024
 _VISER_FRAME_RATE_ENV = "SE3_VISER_FRAME_RATE"
 _VISER_INITIAL_SPEED_ENV = "SE3_VISER_INITIAL_SPEED"
-_VISER_FOLLOW_CTBC_ENV = "SE3_VISER_FOLLOW_CTBC"
 
 
 def _resolve_play_config(task_id: str, cfg: PlayConfig) -> PlayConfig:
@@ -94,120 +91,27 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         self._se3_train_run_dir = _training_run_dir_from_env()
         self._se3_train_iter_html = None
         self._se3_train_iter_last_update = 0.0
-        self._se3_ctbc_html = None
-        self._se3_ctbc_last_update = 0.0
-        self._se3_ctbc_last_log = 0.0
-        self._se3_ctbc_checkpoint_iter = None
-        self._se3_follow_ctbc = None
-        self._se3_ctbc_total_s = None
-        self._se3_ctbc_peak_s = None
-        self._se3_ctbc_hold_end_s = None
-        self._se3_ctbc_amplitude = None
-        self._se3_ctbc_hip_ratio = None
-        self._se3_ctbc_knee_ratio = None
-        self._se3_ctbc_profile_html = None
-        self._se3_ctbc_control_update = False
-        self._se3_ctbc_default_config = None
 
         if self._se3_train_run_dir is not None:
             with self._server.gui.add_folder("Training"):
                 self._se3_train_iter_html = self._server.gui.add_html("")
-        state = getattr(self.env.unwrapped, "stair_climb_state", None)
-        if state is not None:
-            profile = state.feedforward_config()
-            self._se3_ctbc_default_config = profile
-            with self._server.gui.add_folder("CTBC Feedforward"):
-                self._se3_follow_ctbc = self._server.gui.add_checkbox(
-                    "Follow active CTBC",
-                    initial_value=_bool_env(_VISER_FOLLOW_CTBC_ENV, default=False),
-                )
-                self._se3_ctbc_total_s = self._server.gui.add_slider(
-                    "Total duration (s)",
-                    min=0.05,
-                    max=1.0,
-                    step=0.01,
-                    initial_value=float(profile["period_s"]),
-                )
-                self._se3_ctbc_peak_s = self._server.gui.add_slider(
-                    "Peak time (s)",
-                    min=0.01,
-                    max=0.50,
-                    step=0.01,
-                    initial_value=float(profile["attack_s"]),
-                )
-                self._se3_ctbc_hold_end_s = self._server.gui.add_slider(
-                    "Peak hold end (s)",
-                    min=0.01,
-                    max=0.90,
-                    step=0.01,
-                    initial_value=float(profile["hold_end_s"]),
-                )
-                self._se3_ctbc_amplitude = self._server.gui.add_slider(
-                    "Amplitude (rad)",
-                    min=0.0,
-                    max=2.0,
-                    step=0.05,
-                    initial_value=float(profile["amplitude_rad"]),
-                )
-                self._se3_ctbc_hip_ratio = self._server.gui.add_slider(
-                    "Hip ratio",
-                    min=0.0,
-                    max=3.0,
-                    step=0.05,
-                    initial_value=float(profile["hip_ratio"]),
-                )
-                self._se3_ctbc_knee_ratio = self._server.gui.add_slider(
-                    "Knee ratio",
-                    min=0.0,
-                    max=3.0,
-                    step=0.05,
-                    initial_value=float(profile["knee_ratio"]),
-                )
-                reset_profile = self._server.gui.add_button("Reset pulse")
-                trigger_left = self._server.gui.add_button("Trigger left")
-                trigger_right = self._server.gui.add_button("Trigger right")
-                trigger_both = self._server.gui.add_button("Trigger both")
-                self._se3_ctbc_profile_html = self._server.gui.add_html("")
-                self._se3_ctbc_html = self._server.gui.add_html("")
 
-            for handle in (
-                self._se3_ctbc_total_s,
-                self._se3_ctbc_peak_s,
-                self._se3_ctbc_hold_end_s,
-                self._se3_ctbc_amplitude,
-                self._se3_ctbc_hip_ratio,
-                self._se3_ctbc_knee_ratio,
-            ):
-                handle.on_update(lambda _event: self._apply_ctbc_tuning())
-
-            @reset_profile.on_click
-            def _reset_ctbc_profile(_event) -> None:
-                self._set_ctbc_controls(self._se3_ctbc_default_config)
-
-            @trigger_left.on_click
-            def _trigger_ctbc_left(_event) -> None:
-                self._trigger_ctbc("left")
-
-            @trigger_right.on_click
-            def _trigger_ctbc_right(_event) -> None:
-                self._trigger_ctbc("right")
-
-            @trigger_both.on_click
-            def _trigger_ctbc_both(_event) -> None:
-                self._trigger_ctbc("both")
-
-            self._apply_ctbc_tuning()
-
-        self._sync_ctbc_checkpoint_iteration(force=True)
         self._update_training_iter_display(force=True)
-        self._update_ctbc_display(force=True)
+
+    def reset_environment(self) -> None:
+        """Reset all viewer envs and synchronously refresh their Viser instances."""
+        super().reset_environment()
+        sim = self.env.unwrapped.sim
+        with self._sim_lock:
+            with self._server.atomic():
+                self._scene.update(sim.data)
+                self._server.flush()
+        self._scene.request_update()
 
     def sync_env_to_viewer(self) -> None:
         """同步仿真画面，并刷新外部训练进度。"""
         super().sync_env_to_viewer()
-        self._sync_ctbc_checkpoint_iteration()
         self._update_training_iter_display()
-        self._update_ctbc_display()
 
     def _set_initial_speed(self, speed: float) -> None:
         """把初始播放速度吸附到 MJLab 支持的最近档位。"""
@@ -215,72 +119,6 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         speed_index = min(range(len(speeds)), key=lambda index: abs(speeds[index] - speed))
         self._speed_index = speed_index
         self._time_multiplier = speeds[speed_index]
-
-    def _apply_ctbc_tuning(self) -> None:
-        """将 Viser 控件值立即应用到运行中的 CTBC 状态机。"""
-        if self._se3_ctbc_control_update:
-            return
-        handles = (
-            self._se3_ctbc_total_s,
-            self._se3_ctbc_peak_s,
-            self._se3_ctbc_hold_end_s,
-            self._se3_ctbc_amplitude,
-            self._se3_ctbc_hip_ratio,
-            self._se3_ctbc_knee_ratio,
-        )
-        if any(handle is None for handle in handles):
-            return
-        state = getattr(self.env.unwrapped, "stair_climb_state", None)
-        if state is None:
-            return
-
-        total_s = float(self._se3_ctbc_total_s.value)
-        peak_s = min(float(self._se3_ctbc_peak_s.value), total_s - state.control_dt)
-        peak_s = max(state.control_dt, peak_s)
-        hold_end_s = min(
-            max(float(self._se3_ctbc_hold_end_s.value), peak_s),
-            total_s - state.control_dt,
-        )
-        profile = state.configure_feedforward(
-            ff_amplitude_rad=float(self._se3_ctbc_amplitude.value),
-            ff_period_s=total_s,
-            ff_attack_s=peak_s,
-            ff_hold_s=hold_end_s - peak_s,
-            hip_feedforward_ratio=float(self._se3_ctbc_hip_ratio.value),
-            knee_feedforward_ratio=float(self._se3_ctbc_knee_ratio.value),
-        )
-        self._set_ctbc_controls(profile, apply=False)
-
-    def _set_ctbc_controls(
-        self,
-        profile: dict[str, float | int] | None,
-        *,
-        apply: bool = True,
-    ) -> None:
-        """把离散后的实际参数回写到滑块，保持 GUI 与仿真一致。"""
-        if profile is None:
-            return
-        self._se3_ctbc_control_update = True
-        try:
-            self._se3_ctbc_total_s.value = float(profile["period_s"])
-            self._se3_ctbc_peak_s.value = float(profile["attack_s"])
-            self._se3_ctbc_hold_end_s.value = float(profile["hold_end_s"])
-            self._se3_ctbc_amplitude.value = float(profile["amplitude_rad"])
-            self._se3_ctbc_hip_ratio.value = float(profile["hip_ratio"])
-            self._se3_ctbc_knee_ratio.value = float(profile["knee_ratio"])
-            if self._se3_ctbc_profile_html is not None:
-                self._se3_ctbc_profile_html.content = _format_ctbc_profile_html(profile)
-        finally:
-            self._se3_ctbc_control_update = False
-        if apply:
-            self._apply_ctbc_tuning()
-
-    def _trigger_ctbc(self, side: str) -> None:
-        """手动触发当前选中环境的 CTBC 脉冲。"""
-        state = getattr(self.env.unwrapped, "stair_climb_state", None)
-        if state is None:
-            return
-        state.trigger_feedforward(int(self._scene.env_idx), side)
 
     def _update_training_iter_display(self, force: bool = False) -> None:
         """低频读取训练日志，把当前 PPO iter 写入 Viser GUI。"""
@@ -298,190 +136,6 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         self._se3_train_iter_html.content = _format_training_progress_html(
             self._se3_train_run_dir, progress
         )
-
-    def _sync_ctbc_checkpoint_iteration(self, force: bool = False) -> None:
-        """让 watch 的 CTBC 课程始终跟随当前所选 checkpoint。"""
-        state = getattr(self.env.unwrapped, "stair_climb_state", None)
-        if state is None:
-            return
-        raw_iteration = os.environ.get("SE3_WATCH_ITER", "")
-        iteration = int(raw_iteration) if raw_iteration.isdigit() else -1
-        if iteration < 0:
-            checkpoint_name = self._ckpt_mgr.current_name if self._ckpt_mgr is not None else ""
-            iteration = _checkpoint_iteration(Path(checkpoint_name))
-        if iteration < 0 or (not force and iteration == self._se3_ctbc_checkpoint_iter):
-            return
-        state.set_fixed_iteration(iteration)
-        self._se3_ctbc_checkpoint_iter = iteration
-
-    def _update_ctbc_display(self, force: bool = False) -> None:
-        """显示所选环境从碰撞判据到动作注入的完整 CTBC 链路。"""
-        if self._se3_ctbc_html is None:
-            return
-        now = time.monotonic()
-        if not force and now - self._se3_ctbc_last_update < _CTBC_UPDATE_INTERVAL_S:
-            return
-        self._se3_ctbc_last_update = now
-
-        env = self.env.unwrapped
-        state = getattr(env, "stair_climb_state", None)
-        if state is None:
-            return
-        active_mask = state.contact_triggered()
-        active_ids = active_mask.nonzero().flatten().detach().cpu().tolist()
-        env_idx = int(self._scene.env_idx)
-        if (
-            self._se3_follow_ctbc is not None
-            and self._se3_follow_ctbc.value
-            and active_ids
-            and not bool(active_mask[env_idx].item())
-        ):
-            env_idx = int(active_ids[0])
-            self._scene.env_idx = env_idx
-        contact = state.latest_contact_force[env_idx].detach().cpu().tolist()
-        stable = state.stable_contact[env_idx].detach().cpu().tolist()
-        phase = state.ff_phase[env_idx].detach().cpu().tolist()
-        cooldown = state.cooldown[env_idx].detach().cpu().tolist()
-        active_count = len(active_ids)
-        stable_count = int(state.stable_contact.any(dim=-1).sum().item())
-        cycles = int(state.complete_ff_cycle_count[env_idx].item())
-
-        output_bias = [0.0] * 4
-        action_delta = [0.0] * 4
-        requested_wheel_delta = [[0.0, 0.0], [0.0, 0.0]]
-        actual_wheel_xz = [[0.0, 0.0], [0.0, 0.0]]
-        target_wheel_xz = [[0.0, 0.0], [0.0, 0.0]]
-        action_term = env.action_manager.get_term("delayed_action")
-        if hasattr(action_term, "ctbc_output_bias"):
-            output_bias = action_term.ctbc_output_bias[env_idx, :4].detach().cpu().tolist()
-        if hasattr(action_term, "ctbc_action_delta"):
-            action_delta = action_term.ctbc_action_delta[env_idx, :4].detach().cpu().tolist()
-        if hasattr(action_term, "ctbc_wheel_delta_xz"):
-            requested_wheel_delta = action_term.ctbc_wheel_delta_xz[env_idx].detach().cpu().tolist()
-        if hasattr(action_term, "actual_wheel_xz"):
-            actual_wheel_xz = action_term.actual_wheel_xz[env_idx].detach().cpu().tolist()
-        if hasattr(action_term, "target_wheel_xz"):
-            target_wheel_xz = action_term.target_wheel_xz[env_idx].detach().cpu().tolist()
-
-        self._se3_ctbc_html.content = _format_ctbc_html(
-            env_idx=env_idx,
-            num_envs=int(env.num_envs),
-            local_iter=int(state.local_iteration),
-            kff=float(state.kff),
-            force_threshold=float(state.force_threshold),
-            contact_window=int(state.contact_window),
-            contact=contact,
-            stable=stable,
-            phase=phase,
-            period_steps=int(state.ff_period_steps),
-            cooldown=cooldown,
-            active_count=active_count,
-            active_ids=active_ids,
-            stable_count=stable_count,
-            cycles=cycles,
-            output_bias=output_bias,
-            action_delta=action_delta,
-            requested_wheel_delta=requested_wheel_delta,
-            actual_wheel_xz=actual_wheel_xz,
-            target_wheel_xz=target_wheel_xz,
-        )
-        if now - self._se3_ctbc_last_log >= _CTBC_LOG_INTERVAL_S:
-            self._se3_ctbc_last_log = now
-            print(
-                "[CTBC] "
-                f"iter={state.local_iteration} kff={state.kff:.3f} "
-                f"active={active_count}/{env.num_envs} stable={stable_count}/{env.num_envs} "
-                f"active_ids={active_ids} env={env_idx} force={contact} phase={phase} "
-                f"bias={[round(value, 3) for value in output_bias]} "
-                f"delta={[round(value, 3) for value in action_delta]} "
-                f"wheel_delta_cm={_round_nested_cm(requested_wheel_delta)} "
-                f"actual_xz_cm={_round_nested_cm(actual_wheel_xz)} "
-                f"target_xz_cm={_round_nested_cm(target_wheel_xz)}"
-            )
-
-
-def _format_ctbc_html(
-    *,
-    env_idx: int,
-    num_envs: int,
-    local_iter: int,
-    kff: float,
-    force_threshold: float,
-    contact_window: int,
-    contact: list[float],
-    stable: list[bool],
-    phase: list[int],
-    period_steps: int,
-    cooldown: list[int],
-    active_count: int,
-    active_ids: list[int],
-    stable_count: int,
-    cycles: int,
-    output_bias: list[float],
-    action_delta: list[float],
-    requested_wheel_delta: list[list[float]],
-    actual_wheel_xz: list[list[float]],
-    target_wheel_xz: list[list[float]],
-) -> str:
-    """格式化 CTBC 传感、状态机和动作注入遥测。"""
-    active = [value >= 0 for value in phase]
-    return f"""
-      <div style="font-size:0.85em; line-height:1.4; padding:0 1em 0.5em 1em;">
-        <strong>Checkpoint iteration:</strong> {local_iter}<br/>
-        <strong>kff:</strong> {kff:.3f}<br/>
-        <strong>All envs:</strong> active {active_count}/{num_envs},
-        stable-contact {stable_count}/{num_envs}<br/>
-        <strong>Active env IDs:</strong> {active_ids}<br/>
-        <strong>Selected env:</strong> {env_idx}, completed cycles {cycles}<br/>
-        <strong>Trigger:</strong> force &gt; {force_threshold:.1f} N for
-        {contact_window} consecutive frames<br/>
-        <strong>Contact L/R:</strong> {contact[0]:.1f} / {contact[1]:.1f} N<br/>
-        <strong>Stable L/R:</strong> {stable[0]} / {stable[1]}<br/>
-        <strong>Active L/R:</strong> {active[0]} / {active[1]}<br/>
-        <strong>Phase L/R:</strong> {phase[0]} / {phase[1]} of {period_steps}<br/>
-        <strong>Cooldown L/R:</strong> {cooldown[0]} / {cooldown[1]}<br/>
-        <strong>Legacy bias:</strong>
-        [{", ".join(f"{value:+.3f}" for value in output_bias)}]<br/>
-        <strong>Injected action delta:</strong>
-        [{", ".join(f"{value:+.3f}" for value in action_delta)}]<br/>
-        <strong>Requested wheel dX/dZ (cm) L/R:</strong>
-        {_format_xz_cm(requested_wheel_delta)}<br/>
-        <strong>Actual wheel X/Z (cm) L/R:</strong>
-        {_format_xz_cm(actual_wheel_xz)}<br/>
-        <strong>Target wheel X/Z (cm) L/R:</strong>
-        {_format_xz_cm(target_wheel_xz)}
-      </div>
-    """
-
-
-def _format_xz_cm(values: list[list[float]]) -> str:
-    return " / ".join(f"({side[0] * 100.0:+.1f}, {side[1] * 100.0:+.1f})" for side in values)
-
-
-def _format_ctbc_profile_html(profile: dict[str, float | int]) -> str:
-    return f"""
-      <div style="font-size:0.85em; line-height:1.35; padding:0 1em 0.5em 1em;">
-        <strong>Pulse:</strong> {float(profile["period_s"]):.2f} s /
-        {int(profile["period_steps"])} steps<br/>
-        <strong>Attack:</strong> {float(profile["attack_s"]):.2f} s<br/>
-        <strong>Hold:</strong> {float(profile["hold_s"]):.2f} s<br/>
-        <strong>Decay:</strong> {float(profile["decay_s"]):.2f} s<br/>
-        <strong>Amplitude:</strong> {float(profile["amplitude_rad"]):.2f} rad<br/>
-        <strong>Hip / knee ratio:</strong>
-        {float(profile["hip_ratio"]):.2f} / {float(profile["knee_ratio"]):.2f}
-      </div>
-    """
-
-
-def _round_nested_cm(values: list[list[float]]) -> list[list[float]]:
-    return [[round(component * 100.0, 2) for component in side] for side in values]
-
-
-def _bool_env(name: str, *, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _viser_frame_rate_from_env(*, default: float) -> float:

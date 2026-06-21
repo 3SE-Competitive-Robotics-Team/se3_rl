@@ -40,6 +40,13 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     diff_drive_half_track: float = 0.20
     diff_drive_max_wheel_speed: float = 45.0
     diff_drive_wheel_speed_fraction: float = 1.0
+    lin_vel_profile_enabled: bool = False
+    """是否让 vx 在随机时间切换到新的随机值。"""
+    lin_vel_profile_iteration_range: tuple[int, int] | None = None
+    """启用 vx profile 的 PPO iteration 区间；None 表示全程启用。"""
+    lin_vel_profile_steps_per_policy_iter: int = 64
+    lin_vel_profile_resampling_time_range_s: tuple[float, float] = (0.6, 2.0)
+    """vx profile 每段随机速度的保持时间范围。"""
     yaw_rate_profile_enabled: bool = False
     """是否将 yaw_rate 指令随机为常值/正弦/锯齿 profile。"""
     yaw_rate_profile_iteration_range: tuple[int, int] | None = None
@@ -108,6 +115,15 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._yaw_profile_phase = torch.zeros(self.num_envs, device=self.device)
         self._yaw_profile_lower = torch.zeros(self.num_envs, device=self.device)
         self._yaw_profile_upper = torch.zeros(self.num_envs, device=self.device)
+        self._lin_vel_profile_mode = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self._lin_vel_profile_target = torch.zeros(self.num_envs, device=self.device)
+        self._lin_vel_profile_elapsed = torch.zeros(self.num_envs, device=self.device)
+        self._lin_vel_profile_next_resample_time = torch.zeros(
+            self.num_envs,
+            device=self.device,
+        )
         self._yaw_pid_target_yaw = torch.zeros(self.num_envs, device=self.device)
         self._yaw_pid_target_direction_w = torch.zeros(self.num_envs, 2, device=self.device)
         self._yaw_pid_target_direction_w[:, 0] = 1.0
@@ -247,6 +263,7 @@ class VelocityHeightCommandTerm(CommandTerm):
                 standing_height,
             )
         if len(standing_ids) > 0:
+            self._reset_lin_vel_profiles(standing_ids)
             self._reset_yaw_profiles(standing_ids)
 
         # 运动环境:随机速度 + 随机姿态 + 随机高度。
@@ -262,6 +279,7 @@ class VelocityHeightCommandTerm(CommandTerm):
                 + self.cfg.ang_vel_yaw_range[0]
             )
             lin_vel, yaw_vel = self._constrain_diff_drive_command(lin_vel, yaw_vel)
+            self._resample_lin_vel_profiles(moving_ids, lin_vel)
             self._resample_yaw_profiles(moving_ids, lin_vel, yaw_vel)
             pitch = (
                 torch.rand(len(moving_ids), device=self.device)
@@ -394,6 +412,22 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._yaw_profile_lower[env_ids] = 0.0
         self._yaw_profile_upper[env_ids] = 0.0
 
+    def _reset_lin_vel_profiles(self, env_ids: torch.Tensor) -> None:
+        self._lin_vel_profile_mode[env_ids] = 0
+        self._lin_vel_profile_target[env_ids] = 0.0
+        self._lin_vel_profile_elapsed[env_ids] = 0.0
+        self._lin_vel_profile_next_resample_time[env_ids] = 0.0
+
+    def _lin_vel_profile_active(self) -> bool:
+        if not self.cfg.lin_vel_profile_enabled:
+            return False
+        iteration_range = self.cfg.lin_vel_profile_iteration_range
+        if iteration_range is None:
+            return True
+        steps_per_iter = max(1, int(self.cfg.lin_vel_profile_steps_per_policy_iter))
+        iteration = int(getattr(self._env, "common_step_counter", 0)) // steps_per_iter
+        return int(iteration_range[0]) <= iteration < int(iteration_range[1])
+
     def _yaw_profile_active(self) -> bool:
         if not self.cfg.yaw_rate_profile_enabled:
             return False
@@ -432,6 +466,59 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._yaw_pid_target_yaw[env_ids] = target_yaw
         self._yaw_pid_target_direction_w[env_ids, 0] = torch.cos(target_yaw)
         self._yaw_pid_target_direction_w[env_ids, 1] = torch.sin(target_yaw)
+
+    def _resample_lin_vel_profiles(
+        self,
+        env_ids: torch.Tensor,
+        lin_vel: torch.Tensor,
+    ) -> None:
+        self._lin_vel_profile_target[env_ids] = lin_vel
+        self._lin_vel_profile_elapsed[env_ids] = 0.0
+
+        if not self._lin_vel_profile_active():
+            self._lin_vel_profile_mode[env_ids] = 0
+            self._lin_vel_profile_next_resample_time[env_ids] = 0.0
+            return
+
+        n = int(env_ids.numel())
+        if not self._lin_vel_profile_range_has_motion():
+            self._lin_vel_profile_mode[env_ids] = 0
+            self._lin_vel_profile_target[env_ids] = 0.0
+            self._lin_vel_profile_next_resample_time[env_ids] = 0.0
+            return
+
+        self._lin_vel_profile_mode[env_ids] = 1
+        self._lin_vel_profile_target[env_ids] = self._sample_lin_vel_profile_targets(n)
+        self._lin_vel_profile_next_resample_time[env_ids] = (
+            self._sample_lin_vel_profile_resample_times(n)
+        )
+
+    def _lin_vel_profile_range_has_motion(self) -> bool:
+        lin_low_cfg, lin_high_cfg = self.cfg.lin_vel_x_range
+        return max(abs(float(lin_low_cfg)), abs(float(lin_high_cfg))) > self.cfg.lin_vel_deadband
+
+    def _sample_lin_vel_profile_targets(self, count: int) -> torch.Tensor:
+        lin_low_cfg, lin_high_cfg = self.cfg.lin_vel_x_range
+        lin_low = float(lin_low_cfg)
+        lin_high = float(lin_high_cfg)
+        if lin_high < lin_low:
+            lin_low, lin_high = lin_high, lin_low
+        target = torch.rand(count, device=self.device) * (lin_high - lin_low) + lin_low
+        if self.cfg.constrain_diff_drive_commands:
+            wheel_radius = max(float(self.cfg.diff_drive_wheel_radius), 1.0e-6)
+            wheel_speed_budget = (
+                wheel_radius
+                * max(float(self.cfg.diff_drive_max_wheel_speed), 1.0e-6)
+                * max(float(self.cfg.diff_drive_wheel_speed_fraction), 1.0e-6)
+            )
+            target = torch.clamp(target, min=-wheel_speed_budget, max=wheel_speed_budget)
+        return target
+
+    def _sample_lin_vel_profile_resample_times(self, count: int) -> torch.Tensor:
+        time_min, time_max = self.cfg.lin_vel_profile_resampling_time_range_s
+        low = max(float(time_min), self._control_dt())
+        high = max(float(time_max), low)
+        return torch.rand(count, device=self.device) * (high - low) + low
 
     def _resample_yaw_profiles(
         self,
@@ -484,6 +571,29 @@ class VelocityHeightCommandTerm(CommandTerm):
         physics_dt = float(getattr(self._env, "physics_dt", 0.002))
         decimation = int(getattr(getattr(self._env, "cfg", None), "decimation", 1))
         return physics_dt * max(1, decimation)
+
+    def _profiled_lin_vel(self, lin_vel: torch.Tensor) -> torch.Tensor:
+        if not self.cfg.lin_vel_profile_enabled:
+            return lin_vel
+        if not self._lin_vel_profile_active():
+            return lin_vel
+        mode = self._lin_vel_profile_mode
+        wave = (mode > 0) & (~self._standing_mask)
+        if not bool(torch.any(wave)):
+            return lin_vel
+
+        self._lin_vel_profile_elapsed[wave] += self._control_dt()
+        due = wave & (
+            self._lin_vel_profile_elapsed >= self._lin_vel_profile_next_resample_time
+        )
+        if bool(torch.any(due)):
+            due_count = int(due.sum().item())
+            self._lin_vel_profile_target[due] = self._sample_lin_vel_profile_targets(due_count)
+            self._lin_vel_profile_elapsed[due] = 0.0
+            self._lin_vel_profile_next_resample_time[due] = (
+                self._sample_lin_vel_profile_resample_times(due_count)
+            )
+        return torch.where(wave, self._lin_vel_profile_target, lin_vel)
 
     def _profiled_yaw(self, yaw_vel: torch.Tensor) -> torch.Tensor:
         if not self.cfg.yaw_rate_profile_enabled:
@@ -570,11 +680,14 @@ class VelocityHeightCommandTerm(CommandTerm):
     def _update_command(self) -> None:
         """对速度指令施加死区。"""
         moving = ~self._standing_mask
-        lin_vel = self._command[:, 0]
+        lin_vel = self._profiled_lin_vel(self._command[:, 0])
         if self._yaw_pid_active():
             yaw_vel = self._yaw_pid_command(lin_vel)
         else:
             yaw_vel = self._profiled_yaw(self._command[:, 1])
+            if self.cfg.constrain_diff_drive_commands:
+                yaw_low, yaw_high = self._diff_drive_yaw_bounds(lin_vel)
+                yaw_vel = torch.clamp(yaw_vel, min=yaw_low, max=yaw_high)
 
         # 将小速度置零(死区)。
         lin_vel = torch.where(

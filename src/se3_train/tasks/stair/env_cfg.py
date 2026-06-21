@@ -41,8 +41,10 @@ _STAIR_COMMAND_WHEEL_RADIUS = 0.060
 _STAIR_COMMAND_HALF_TRACK = 0.200725
 _STAIR_COMMAND_WHEEL_SPEED_FRACTION = 0.70
 _STAIR_TERRAIN_TYPES = ("inv_pyramid_stairs",)
+_STAIR_STEP_HEIGHT_RANGE = (0.04, 0.22)
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _WALKING_HEIGHT_RANGE = (_DEFAULT_STANDING_HEIGHT, _DEFAULT_STANDING_HEIGHT)
+_STAIR_BODY_HEIGHT_RANGE = (0.24, 0.385)
 _WALKING_PHASE_ITERATIONS = 800
 _STEPS_PER_POLICY_ITER = 64
 _WATCH_ITER_ENV = "SE3_WATCH_ITER"
@@ -105,7 +107,7 @@ def _stair_terrain_cfg() -> TerrainGeneratorCfg:
             "inv_pyramid_stairs": BoxInvertedPyramidStairsTerrainCfg(
                 proportion=0.8,
                 size=(12.0, 12.0),
-                step_height_range=(0.05, 0.20),
+                step_height_range=_STAIR_STEP_HEIGHT_RANGE,
                 step_width=1.0,
                 platform_width=2.0,
                 border_width=1.0,
@@ -209,6 +211,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         JointGroup.WHEEL_ACTUATORS[0]
     ]
     command_cfg.diff_drive_wheel_speed_fraction = _STAIR_COMMAND_WHEEL_SPEED_FRACTION
+    command_cfg.lin_vel_profile_enabled = True
+    command_cfg.lin_vel_profile_iteration_range = (0, _WALKING_PHASE_ITERATIONS)
+    command_cfg.lin_vel_profile_steps_per_policy_iter = _STEPS_PER_POLICY_ITER
+    command_cfg.lin_vel_profile_resampling_time_range_s = (0.6, 2.0)
     command_cfg.yaw_rate_profile_enabled = True
     command_cfg.yaw_rate_profile_iteration_range = (0, _WALKING_PHASE_ITERATIONS)
     command_cfg.yaw_rate_profile_steps_per_policy_iter = _STEPS_PER_POLICY_ITER
@@ -310,19 +316,38 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
     cfg.rewards["action_rate"] = RewardTermCfg(func=rewards.action_rate_no_ctbc, weight=-0.48)
+    cfg.rewards["joint_mirror"] = RewardTermCfg(
+        func=rewards.joint_mirror_no_ctbc,
+        weight=-0.35,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["tracking_orientation_l2"] = RewardTermCfg(
+        func=rewards.tracking_orientation_l2,
+        weight=-18.0,
+        params={"command_name": "velocity_height"},
+    )
+    cfg.rewards["bad_tilt"] = RewardTermCfg(
+        func=rewards.bad_tilt,
+        weight=-10.0,
+        params={"soft_limit_deg": 8.0, "hard_limit_deg": 25.0, "max_penalty": 6.0},
+    )
+    cfg.rewards["collision"] = RewardTermCfg(
+        func=rewards.collision,
+        weight=-32.0,
+        params={
+            "sensor_name": "collision_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "use_recovery_gate": False,
+        },
+    )
     cfg.rewards["contact_forces"] = RewardTermCfg(
-        func=rewards.contact_forces_no_ctbc,
+        func=rewards.contact_forces_stair,
         weight=-1.07e-3,
         params={
             "threshold": 35.0,
             "sensor_name": "wheel_sensor",
             "asset_cfg": SceneEntityCfg("robot"),
         },
-    )
-    cfg.rewards["stair_feet_clearance"] = RewardTermCfg(
-        func=rewards.stair_feet_clearance,
-        weight=0.3,
-        params={"sensor_name": "wheel_height_sensor", "h_min": 0.03, "h_max": 0.30},
     )
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
         func=rewards.stair_target_progress_delta,
@@ -445,39 +470,55 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
         },
     )
-    cfg.rewards["stair_ctbc_no_progress"] = RewardTermCfg(
-        func=rewards.stair_ctbc_no_progress,
-        weight=-1.0,
+    cfg.rewards["stair_ctbc_side_height_gain"] = RewardTermCfg(
+        func=rewards.stair_ctbc_side_height_gain,
+        weight=0.25,
         params={
             "command_name": "velocity_height",
-            "command_threshold": 0.2,
-            "move_up_distance_ratio": 0.35,
-            "progress_speed_threshold": 0.02,
-            "upright_threshold": -0.5,
+            "max_gain": 0.18,
+            "reward_window_s": 0.30,
+            "decay_power": 2.0,
+            "contact_sensor_name": "wheel_riser_sensor",
+            "contact_force_threshold": 1.0,
             "terrain_type_names": _STAIR_TERRAIN_TYPES,
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    cfg.rewards["stair_feet_air_time"] = RewardTermCfg(
-        func=rewards.stair_feet_air_time,
-        weight=0.2,
-        params={"sensor_name": "wheel_sensor"},
+    cfg.rewards["stair_ctbc_side_forward_progress"] = RewardTermCfg(
+        func=rewards.stair_ctbc_side_forward_progress,
+        weight=0.8,
+        params={
+            "command_name": "velocity_height",
+            "max_progress": 0.35,
+            "reward_window_s": 0.30,
+            "decay_power": 2.0,
+            "contact_sensor_name": "wheel_riser_sensor",
+            "contact_force_threshold": 1.0,
+            "terrain_type_names": _STAIR_TERRAIN_TYPES,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
     )
-    cfg.rewards["stair_contact_number"] = RewardTermCfg(
-        func=rewards.stair_contact_number,
-        weight=0.2,
-        params={"sensor_name": "wheel_sensor"},
-    )
-    cfg.rewards["stair_wheel_swing_zero_vel"] = RewardTermCfg(
-        func=rewards.stair_wheel_swing_zero_vel,
-        weight=0.1,
-        params={"sensor_name": "wheel_sensor"},
+    cfg.rewards["stair_ctbc_side_no_outcome"] = RewardTermCfg(
+        func=rewards.stair_ctbc_side_no_outcome,
+        weight=-1.5,
+        params={
+            "command_name": "velocity_height",
+            "grace_s": 0.06,
+            "min_height_gain": 0.025,
+            "min_progress": 0.035,
+            "deadline_s": 0.18,
+            "contact_sensor_name": "wheel_riser_sensor",
+            "contact_force_threshold": 1.0,
+            "terrain_type_names": _STAIR_TERRAIN_TYPES,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
     )
     cfg.rewards["obs_steps_climbed"] = RewardTermCfg(
         func=rewards.stair_steps_climbed,
         weight=0.001,
         params={
             "step_height": None,
-            "step_height_range": (0.05, 0.20),
+            "step_height_range": _STAIR_STEP_HEIGHT_RANGE,
             "step_depth": 0.30,
             "start_x_offset": 0.0,
             "standing_height": _DEFAULT_STANDING_HEIGHT,
@@ -659,17 +700,17 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 250,
-                        "lin_vel_x_range": (0.6, 1.2),
+                        "lin_vel_x_range": (0.6, 1.5),
                         "ang_vel_yaw_range": (-3.0, 3.0),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 500,
-                        "lin_vel_x_range": (0.6, 1.2),
+                        "lin_vel_x_range": (0.6, 1.5),
                         "ang_vel_yaw_range": (-3.0, 3.0),
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS + 800,
-                        "lin_vel_x_range": (0.6, 1.2),
+                        "lin_vel_x_range": (0.6, 1.5),
                         "ang_vel_yaw_range": (-3.0, 3.0),
                     },
                 ],
@@ -698,11 +739,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     },
                     {
                         "iteration": 600,
-                        "height_range": (0.24, 0.37),
+                        "height_range": _STAIR_BODY_HEIGHT_RANGE,
                     },
                     {
                         "iteration": _WALKING_PHASE_ITERATIONS,
-                        "height_range": (0.24, 0.37),
+                        "height_range": _STAIR_BODY_HEIGHT_RANGE,
                     },
                 ],
             },
@@ -711,20 +752,21 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=curriculums.stair_terrain_levels,
             params={
                 "asset_name": "robot",
-                "standing_height": _DEFAULT_STANDING_HEIGHT,
-                "command_name": "velocity_height",
-                "move_up_distance_ratio": 0.35,
-                "move_down_distance_ratio": 0.12,
                 "upright_threshold": -0.5,
                 "terrain_type_names": _STAIR_TERRAIN_TYPES,
                 "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
                 "flat_terrain_type_name": "flat",
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
                 "fixed_iteration": watch_iter,
-                "success_threshold": 0.8,
+                "step_height_range": _STAIR_STEP_HEIGHT_RANGE,
+                "success_steps": 3,
+                "height_sensor_name": "wheel_height_sensor",
+                "success_threshold": 0.7,
                 "low_stair_ratio": 0.20,
                 "flat_ratio": 0.05,
-                "min_success_samples": 128,
+                "mastery_window_iterations": 16,
+                "mastery_evaluation_interval_iterations": 4,
+                "min_success_samples": 4096,
                 "initial_target_level": stair_initial_target_level,
             },
         )

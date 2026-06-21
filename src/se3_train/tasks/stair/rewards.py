@@ -10,7 +10,6 @@ from mjlab.sensor import ContactSensor
 
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import rewards as base_rewards
-from se3_train.mdp.joint_indices import wheel_joint_ids
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
 
@@ -68,6 +67,128 @@ def _ctbc_trigger_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
     if state is None:
         return torch.zeros(env.num_envs, device=env.device)
     return state.ctbc_trigger_weight()
+
+
+def _ctbc_trigger_active(env: ManagerBasedRlEnv) -> torch.Tensor:
+    state = _get_stair_state(env)
+    if state is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    return state.contact_triggered().float()
+
+
+def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
+    attr_name = f"_stair_ctbc_wheel_body_ids_{asset_cfg.name}"
+    cached = getattr(env, attr_name, None)
+    if isinstance(cached, list) and len(cached) == 2:
+        return cached
+    robot = env.scene[asset_cfg.name]
+    body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
+    if len(body_ids) != 2:
+        raise RuntimeError(f"必须找到左右轮 body，实际找到: {body_names}")
+    setattr(env, attr_name, body_ids)
+    return body_ids
+
+
+def _ctbc_side_outcome_components(
+    env: ManagerBasedRlEnv,
+    *,
+    command_name: str,
+    terrain_type_names: tuple[str, ...],
+    asset_cfg: SceneEntityCfg,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return per-side CTBC active mask, height gain, and target-direction progress gain."""
+    state = _get_stair_state(env)
+    if state is None:
+        zero = torch.zeros(env.num_envs, 2, device=env.device)
+        return zero.bool(), zero, zero
+
+    robot = env.scene[asset_cfg.name]
+    body_ids = _wheel_body_ids(env, asset_cfg)
+    wheel_pos_w = torch.nan_to_num(robot.data.body_link_pos_w[:, body_ids, :], nan=0.0)
+    wheel_z = wheel_pos_w[:, :, 2]
+    direction = _target_direction_w(env, command_name)
+    wheel_progress = torch.sum(wheel_pos_w[:, :, :2] * direction.unsqueeze(1), dim=-1)
+
+    active = state.ff_phase >= 0
+    shape = (env.num_envs, 2)
+    start_z_name = "_stair_ctbc_side_start_z"
+    start_progress_name = "_stair_ctbc_side_start_progress"
+    initialized_name = "_stair_ctbc_side_initialized"
+    start_z = getattr(env, start_z_name, None)
+    start_progress = getattr(env, start_progress_name, None)
+    initialized = getattr(env, initialized_name, None)
+    if (
+        not isinstance(start_z, torch.Tensor)
+        or start_z.shape != shape
+        or start_z.device != env.device
+    ):
+        start_z = torch.zeros(shape, device=env.device)
+        setattr(env, start_z_name, start_z)
+    if (
+        not isinstance(start_progress, torch.Tensor)
+        or start_progress.shape != shape
+        or start_progress.device != env.device
+    ):
+        start_progress = torch.zeros(shape, device=env.device)
+        setattr(env, start_progress_name, start_progress)
+    if (
+        not isinstance(initialized, torch.Tensor)
+        or initialized.shape != shape
+        or initialized.device != env.device
+    ):
+        initialized = torch.zeros(shape, device=env.device, dtype=torch.bool)
+        setattr(env, initialized_name, initialized)
+
+    initialized[~active] = False
+    new_active = active & (~initialized)
+    start_z[new_active] = wheel_z[new_active]
+    start_progress[new_active] = wheel_progress[new_active]
+    initialized[new_active] = True
+
+    height_gain = torch.clamp(wheel_z - start_z, min=0.0)
+    progress_gain = torch.clamp(wheel_progress - start_progress, min=0.0)
+    terrain_mask = _terrain_type_mask(env, terrain_type_names).unsqueeze(1)
+    active = active & terrain_mask
+    return active, height_gain, progress_gain
+
+
+def _ctbc_side_terrain_contact(
+    env: ManagerBasedRlEnv,
+    *,
+    sensor_name: str,
+    force_threshold: float,
+) -> torch.Tensor:
+    """Return per-side wheel contact with terrain, including side faces and top surfaces."""
+    try:
+        sensor: ContactSensor = env.scene[sensor_name]
+    except (KeyError, AttributeError):
+        return torch.zeros(env.num_envs, 2, dtype=torch.bool, device=env.device)
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, 2, dtype=torch.bool, device=env.device)
+
+    force = torch.nan_to_num(data.force, nan=0.0).reshape(env.num_envs, 2, -1, 3)
+    valid = torch.ones(force.shape[:-1], dtype=torch.bool, device=env.device)
+    if data.found is not None:
+        found = data.found.reshape(env.num_envs, 2, -1) > 0
+        valid = valid & found
+    force_contact = torch.norm(force, dim=-1) > float(force_threshold)
+    return (valid & force_contact).any(dim=-1)
+
+
+def _ctbc_side_time_weight(
+    env: ManagerBasedRlEnv,
+    *,
+    reward_window_s: float,
+    decay_power: float,
+) -> torch.Tensor:
+    state = _get_stair_state(env)
+    if state is None:
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    elapsed = torch.clamp(state.ff_phase.float(), min=0.0) * float(state.control_dt)
+    window = max(float(reward_window_s), float(state.control_dt))
+    linear = torch.clamp(1.0 - elapsed / window, min=0.0, max=1.0)
+    return linear ** max(float(decay_power), 0.0)
 
 
 def _local_iteration(env: ManagerBasedRlEnv, steps_per_policy_iter: int = 64) -> int:
@@ -512,36 +633,105 @@ def stair_backtrack(
     return active.float() * _upright_gate(env)
 
 
-def stair_ctbc_no_progress(
+def stair_ctbc_side_height_gain(
     env: ManagerBasedRlEnv,
     command_name: str,
-    command_threshold: float = 0.2,
-    move_up_distance_ratio: float = 0.35,
-    progress_speed_threshold: float = 0.02,
-    upright_threshold: float = -0.5,
+    max_gain: float = 0.18,
+    reward_window_s: float = 0.30,
+    decay_power: float = 2.0,
+    contact_sensor_name: str = "wheel_riser_sensor",
+    contact_force_threshold: float = 1.0,
     terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Penalty when CTBC is active but does not create outward stair progress."""
+    """Reward early terrain-contacted side height gain without rewarding wheels in free air."""
+    active, height_gain, _ = _ctbc_side_outcome_components(
+        env,
+        command_name=command_name,
+        terrain_type_names=terrain_type_names,
+        asset_cfg=asset_cfg,
+    )
+    side_contact = _ctbc_side_terrain_contact(
+        env,
+        sensor_name=contact_sensor_name,
+        force_threshold=contact_force_threshold,
+    )
+    time_weight = _ctbc_side_time_weight(
+        env,
+        reward_window_s=reward_window_s,
+        decay_power=decay_power,
+    )
+    normalized = torch.clamp(height_gain / max(float(max_gain), 1.0e-6), 0.0, 1.0)
+    gated = active & side_contact
+    return torch.sum(normalized * time_weight * gated.float(), dim=1) * _upright_gate(env)
+
+
+def stair_ctbc_side_forward_progress(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    max_progress: float = 0.35,
+    reward_window_s: float = 0.30,
+    decay_power: float = 2.0,
+    contact_sensor_name: str = "wheel_riser_sensor",
+    contact_force_threshold: float = 1.0,
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward early terrain-contacted side progress along the target climb direction."""
+    active, _, progress_gain = _ctbc_side_outcome_components(
+        env,
+        command_name=command_name,
+        terrain_type_names=terrain_type_names,
+        asset_cfg=asset_cfg,
+    )
+    side_contact = _ctbc_side_terrain_contact(
+        env,
+        sensor_name=contact_sensor_name,
+        force_threshold=contact_force_threshold,
+    )
+    time_weight = _ctbc_side_time_weight(
+        env,
+        reward_window_s=reward_window_s,
+        decay_power=decay_power,
+    )
+    normalized = torch.clamp(progress_gain / max(float(max_progress), 1.0e-6), 0.0, 1.0)
+    gated = active & side_contact
+    return torch.sum(normalized * time_weight * gated.float(), dim=1) * _upright_gate(env)
+
+
+def stair_ctbc_side_no_outcome(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    grace_s: float = 0.06,
+    min_height_gain: float = 0.025,
+    min_progress: float = 0.035,
+    deadline_s: float = 0.18,
+    contact_sensor_name: str = "wheel_riser_sensor",
+    contact_force_threshold: float = 1.0,
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize a triggered side that fails to produce early contacted outcome."""
     state = _get_stair_state(env)
     if state is None:
         return torch.zeros(env.num_envs, device=env.device)
-    command = env.command_manager.get_command(command_name)
-    _, target_speed, _, _, terrain_mask = _target_progress_components(
+    active, height_gain, progress_gain = _ctbc_side_outcome_components(
         env,
         command_name=command_name,
-        move_up_distance_ratio=move_up_distance_ratio,
         terrain_type_names=terrain_type_names,
+        asset_cfg=asset_cfg,
     )
-    move_up_distance = max(_terrain_size_x(env) * float(move_up_distance_ratio), 1.0e-6)
-    progress_speed = target_speed / move_up_distance
-    active = (
-        terrain_mask
-        & _curriculum_upright_mask(env, upright_threshold)
-        & (command[:, 0] > float(command_threshold))
-        & state.contact_triggered()
-        & (progress_speed < float(progress_speed_threshold))
+    side_contact = _ctbc_side_terrain_contact(
+        env,
+        sensor_name=contact_sensor_name,
+        force_threshold=contact_force_threshold,
     )
-    return active.float() * float(state.kff) * _upright_gate(env)
+    elapsed = torch.clamp(state.ff_phase.float(), min=0.0) * float(state.control_dt)
+    checked_window = (elapsed >= float(grace_s)) & (elapsed <= float(deadline_s))
+    has_outcome = side_contact & (
+        (height_gain >= float(min_height_gain)) | (progress_gain >= float(min_progress))
+    )
+    return torch.sum((active & checked_window & (~has_outcome)).float(), dim=1) * _upright_gate(env)
 
 
 def stair_terrain_level(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -553,88 +743,6 @@ def stair_terrain_level(env: ManagerBasedRlEnv) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
             return value.to(device=env.device).float()
     return torch.zeros(env.num_envs, device=env.device)
-
-
-def stair_feet_clearance(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    h_min: float = 0.03,
-    h_max: float = 0.25,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """摆动相轮子离地高度奖励，仅在 CTBC 触发时计入。"""
-    del asset_cfg
-    if _get_stair_state(env) is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    sensor = env.scene[sensor_name]
-    wheel_heights = torch.nan_to_num(sensor.data.heights, nan=0.0)
-    if wheel_heights.ndim == 1:
-        wheel_heights = wheel_heights.unsqueeze(-1)
-    in_range = ((wheel_heights > h_min) & (wheel_heights < h_max)).float()
-    return in_range.sum(dim=-1) * _ctbc_trigger_weight(env)
-
-
-def stair_feet_air_time(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """摆动相轮子空中时间奖励，仅在 CTBC 触发时计入。"""
-    del asset_cfg
-    if _get_stair_state(env) is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    sensor: ContactSensor = env.scene[sensor_name]
-    data = sensor.data
-    if data.force is None:
-        return torch.zeros(env.num_envs, device=env.device)
-    force_mag = torch.norm(torch.nan_to_num(data.force, nan=0.0), dim=-1)
-    in_air = (force_mag < 1.0).float()
-    air_time = torch.clamp(in_air * float(env.step_dt), max=0.5)
-    return air_time.sum(dim=-1) * _ctbc_trigger_weight(env)
-
-
-def stair_contact_number(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """实际触地/摆动状态与 CTBC 期望 stance 的匹配奖励。"""
-    del asset_cfg
-    state = _get_stair_state(env)
-    if state is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    sensor: ContactSensor = env.scene[sensor_name]
-    data = sensor.data
-    if data.force is None:
-        return torch.zeros(env.num_envs, device=env.device)
-    force_mag = torch.norm(torch.nan_to_num(data.force, nan=0.0), dim=-1)
-    in_contact = force_mag > 1.0
-    ff_active = state._ff_phase >= 0
-    match = (in_contact & ~ff_active) | (~in_contact & ff_active)
-    mismatch = ~match
-    reward = match.float() - 1.3 * mismatch.float()
-    return reward.sum(dim=-1) * _ctbc_trigger_weight(env)
-
-
-def stair_wheel_swing_zero_vel(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """摆动相轮子角速度零速奖励，仅在 CTBC 触发时计入。"""
-    del sensor_name
-    state = _get_stair_state(env)
-    if state is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    robot = env.scene[asset_cfg.name]
-    wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
-    ff_active = (state._ff_phase >= 0).float()
-    reward = torch.exp(-(ff_active * wheel_vel**2).sum(dim=-1))
-    return reward * _ctbc_trigger_weight(env)
 
 
 def stair_forward_progress(
@@ -911,24 +1019,37 @@ def action_rate_no_ctbc(env: ManagerBasedRlEnv) -> torch.Tensor:
     return result * scale * _upright_gate(env)
 
 
-def contact_forces_no_ctbc(
+def joint_mirror_no_ctbc(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    from se3_train.mdp.rewards import joint_mirror
+
+    result = joint_mirror(env, asset_cfg=asset_cfg)
+    if _get_stair_state(env) is None:
+        return result
+    return result * (1.0 - _ctbc_trigger_active(env))
+
+
+def contact_forces_stair(
     env: ManagerBasedRlEnv,
     threshold: float,
     sensor_name: str,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
+    """Wheel terrain-contact force penalty used in stair training.
+
+    Unlike earlier CTBC runs, this is not discounted during feedforward triggers.
+    """
     from se3_train.mdp.rewards import contact_forces
 
-    result = contact_forces(
+    return contact_forces(
         env,
         threshold=threshold,
         sensor_name=sensor_name,
         asset_cfg=asset_cfg,
         use_recovery_gate=False,
     )
-    if _get_stair_state(env) is None:
-        return result
-    return result * (1.0 - 0.5 * _ctbc_trigger_weight(env))
 
 
 def stair_diagnostics(
@@ -986,22 +1107,22 @@ def stair_diagnostics(
 __all__ = [
     *_FLAT_REWARD_ALL,
     "action_rate_no_ctbc",
-    "contact_forces_no_ctbc",
+    "contact_forces_stair",
     "flat_phase_leg_contact_penalty",
     "flat_phase_tracking_lin_vel",
     "flat_phase_wheel_contact_penalty",
+    "joint_mirror_no_ctbc",
     "leg_power_no_ctbc",
     "leg_torques_no_ctbc",
     "stair_backtrack",
     "stair_climb_progress",
     "stair_commanded_stall",
-    "stair_contact_number",
-    "stair_ctbc_no_progress",
+    "stair_ctbc_side_forward_progress",
+    "stair_ctbc_side_height_gain",
+    "stair_ctbc_side_no_outcome",
     "stair_diagnostics",
     "stair_early_speed_deficit",
     "stair_early_velocity_tracking",
-    "stair_feet_air_time",
-    "stair_feet_clearance",
     "stair_forward_progress",
     "stair_heading_error",
     "stair_height_gain",
@@ -1014,6 +1135,5 @@ __all__ = [
     "stair_tangential_velocity",
     "stair_target_progress_delta",
     "stair_terrain_level",
-    "stair_wheel_swing_zero_vel",
     "stand_still_no_ctbc",
 ]

@@ -32,6 +32,11 @@ from . import commands, curriculums, events, observations, rewards, terminations
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
+_LEG_ENCODER_BIAS_RANGE = (-0.01, 0.01)
+_LEG_ENCODER_NOISE_RANGE = (-0.01, 0.01)
+_LEG_ENCODER_LATE_NOISE_RANGE = (-0.025, 0.025)
+_LEG_ENCODER_NOISE_RAMP_ITERATION_RANGE = (800, 1800)
+_STEPS_PER_POLICY_ITER = 64
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -129,6 +134,19 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         wheel_height_sensor_cfg,
     )
 
+    leg_joint_pos_term = ObservationTermCfg(func=observations.leg_joint_pos_obs)
+    if not play:
+        leg_joint_pos_term = ObservationTermCfg(
+            func=observations.leg_joint_pos_obs,
+            params={
+                "encoder_bias_range": _LEG_ENCODER_BIAS_RANGE,
+                "encoder_noise_range": _LEG_ENCODER_NOISE_RANGE,
+                "late_encoder_noise_range": _LEG_ENCODER_LATE_NOISE_RANGE,
+                "noise_ramp_iteration_range": _LEG_ENCODER_NOISE_RAMP_ITERATION_RANGE,
+                "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+            },
+        )
+
     actor_terms = {
         "base_ang_vel": ObservationTermCfg(
             func=observations.base_ang_vel_obs,
@@ -139,10 +157,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.05, n_max=0.05),
         ),
         "commands": ObservationTermCfg(func=observations.commands_obs),
-        "leg_joint_pos": ObservationTermCfg(
-            func=observations.leg_joint_pos_obs,
-            noise=Unoise(n_min=-0.01, n_max=0.01),
-        ),
+        "leg_joint_pos": leg_joint_pos_term,
         "leg_joint_vel": ObservationTermCfg(
             func=observations.leg_joint_vel_obs,
             noise=Unoise(n_min=-1.5, n_max=1.5),
@@ -155,6 +170,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     critic_terms = {
         **actor_terms,
+        "leg_joint_pos": ObservationTermCfg(func=observations.leg_joint_pos_obs),
         "base_lin_vel": ObservationTermCfg(func=observations.base_lin_vel_obs),
         "wheel_contact_forces": ObservationTermCfg(
             func=observations.wheel_contact_force_obs,
@@ -444,6 +460,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "align_root_height_to_wheels": True,
                     "wheel_clearance": 0.001,
                 },
+            ),
+            "leg_encoder_bias": EventTermCfg(
+                func=observations.resample_leg_encoder_bias,
+                mode="reset",
+                params={"bias_range": _LEG_ENCODER_BIAS_RANGE},
             ),
             "friction": EventTermCfg(
                 func=events.randomize_friction,
