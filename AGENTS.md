@@ -4,9 +4,11 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 6 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
+- 7 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证，计划 deprecated）、`se3_deploy`（NX 真机部署 runtime，计划 deprecated）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
 - 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
+
+迁移约定：`se3_sim2sim` 和 `se3_deploy` 为历史兼容模块，后续建议迁移到 `https://github.com/3SE-Competitive-Robotics-Team/se3-mono`。Agent 在主动使用 `se3_deploy` 或执行 NX 真机部署/调试命令前，必须先询问主人是否继续使用旧链路；用户已经明确要求时可以继续。
 
 ## 术语表 (Glossary)
 
@@ -361,7 +363,8 @@ se3_wheel_leg/
 │   ├── se3_flow_match/    # Flow Matching（暂不可用，待迁移 34D）
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
-│   ├── se3_sim2sim/        # sim2sim 验证
+│   ├── se3_sim2sim/        # sim2sim 验证（计划 deprecated，迁移 se3-mono）
+│   ├── se3_deploy/         # NX 真机部署 runtime（计划 deprecated，使用前先确认）
 │   ├── se3_tools/          # 关节诊断和模型查看工具
 │   └── se3_jump_to/        # 跳跃参考轨迹生成
 ```

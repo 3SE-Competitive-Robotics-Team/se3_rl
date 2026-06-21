@@ -1,9 +1,11 @@
 ---
 name: nx-debug-workflow
-description: SerialLeg NX 真机调试流程：启动 CDC relay、MJCF viewer、检查通信状态。当提到 NX 调试、真机回传、CDC viewer、serialleg-nx 时触发。
+description: SerialLeg NX 真机调试流程（旧 se3_deploy 链路，计划 deprecated）：启动 CDC relay、MJCF viewer、检查通信状态。当提到 NX 调试、真机回传、CDC viewer、serialleg-nx 时触发；执行前先询问主人是否继续使用旧链路。
 ---
 
 # SerialLeg NX 调试 Workflow
+
+> 状态：本 workflow 来自旧 `workflow.md`，现已转成 Codex skill。它依赖本仓库的 `se3_deploy` / `se3_sim2sim` 旧链路，二者计划 deprecated；新开发建议迁移到 `https://github.com/3SE-Competitive-Robotics-Team/se3-mono`。Agent 只能在主人确认继续使用旧链路后执行下面的命令。
 
 目标：先启动 NX 侧 CDC relay，再在本机打开 MJCF viewer 看真机回传状态。
 
