@@ -4,8 +4,8 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 6 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching 基础组件）
-- 机器人：6 DOF（左腿 lf0/lf1/l_wheel + 右腿 rf0/rf1/r_wheel）
+- 6 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
+- 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
 ## 术语表 (Glossary)
@@ -68,13 +68,13 @@ uv run ruff check . --fix
 uv run prek run --all-files
 
 # Smoke 验证（5 轮，不上传 W&B）
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # 评估 / sim2sim（纯 MuJoCo CPU + Rerun，macOS 可运行）
 uv run se3-sim2sim --max-steps 3000 --course walk-sweep
@@ -106,7 +106,7 @@ uv run se3-sim2sim --checkpoint <ckpt> --jump-interval-s 5.0 --jump-target-heigh
 **每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 # 修改了跳跃相关代码时用这条：
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
@@ -197,11 +197,14 @@ se3_train/
 ├── tasks/           # 每个训练任务的最小独立单元
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-GRU
+│   ├── stair/       # SE3-WheelLegged-Stair-GRU（爬楼梯）
+│   ├── recovery/    # SE3-WheelLegged-Recovery-GRU（倒地自启）
 │   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
-│   └── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
+│   ├── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
+│   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
-    ├── observations.py     # 32 维 actor 观测（含跳跃扩展）
+    ├── observations.py     # 34 维 actor 观测（6-joint policy-order）
     ├── rewards.py          # 行走奖励函数
     ├── jump_rewards.py     # 跳跃专属奖励函数
     ├── commands.py         # 速度+高度指令生成器
@@ -355,7 +358,7 @@ se3_wheel_leg/
 │   ├── base_model/         # 训练完成的基模（_gru.pt / _mlp.pt）
 │   └── trajectories/       # 跳跃参考轨迹（jump_0.4m.npz 等）
 ├── src/
-│   ├── se3_flow_match/    # Flow Matching 基础组件
+│   ├── se3_flow_match/    # Flow Matching（暂不可用，待迁移 34D）
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
 │   ├── se3_sim2sim/        # sim2sim 验证
