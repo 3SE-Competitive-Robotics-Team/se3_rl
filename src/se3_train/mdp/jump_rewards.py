@@ -1651,40 +1651,6 @@ def flat_wheel_contact_penalty_no_jump(
     return penalty * idle.float()
 
 
-def flat_base_height_penalty_no_jump(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    height_sensor_name: str,
-    sigma: float = 0.05,
-) -> torch.Tensor:
-    """平地段 base 高度惩罚。
-
-    直接惩罚 base height 偏离当前 command height 的平方误差。
-    这比只靠 tracking_height 的正奖励更明确，方便把平地站高收敛到
-    我们指定的随机区间内。
-    """
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    flat = (~jump_flag) & (~_recovery_reset_mask(env))
-
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = sensor.data.heights[:, 0]
-    target_height = cmd[:, 4]
-    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
-
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
-        env.extras["log"].update(
-            {
-                "Jump/diag_flat_base_height_error_m": _mean_on_mask(
-                    torch.abs(height - target_height), flat
-                ),
-                "Jump/diag_flat_base_height_penalty": _mean_on_mask(penalty, flat),
-            }
-        )
-
-    return penalty * flat.float()
-
-
 def action_smoothness_no_jump(
     env: ManagerBasedRlEnv,
     command_name: str,

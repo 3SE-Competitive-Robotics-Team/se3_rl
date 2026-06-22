@@ -223,6 +223,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "delayed_action": SerialLegDelayedActionCfg(
             entity_name="robot",
             leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
+            action_clip=None,
         ),
     }
 
@@ -241,7 +242,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             diff_drive_wheel_speed_fraction=_FLAT_COMMAND_WHEEL_SPEED_FRACTION,
         ),
     }
-
     cfg.rewards = {
         "tracking_lin_vel": RewardTermCfg(
             func=rewards.tracking_lin_vel,
@@ -297,9 +297,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-12.0,
             params={"command_name": "velocity_height"},
         ),
-        "tracking_height": RewardTermCfg(
-            func=rewards.tracking_height,
-            weight=2.49,
+        "flat_base_height": RewardTermCfg(
+            func=rewards.flat_base_height_penalty_no_jump,
+            weight=-4.0,
             params={
                 "command_name": "velocity_height",
                 "sigma": 0.05,

@@ -960,6 +960,33 @@ def tracking_height(
     return reward
 
 
+def flat_base_height_penalty_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    sigma: float = 0.05,
+) -> torch.Tensor:
+    """平地段 base 高度 L2 惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = (~jump_flag) & (~_recovery_reset_mask(env))
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    target_height = cmd[:, 4]
+    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Flat/base_height_error_m": _masked_mean(torch.abs(height - target_height), flat),
+                "Flat/base_height_penalty": _masked_mean(penalty, flat),
+            }
+        )
+
+    return penalty * flat.float()
+
+
 def bad_tilt(
     env: ManagerBasedRlEnv,
     soft_limit_deg: float = 12.0,

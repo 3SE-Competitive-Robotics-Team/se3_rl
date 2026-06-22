@@ -6,7 +6,6 @@ from mjlab.envs.mdp.rewards import is_alive
 
 from se3_train.mdp.jump_rewards import (
     action_smoothness_no_jump,
-    flat_base_height_penalty_no_jump,
     flat_base_lin_vel_z_no_jump,
     flat_wheel_center_alignment_no_jump,
     flat_wheel_contact_penalty_no_jump,
@@ -23,6 +22,7 @@ from se3_train.mdp.rewards import (
     contact_forces,
     dof_pos_limits,
     feet_contact_without_cmd,
+    flat_base_height_penalty_no_jump,
     flat_leg_contact_penalty,
     flat_wheel_contact_penalty,
     joint_mirror,
@@ -33,7 +33,6 @@ from se3_train.mdp.rewards import (
     lin_vel_z,
     stand_still,
     tracking_ang_vel,
-    tracking_height,
     tracking_lin_vel,
     tracking_lin_yaw_joint,
     tracking_orientation_l2,
@@ -68,7 +67,6 @@ __all__ = [
     "lin_vel_z",
     "stand_still",
     "tracking_ang_vel",
-    "tracking_height",
     "tracking_lin_vel",
     "tracking_lin_yaw_joint",
     "tracking_orientation_l2",
