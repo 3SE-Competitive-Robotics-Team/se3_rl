@@ -284,14 +284,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards.pop("flat_wheel_contact", None)
     cfg.rewards.pop("flat_leg_contact", None)
     cfg.rewards.pop("tracking_lin_yaw_joint", None)
-    if "tracking_height" in cfg.rewards:
-        tracking_height_params = dict(cfg.rewards["tracking_height"].params or {})
-        tracking_height_params["ignore_recovery"] = True
-        cfg.rewards["tracking_height"] = replace(
-            cfg.rewards["tracking_height"],
-            weight=1.0,
-            params=tracking_height_params,
-        )
+    cfg.rewards["tracking_height"] = RewardTermCfg(
+        func=mdp_rewards.tracking_height,
+        weight=1.0,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.05,
+            "height_sensor_name": "base_height_sensor",
+            "ignore_recovery": True,
+        },
+    )
     if "tracking_ang_vel" in cfg.rewards:
         cfg.rewards["tracking_ang_vel"] = replace(cfg.rewards["tracking_ang_vel"], weight=1.5)
     if "tracking_orientation_l2" in cfg.rewards:

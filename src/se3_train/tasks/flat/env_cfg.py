@@ -23,6 +23,7 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.robot_cfg import get_serialleg_cfg
@@ -32,6 +33,45 @@ from . import commands, curriculums, events, observations, rewards, terminations
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
+_FLAT_LEG_ACTION_SCALE = 0.25
+_FLAT_INITIAL_LIN_VEL_X_RANGE = (-0.4, 0.4)
+_FLAT_INITIAL_ANG_VEL_YAW_RANGE = (-1.0, 1.0)
+_FLAT_COMMAND_WHEEL_RADIUS = 0.06
+_FLAT_COMMAND_HALF_TRACK = 0.20
+_FLAT_COMMAND_WHEEL_SPEED_FRACTION = 0.9
+_STEPS_PER_POLICY_ITER = 64
+_FLAT_VELOCITY_STAGES = [
+    {
+        "iteration": 0,
+        "lin_vel_x_range": _FLAT_INITIAL_LIN_VEL_X_RANGE,
+        "ang_vel_yaw_range": _FLAT_INITIAL_ANG_VEL_YAW_RANGE,
+    },
+    {
+        "iteration": 400,
+        "lin_vel_x_range": (-0.8, 0.8),
+        "ang_vel_yaw_range": (-2.0, 2.0),
+    },
+    {
+        "iteration": 800,
+        "lin_vel_x_range": (-1.2, 1.2),
+        "ang_vel_yaw_range": (-4.0, 4.0),
+    },
+    {
+        "iteration": 1200,
+        "lin_vel_x_range": (-1.6, 1.6),
+        "ang_vel_yaw_range": (-6.0, 6.0),
+    },
+    {
+        "iteration": 1600,
+        "lin_vel_x_range": (-2.0, 2.0),
+        "ang_vel_yaw_range": (-9.0, 9.0),
+    },
+    {
+        "iteration": 2000,
+        "lin_vel_x_range": (-2.4, 2.4),
+        "ang_vel_yaw_range": (-12.0, 12.0),
+    },
+]
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -180,20 +220,28 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     cfg.actions = {
-        "delayed_action": SerialLegDelayedActionCfg(entity_name="robot"),
+        "delayed_action": SerialLegDelayedActionCfg(
+            entity_name="robot",
+            leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
+            action_clip=None,
+        ),
     }
 
     cfg.commands = {
         "velocity_height": commands.JumpCommandCfg(
             resampling_time_range=(5.0, 5.0),
             jump_prob=0.0,  # 行走任务不触发跳跃
-            lin_vel_x_range=(-3.0, 3.0),
-            ang_vel_yaw_range=(-13.0, 13.0),
+            lin_vel_x_range=_FLAT_INITIAL_LIN_VEL_X_RANGE,
+            ang_vel_yaw_range=_FLAT_INITIAL_ANG_VEL_YAW_RANGE,
             height_range=_STANDING_HEIGHT_RANGE,
             standing_height_range=_STANDING_HEIGHT_RANGE,
+            constrain_diff_drive_commands=True,
+            diff_drive_wheel_radius=_FLAT_COMMAND_WHEEL_RADIUS,
+            diff_drive_half_track=_FLAT_COMMAND_HALF_TRACK,
+            diff_drive_max_wheel_speed=_ROBOT_DEFAULTS.action_scale[JointGroup.WHEEL_ACTUATORS[0]],
+            diff_drive_wheel_speed_fraction=_FLAT_COMMAND_WHEEL_SPEED_FRACTION,
         ),
     }
-
     cfg.rewards = {
         "tracking_lin_vel": RewardTermCfg(
             func=rewards.tracking_lin_vel,
@@ -231,15 +279,27 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "use_upright_gate": False,
             },
         ),
+        "command_velocity_error": RewardTermCfg(
+            func=rewards.command_velocity_error,
+            weight=-2.0,
+            params={
+                "command_name": "velocity_height",
+                "lin_vel_scale": 0.5,
+                "yaw_vel_scale": 1.0,
+                "lin_deadband": 0.05,
+                "yaw_deadband": 0.10,
+                "max_penalty": 9.0,
+            },
+        ),
         # 姿态相关项只使用惩罚语义:偏离目标姿态扣分,明显倾斜加重扣分。
         "tracking_orientation_l2": RewardTermCfg(
             func=rewards.tracking_orientation_l2,
             weight=-12.0,
             params={"command_name": "velocity_height"},
         ),
-        "tracking_height": RewardTermCfg(
-            func=rewards.tracking_height,
-            weight=2.49,
+        "flat_base_height": RewardTermCfg(
+            func=rewards.flat_base_height_penalty_no_jump,
+            weight=-4.0,
             params={
                 "command_name": "velocity_height",
                 "sigma": 0.05,
@@ -369,6 +429,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     if not play:
         cfg.curriculum = {
+            "command_vel": CurriculumTermCfg(
+                func=curriculums.commands_vel,
+                params={
+                    "command_name": "velocity_height",
+                    "use_iterations": True,
+                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+                    "velocity_stages": _FLAT_VELOCITY_STAGES,
+                },
+            ),
             "push_disturbance": CurriculumTermCfg(
                 func=curriculums.push_disturbance,
                 params={

@@ -628,6 +628,44 @@ def tracking_ang_vel(
     return reward
 
 
+def command_velocity_error(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    lin_vel_scale: float = 0.5,
+    yaw_vel_scale: float = 1.0,
+    lin_deadband: float = 0.05,
+    yaw_deadband: float = 0.10,
+    max_penalty: float = 9.0,
+) -> torch.Tensor:
+    """惩罚平地速度违令，避免 exp 跟踪奖励在大误差时变成无梯度零奖励。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    active = ~jump_flag
+
+    lin_error = torch.abs(robot.data.root_link_lin_vel_b[:, 0] - cmd[:, 0])
+    yaw_error = torch.abs(robot.data.root_link_ang_vel_b[:, 2] - cmd[:, 1])
+    lin_excess = torch.clamp(lin_error - float(lin_deadband), min=0.0)
+    yaw_excess = torch.clamp(yaw_error - float(yaw_deadband), min=0.0)
+    penalty = (lin_excess / float(lin_vel_scale)) ** 2 + (yaw_excess / float(yaw_vel_scale)) ** 2
+    penalty = torch.clamp(penalty, max=float(max_penalty)) * active.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Locomotion/command_velocity_error_penalty": _masked_mean(penalty, active),
+                "Locomotion/command_velocity_lin_excess": _masked_mean(lin_excess, active),
+                "Locomotion/command_velocity_yaw_excess": _masked_mean(yaw_excess, active),
+            }
+        )
+
+    return penalty
+
+
 def tracking_lin_yaw_joint(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -920,6 +958,33 @@ def tracking_height(
     if ignore_recovery:
         reward = reward * (~_recovery_reset_mask(env)).float()
     return reward
+
+
+def flat_base_height_penalty_no_jump(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    sigma: float = 0.05,
+) -> torch.Tensor:
+    """平地段 base 高度 L2 惩罚。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    flat = (~jump_flag) & (~_recovery_reset_mask(env))
+
+    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
+    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    target_height = cmd[:, 4]
+    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Flat/base_height_error_m": _masked_mean(torch.abs(height - target_height), flat),
+                "Flat/base_height_penalty": _masked_mean(penalty, flat),
+            }
+        )
+
+    return penalty * flat.float()
 
 
 def bad_tilt(
