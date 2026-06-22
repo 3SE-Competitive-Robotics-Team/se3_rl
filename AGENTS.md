@@ -258,21 +258,6 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
 
-## RL 训练调优 Skill
-
-**触发条件**（满足其一即加载 `.agents/skills/rl-tuning/SKILL.md`）：
-- 训练不收敛、奖励停滞或持续下降
-- 策略行为不符合预期（跳不高、走路抖动、高度偏低、跪地）
-- 需要分析为什么某个能力学不会
-- 发现奖励函数 bug 或门控失效
-- 需要设计或修改奖励权重、课程、RSI
-- 需要判断某次修改是否真正生效
-- 需要从 wandb 指标推断根因
-
-**已验证案例库**：`.agents/skills/rl-tuning/references/symptom-to-hypothesis.md`（持续追加）
-
----
-
 ## 远程训练机运维 Skill
 
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
