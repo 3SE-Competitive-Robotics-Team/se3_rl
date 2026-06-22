@@ -102,7 +102,7 @@ uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 
 ### 远程多卡训练
 
-`codex/xyh` 个人工作分支当前只使用两台远程训练服务器：`a800`（4 * NVIDIA A800，每卡 4096 envs，全局约 16384 envs）和 `gpufree`（1 * NVIDIA L40S，单卡 8192 envs）。没有 `wuyinyun` 远程训练服务器；`docs/wuyinyun.md` 仅作历史归档。
+`codex/xyh` 个人工作分支当前常用远程训练服务器：`a800`（4 * NVIDIA A800，每卡 4096 envs，全局约 16384 envs）、`gpufree`（1 * NVIDIA L40S，单卡 8192 envs）和 `wuyingyun`（1 * NVIDIA RTX 5880，按需单卡训练）。
 
 gpufree 等按量计费机器遵循“本地改代码、无卡模式准备、GPU 模式短验证、GPU 模式长训、产物同步后立即关机”的流程，具体见 `.agents/skills/remote-dev-se3/machines/gpufree.md`。
 
