@@ -278,7 +278,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
 **触发条件**（满足其一即加载）：
-- 提到远程训练机、GPU 机器、云机器、wuyinyun、无影云、阿里云、腾讯云
+- 提到远程训练机、GPU 机器、云机器、wuyingyun、无影云、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
 - 需要启动、停止、监控训练进程
 - 需要查看训练日志、wandb 数据
@@ -287,13 +287,13 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 - 询问 tmux 会话管理
 
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
-当前已注册：`wuyinyun`（无影云 RTX 5880）。
+当前已注册：`wuyingyun`（无影云 RTX 5880）。
 
 ## 环境限制
 
 - **训练**：仅支持 Linux + NVIDIA GPU（CUDA 12.4+）
 - **评估/sim2sim**：支持 macOS、Linux、Windows (WSL)
-- 推荐环境数：1024（6 DOF 机器人，白天）/ 2048（wuyinyun 夜间）
+- 推荐环境数：1024（6 DOF 机器人，白天）/ 2048（wuyingyun 夜间）
 - 推荐 GPU 显存：8GB+（RTX 3090/4090 训练约 2-3 小时）
 
 ## 踩坑记录

@@ -1,6 +1,6 @@
-# wuyinyun 机器备忘录
+# wuyingyun 机器备忘录
 
-> 通用操作流程见父目录 `SKILL.md`，本文件只记录 wuyinyun 特有的参数和坑。
+> 通用操作流程见父目录 `SKILL.md`，本文件只记录 wuyingyun 特有的参数和坑。
 
 ## 基本信息
 
@@ -8,7 +8,7 @@
 |---|---|
 | IP | 172.31.1.74 |
 | 用户名 | zhongjin_lu |
-| SSH 别名 | `wuyinyun` |
+| SSH 别名 | `wuyingyun` |
 | 云厂商 | 无影云 |
 | 系统 | Ubuntu 22.04，Linux 5.15.0-125-generic |
 | GPU | NVIDIA RTX 5880 Ada 48GB，sm_89 |
@@ -22,11 +22,11 @@
 
 ## 本机 SSH 配置
 
-本机密钥：`~/.ssh/wuyinyun`（ed25519），公钥已写入远程 `~/.ssh/authorized_keys`。
+本机密钥：`~/.ssh/wuyinyun`（ed25519，当前仅保留密钥文件名），公钥已写入远程 `~/.ssh/authorized_keys`。
 
 `~/.ssh/config`：
 ```
-Host wuyinyun
+Host wuyingyun
     HostName 172.31.1.74
     User zhongjin_lu
     IdentityFile ~/.ssh/wuyinyun
@@ -48,7 +48,7 @@ Host github.com
 
 验证：
 ```bash
-ssh wuyinyun "timeout 10 ssh -o ConnectTimeout=8 -T git@github.com 2>&1; echo exit:$?"
+ssh wuyingyun "timeout 10 ssh -o ConnectTimeout=8 -T git@github.com 2>&1; echo exit:$?"
 # 期望：Hi XiaoPengYouCode! You've successfully authenticated...
 ```
 
@@ -65,24 +65,24 @@ ssh wuyinyun "timeout 10 ssh -o ConnectTimeout=8 -T git@github.com 2>&1; echo ex
 
 ```bash
 # 开启隧道（后台运行）
-boring open wuyinyun-proxy
+boring open wuyingyun-proxy
 
 # 查看状态
 boring list
 
 # 关闭隧道
-boring close wuyinyun-proxy
+boring close wuyingyun-proxy
 ```
 
 切换网络后 boring 会自动重连，无需手动重建。
 
-## wuyinyun 特有的依赖问题
+## wuyingyun 特有的依赖问题
 
 ### nvshmem
 
 nvshmem 通过机器本地 Mihomo 代理安装（不走 SSH 隧道）：
 ```bash
-ssh wuyinyun "HTTPS_PROXY=http://127.0.0.1:7897 HTTP_PROXY=http://127.0.0.1:7897 uv add nvshmem"
+ssh wuyingyun "HTTPS_PROXY=http://127.0.0.1:7897 HTTP_PROXY=http://127.0.0.1:7897 uv add nvshmem"
 ```
 
 ### warp-lang 必须锁定 < 1.13.0
@@ -92,7 +92,7 @@ macOS CPU 路径不触发此问题。
 
 验证：
 ```bash
-ssh wuyinyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip show warp-lang | grep Version"
+ssh wuyingyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip show warp-lang | grep Version"
 ```
 
 ### PyTorch 版本选择
