@@ -628,6 +628,44 @@ def tracking_ang_vel(
     return reward
 
 
+def command_velocity_error(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    lin_vel_scale: float = 0.5,
+    yaw_vel_scale: float = 1.0,
+    lin_deadband: float = 0.05,
+    yaw_deadband: float = 0.10,
+    max_penalty: float = 9.0,
+) -> torch.Tensor:
+    """惩罚平地速度违令，避免 exp 跟踪奖励在大误差时变成无梯度零奖励。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    active = ~jump_flag
+
+    lin_error = torch.abs(robot.data.root_link_lin_vel_b[:, 0] - cmd[:, 0])
+    yaw_error = torch.abs(robot.data.root_link_ang_vel_b[:, 2] - cmd[:, 1])
+    lin_excess = torch.clamp(lin_error - float(lin_deadband), min=0.0)
+    yaw_excess = torch.clamp(yaw_error - float(yaw_deadband), min=0.0)
+    penalty = (lin_excess / float(lin_vel_scale)) ** 2 + (yaw_excess / float(yaw_vel_scale)) ** 2
+    penalty = torch.clamp(penalty, max=float(max_penalty)) * active.float()
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Locomotion/command_velocity_error_penalty": _masked_mean(penalty, active),
+                "Locomotion/command_velocity_lin_excess": _masked_mean(lin_excess, active),
+                "Locomotion/command_velocity_yaw_excess": _masked_mean(yaw_excess, active),
+            }
+        )
+
+    return penalty
+
+
 def tracking_lin_yaw_joint(
     env: ManagerBasedRlEnv,
     command_name: str,

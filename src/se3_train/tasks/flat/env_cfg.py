@@ -279,6 +279,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "use_upright_gate": False,
             },
         ),
+        "command_velocity_error": RewardTermCfg(
+            func=rewards.command_velocity_error,
+            weight=-2.0,
+            params={
+                "command_name": "velocity_height",
+                "lin_vel_scale": 0.5,
+                "yaw_vel_scale": 1.0,
+                "lin_deadband": 0.05,
+                "yaw_deadband": 0.10,
+                "max_penalty": 9.0,
+            },
+        ),
         # 姿态相关项只使用惩罚语义:偏离目标姿态扣分,明显倾斜加重扣分。
         "tracking_orientation_l2": RewardTermCfg(
             func=rewards.tracking_orientation_l2,
