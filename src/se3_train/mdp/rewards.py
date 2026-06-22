@@ -204,17 +204,27 @@ def _active_rod_angle_margins(robot) -> tuple[torch.Tensor, torch.Tensor, torch.
     return min_margin, min_lower, min_upper
 
 
+def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
+    """缓存左右轮 body 在 articulation 内的局部索引。"""
+    attr_name = f"_se3_wheel_body_ids_{asset_cfg.name}"
+    cached = getattr(env, attr_name, None)
+    if isinstance(cached, list) and len(cached) == 2:
+        return cached
+    robot = env.scene[asset_cfg.name]
+    body_ids, body_names = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
+    if len(body_ids) != 2:
+        raise RuntimeError(f"必须找到左右轮 body，实际找到: {body_names}")
+    setattr(env, attr_name, body_ids)
+    return body_ids
+
+
 def _wheel_clearance_stats(
     env: ManagerBasedRlEnv,
     robot,
     asset_cfg: SceneEntityCfg,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """返回左右轮底离地最小高度和平均高度。"""
-    attr_name = f"_recovery_diag_wheel_body_ids_{asset_cfg.name}"
-    body_ids = getattr(env, attr_name, None)
-    if not isinstance(body_ids, list) or len(body_ids) != 2:
-        body_ids, _ = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
-        setattr(env, attr_name, body_ids)
+    body_ids = _wheel_body_ids(env, asset_cfg)
     wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
     ground_z = env.scene.env_origins[:, 2].unsqueeze(1)
     wheel_bottom = wheel_pos_w[:, :, 2] - ground_z - _FOURBAR_WHEEL_RADIUS_M
@@ -1909,6 +1919,34 @@ def flat_leg_contact_penalty(
         )
 
     return has_contact.float() * active.float()
+
+
+def wheel_feet_distance(
+    env: ManagerBasedRlEnv,
+    command_name: str | None = None,
+    min_feet_distance: float = 0.43,
+    max_feet_distance: float = 0.46,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """左右轮心水平距离越界惩罚。"""
+    del command_name
+    robot = env.scene[asset_cfg.name]
+    body_ids = _wheel_body_ids(env, asset_cfg)
+    wheel_pos_xy = robot.data.body_link_pos_w[:, body_ids, :2]
+    feet_distance = torch.linalg.norm(wheel_pos_xy[:, 0, :] - wheel_pos_xy[:, 1, :], dim=1)
+    penalty = torch.clamp(float(min_feet_distance) - feet_distance, min=0.0)
+    penalty += torch.clamp(feet_distance - float(max_feet_distance), min=0.0)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        active = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+        env.extras["log"].update(
+            {
+                "Locomotion/wheel_feet_distance_m": _masked_mean(feet_distance, active),
+                "Locomotion/wheel_feet_distance_penalty": _masked_mean(penalty, active),
+            }
+        )
+
+    return penalty
 
 
 def flat_wheel_contact_penalty(

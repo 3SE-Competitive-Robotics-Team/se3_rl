@@ -250,22 +250,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    cfg.rewards["wheel_distance"] = RewardTermCfg(
-        func=rewards.wheel_distance_regularization,
+    cfg.rewards["wheel_feet_distance"] = RewardTermCfg(
+        func=rewards.wheel_feet_distance,
         weight=-4.0,
         params={
             "command_name": "velocity_height",
-            "min_lateral_distance": 0.40,
-            "max_lateral_distance": 0.46,
-            "max_fore_aft_offset": 0.02,
-            "lateral_scale": 0.04,
-            "fore_aft_scale": 0.025,
-            "fore_aft_weight": 2.0,
-            "standing_scale": 1.4,
-            "grounded_scale": 0.5,
-            "takeoff_scale": 1.2,
-            "air_scale": 1.0,
-            "landing_scale": 1.8,
+            "min_feet_distance": 0.43,
+            "max_feet_distance": 0.46,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )

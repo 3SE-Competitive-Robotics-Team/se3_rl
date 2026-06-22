@@ -1013,18 +1013,15 @@ def gait_pose(
 def wheel_feet_distance(
     env: ManagerBasedRlEnv,
     command_name: str,
-    min_feet_distance: float,
-    max_feet_distance: float,
+    min_feet_distance: float = 0.43,
+    max_feet_distance: float = 0.46,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """WHEEL 模式左右轮心水平距离越界惩罚。
-
-    参考 tron1 WF 的 feet_distance：只在左右轮心距离小于下限或大于上限时产生代价。
-    """
+    """WHEEL 模式左右轮心水平距离越界惩罚。"""
     robot = env.scene[asset_cfg.name]
     body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_pos = robot.data.body_link_pos_w[:, body_ids, :2]
-    feet_distance = torch.linalg.norm(wheel_pos[:, 0, :] - wheel_pos[:, 1, :], dim=1)
+    wheel_pos_xy = robot.data.body_link_pos_w[:, body_ids, :2]
+    feet_distance = torch.linalg.norm(wheel_pos_xy[:, 0, :] - wheel_pos_xy[:, 1, :], dim=1)
     penalty = torch.clamp(float(min_feet_distance) - feet_distance, min=0.0)
     penalty += torch.clamp(feet_distance - float(max_feet_distance), min=0.0)
     gate = mode_weight(env, command_name, TaskMode.WHEEL)
@@ -1033,14 +1030,8 @@ def wheel_feet_distance(
         active = gate > 0.0
         env.extras["log"].update(
             {
-                "TaskMode/diag_wheel_feet_distance_m": _mean_on_mask(
-                    feet_distance,
-                    active,
-                ),
-                "TaskMode/diag_wheel_feet_distance_penalty": _mean_on_mask(
-                    penalty,
-                    active,
-                ),
+                "TaskMode/diag_wheel_feet_distance_m": _mean_on_mask(feet_distance, active),
+                "TaskMode/diag_wheel_feet_distance_penalty": _mean_on_mask(penalty, active),
             }
         )
 

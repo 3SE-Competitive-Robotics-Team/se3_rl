@@ -168,8 +168,8 @@ def apply_loco_task_mode_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         weight=-25.0,
         params={
             "command_name": "velocity_height",
-            "min_feet_distance": 0.35,
-            "max_feet_distance": 0.45,
+            "min_feet_distance": 0.43,
+            "max_feet_distance": 0.46,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )

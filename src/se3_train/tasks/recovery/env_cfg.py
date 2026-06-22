@@ -21,6 +21,7 @@ _ROBOT_DEFAULTS = SharedRobotConfig()
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
+_RECOVERY_LEG_ACTION_SCALE = 0.25
 _RECOVERY_WHEEL_KD = 0.08
 _RECOVERY_COMMAND_WHEEL_RADIUS = 0.060
 _RECOVERY_COMMAND_HALF_TRACK = 0.200725
@@ -39,8 +40,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_RECOVERY_WHEEL_KD)
     cfg.sim.nconmax = 64
     cfg.sim.njmax = 256
-    cfg.actions["delayed_action"].height_conditioned_action_default = True
-    cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
+    action_cfg = cfg.actions["delayed_action"]
+    action_cfg.leg_scales = (_RECOVERY_LEG_ACTION_SCALE,) * 4
+    action_cfg.action_clip = None
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.resampling_time_range = (10.0, 10.0)
     command_cfg.lin_vel_x_range = (0.0, 0.0)
@@ -270,7 +272,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         )
 
-    # 去掉轴向姿态惩罚和旧 recovery 专属奖励；高度奖励保留全姿态梯度。
+    # 去掉轴向姿态惩罚和旧 recovery 专属奖励；高度项沿用 flat 的二次误差惩罚。
     for reward_name in (
         "tracking_orientation_l2",
         "tracking_lin_yaw_joint",
@@ -280,6 +282,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "flat_base_lin_vel_z",
         "flat_action_smoothness",
         "flat_wheel_contact",
+        "wheel_feet_distance",
         "flat_leg_contact",
         "flat_wheel_ground_slip",
         "flat_wheel_center_alignment",
@@ -301,22 +304,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         cfg.rewards["tracking_ang_vel"].weight = 1.5
 
     cfg.rewards["tracking_height"] = RewardTermCfg(
-        func=rewards.tracking_height,
-        weight=-800.0,
+        func=rewards.flat_base_height_penalty_no_jump,
+        weight=-4.0,
         params={
             "command_name": "velocity_height",
-            "sigma": 0.0025,
+            "sigma": 0.05,
             "height_sensor_name": "base_height_sensor",
-            "kernel": "l2",
-            "use_upright_gate": False,
-            # 临时实验（删除日期：2026-06-11）：关闭高度姿态端点门控，验证全姿态高度梯度是否更利于恢复。
-            "use_pose_end_gate": False,
-            "upright_gate_angle_deg": 30.0,
-            "inverted_gate_angle_deg": 150.0,
         },
     )
 
-    # 自起训练中 upward 是主目标；高度奖励提供全姿态抬升梯度，动作正则负责压住饱和翻身。
+    # 自起训练中 upward 是主目标；高度项只惩罚目标高度误差，动作正则负责压住饱和翻身。
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=2.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)

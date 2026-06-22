@@ -36,6 +36,7 @@ from se3_train.mdp.rewards import (
     tracking_lin_vel,
     tracking_lin_yaw_joint,
     tracking_orientation_l2,
+    wheel_feet_distance,
     wheel_torques,
 )
 
@@ -70,5 +71,6 @@ __all__ = [
     "tracking_lin_vel",
     "tracking_lin_yaw_joint",
     "tracking_orientation_l2",
+    "wheel_feet_distance",
     "wheel_torques",
 ]
