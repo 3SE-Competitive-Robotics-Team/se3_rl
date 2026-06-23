@@ -29,6 +29,7 @@ from mjlab.terrains import (
 
 from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp import events as mdp_events
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.mdp import terminations
 from se3_train.robot_cfg import get_serialleg_cfg
@@ -800,6 +801,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         )
         cfg.events["reset_root_state"] = replace(
             cfg.events["reset_root_state"],
+            func=mdp_events.reset_root_state_recovery_full,
             params=reset_root_params,
         )
     reset_joint_params = dict(cfg.events["reset_joints"].params or {})

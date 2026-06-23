@@ -46,7 +46,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.standing_ratio = 0.0
 
     cfg.events["reset_root_state"] = EventTermCfg(
-        func=mdp_events.reset_root_state_full,
+        func=mdp_events.reset_root_state_recovery_full,
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot"),

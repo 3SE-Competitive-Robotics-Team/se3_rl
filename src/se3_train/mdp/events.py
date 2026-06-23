@@ -142,6 +142,33 @@ def _ensure_recovery_float_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Te
     return values
 
 
+def _clear_existing_recovery_episode(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
+    """普通 reset 只清理已有 recovery 标记，不创建 recovery 缓存。"""
+    bool_names = (
+        "_recovery_episode_mask",
+        "_recovery_reset_mask",
+        "_recovery_cache_reset_mask",
+        "_recovery_success_completed",
+        "_recovery_success_completed_latched",
+    )
+    for name in bool_names:
+        values = getattr(env, name, None)
+        if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
+            values[env_ids] = False
+
+    zero_long_names = ("_recovery_success_steps", "_recovery_cache_type")
+    for name in zero_long_names:
+        values = getattr(env, name, None)
+        if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
+            values[env_ids] = 0
+
+    minus_one_long_names = ("_recovery_time_to_success_steps", "_recovery_success_updated_step")
+    for name in minus_one_long_names:
+        values = getattr(env, name, None)
+        if isinstance(values, torch.Tensor) and values.shape[0] == env.num_envs:
+            values[env_ids] = -1
+
+
 def _np_str_tuple(values) -> tuple[str, ...]:
     """把 np 字符串/bytes 数组转成普通字符串元组。"""
     array = values.tolist()
@@ -730,6 +757,81 @@ def reset_root_state_full(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """重置 base 到默认站立状态，仅随机 xy 和 yaw。"""
+    _reset_root_state_full_impl(
+        env,
+        env_ids,
+        asset_cfg=asset_cfg,
+        enable_recovery=False,
+    )
+
+
+def reset_root_state_recovery_full(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    recovery_prob: float = 0.0,
+    recovery_stages: list[dict] | None = None,
+    recovery_roll_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_pitch_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_height_range: tuple[float, float] = (0.24, 0.34),
+    recovery_lin_vel_range: tuple[float, float] = (-0.15, 0.15),
+    recovery_ang_vel_range: tuple[float, float] = (-0.8, 0.8),
+    recovery_side_roll_prob: float = 0.0,
+    recovery_side_roll_min_abs: float = 0.75,
+    recovery_side_pitch_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_fallen_pose_prob: float = 0.0,
+    recovery_fallen_roll_pose_prob: float = 0.5,
+    recovery_fallen_roll_abs_range: tuple[float, float] = (1.35, 1.75),
+    recovery_fallen_pitch_abs_range: tuple[float, float] = (1.35, 1.75),
+    recovery_fallen_coupled_range: tuple[float, float] = (-0.35, 0.35),
+    recovery_fallen_height_range: tuple[float, float] = (0.12, 0.24),
+    recovery_state_cache_path: str | None = None,
+    recovery_state_cache_prob: float = 0.0,
+    recovery_state_cache_split: str = "train",
+    recovery_grace_steps: int = 400,
+    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
+    recovery_zero_velocity_command: bool = True,
+    recovery_mask_attr: str | None = None,
+) -> None:
+    """按 recovery 配置重置 base，用于倒地自启或混合任务。"""
+    _reset_root_state_full_impl(
+        env,
+        env_ids,
+        asset_cfg=asset_cfg,
+        enable_recovery=True,
+        recovery_prob=recovery_prob,
+        recovery_stages=recovery_stages,
+        recovery_roll_range=recovery_roll_range,
+        recovery_pitch_range=recovery_pitch_range,
+        recovery_height_range=recovery_height_range,
+        recovery_lin_vel_range=recovery_lin_vel_range,
+        recovery_ang_vel_range=recovery_ang_vel_range,
+        recovery_side_roll_prob=recovery_side_roll_prob,
+        recovery_side_roll_min_abs=recovery_side_roll_min_abs,
+        recovery_side_pitch_range=recovery_side_pitch_range,
+        recovery_fallen_pose_prob=recovery_fallen_pose_prob,
+        recovery_fallen_roll_pose_prob=recovery_fallen_roll_pose_prob,
+        recovery_fallen_roll_abs_range=recovery_fallen_roll_abs_range,
+        recovery_fallen_pitch_abs_range=recovery_fallen_pitch_abs_range,
+        recovery_fallen_coupled_range=recovery_fallen_coupled_range,
+        recovery_fallen_height_range=recovery_fallen_height_range,
+        recovery_state_cache_path=recovery_state_cache_path,
+        recovery_state_cache_prob=recovery_state_cache_prob,
+        recovery_state_cache_split=recovery_state_cache_split,
+        recovery_grace_steps=recovery_grace_steps,
+        recovery_command_height=recovery_command_height,
+        recovery_zero_velocity_command=recovery_zero_velocity_command,
+        recovery_mask_attr=recovery_mask_attr,
+    )
+
+
+def _reset_root_state_full_impl(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    enable_recovery: bool = False,
     recovery_prob: float = 0.0,
     recovery_stages: list[dict] | None = None,
     recovery_roll_range: tuple[float, float] = (-0.35, 0.35),
@@ -781,78 +883,89 @@ def reset_root_state_full(
     )
     pos[:, 0:3] += env.scene.env_origins[env_ids]
 
-    stage = _active_recovery_stage(env, recovery_stages)
-    recovery_prob = float(_stage_value(stage, "prob", recovery_prob))
-    recovery_roll_range = _stage_value(stage, "roll_range", recovery_roll_range)
-    recovery_pitch_range = _stage_value(stage, "pitch_range", recovery_pitch_range)
-    recovery_height_range = _stage_value(stage, "height_range", recovery_height_range)
-    recovery_side_roll_prob = float(_stage_value(stage, "side_roll_prob", recovery_side_roll_prob))
-    recovery_side_roll_min_abs = float(
-        _stage_value(stage, "side_roll_min_abs", recovery_side_roll_min_abs)
-    )
-    recovery_side_pitch_range = _stage_value(stage, "side_pitch_range", recovery_side_pitch_range)
-    recovery_fallen_pose_prob = float(
-        _stage_value(stage, "fallen_pose_prob", recovery_fallen_pose_prob)
-    )
-    recovery_fallen_roll_pose_prob = float(
-        _stage_value(stage, "fallen_roll_pose_prob", recovery_fallen_roll_pose_prob)
-    )
-    recovery_fallen_roll_abs_range = _stage_value(
-        stage, "fallen_roll_abs_range", recovery_fallen_roll_abs_range
-    )
-    recovery_fallen_pitch_abs_range = _stage_value(
-        stage, "fallen_pitch_abs_range", recovery_fallen_pitch_abs_range
-    )
-    recovery_fallen_coupled_range = _stage_value(
-        stage, "fallen_coupled_range", recovery_fallen_coupled_range
-    )
-    recovery_fallen_height_range = _stage_value(
-        stage, "fallen_height_range", recovery_fallen_height_range
-    )
-    recovery_state_cache_path = _stage_value(stage, "state_cache_path", recovery_state_cache_path)
-    recovery_state_cache_prob = float(
-        _stage_value(stage, "state_cache_prob", recovery_state_cache_prob)
-    )
-    recovery_state_cache_split = str(
-        _stage_value(stage, "state_cache_split", recovery_state_cache_split)
-    )
-    env._recovery_stage_step = int(stage.get("step", 0))
-    env._recovery_stage_prob = float(recovery_prob)
-    env._recovery_stage_fallen_pose_prob = float(recovery_fallen_pose_prob)
-    env._recovery_stage_cache_prob = float(recovery_state_cache_prob)
+    if enable_recovery:
+        stage = _active_recovery_stage(env, recovery_stages)
+        recovery_prob = float(_stage_value(stage, "prob", recovery_prob))
+        recovery_roll_range = _stage_value(stage, "roll_range", recovery_roll_range)
+        recovery_pitch_range = _stage_value(stage, "pitch_range", recovery_pitch_range)
+        recovery_height_range = _stage_value(stage, "height_range", recovery_height_range)
+        recovery_side_roll_prob = float(
+            _stage_value(stage, "side_roll_prob", recovery_side_roll_prob)
+        )
+        recovery_side_roll_min_abs = float(
+            _stage_value(stage, "side_roll_min_abs", recovery_side_roll_min_abs)
+        )
+        recovery_side_pitch_range = _stage_value(
+            stage, "side_pitch_range", recovery_side_pitch_range
+        )
+        recovery_fallen_pose_prob = float(
+            _stage_value(stage, "fallen_pose_prob", recovery_fallen_pose_prob)
+        )
+        recovery_fallen_roll_pose_prob = float(
+            _stage_value(stage, "fallen_roll_pose_prob", recovery_fallen_roll_pose_prob)
+        )
+        recovery_fallen_roll_abs_range = _stage_value(
+            stage, "fallen_roll_abs_range", recovery_fallen_roll_abs_range
+        )
+        recovery_fallen_pitch_abs_range = _stage_value(
+            stage, "fallen_pitch_abs_range", recovery_fallen_pitch_abs_range
+        )
+        recovery_fallen_coupled_range = _stage_value(
+            stage, "fallen_coupled_range", recovery_fallen_coupled_range
+        )
+        recovery_fallen_height_range = _stage_value(
+            stage, "fallen_height_range", recovery_fallen_height_range
+        )
+        recovery_state_cache_path = _stage_value(
+            stage, "state_cache_path", recovery_state_cache_path
+        )
+        recovery_state_cache_prob = float(
+            _stage_value(stage, "state_cache_prob", recovery_state_cache_prob)
+        )
+        recovery_state_cache_split = str(
+            _stage_value(stage, "state_cache_split", recovery_state_cache_split)
+        )
+        env._recovery_stage_step = int(stage.get("step", 0))
+        env._recovery_stage_prob = float(recovery_prob)
+        env._recovery_stage_fallen_pose_prob = float(recovery_fallen_pose_prob)
+        env._recovery_stage_cache_prob = float(recovery_state_cache_prob)
 
-    recovery_mask = torch.rand(n, device=env.device) < recovery_prob
-    if recovery_mask_attr:
-        preset_mask = getattr(env, recovery_mask_attr, None)
-        if isinstance(preset_mask, torch.Tensor) and preset_mask.shape[0] == env.num_envs:
-            recovery_mask = preset_mask[env_ids].to(device=env.device, dtype=torch.bool)
-    recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
-    init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
-    init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
-    init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
-    init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
-    init_roll[env_ids] = 0.0
-    init_pitch[env_ids] = 0.0
-    init_yaw[env_ids] = 0.0
-    init_tilt[env_ids] = 0.0
-    env._recovery_grace_steps = int(recovery_grace_steps)
-    env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
-    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-    if recovery_command_height is None:
-        env._recovery_command_height = float("nan")
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                command_height_buf[env_ids] = cmd[env_ids, 4].to(
-                    device=env.device, dtype=command_height_buf.dtype
-                )
-            except Exception:
+        recovery_mask = torch.rand(n, device=env.device) < recovery_prob
+        if recovery_mask_attr:
+            preset_mask = getattr(env, recovery_mask_attr, None)
+            if isinstance(preset_mask, torch.Tensor) and preset_mask.shape[0] == env.num_envs:
+                recovery_mask = preset_mask[env_ids].to(device=env.device, dtype=torch.bool)
+        recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
+        init_roll = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
+        init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
+        init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
+        init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
+        init_roll[env_ids] = 0.0
+        init_pitch[env_ids] = 0.0
+        init_yaw[env_ids] = 0.0
+        init_tilt[env_ids] = 0.0
+        env._recovery_grace_steps = int(recovery_grace_steps)
+        env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
+        command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
+        if recovery_command_height is None:
+            env._recovery_command_height = float("nan")
+            if hasattr(env, "command_manager"):
+                try:
+                    cmd = env.command_manager.get_command("velocity_height")
+                    command_height_buf[env_ids] = cmd[env_ids, 4].to(
+                        device=env.device, dtype=command_height_buf.dtype
+                    )
+                except Exception:
+                    command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
+            else:
                 command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
         else:
-            command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
+            env._recovery_command_height = float(recovery_command_height)
+            command_height_buf[env_ids] = float(recovery_command_height)
     else:
-        env._recovery_command_height = float(recovery_command_height)
-        command_height_buf[env_ids] = float(recovery_command_height)
+        recovery_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
+        init_roll = init_pitch = init_yaw = init_tilt = None
+        _clear_existing_recovery_episode(env, env_ids)
 
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
