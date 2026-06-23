@@ -13,7 +13,6 @@ import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
-from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from se3_shared import (
     RobotConfig as SharedRobotConfig,
@@ -1070,101 +1069,6 @@ def jump_joint_mirror(
         )
 
     return mirror_penalty * stage_scale * jump_flag.float()
-
-
-def wheel_distance_regularization(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    min_lateral_distance: float = 0.40,
-    max_lateral_distance: float = 0.46,
-    max_fore_aft_offset: float = 0.03,
-    lateral_scale: float = 0.04,
-    fore_aft_scale: float = 0.03,
-    fore_aft_weight: float = 1.5,
-    standing_scale: float = 1.0,
-    grounded_scale: float = 0.4,
-    takeoff_scale: float = 1.2,
-    air_scale: float = 1.0,
-    landing_scale: float = 1.4,
-    low_speed_threshold: float = 0.10,
-    max_penalty: float = 4.0,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """显式轮距约束:约束左右轮横向间距,并惩罚前后错位。
-
-    Tron1 的 pen_feet_distance 是直接约束脚间距;SerialLeg 之前只靠
-    joint_mirror 间接约束,无法直接发现"两个轮一前一后"的站立姿态。
-    这里在 base 坐标系下计算左右轮中心差:
-    - y 方向:横向轮距,默认站立约 0.433m,因此约束在 0.40~0.46m
-    - x 方向:前后错位,超过 0.03m 后惩罚
-
-    非跳跃低速站立和跳跃全阶段都会激活;高速行走期不激活,避免限制步态调整。
-    """
-    robot = env.scene[asset_cfg.name]
-    body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
-    delta_w = wheel_pos_w[:, 0, :] - wheel_pos_w[:, 1, :]
-    delta_b = quat_apply_inverse(robot.data.root_link_quat_w, delta_w)
-
-    lateral_distance = torch.abs(delta_b[:, 1])
-    fore_aft_offset = torch.abs(delta_b[:, 0])
-
-    lateral_low = torch.clamp(float(min_lateral_distance) - lateral_distance, min=0.0)
-    lateral_high = torch.clamp(lateral_distance - float(max_lateral_distance), min=0.0)
-    lateral_error = lateral_low + lateral_high
-    fore_aft_error = torch.clamp(fore_aft_offset - float(max_fore_aft_offset), min=0.0)
-
-    penalty = (lateral_error / float(lateral_scale)) ** 2 + float(fore_aft_weight) * (
-        fore_aft_error / float(fore_aft_scale)
-    ) ** 2
-    penalty = torch.clamp(penalty, max=float(max_penalty))
-
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    low_speed = (torch.abs(cmd[:, 0]) < float(low_speed_threshold)) & (
-        torch.abs(cmd[:, 1]) < float(low_speed_threshold)
-    )
-
-    stage_scale = torch.zeros_like(penalty)
-    stage_scale = torch.where(
-        (~jump_flag) & low_speed,
-        torch.full_like(stage_scale, float(standing_scale)),
-        stage_scale,
-    )
-
-    term = env.command_manager.get_term(command_name)
-    if isinstance(term, JumpCommandTerm):
-        jump_scale = torch.full_like(stage_scale, float(grounded_scale))
-        jump_scale = torch.where(
-            term.reference_takeoff_active(),
-            torch.full_like(jump_scale, float(takeoff_scale)),
-            jump_scale,
-        )
-        jump_scale = torch.where(
-            term.jump_stage == 1,
-            torch.full_like(jump_scale, float(air_scale)),
-            jump_scale,
-        )
-        jump_scale = torch.where(
-            term.jump_stage == 2,
-            torch.full_like(jump_scale, float(landing_scale)),
-            jump_scale,
-        )
-        stage_scale = torch.where(jump_flag, jump_scale, stage_scale)
-
-    if hasattr(env, "extras"):
-        active = stage_scale > 0.0
-        env.extras.setdefault("log", {})["Jump/diag_wheel_lateral_distance_m"] = (
-            lateral_distance[active].mean() if active.any() else torch.zeros((), device=env.device)
-        )
-        env.extras.setdefault("log", {})["Jump/diag_wheel_fore_aft_offset_m"] = (
-            fore_aft_offset[active].mean() if active.any() else torch.zeros((), device=env.device)
-        )
-        env.extras.setdefault("log", {})["Jump/diag_wheel_distance_raw"] = (
-            penalty[active].mean() if active.any() else torch.zeros((), device=env.device)
-        )
-
-    return penalty * stage_scale
 
 
 def flat_wheel_center_alignment_no_jump(

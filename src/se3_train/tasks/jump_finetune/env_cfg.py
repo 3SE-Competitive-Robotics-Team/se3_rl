@@ -332,25 +332,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # 显式轮距:学习 Tron1 的 pen_feet_distance 设计,用几何距离直接约束双轮。
-    # SerialLeg 默认站立左右轮距约 0.433m,因此这里约束 0.40~0.46m,同时惩罚
-    # 前后错位,解决"两个轮一前一后"这类 joint_mirror 看不准的问题。
-    cfg.rewards["wheel_distance"] = RewardTermCfg(
-        func=rewards.wheel_distance_regularization,
-        weight=-5.0,
+    # 左右轮前后对齐:SerialLeg 无 ab/ad 自由度，只惩罚 base 坐标系 x 方向错位。
+    cfg.rewards["same_feet_x_position"] = RewardTermCfg(
+        func=rewards.same_feet_x_position,
+        weight=-4.0,
         params={
             "command_name": "velocity_height",
-            "min_lateral_distance": 0.40,
-            "max_lateral_distance": 0.46,
-            "max_fore_aft_offset": 0.03,
-            "lateral_scale": 0.04,
-            "fore_aft_scale": 0.03,
-            "fore_aft_weight": 1.5,
-            "standing_scale": 1.0,
-            "grounded_scale": 0.4,
-            "takeoff_scale": 1.2,
-            "air_scale": 1.0,
-            "landing_scale": 1.4,
+            "scale_m": 0.01,
+            "max_penalty": 20.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )

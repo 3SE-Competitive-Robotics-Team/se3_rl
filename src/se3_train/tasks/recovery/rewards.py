@@ -22,8 +22,13 @@ from se3_train.mdp.rewards import (
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_REWARD_ALL
 
+_RECOVERY_FLAT_REWARD_ALL = tuple(
+    reward_name for reward_name in _FLAT_REWARD_ALL if reward_name != "same_feet_x_position"
+)
+globals().pop("same_feet_x_position", None)
+
 __all__ = [
-    *_FLAT_REWARD_ALL,
+    *_RECOVERY_FLAT_REWARD_ALL,
     "action_smoothness",
     "leg_action_rate",
     "leg_contact_penalty",
