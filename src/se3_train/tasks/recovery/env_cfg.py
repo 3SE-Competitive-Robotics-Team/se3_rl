@@ -282,7 +282,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "flat_base_lin_vel_z",
         "flat_action_smoothness",
         "flat_wheel_contact",
-        "wheel_feet_distance",
+        "same_feet_x_position",
         "flat_leg_contact",
         "flat_wheel_ground_slip",
         "flat_wheel_center_alignment",

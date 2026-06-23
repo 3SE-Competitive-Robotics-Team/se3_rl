@@ -332,14 +332,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
-    # 显式轮距:学习 Tron1 的 pen_feet_distance 设计,用左右轮心水平距离直接约束双轮。
-    cfg.rewards["wheel_feet_distance"] = RewardTermCfg(
-        func=rewards.wheel_feet_distance,
-        weight=-5.0,
+    # 左右轮前后对齐:SerialLeg 无 ab/ad 自由度，只惩罚 base 坐标系 x 方向错位。
+    cfg.rewards["same_feet_x_position"] = RewardTermCfg(
+        func=rewards.same_feet_x_position,
+        weight=-4.0,
         params={
             "command_name": "velocity_height",
-            "min_feet_distance": 0.43,
-            "max_feet_distance": 0.46,
+            "scale_m": 0.01,
+            "max_penalty": 20.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )

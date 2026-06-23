@@ -31,12 +31,12 @@ from se3_train.mdp.rewards import (
     leg_power,
     leg_torques,
     lin_vel_z,
+    same_feet_x_position,
     stand_still,
     tracking_ang_vel,
     tracking_lin_vel,
     tracking_lin_yaw_joint,
     tracking_orientation_l2,
-    wheel_feet_distance,
     wheel_torques,
 )
 
@@ -66,11 +66,11 @@ __all__ = [
     "leg_power",
     "leg_torques",
     "lin_vel_z",
+    "same_feet_x_position",
     "stand_still",
     "tracking_ang_vel",
     "tracking_lin_vel",
     "tracking_lin_yaw_joint",
     "tracking_orientation_l2",
-    "wheel_feet_distance",
     "wheel_torques",
 ]

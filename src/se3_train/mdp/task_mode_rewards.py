@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -1010,28 +1011,30 @@ def gait_pose(
     return reward * gate
 
 
-def wheel_feet_distance(
+def same_feet_x_position(
     env: ManagerBasedRlEnv,
     command_name: str,
-    min_feet_distance: float = 0.43,
-    max_feet_distance: float = 0.46,
+    scale_m: float = 0.01,
+    max_penalty: float = 20.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """WHEEL 模式左右轮心水平距离越界惩罚。"""
-    robot = env.scene[asset_cfg.name]
-    body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_pos_xy = robot.data.body_link_pos_w[:, body_ids, :2]
-    feet_distance = torch.linalg.norm(wheel_pos_xy[:, 0, :] - wheel_pos_xy[:, 1, :], dim=1)
-    penalty = torch.clamp(float(min_feet_distance) - feet_distance, min=0.0)
-    penalty += torch.clamp(feet_distance - float(max_feet_distance), min=0.0)
+    """WHEEL 模式指数惩罚左右轮在机身坐标系 x 方向的前后错位。"""
+    wheel_pos_b = _wheel_pos_body_frame(env, asset_cfg)
+    offset = torch.abs(wheel_pos_b[:, 0, 0] - wheel_pos_b[:, 1, 0])
+    penalty_cap = math.log1p(max(float(max_penalty), 0.0))
+    normalized = torch.clamp(offset / max(float(scale_m), 1.0e-6), min=0.0, max=penalty_cap)
+    penalty = torch.expm1(normalized)
     gate = mode_weight(env, command_name, TaskMode.WHEEL)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
         active = gate > 0.0
         env.extras["log"].update(
             {
-                "TaskMode/diag_wheel_feet_distance_m": _mean_on_mask(feet_distance, active),
-                "TaskMode/diag_wheel_feet_distance_penalty": _mean_on_mask(penalty, active),
+                "TaskMode/diag_same_feet_x_position_m": _mean_on_mask(offset, active),
+                "TaskMode/diag_same_feet_x_position_penalty": _mean_on_mask(
+                    penalty,
+                    active,
+                ),
             }
         )
 
@@ -1758,7 +1761,7 @@ __all__ = [
     "mode_stand_still",
     "mode_tracking_ang_vel",
     "mode_tracking_lin_vel",
-    "wheel_feet_distance",
+    "same_feet_x_position",
     "wheel_idle_action_rate",
     "wheel_idle_motion_penalty",
     "wheel_in_place_linear_vel",

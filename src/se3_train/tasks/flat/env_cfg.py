@@ -381,13 +381,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "force_threshold": 1.0,
             },
         ),
-        "wheel_feet_distance": RewardTermCfg(
-            func=rewards.wheel_feet_distance,
-            weight=-25.0,
+        "same_feet_x_position": RewardTermCfg(
+            func=rewards.same_feet_x_position,
+            weight=-6.0,
             params={
                 "command_name": "velocity_height",
-                "min_feet_distance": 0.43,
-                "max_feet_distance": 0.46,
+                "scale_m": 0.01,
+                "max_penalty": 20.0,
                 "asset_cfg": SceneEntityCfg("robot"),
             },
         ),
