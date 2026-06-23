@@ -159,6 +159,7 @@ Smoke 模式特点：
 - 提交格式：`<feat/chore/fix/del/enh/docs>(<module>): <content>`
 - body 用 `- ` 列表
 - PR 提交前必须 rebase
+- PR 标题和描述统一使用中文，验证命令可保留原始命令文本
 - 示例：
   ```
   feat(se3_train): 新增动作延迟配置
