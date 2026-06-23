@@ -483,6 +483,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
 
     if play:
+        cfg.commands["velocity_height"].pitch_range = (0.0, 0.0)
+        cfg.commands["velocity_height"].roll_range = (0.0, 0.0)
         cfg.events = {
             "reset_scene_to_default": EventTermCfg(
                 func=lambda env, env_ids: None,
