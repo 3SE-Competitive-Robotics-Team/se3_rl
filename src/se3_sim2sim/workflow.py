@@ -654,6 +654,7 @@ class Sim2SimWorkflow:
                     model=self.robot.model,
                     control_dt=self.cfg.robot.sim_dt * self.cfg.robot.control_decimation,
                     geom_view=self.cfg.viewer.geom_view,
+                    port=self.cfg.viewer.port,
                     checkpoint_path=self.policy.checkpoint_path,
                     policy_iteration=self.policy.iteration,
                 )

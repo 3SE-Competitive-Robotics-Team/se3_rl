@@ -483,6 +483,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
 
     if play:
+        cfg.commands["velocity_height"].pitch_range = (0.0, 0.0)
+        cfg.commands["velocity_height"].roll_range = (0.0, 0.0)
         cfg.events = {
             "reset_scene_to_default": EventTermCfg(
                 func=lambda env, env_ids: None,
@@ -491,7 +493,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "reset_root_state": EventTermCfg(
                 func=events.reset_root_state_full,
                 mode="reset",
-                params={"asset_cfg": SceneEntityCfg("robot")},
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "recovery_prob": 0.0,
+                    "recovery_lin_vel_range": (0.0, 0.0),
+                },
             ),
             "reset_joints": EventTermCfg(
                 func=events.reset_joints,

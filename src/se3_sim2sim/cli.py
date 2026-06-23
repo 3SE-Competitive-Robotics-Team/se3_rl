@@ -199,6 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
     )
     parser.add_argument("--viewer", choices=["rerun", "mujoco", "viser", "none"], default="rerun")
+    parser.add_argument(
+        "--viser-port",
+        type=int,
+        default=ViewerConfig().port,
+        help="Viser HTTP 服务端口。",
+    )
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
@@ -685,6 +691,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             record_to_rrd=args.rerun_record,
             memory_limit=str(args.rerun_memory_limit),
             log_every=max(1, int(args.viewer_log_every)),
+            port=int(args.viser_port),
             geom_view=str(args.rerun_geom_view),
         ),
         max_steps=int(args.max_steps),

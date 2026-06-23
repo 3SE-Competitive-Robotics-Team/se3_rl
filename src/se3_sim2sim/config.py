@@ -318,6 +318,8 @@ class ViewerConfig(BaseModel):
     memory_limit: str = "1GB"
     log_every: int = 1
     follow_body: str = "base_link"
+    port: Annotated[int, Field(ge=1, le=65535)] = 8080
+    """Viser HTTP 服务端口。"""
     geom_view: RerunGeomView = "visual"
     """3D viewer 显示的 MJCF 几何：visual 用于复查外观，collision 用于接触诊断。"""
 

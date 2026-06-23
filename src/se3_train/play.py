@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import tyro
 from mjlab import TYRO_FLAGS
@@ -17,6 +18,8 @@ from mjlab.scripts import play as mjlab_play
 from mjlab.scripts._cli import maybe_print_top_level_help
 from mjlab.scripts.play import PlayConfig
 from mjlab.tasks.registry import list_tasks, load_rl_cfg
+from mjlab.viewer.viser import viewer as mjlab_viser_viewer
+from mjlab.viewer.viser.scene import MjlabViserScene
 from mjlab.viewer.viser.viewer import ViserPlayViewer
 
 from se3_train.training_runtime import TRAINING_STATUS_FILENAME
@@ -32,6 +35,25 @@ _LOG_TAIL_BYTES = 256 * 1024
 _VISER_FRAME_RATE_ENV = "SE3_VISER_FRAME_RATE"
 _VISER_INITIAL_SPEED_ENV = "SE3_VISER_INITIAL_SPEED"
 _VISER_FOLLOW_CTBC_ENV = "SE3_VISER_FOLLOW_CTBC"
+
+
+def _hide_collision_group(scene: Any) -> None:
+    """隐藏 MJCF group 0 碰撞体，保留视觉模型默认显示。"""
+    if not hasattr(scene, "geom_groups_visible"):
+        return
+    if len(scene.geom_groups_visible) > 0:
+        scene.geom_groups_visible[0] = False
+    sync_visibilities = getattr(scene, "_sync_visibilities", None)
+    if callable(sync_visibilities):
+        sync_visibilities()
+
+
+class _Se3MjlabViserScene(MjlabViserScene):
+    """SE3 play 专用 scene，默认不显示碰撞体。"""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        _hide_collision_group(self)
 
 
 def _resolve_play_config(task_id: str, cfg: PlayConfig) -> PlayConfig:
@@ -111,9 +133,15 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
                 )
                 self._se3_ctbc_html = self._server.gui.add_html("")
 
+        self._hide_collision_geoms_by_default()
         self._sync_ctbc_checkpoint_iteration(force=True)
         self._update_training_iter_display(force=True)
         self._update_ctbc_display(force=True)
+
+    def _hide_collision_geoms_by_default(self) -> None:
+        """默认隐藏 MJCF group 0 碰撞体，只显示视觉模型。"""
+        if hasattr(self, "_scene"):
+            _hide_collision_group(self._scene)
 
     def sync_env_to_viewer(self) -> None:
         """同步仿真画面，并刷新外部训练进度。"""
@@ -596,6 +624,7 @@ def _latest_training_run_dir(task_id: str, log_root: Path) -> Path | None:
 
 def _install_se3_viser_viewer() -> None:
     """替换 MJLab 默认 Viser viewer，增加 SE3 训练值守面板。"""
+    mjlab_viser_viewer.MjlabViserScene = _Se3MjlabViserScene
     mjlab_play.ViserPlayViewer = _Se3ViserPlayViewer
 
 
