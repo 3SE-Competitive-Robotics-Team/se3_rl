@@ -15,7 +15,7 @@
 | CUDA toolkit | 12.8（`/usr/local/cuda-12.8`） |
 | CUDA driver | 570.172.18 |
 | 主机名 | pntlgaolhyg69qw |
-| 仓库路径 | `~/project/se3_wheel_leg` |
+| 仓库路径 | `~/project/se3_rl` |
 | uv 路径 | `~/.local/bin/uv`（需 `source ~/.local/bin/env` 激活） |
 | zellij | `~/.local/bin/zellij`（已安装） |
 | GitHub SSH key | `~/.ssh/github_wuyinyun`（ed25519，账号 `XiaoPengYouCode`） |
@@ -92,7 +92,7 @@ macOS CPU 路径不触发此问题。
 
 验证：
 ```bash
-ssh wuyingyun "source ~/.local/bin/env && cd ~/project/se3_wheel_leg && uv pip show warp-lang | grep Version"
+ssh wuyingyun "source ~/.local/bin/env && cd ~/project/se3_rl && uv pip show warp-lang | grep Version"
 ```
 
 ### PyTorch 版本选择
