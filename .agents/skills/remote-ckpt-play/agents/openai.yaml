@@ -1,0 +1,3 @@
+interface:
+  display_name: "Remote Checkpoint Play"
+  short_description: "从远端拉 checkpoint 跑 play 可视化"
