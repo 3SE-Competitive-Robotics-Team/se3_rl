@@ -167,6 +167,7 @@ class WheelLeggedRobot:
                 bool(cfg.height_conditioned_action_default) and self.active_rod_action_semantics
             ),
             active_rod_semantics=self.active_rod_action_semantics,
+            leg_action_reference=cfg.leg_action_reference,
             active_rod_target_lower_preload_margin=cfg.active_rod_target_lower_preload_margin,
             active_rod_target_upper_preload_margin=cfg.active_rod_target_upper_preload_margin,
             dtype=np.float64,
@@ -1003,12 +1004,20 @@ class WheelLeggedRobot:
         decoded_action = self.action_decoder.decode(
             action,
             command_height=float(self.command[4]),
+            current_policy_pos=self._current_policy_leg_pos(),
             fallback_default=self.default_dof_pos[JointGroup.CTRL_LEGS],
         )
         return self._compute_decoded_target_torques(
             leg_target=decoded_action.leg_target,
             wheel_vel_target=decoded_action.wheel_vel_target,
         )
+
+    def _current_policy_leg_pos(self) -> np.ndarray:
+        """返回当前 policy-order 腿部位置，供相对动作参考使用。"""
+        output_leg_pos = self.dof_pos[JointGroup.CTRL_LEGS]
+        if self.fourbar_surrogate:
+            return output_to_policy_pos_np(output_leg_pos)
+        return output_leg_pos.copy()
 
     def _compute_decoded_target_torques(
         self,

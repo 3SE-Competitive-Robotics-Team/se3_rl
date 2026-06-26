@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -44,6 +45,7 @@ class PolicyActionDecoder:
         action_scale: tuple[float, ...] | np.ndarray | None = None,
         height_conditioned_action_default: bool = False,
         active_rod_semantics: bool = True,
+        leg_action_reference: Literal["default", "front_current"] = "default",
         active_rod_target_lower_preload_margin: float | None = None,
         active_rod_target_upper_preload_margin: float = 0.0,
         dtype: np.dtype | type = np.float64,
@@ -57,6 +59,12 @@ class PolicyActionDecoder:
         self.action_clip = self.robot_cfg.action_clip
         self.height_conditioned_action_default = bool(height_conditioned_action_default)
         self.active_rod_semantics = bool(active_rod_semantics)
+        if leg_action_reference not in ("default", "front_current"):
+            raise ValueError(
+                "leg_action_reference must be 'default' or 'front_current', "
+                f"got {leg_action_reference}"
+            )
+        self.leg_action_reference = leg_action_reference
         lower, upper = self.robot_cfg.active_rod_angle_limits
         lower_margin = (
             self.robot_cfg.active_rod_lower_target_overdrive
@@ -109,6 +117,7 @@ class PolicyActionDecoder:
         *,
         command_height: float | None = None,
         policy_default: np.ndarray | None = None,
+        current_policy_pos: np.ndarray | None = None,
         fallback_default: np.ndarray | None = None,
     ) -> DecodedPolicyAction:
         """解码 policy action；输入输出均使用 policy 顺序。"""
@@ -121,7 +130,11 @@ class PolicyActionDecoder:
             if policy_default is None
             else np.asarray(policy_default, dtype=self.dtype).reshape(4)
         )
-        leg_target = self.leg_target(clipped[:4], default)
+        leg_target = self.leg_target(
+            clipped[:4],
+            default,
+            current_policy_pos=current_policy_pos,
+        )
         wheel_vel_target = (
             clipped[JointGroup.CTRL_WHEELS] * self.action_scale[JointGroup.WHEEL_ACTUATORS]
         )
@@ -132,10 +145,22 @@ class PolicyActionDecoder:
             policy_default=default,
         )
 
-    def leg_target(self, leg_action: np.ndarray, policy_default: np.ndarray) -> np.ndarray:
+    def leg_target(
+        self,
+        leg_action: np.ndarray,
+        policy_default: np.ndarray,
+        *,
+        current_policy_pos: np.ndarray | None = None,
+    ) -> np.ndarray:
         """解码 4D 腿部 action。"""
         leg_action = np.asarray(leg_action, dtype=self.dtype).reshape(4)
         default = np.asarray(policy_default, dtype=self.dtype).reshape(4)
+        if self.leg_action_reference == "front_current":
+            if current_policy_pos is None:
+                raise ValueError("front_current action reference needs current_policy_pos")
+            current = np.asarray(current_policy_pos, dtype=self.dtype).reshape(4)
+            default = default.copy()
+            default[[0, 2]] = current[[0, 2]]
         leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
         if not self.active_rod_semantics:
             return (default + leg_action * leg_scale).astype(self.dtype, copy=False)

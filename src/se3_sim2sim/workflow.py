@@ -410,7 +410,11 @@ class Sim2SimWorkflow:
                 info["rc_off_mode"] = str(rc_sched.off_mode)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
-                front_action_period = front_action_periods_from_scales(self.robot.action_scale)
+                front_action_period = (
+                    False
+                    if self.robot.cfg.leg_action_reference == "front_current"
+                    else front_action_periods_from_scales(self.robot.action_scale)
+                )
                 action_delta = (
                     np.zeros_like(action_now)
                     if _prev_action is None
@@ -662,6 +666,7 @@ class Sim2SimWorkflow:
                 ViserViewer(
                     model=self.robot.model,
                     control_dt=self.cfg.robot.sim_dt * self.cfg.robot.control_decimation,
+                    port=self.cfg.viewer.viser_port,
                     geom_view=self.cfg.viewer.geom_view,
                     checkpoint_path=self.policy.checkpoint_path,
                     policy_iteration=self.policy.iteration,

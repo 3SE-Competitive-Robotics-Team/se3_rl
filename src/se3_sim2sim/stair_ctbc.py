@@ -225,7 +225,12 @@ class StairCtbcRuntime:
             command_height=float(robot.command[4]),
             fallback_default=robot.default_dof_pos[JointGroup.CTRL_LEGS],
         )
-        current_policy = robot.action_decoder.leg_target(leg_action, policy_default)
+        current_policy_pos = robot._current_policy_leg_pos()
+        current_policy = robot.action_decoder.leg_target(
+            leg_action,
+            policy_default,
+            current_policy_pos=current_policy_pos,
+        )
         current_output = policy_to_output_pos_np(current_policy)
         current_wheel_xz = output_leg_wheel_xz_np(current_output)
         desired_wheel_xz = current_wheel_xz + wheel_delta_xz
@@ -237,6 +242,9 @@ class StairCtbcRuntime:
                 sl = slice(2 * side_idx, 2 * side_idx + 2)
                 desired_output[sl] = cartesian_desired_output[sl]
         desired_policy = output_to_policy_pos_np(desired_output)
+        action_reference = policy_default.copy()
+        if robot.cfg.leg_action_reference == "front_current":
+            action_reference[[0, 2]] = current_policy_pos[[0, 2]]
 
         desired_action = np.asarray(leg_action, dtype=np.float64).copy()
         leg_scale = robot.action_scale[JointGroup.LEG_ACTUATORS]
@@ -247,11 +255,12 @@ class StairCtbcRuntime:
                 continue
             front_coef, back_coef = coeffs[side_idx]
             desired_action[front_idx] = (
-                desired_policy[front_idx] - policy_default[front_idx]
+                desired_policy[front_idx] - action_reference[front_idx]
             ) / leg_scale[front_idx]
             if robot.cfg.height_conditioned_action_default:
                 active_default = (
-                    front_coef * policy_default[front_idx] + back_coef * policy_default[back_idx]
+                    front_coef * action_reference[front_idx]
+                    + back_coef * action_reference[back_idx]
                 )
             else:
                 active_default = active_mid

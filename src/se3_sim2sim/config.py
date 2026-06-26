@@ -18,6 +18,7 @@ RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
 RcOffMode = Literal["no-torque", "hold-current"]
+LegActionReference = Literal["default", "front_current"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
 RECOVERY_COMMAND_HEIGHT_M = se3_shared.RECOVERY_COMMAND_HEIGHT_M
 RECOVERY_POSE_CHOICES: tuple[RecoveryPose, ...] = (
@@ -38,6 +39,8 @@ RECOVERY_POSE_RP_RAD: dict[RecoveryPose, tuple[float, float]] = {
 _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
 _MJCF_DIR = Path("assets/robots/serialleg/mjcf")
+_FLAT_LEG_ACTION_SCALE = 0.25
+_RECOVERY_WHEEL_ACTION_SCALE = 45.0
 
 DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "closedchain"
 SIM_MODEL_VARIANT_CHOICES: tuple[SimModelVariant, ...] = (
@@ -81,6 +84,38 @@ def normalize_model_variant(value: str) -> SimModelVariant:
 def model_path_for_variant(value: str) -> Path:
     """返回指定 sim2sim 模型变体对应的 MJCF 路径。"""
     return SIM_MODEL_VARIANT_PATHS[normalize_model_variant(value)]
+
+
+def action_scale_for_task(task: str) -> tuple[float, ...]:
+    """按训练任务的 action contract 返回 sim2sim 缩放。"""
+    task_key = task.lower()
+    if "recovery" in task_key:
+        return (
+            _shared_robot.action_scale[0],
+            _shared_robot.action_scale[1],
+            _shared_robot.action_scale[2],
+            _shared_robot.action_scale[3],
+            _RECOVERY_WHEEL_ACTION_SCALE,
+            _RECOVERY_WHEEL_ACTION_SCALE,
+        )
+    if "flat" in task_key:
+        return (
+            _FLAT_LEG_ACTION_SCALE,
+            _FLAT_LEG_ACTION_SCALE,
+            _FLAT_LEG_ACTION_SCALE,
+            _FLAT_LEG_ACTION_SCALE,
+            _shared_robot.action_scale[4],
+            _shared_robot.action_scale[5],
+        )
+    return _shared_robot.action_scale
+
+
+def leg_action_reference_for_task(task: str) -> LegActionReference:
+    """按当前实验分支的训练 action contract 返回参考系。"""
+    task_key = task.lower()
+    if any(name in task_key for name in ("flat", "recovery", "stair")):
+        return "front_current"
+    return "default"
 
 
 class YawPidConfig(BaseModel):
@@ -272,6 +307,7 @@ class RobotConfig(BaseModel):
     """判定 base_link 已接地需要连续满足的 MuJoCo step 数。"""
     action_scale: tuple[float, ...] = _shared_robot.action_scale
     action_clip: float | None = _shared_robot.action_clip
+    leg_action_reference: LegActionReference = "default"
     height_conditioned_action_default: bool = True
     """让腿部 action=0 对应当前 command height 下的默认腿型。"""
     active_rod_target_lower_preload_margin: Annotated[float, Field(ge=0.0)] = (
@@ -319,6 +355,7 @@ class ViewerConfig(BaseModel):
     log_every: int = 1
     follow_body: str = "base_link"
     geom_view: RerunGeomView = "visual"
+    viser_port: Annotated[int, Field(ge=1, le=65535)] = 8080
     """3D viewer 显示的 MJCF 几何：visual 用于复查外观，collision 用于接触诊断。"""
 
 

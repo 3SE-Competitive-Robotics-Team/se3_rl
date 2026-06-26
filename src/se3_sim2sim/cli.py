@@ -26,6 +26,8 @@ from .config import (
     StairCtbcConfig,
     ViewerConfig,
     YawPidConfig,
+    action_scale_for_task,
+    leg_action_reference_for_task,
     model_path_for_variant,
 )
 from .course import CourseConfig, CourseType
@@ -199,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of MuJoCo steps per policy action. Default 4 gives 50 Hz control at 0.005s sim_dt.",
     )
     parser.add_argument("--viewer", choices=["rerun", "mujoco", "viser", "none"], default="rerun")
+    parser.add_argument("--viser-port", type=int, default=ViewerConfig().viser_port)
     parser.add_argument("--rerun-app-id", default="se3_sim2sim")
     parser.add_argument("--rerun-address", default=None)
     parser.add_argument("--rerun-record", type=Path, default=None)
@@ -326,6 +329,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="height_conditioned_action_default",
         action="store_false",
         help="显式关闭 height-conditioned action 默认腿型，覆盖 recovery deploy npz 自动检测。",
+    )
+    parser.add_argument(
+        "--leg-action-reference",
+        choices=("default", "front_current"),
+        default=None,
+        help="Override leg action reference. Defaults to the selected task contract.",
     )
     parser.add_argument(
         "--active-rod-target-lower-preload-margin",
@@ -569,6 +578,12 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     deploy_init_summary = None
     deploy_init_reference_obs = None
     checkpoint = args.checkpoint
+    task = str(args.task)
+    leg_action_reference = (
+        leg_action_reference_for_task(task)
+        if args.leg_action_reference is None
+        else str(args.leg_action_reference)
+    )
 
     if args.recovery_pose is not None:
         if args.deploy_telemetry_init is not None:
@@ -615,7 +630,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     return RunConfig(
         robot=RobotConfig(
             model_path=model_path,
-            task=str(args.task),
+            task=task,
             seed=int(args.seed),
             stair_terrain=bool(args.stair_terrain),
             stair_terrain_level=int(args.stair_terrain_level),
@@ -640,6 +655,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             pre_policy_settle_max_s=float(args.pre_policy_settle_max_s),
             pre_policy_settle_contact_steps=max(1, int(args.pre_policy_settle_contact_steps)),
             command=tuple(command),
+            action_scale=action_scale_for_task(task),
+            leg_action_reference=leg_action_reference,
             yaw_pid=YawPidConfig(
                 enabled=_yaw_pid_enabled_from_args(args),
                 target_yaw_rad=math.radians(float(args.yaw_target_deg)),
@@ -686,6 +703,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             memory_limit=str(args.rerun_memory_limit),
             log_every=max(1, int(args.viewer_log_every)),
             geom_view=str(args.rerun_geom_view),
+            viser_port=int(args.viser_port),
         ),
         max_steps=int(args.max_steps),
         fixed_reset=not bool(args.random_reset),
