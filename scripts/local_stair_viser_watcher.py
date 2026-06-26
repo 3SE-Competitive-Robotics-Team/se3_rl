@@ -185,6 +185,8 @@ def github_json(args: argparse.Namespace, url: str) -> object:
 
 
 def laptop_cmd(args: argparse.Namespace, *command: str) -> list[str]:
+    if args.laptop_host == "self":
+        return list(command)
     return ["ssh", *SSH_OPTS, args.laptop_host, *command]
 
 
