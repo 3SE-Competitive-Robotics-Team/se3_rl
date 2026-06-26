@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
@@ -45,6 +45,7 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
 
     leg_actuator_names: tuple[str, ...] = JointGroup.POLICY_LEG_NAMES
     wheel_actuator_names: tuple[str, ...] = JointGroup.WHEEL_NAMES
+    leg_action_reference: Literal["default", "front_current"] = "default"
     leg_scales: tuple[float, ...] = tuple(
         _SHARED_ROBOT.action_scale[i] for i in JointGroup.LEG_ACTUATORS
     )
@@ -97,6 +98,11 @@ class SerialLegDelayedAction(ActionTerm):
         if len(cfg.leg_scales) != 4:
             raise ValueError(
                 f"SerialLegDelayedAction expects 4 leg action scales, got {cfg.leg_scales}"
+            )
+        if cfg.leg_action_reference not in ("default", "front_current"):
+            raise ValueError(
+                "leg_action_reference must be 'default' or 'front_current', "
+                f"got {cfg.leg_action_reference}"
             )
         if cfg.action_clip is not None and cfg.action_clip <= 0.0:
             raise ValueError(f"action_clip must be positive or None, got {cfg.action_clip}")
@@ -229,6 +235,14 @@ class SerialLegDelayedAction(ActionTerm):
     def delay_steps(self) -> torch.Tensor:
         return self._delay_steps
 
+    @property
+    def front_action_periods(self) -> tuple[float, float] | Literal[False]:
+        if self.cfg.leg_action_reference == "front_current":
+            return False
+        from se3_shared import front_action_periods_from_scales
+
+        return front_action_periods_from_scales(self.cfg.leg_scales)
+
     def process_actions(self, actions: torch.Tensor) -> None:
         incoming_actions = actions.to(self.device)
         self._unclipped_actions[:] = incoming_actions
@@ -282,14 +296,14 @@ class SerialLegDelayedAction(ActionTerm):
         self._delayed_actions = self._action_fifo[self._delay_steps, self._env_indices]
 
         if self._fourbar_surrogate:
-            policy_target = self._leg_action_to_policy_target(
-                self._delayed_actions[:, :4],
-                self._current_leg_action_defaults(),
-            )
-            self._policy_leg_target[:] = policy_target
             output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
             output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
             policy_pos = output_to_policy_pos_torch(output_pos)
+            policy_target = self._leg_action_to_policy_target(
+                self._delayed_actions[:, :4],
+                self._current_leg_action_reference(policy_pos),
+            )
+            self._policy_leg_target[:] = policy_target
             policy_vel = output_to_policy_vel_torch(output_pos, output_vel)
             policy_error = policy_leg_position_error_torch(
                 policy_target,
@@ -304,14 +318,14 @@ class SerialLegDelayedAction(ActionTerm):
             leg_torque = policy_to_output_torque_torch(policy_pos, policy_torque)
             self._entity.set_joint_effort_target(leg_torque, joint_ids=self._leg_joint_ids)
         else:
+            current_leg_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
             leg_target = self._leg_action_to_policy_target(
                 self._delayed_actions[:, :4],
-                self._current_leg_action_defaults(),
+                self._current_leg_action_reference(current_leg_pos),
             )
             self._policy_leg_target[:] = leg_target
             servo_leg_target = leg_target
             if self._closedchain:
-                current_leg_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
                 servo_leg_target = current_leg_pos + policy_leg_position_error_torch(
                     leg_target,
                     current_leg_pos,
@@ -349,6 +363,14 @@ class SerialLegDelayedAction(ActionTerm):
                 )
             return self._current_policy_leg_defaults()
         return self._entity.data.default_joint_pos[:, self._leg_joint_ids]
+
+    def _current_leg_action_reference(self, current_policy_pos: torch.Tensor) -> torch.Tensor:
+        """按配置返回腿部 action 参考点；整周转前杆可相对当前角。"""
+        reference = self._current_leg_action_defaults()
+        if self.cfg.leg_action_reference == "front_current":
+            reference = reference.clone()
+            reference[:, (0, 2)] = current_policy_pos[:, (0, 2)]
+        return reference
 
     def _leg_action_to_policy_target(
         self,

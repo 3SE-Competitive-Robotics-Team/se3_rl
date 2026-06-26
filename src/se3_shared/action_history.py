@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from typing import Literal
 
 import numpy as np
 
@@ -16,7 +17,7 @@ FRONT_ACTION_PERIOD = 2.0
 FRONT_ACTION_INDICES = (0, 2)
 FRONT_PHYSICAL_PERIOD = 2.0 * math.pi
 
-FrontActionPeriod = float | Sequence[float] | np.ndarray
+FrontActionPeriod = float | Sequence[float] | np.ndarray | Literal[False]
 
 
 def front_action_period_from_scale(action_scale: float) -> float:
@@ -84,6 +85,8 @@ def wrap_front_action_delta_np(
     out = np.asarray(delta, dtype=np.float64).copy()
     if out.ndim == 0:
         return out
+    if front_action_period is False:
+        return out
     width = out.shape[-1]
     for order, index in enumerate(FRONT_ACTION_INDICES):
         if width > index:
@@ -95,9 +98,11 @@ def wrap_front_action_delta_np(
 def wrap_front_action_value_delta_np(
     delta: np.ndarray,
     *,
-    front_action_period: float | None = None,
+    front_action_period: float | Literal[False] | None = None,
 ) -> np.ndarray:
     """把单个前杆 action 差值折回最短等价差分。"""
+    if front_action_period is False:
+        return np.asarray(delta, dtype=np.float64)
     period = (
         FRONT_ACTION_PERIOD
         if front_action_period is None
@@ -147,6 +152,8 @@ def wrap_front_action_delta_torch(
     out = delta.clone()
     if out.ndim == 0:
         return out
+    if front_action_period is False:
+        return out
     width = out.shape[-1]
     for order, index in enumerate(FRONT_ACTION_INDICES):
         if width > index:
@@ -158,9 +165,11 @@ def wrap_front_action_delta_torch(
 def wrap_front_action_value_delta_torch(
     delta: torch.Tensor,
     *,
-    front_action_period: float | None = None,
+    front_action_period: float | Literal[False] | None = None,
 ) -> torch.Tensor:
     """把单个前杆 action 差值折回最短等价差分。"""
+    if front_action_period is False:
+        return delta
     period = (
         FRONT_ACTION_PERIOD
         if front_action_period is None

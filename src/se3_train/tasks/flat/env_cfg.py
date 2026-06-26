@@ -222,6 +222,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.actions = {
         "delayed_action": SerialLegDelayedActionCfg(
             entity_name="robot",
+            leg_action_reference="front_current",
             leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
             action_clip=_ROBOT_DEFAULTS.action_clip,
         ),

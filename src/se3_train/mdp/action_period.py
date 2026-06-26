@@ -2,23 +2,31 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from se3_shared import FRONT_ACTION_INDICES, front_action_periods_from_scales
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
+_MISSING = object()
 
-def front_action_periods_from_env(env: ManagerBasedRlEnv) -> tuple[float, float] | None:
+
+def front_action_periods_from_env(
+    env: ManagerBasedRlEnv,
+) -> tuple[float, float] | Literal[False] | None:
     """从当前 action term 的 leg scale 推出 LF0/RF0 的 action 周期。"""
     action_manager = getattr(env, "action_manager", None)
     if action_manager is None:
         return None
     for term_name in action_manager.active_terms:
         term = action_manager.get_term(term_name)
-        periods = getattr(term, "front_action_periods", None)
-        if periods is not None:
+        periods = getattr(term, "front_action_periods", _MISSING)
+        if periods is not _MISSING:
+            if periods is None:
+                return None
+            if periods is False:
+                return False
             return _as_period_pair(periods)
         cfg = getattr(term, "cfg", None)
         leg_scales = getattr(cfg, "leg_scales", None)
@@ -27,11 +35,13 @@ def front_action_periods_from_env(env: ManagerBasedRlEnv) -> tuple[float, float]
     return None
 
 
-def primary_front_action_period_from_env(env: ManagerBasedRlEnv) -> float | None:
+def primary_front_action_period_from_env(env: ManagerBasedRlEnv) -> float | Literal[False] | None:
     """返回单个前杆周期；左右不一致时取平均以维持镜像奖励的标量接口。"""
     periods = front_action_periods_from_env(env)
     if periods is None:
         return None
+    if periods is False:
+        return False
     return 0.5 * (float(periods[0]) + float(periods[1]))
 
 
