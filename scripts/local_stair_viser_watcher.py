@@ -599,25 +599,28 @@ def start_viewer(
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout = (log_dir / "viser.out.log").open("w", encoding="utf-8", errors="replace")
     stderr = (log_dir / "viser.err.log").open("w", encoding="utf-8", errors="replace")
-    command = [
-        "uv",
-        "run",
-        "se3-sim2sim",
-        "--checkpoint",
-        str(checkpoint),
-        "--model-variant",
-        "closedchain",
-        "--sim-dt",
-        str(args.sim_dt),
-        "--control-decimation",
-        str(args.control_decimation),
-        "--viewer",
-        "viser",
-        "--device",
-        args.device,
-        "--print-every",
-        "0",
-    ]
+    command = ["uv", "run"]
+    if args.viewer_uv_no_sync:
+        command.append("--no-sync")
+    command.extend(
+        [
+            "se3-sim2sim",
+            "--checkpoint",
+            str(checkpoint),
+            "--model-variant",
+            "closedchain",
+            "--sim-dt",
+            str(args.sim_dt),
+            "--control-decimation",
+            str(args.control_decimation),
+            "--viewer",
+            "viser",
+            "--device",
+            args.device,
+            "--print-every",
+            "0",
+        ]
+    )
     if args.mode == "recovery":
         command.extend(
             [
@@ -749,6 +752,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--recovery-command-height", type=float, default=0.26)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--viewer-uv-no-sync", action="store_true")
     parser.add_argument("--ssh-attempts", type=int, default=3)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--no-viewer", action="store_true")
