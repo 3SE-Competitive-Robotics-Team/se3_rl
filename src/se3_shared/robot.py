@@ -157,10 +157,10 @@ class RobotConfig(BaseModel):
         _ACTIVE_ROD_ACTION_SCALE,
         pi,
         _ACTIVE_ROD_ACTION_SCALE,
-        45.0,
-        45.0,
+        20.0,
+        20.0,
     )
-    action_clip: float | None = 1.0
+    action_clip: float | None = 100.0
     sim_dt: float = 0.005
     control_decimation: int = 4
     action_delay: ActionDelayConfig = Field(default_factory=ActionDelayConfig)
