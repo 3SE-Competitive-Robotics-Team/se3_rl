@@ -207,7 +207,7 @@ def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -
         else ""
     )
     return (
-        "uv run python scripts/watch_remote_train_local.py `\n"
+        "uv run --no-sync python scripts/watch_remote_train_local.py `\n"
         f"{route_args}"
         f"  --namespace {args.namespace} `\n"
         f"  --pod {args.pod} `\n"
