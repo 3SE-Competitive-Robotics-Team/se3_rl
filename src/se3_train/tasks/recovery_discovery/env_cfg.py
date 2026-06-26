@@ -6,9 +6,11 @@ import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_train.mdp import events as mdp_events
+from se3_train.tasks.recovery import rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 
 
@@ -25,7 +27,21 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["tracking_height"].weight = -1500.0
     cfg.rewards["tracking_height"].params["use_pose_end_gate"] = False
     cfg.rewards["tracking_height"].params["use_inverted_free_upright_height_gate"] = True
+    cfg.rewards["upward"].func = rewards.recovery_upward
     cfg.rewards["upward"].weight = 3.0
+    cfg.rewards["recovery_progress"] = RewardTermCfg(
+        func=rewards.recovery_progress,
+        weight=1.0,
+        params={
+            "height_sensor_name": "base_height_sensor",
+            "upright_delta_scale": 0.05,
+            "height_delta_scale": 0.03,
+            "max_reward": 4.0,
+            "height_gate_start_deg": 60.0,
+            "height_gate_full_deg": 130.0,
+            "min_height_gate": 0.0,
+        },
+    )
 
     cfg.curriculum = {}
     cfg.events.pop("push_robots", None)
@@ -53,25 +69,25 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "ang_vel_range": (0.0, 0.0),
                 },
                 {
-                    "iteration": 300,
-                    "roll_jitter_range": (-math.radians(10.0), math.radians(10.0)),
-                    "pitch_jitter_range": (-math.radians(10.0), math.radians(10.0)),
-                    "lin_vel_range": (-0.03, 0.03),
-                    "ang_vel_range": (-0.10, 0.10),
+                    "iteration": 500,
+                    "roll_jitter_range": (-math.radians(8.0), math.radians(8.0)),
+                    "pitch_jitter_range": (-math.radians(8.0), math.radians(8.0)),
+                    "lin_vel_range": (-0.02, 0.02),
+                    "ang_vel_range": (-0.08, 0.08),
                 },
                 {
-                    "iteration": 800,
-                    "roll_jitter_range": (-math.radians(15.0), math.radians(15.0)),
-                    "pitch_jitter_range": (-math.radians(15.0), math.radians(15.0)),
+                    "iteration": 1200,
+                    "roll_jitter_range": (-math.radians(12.0), math.radians(12.0)),
+                    "pitch_jitter_range": (-math.radians(12.0), math.radians(12.0)),
+                    "lin_vel_range": (-0.03, 0.03),
+                    "ang_vel_range": (-0.12, 0.12),
+                },
+                {
+                    "iteration": 2200,
+                    "roll_jitter_range": (-math.radians(18.0), math.radians(18.0)),
+                    "pitch_jitter_range": (-math.radians(18.0), math.radians(18.0)),
                     "lin_vel_range": (-0.05, 0.05),
                     "ang_vel_range": (-0.20, 0.20),
-                },
-                {
-                    "iteration": 1500,
-                    "roll_jitter_range": (-math.radians(20.0), math.radians(20.0)),
-                    "pitch_jitter_range": (-math.radians(20.0), math.radians(20.0)),
-                    "lin_vel_range": (-0.08, 0.08),
-                    "ang_vel_range": (-0.30, 0.30),
                 },
             ],
             "use_iterations": True,
@@ -95,22 +111,22 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "joint_randomization_prob": 0.0,
                 },
                 {
-                    "iteration": 300,
+                    "iteration": 500,
+                    "joint_offset_range": 0.05,
+                    "joint_vel_range": (-0.10, 0.10),
+                    "joint_randomization_prob": 0.15,
+                },
+                {
+                    "iteration": 1200,
                     "joint_offset_range": 0.10,
                     "joint_vel_range": (-0.20, 0.20),
                     "joint_randomization_prob": 0.25,
                 },
                 {
-                    "iteration": 800,
-                    "joint_offset_range": 0.20,
-                    "joint_vel_range": (-0.40, 0.40),
+                    "iteration": 2200,
+                    "joint_offset_range": 0.18,
+                    "joint_vel_range": (-0.35, 0.35),
                     "joint_randomization_prob": 0.50,
-                },
-                {
-                    "iteration": 1500,
-                    "joint_offset_range": 0.25,
-                    "joint_vel_range": (-0.50, 0.50),
-                    "joint_randomization_prob": 0.75,
                 },
             ],
             "use_iterations": True,

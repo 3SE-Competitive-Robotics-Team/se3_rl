@@ -7,7 +7,11 @@ import math
 import re
 from pathlib import Path
 
-from se3_shared import ActionDelayConfig
+from se3_shared import (
+    RECOVERY_ACTION_CLIP,
+    ActionDelayConfig,
+    recovery_action_scale,
+)
 
 from .config import (
     DEFAULT_SIM_MODEL_VARIANT,
@@ -541,6 +545,17 @@ def _height_conditioned_action_default_from_args(args: argparse.Namespace) -> bo
     return bool(RobotConfig().height_conditioned_action_default)
 
 
+def _uses_recovery_action_contract(args: argparse.Namespace, checkpoint: Path | None) -> bool:
+    """判断本次 sim2sim 是否应按 recovery 训练 contract 解码 action。"""
+    if getattr(args, "recovery_pose", None) is not None:
+        return True
+    if getattr(args, "deploy_telemetry_init", None) is not None:
+        return True
+    if checkpoint is None:
+        return False
+    return "recovery" in checkpoint.as_posix().lower()
+
+
 def config_from_args(args: argparse.Namespace) -> RunConfig:
     action_delay = ActionDelayConfig(
         enabled=not bool(args.no_action_delay),
@@ -611,6 +626,11 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         deploy_init_reference_obs = deploy_init.reference_obs
         if checkpoint is None and deploy_init.checkpoint_hint is not None:
             checkpoint = deploy_init.checkpoint_hint
+    use_recovery_action_contract = _uses_recovery_action_contract(args, checkpoint)
+    action_scale = (
+        recovery_action_scale() if use_recovery_action_contract else RobotConfig().action_scale
+    )
+    action_clip = RECOVERY_ACTION_CLIP if use_recovery_action_contract else RobotConfig().action_clip
 
     return RunConfig(
         robot=RobotConfig(
@@ -652,6 +672,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             action_delay_steps=(
                 None if args.action_delay_steps is None else max(0, int(args.action_delay_steps))
             ),
+            action_scale=action_scale,
+            action_clip=action_clip,
             height_conditioned_action_default=_height_conditioned_action_default_from_args(args),
             active_rod_target_lower_preload_margin=float(
                 args.active_rod_target_lower_preload_margin

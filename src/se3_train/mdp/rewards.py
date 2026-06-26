@@ -468,6 +468,12 @@ def _upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     return torch.square(1.0 - projected_gravity_z)
 
 
+def _recovery_upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
+    """Recovery 专用直立分数：倒置也保留梯度，近直立额外加权。"""
+    upright = torch.clamp((1.0 - projected_gravity_z) * 0.5, 0.0, 1.0)
+    return 2.0 * upright + 2.0 * torch.pow(upright, 4.0)
+
+
 def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
@@ -495,6 +501,34 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
                 "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
                 "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
                 "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
+            }
+        )
+        _log_cached_reset_diagnostics(env)
+
+    return reward
+
+
+def recovery_upward(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """倒地自起用向上奖励，对倒置/侧躺阶段提供连续引导。"""
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    reward = _recovery_upward_score(pg_z)
+
+    if hasattr(env, "extras") and _should_log_step(env):
+        tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+        upright_15 = tilt < torch.deg2rad(torch.as_tensor(15.0, device=env.device))
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Locomotion/upward": reward.mean().item(),
+                "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
+                "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
+                "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
+                "Recovery/diag_recovery_upward_linear": torch.clamp(
+                    (1.0 - pg_z) * 0.5, 0.0, 1.0
+                )
+                .mean()
+                .item(),
             }
         )
         _log_cached_reset_diagnostics(env)

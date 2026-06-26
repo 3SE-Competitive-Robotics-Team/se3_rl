@@ -18,6 +18,7 @@ from se3_shared import (
     ObservationConfig,
     PolicyActionDecoder,
     RobotConfig,
+    recovery_robot_config,
 )
 
 from .numpy_policy import NumpyPolicyRuntime
@@ -190,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
 
     policy = _load_policy(checkpoint)
     decoder = PolicyActionDecoder(
-        robot_cfg=RobotConfig(),
+        robot_cfg=recovery_robot_config(),
         height_conditioned_action_default=True,
         active_rod_semantics=True,
         dtype=np.float32,

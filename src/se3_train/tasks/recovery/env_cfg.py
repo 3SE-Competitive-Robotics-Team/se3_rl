@@ -10,7 +10,7 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from se3_shared import JointGroup
+from se3_shared import RECOVERY_ACTION_CLIP, RECOVERY_WHEEL_ACTION_SCALE, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
@@ -25,8 +25,8 @@ _RECOVERY_WHEEL_KD = 0.08
 _RECOVERY_LEG_ACTION_SCALES = tuple(
     _ROBOT_DEFAULTS.action_scale[i] for i in JointGroup.LEG_ACTUATORS
 )
-_RECOVERY_WHEEL_ACTION_SCALE = 45.0
-_RECOVERY_ACTION_CLIP = 1.0
+_RECOVERY_WHEEL_ACTION_SCALE = RECOVERY_WHEEL_ACTION_SCALE
+_RECOVERY_ACTION_CLIP = RECOVERY_ACTION_CLIP
 _RECOVERY_COMMAND_WHEEL_RADIUS = 0.060
 _RECOVERY_COMMAND_HALF_TRACK = 0.200725
 _RECOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.70

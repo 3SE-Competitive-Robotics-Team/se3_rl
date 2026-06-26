@@ -8,6 +8,8 @@ import numpy as np
 import torch
 
 from se3_shared import (
+    RECOVERY_ACTION_CLIP,
+    RECOVERY_WHEEL_ACTION_SCALE,
     JointGroup,
     ObservationConfig,
     PolicyActionDecoder,
@@ -17,6 +19,8 @@ from se3_shared import (
     periodic_policy_action_delta_torch,
     periodic_policy_action_second_difference_np,
     policy_leg_position_error_np,
+    recovery_action_scale,
+    recovery_robot_config,
     wrap_front_action_value_delta_np,
 )
 from se3_sim2sim.deploy_telemetry import _decode_state_fields
@@ -30,6 +34,7 @@ def main() -> int:
     _check_deploy_telemetry_last_actions_slice()
     _check_periodic_pd_error()
     _check_periodic_action_history()
+    _check_recovery_action_contract()
     _check_height_conditioned_decoder()
     print("recovery sim2sim contract ok")
     return 0
@@ -168,7 +173,7 @@ def _check_periodic_action_history() -> None:
 
 
 def _check_height_conditioned_decoder() -> None:
-    cfg = RobotConfig()
+    cfg = recovery_robot_config()
     decoder = PolicyActionDecoder(
         robot_cfg=cfg,
         height_conditioned_action_default=True,
@@ -188,6 +193,20 @@ def _check_height_conditioned_decoder() -> None:
         raise AssertionError(f"left active target out of bounds: {active_left}")
     if active_right < lower - cfg.active_rod_lower_target_overdrive or active_right > upper:
         raise AssertionError(f"right active target out of bounds: {active_right}")
+
+
+def _check_recovery_action_contract() -> None:
+    cfg = recovery_robot_config()
+    expected_scale = recovery_action_scale(RobotConfig())
+    if tuple(cfg.action_scale) != expected_scale:
+        raise AssertionError(f"recovery action scale mismatch: {cfg.action_scale}")
+    left_wheel, right_wheel = JointGroup.WHEEL_ACTUATORS
+    if cfg.action_scale[left_wheel] != RECOVERY_WHEEL_ACTION_SCALE:
+        raise AssertionError(f"left wheel scale mismatch: {cfg.action_scale}")
+    if cfg.action_scale[right_wheel] != RECOVERY_WHEEL_ACTION_SCALE:
+        raise AssertionError(f"right wheel scale mismatch: {cfg.action_scale}")
+    if cfg.action_clip != RECOVERY_ACTION_CLIP:
+        raise AssertionError(f"recovery action clip mismatch: {cfg.action_clip}")
 
 
 if __name__ == "__main__":

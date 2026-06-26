@@ -53,12 +53,16 @@ from .policy_io import (
     build_policy_observation_np,
 )
 from .recovery import (
+    RECOVERY_ACTION_CLIP,
     RECOVERY_COMMAND_HEIGHT_M,
     RECOVERY_COMMAND_HEIGHT_RANGE_M,
     RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS,
     RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S,
     RECOVERY_DEFAULT_COMMAND_8D,
     RECOVERY_DEFAULT_STM_COMMAND_5D,
+    RECOVERY_WHEEL_ACTION_SCALE,
+    recovery_action_scale,
+    recovery_robot_config,
 )
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
@@ -70,12 +74,14 @@ __all__ = [
     "FRONT_PHYSICAL_PERIOD",
     "M3508_C620_14",
     "M3508_HEXROLL",
+    "RECOVERY_ACTION_CLIP",
     "RECOVERY_COMMAND_HEIGHT_M",
     "RECOVERY_COMMAND_HEIGHT_RANGE_M",
     "RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS",
     "RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S",
     "RECOVERY_DEFAULT_COMMAND_8D",
     "RECOVERY_DEFAULT_STM_COMMAND_5D",
+    "RECOVERY_WHEEL_ACTION_SCALE",
     "ActionDelayConfig",
     "DecodedPolicyAction",
     "Joint",
@@ -113,6 +119,8 @@ __all__ = [
     "policy_to_output_torque_np",
     "policy_to_output_torque_torch",
     "policy_to_output_vel_torch",
+    "recovery_action_scale",
+    "recovery_robot_config",
     "wheel_xz_to_output_pos_np",
     "wheel_xz_to_output_pos_torch",
     "wrap_front_action_delta_np",
