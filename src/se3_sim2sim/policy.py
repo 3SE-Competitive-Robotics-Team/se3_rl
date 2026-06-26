@@ -420,11 +420,10 @@ class PolicyRuntime:
         critic = (
             self._linear_shapes(critic_state_dict, "mlp") if critic_state_dict is not None else []
         )
-        resolved = replace(
-            spec,
-            contract=self.runtime.policy.contract,
-            num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs,
-        )
+        resolved_kwargs = {"num_critic_obs": int(critic[0][1]) if critic else spec.num_critic_obs}
+        if hasattr(self.runtime.policy, "contract") and hasattr(spec, "contract"):
+            resolved_kwargs["contract"] = self.runtime.policy.contract
+        resolved = replace(spec, **resolved_kwargs)
 
         # MLP shape 验证：GRU 时第一层输入是 rnn_hidden_dim，MLP 时是 num_obs
         mlp_input_dim = resolved.rnn_hidden_dim if resolved.is_recurrent else resolved.num_obs
