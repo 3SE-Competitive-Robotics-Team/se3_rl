@@ -123,7 +123,7 @@ ssh laptop-imgpi2nm-shanghai "echo $hostB64 | base64 -d | bash"
 在 laptop 的 repo 根目录运行，而不是在开发机直接打包当前工作区：
 
 ```powershell
-ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run python scripts\remote_sync_start_stair.py --entry-host a800 --namespace gczx-project06 --pod abbtask-79cdb78487-mgx44 --task SE3-WheelLegged-Stair-GRU --load-run base_model --load-checkpoint model_500\.pt --iterations 3000 --run-name <run_name> --job-name <job_name> --watch-terrain-level 9`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_stair.py --entry-host a800 --namespace gczx-project06 --pod abbtask-79cdb78487-mgx44 --task SE3-WheelLegged-Stair-GRU --load-run base_model --load-checkpoint model_500\.pt --iterations 3000 --run-name <run_name> --job-name <job_name> --watch-terrain-level 9`""
 ```
 
 脚本默认排除 `assets/base_model` 以减少 laptop -> A800 传输时间。远端已有对应 checkpoint 时保持默认；只有需要把 laptop repo 里的基模同步进 A800 时加：
@@ -142,7 +142,7 @@ ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_trai
 保留 `--gpu-ids all`，通过 `--cuda-visible-devices` 指定物理 GPU：
 
 ```powershell
-ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run python scripts\remote_sync_start_stair.py --entry-host a800 --pod abbtask-79cdb78487-mgx44 --gpu-ids all --cuda-visible-devices 1,2,3,4,5,6,7`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_stair.py --entry-host a800 --pod abbtask-79cdb78487-mgx44 --gpu-ids all --cuda-visible-devices 1,2,3,4,5,6,7`""
 ```
 
 未指定 `--cuda-visible-devices` 时，脚本要求没有其他活跃训练进程；指定后脚本会检查选定 GPU 的显存占用。
