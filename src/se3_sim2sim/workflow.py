@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from se3_shared import periodic_policy_action_delta_np
+from se3_shared import front_action_periods_from_scales, periodic_policy_action_delta_np
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
 
 from .config import RECOVERY_COMMAND_HEIGHT_M, RECOVERY_POSE_RP_RAD, RunConfig
@@ -410,15 +410,24 @@ class Sim2SimWorkflow:
                 info["rc_off_mode"] = str(rc_sched.off_mode)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
+                front_action_period = front_action_periods_from_scales(self.robot.action_scale)
                 action_delta = (
                     np.zeros_like(action_now)
                     if _prev_action is None
-                    else periodic_policy_action_delta_np(action_now, _prev_action)
+                    else periodic_policy_action_delta_np(
+                        action_now,
+                        _prev_action,
+                        front_action_period=front_action_period,
+                    )
                 )
                 applied_action_delta = (
                     np.zeros_like(applied_action_now)
                     if _prev_applied_action is None
-                    else periodic_policy_action_delta_np(applied_action_now, _prev_applied_action)
+                    else periodic_policy_action_delta_np(
+                        applied_action_now,
+                        _prev_applied_action,
+                        front_action_period=front_action_period,
+                    )
                 )
                 _prev_action = action_now
                 _prev_applied_action = applied_action_now

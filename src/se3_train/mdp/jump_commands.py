@@ -22,6 +22,7 @@ from se3_shared import (
     periodic_policy_action_delta_torch,
 )
 from se3_train.mdp import recovery_state
+from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
@@ -487,6 +488,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         action_delta = periodic_policy_action_delta_torch(
             self._env.action_manager.action,
             self._env.action_manager.prev_action,
+            front_action_period=front_action_periods_from_env(self._env),
         )
         action_rate = torch.sum(action_delta**2, dim=1)
         ang_vel = robot.data.root_link_ang_vel_b

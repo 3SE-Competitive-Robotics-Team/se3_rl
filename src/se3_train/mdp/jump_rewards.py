@@ -21,6 +21,10 @@ from se3_shared import (
     periodic_policy_action_second_difference_torch,
     wrap_front_action_value_delta_torch,
 )
+from se3_train.mdp.action_period import (
+    front_action_periods_from_env,
+    primary_front_action_period_from_env,
+)
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
     active_leg_mirror_diffs,
@@ -867,7 +871,10 @@ def jump_action_mirror(
     jump_flag = cmd[:, 5] > 0.5
     action = env.action_manager.action
 
-    front_mirror = wrap_front_action_value_delta_torch(action[:, 0] - action[:, 2])
+    front_mirror = wrap_front_action_value_delta_torch(
+        action[:, 0] - action[:, 2],
+        front_action_period=primary_front_action_period_from_env(env),
+    )
     leg_mirror = front_mirror**2 + (action[:, 1] - action[:, 3]) ** 2
     # 左右轮 joint axis 相反,同号广义轮速更容易制造 yaw 扭转。
     wheel_yaw = (action[:, 4] + action[:, 5]) ** 2
@@ -1582,7 +1589,12 @@ def action_smoothness_no_jump(
         setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
         return torch.zeros(env.num_envs, device=env.device)
 
-    action_acc = periodic_policy_action_second_difference_torch(action, prev, prev_prev)
+    action_acc = periodic_policy_action_second_difference_torch(
+        action,
+        prev,
+        prev_prev,
+        front_action_period=front_action_periods_from_env(env),
+    )
     penalty = torch.sum(action_acc**2, dim=1)
     setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
     setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())

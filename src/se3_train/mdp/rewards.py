@@ -23,6 +23,7 @@ from se3_shared import (
     policy_leg_position_error_torch,
 )
 from se3_train.mdp import recovery_state
+from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
@@ -1137,7 +1138,11 @@ def leg_power(
 def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
     """当前动作与上一动作差值的平方和。"""
     action = env.action_manager.action
-    action_delta = periodic_policy_action_delta_torch(action, env.action_manager.prev_action)
+    action_delta = periodic_policy_action_delta_torch(
+        action,
+        env.action_manager.prev_action,
+        front_action_period=front_action_periods_from_env(env),
+    )
     penalty = torch.sum(action_delta**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -1183,6 +1188,7 @@ def _action_rate_slice(
     action_delta = periodic_policy_action_delta_torch(
         env.action_manager.action,
         env.action_manager.prev_action,
+        front_action_period=front_action_periods_from_env(env),
     )
     penalty = torch.sum(action_delta[:, start:stop] ** 2, dim=1)
     if recovery_scale is not None:
@@ -1229,7 +1235,12 @@ def action_smoothness(
         setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
         return torch.zeros(env.num_envs, device=env.device)
 
-    action_acc = periodic_policy_action_second_difference_torch(action, prev, prev_prev)
+    action_acc = periodic_policy_action_second_difference_torch(
+        action,
+        prev,
+        prev_prev,
+        front_action_period=front_action_periods_from_env(env),
+    )
     setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
     setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
 
@@ -1499,7 +1510,11 @@ def recovery_diagnostics(
         unclipped_action = action
     action_abs = torch.abs(action)
     unclipped_action_abs = torch.abs(unclipped_action)
-    action_delta = periodic_policy_action_delta_torch(action, prev_action)
+    action_delta = periodic_policy_action_delta_torch(
+        action,
+        prev_action,
+        front_action_period=front_action_periods_from_env(env),
+    )
     max_abs_action = torch.max(action_abs, dim=1).values
     leg_action_abs = action_abs[:, :4]
     wheel_action_abs = action_abs[:, 4:6]
