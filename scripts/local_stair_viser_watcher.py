@@ -617,21 +617,44 @@ def start_viewer(
         args.device,
         "--print-every",
         "0",
-        "--stair-terrain",
-        "--stair-terrain-level",
-        str(level),
-        "--stair-ctbc",
-        "--command",
-        str(args.command_vx),
-        "0",
-        "0",
-        "0",
-        str(args.command_height),
-        "0",
-        "0",
-        "0",
     ]
-    if args.fixed_ctbc_iter:
+    if args.mode == "recovery":
+        command.extend(
+            [
+                "--recovery-pose",
+                args.recovery_pose,
+                "--recovery-command-height",
+                str(args.recovery_command_height),
+                "--command",
+                "0",
+                "0",
+                "0",
+                "0",
+                str(args.recovery_command_height),
+                "0",
+                "0",
+                "0",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "--stair-terrain",
+                "--stair-terrain-level",
+                str(level),
+                "--stair-ctbc",
+                "--command",
+                str(args.command_vx),
+                "0",
+                "0",
+                "0",
+                str(args.command_height),
+                "0",
+                "0",
+                "0",
+            ]
+        )
+    if args.mode == "stair" and args.fixed_ctbc_iter:
         command.extend(["--stair-ctbc-iter", str(iteration)])
     print("[local-viser-watch] launching viewer:")
     print("[local-viser-watch] " + subprocess.list2cmdline(command))
@@ -684,6 +707,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--laptop-run-root", default="E:/se3_stair_viewer/logs/remote_watch")
     parser.add_argument("--local-run-root", type=Path, default=Path("logs/remote_watch"))
     parser.add_argument("--viewer-log-root", type=Path, default=Path("logs/local_viser"))
+    parser.add_argument("--mode", choices=("stair", "recovery"), default="stair")
     parser.add_argument("--interval-iters", type=int, default=100)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
     parser.add_argument("--stability-seconds", type=float, default=10.0)
@@ -718,6 +742,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--command-vx", type=float, default=1.2)
     parser.add_argument("--command-height", type=float, default=0.32)
+    parser.add_argument(
+        "--recovery-pose",
+        choices=("standing", "left_side", "right_side", "prone", "supine"),
+        default="left_side",
+    )
+    parser.add_argument("--recovery-command-height", type=float, default=0.26)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--ssh-attempts", type=int, default=3)
     parser.add_argument("--once", action="store_true")
