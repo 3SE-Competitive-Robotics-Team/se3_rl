@@ -22,6 +22,11 @@ _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _RECOVERY_WHEEL_KD = 0.08
+_RECOVERY_LEG_ACTION_SCALES = tuple(
+    _ROBOT_DEFAULTS.action_scale[i] for i in JointGroup.LEG_ACTUATORS
+)
+_RECOVERY_WHEEL_ACTION_SCALE = 45.0
+_RECOVERY_ACTION_CLIP = 1.0
 _RECOVERY_COMMAND_WHEEL_RADIUS = 0.060
 _RECOVERY_COMMAND_HALF_TRACK = 0.200725
 _RECOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.70
@@ -39,8 +44,14 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_RECOVERY_WHEEL_KD)
     cfg.sim.nconmax = 64
     cfg.sim.njmax = 256
-    cfg.actions["delayed_action"].height_conditioned_action_default = True
-    cfg.actions["delayed_action"].action_default_command_name = "velocity_height"
+    action_cfg = cfg.actions["delayed_action"]
+    # 临时对比实验（删除日期：2026-07-10）：恢复旧 recovery action contract，
+    # 验证合并后训练退化是否来自 flat action 语义漂移；实验结束后改为显式任务契约。
+    action_cfg.leg_scales = _RECOVERY_LEG_ACTION_SCALES
+    action_cfg.wheel_scale = _RECOVERY_WHEEL_ACTION_SCALE
+    action_cfg.action_clip = _RECOVERY_ACTION_CLIP
+    action_cfg.height_conditioned_action_default = True
+    action_cfg.action_default_command_name = "velocity_height"
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.resampling_time_range = (10.0, 10.0)
     command_cfg.lin_vel_x_range = (0.0, 0.0)
@@ -57,9 +68,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.constrain_diff_drive_commands = True
     command_cfg.diff_drive_wheel_radius = _RECOVERY_COMMAND_WHEEL_RADIUS
     command_cfg.diff_drive_half_track = _RECOVERY_COMMAND_HALF_TRACK
-    command_cfg.diff_drive_max_wheel_speed = _ROBOT_DEFAULTS.action_scale[
-        JointGroup.WHEEL_ACTUATORS[0]
-    ]
+    command_cfg.diff_drive_max_wheel_speed = _RECOVERY_WHEEL_ACTION_SCALE
     command_cfg.diff_drive_wheel_speed_fraction = _RECOVERY_COMMAND_WHEEL_SPEED_FRACTION
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
