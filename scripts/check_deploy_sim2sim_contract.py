@@ -10,7 +10,14 @@ import numpy as np
 from se3_deploy.numpy_policy import NumpyPolicyRuntime
 from se3_deploy.observation import RecoveryObservationBuilder, synthetic_recovery_state
 from se3_deploy.recovery_runtime import RecoveryActionTargetDecoder
-from se3_shared import RECOVERY_COMMAND_HEIGHT_M, JointGroup, PolicyActionDecoder
+from se3_shared import (
+    RECOVERY_ACTION_CLIP,
+    RECOVERY_COMMAND_HEIGHT_M,
+    RECOVERY_WHEEL_ACTION_SCALE,
+    JointGroup,
+    PolicyActionDecoder,
+    recovery_robot_config,
+)
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_sim2sim.cli import build_parser as build_sim2sim_parser
 from se3_sim2sim.cli import config_from_args as sim2sim_config_from_args
@@ -37,7 +44,7 @@ def main() -> int:
     if not checkpoint.exists():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
 
-    shared_cfg = SharedRobotConfig()
+    shared_cfg = recovery_robot_config(SharedRobotConfig())
     runtime = RuntimeSpec()
 
     _check_cli_contract(checkpoint, str(args.model_variant))
@@ -81,6 +88,11 @@ def _check_cli_contract(checkpoint: Path, model_variant: str) -> None:
     cfg = sim2sim_config_from_args(args)
     if not cfg.robot.height_conditioned_action_default:
         raise AssertionError("sim2sim CLI did not enable height-conditioned recovery contract")
+    if cfg.robot.action_clip != RECOVERY_ACTION_CLIP:
+        raise AssertionError(f"sim2sim CLI recovery action_clip mismatch: {cfg.robot.action_clip}")
+    wheel_scale = cfg.robot.action_scale[JointGroup.L_WHEEL : JointGroup.R_WHEEL + 1]
+    if tuple(wheel_scale) != (RECOVERY_WHEEL_ACTION_SCALE, RECOVERY_WHEEL_ACTION_SCALE):
+        raise AssertionError(f"sim2sim CLI recovery wheel scale mismatch: {wheel_scale}")
 
 
 def _check_closedchain_robot_contract(model_variant: str, runtime: RuntimeSpec) -> None:
@@ -119,7 +131,11 @@ def _sim2sim_observation(runtime: RuntimeSpec) -> np.ndarray:
     """用 sim2sim builder 拼装与 deploy synthetic state 等价的观测。"""
     shared_cfg = SharedRobotConfig()
     state = synthetic_recovery_state(seq=0)
-    sim_robot_cfg = SimRobotConfig(height_conditioned_action_default=True)
+    sim_robot_cfg = SimRobotConfig(
+        action_scale=shared_cfg.action_scale,
+        action_clip=shared_cfg.action_clip,
+        height_conditioned_action_default=True,
+    )
     builder = ObservationBuilder(
         robot_cfg=sim_robot_cfg,
         runtime=runtime,
