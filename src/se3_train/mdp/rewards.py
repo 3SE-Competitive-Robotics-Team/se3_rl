@@ -88,6 +88,34 @@ def _should_log_step(
     return interval <= 1 or (step - 1) % interval == 0
 
 
+def _episode_phase_scale(
+    env: ManagerBasedRlEnv,
+    horizon_s: float | None = None,
+    min_scale: float = 1.0,
+    max_scale: float = 1.0,
+) -> torch.Tensor:
+    """Smooth per-episode phase scale used by recovery discovery shaping."""
+    if horizon_s is None or float(horizon_s) <= 0.0:
+        return torch.full((env.num_envs,), float(max_scale), device=env.device)
+    step_dt = float(getattr(env, "step_dt", 0.0) or 0.0)
+    if step_dt <= 0.0:
+        step_dt = float(getattr(env, "dt", 0.0) or 0.0)
+    if step_dt <= 0.0:
+        max_episode_length_s = float(getattr(env, "max_episode_length_s", 0.0) or 0.0)
+        max_episode_length = max(float(getattr(env, "max_episode_length", 0.0) or 0.0), 1.0)
+        step_dt = max_episode_length_s / max_episode_length if max_episode_length_s > 0.0 else 1.0
+
+    phase = torch.clamp(
+        env.episode_length_buf.to(device=env.device, dtype=torch.float32)
+        * step_dt
+        / float(horizon_s),
+        0.0,
+        1.0,
+    )
+    smooth = phase * phase * (3.0 - 2.0 * phase)
+    return float(min_scale) + (float(max_scale) - float(min_scale)) * smooth
+
+
 def _command_curriculum_metrics_enabled(env: ManagerBasedRlEnv) -> bool:
     """是否启用速度课程逐步累计指标。"""
     return bool(getattr(env, "_se3_enable_command_curriculum_metrics", False))
@@ -813,6 +841,9 @@ def recovery_upright_orientation_l2(
     roll_weight: float = 1.5,
     pitch_weight: float = 1.0,
     max_penalty: float = 6.0,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """接近直立后惩罚 pitch/roll 分轴误差，抑制转弯时的横滚侧倾。"""
     robot = env.scene["robot"]
@@ -842,7 +873,13 @@ def recovery_upright_orientation_l2(
         float(roll_weight) * roll_term + float(pitch_weight) * pitch_term,
         max=float(max_penalty),
     )
-    result = penalty * gate * active.float()
+    phase_scale = _episode_phase_scale(
+        env,
+        horizon_s=phase_horizon_s,
+        min_scale=phase_min_scale,
+        max_scale=phase_max_scale,
+    )
+    result = penalty * gate * active.float() * phase_scale
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         yaw_abs = torch.abs(cmd[:, 1])
@@ -857,6 +894,9 @@ def recovery_upright_orientation_l2(
             {
                 "Recovery/diag_upright_orientation_penalty": _masked_mean(result, active),
                 "Recovery/diag_upright_orientation_gate": _masked_mean(gate, active),
+                "Recovery/diag_upright_orientation_phase_scale": _masked_mean(
+                    phase_scale, active
+                ),
                 "Recovery/diag_abs_roll_deg_turning": _masked_mean(roll_abs_deg, turning),
                 "Recovery/diag_abs_roll_deg_straight": _masked_mean(roll_abs_deg, straight),
                 "Recovery/diag_abs_roll_deg_by_yaw_cmd/low": _masked_mean(roll_abs_deg, yaw_low),
@@ -890,6 +930,9 @@ def tracking_height(
     hard_inverted_height_tolerance: float = 0.02,
     upright_gate_angle_deg: float = 30.0,
     inverted_gate_angle_deg: float = 150.0,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """高度跟踪项，支持 exp 奖励或 L2 误差惩罚。"""
     cmd = env.command_manager.get_command(command_name)
@@ -1018,6 +1061,20 @@ def tracking_height(
             )
     if ignore_recovery:
         reward = reward * (~_recovery_reset_mask(env)).float()
+    phase_scale = _episode_phase_scale(
+        env,
+        horizon_s=phase_horizon_s,
+        min_scale=phase_min_scale,
+        max_scale=phase_max_scale,
+    )
+    reward = reward * phase_scale
+    if (
+        phase_horizon_s is not None
+        and hasattr(env, "extras")
+        and isinstance(env.extras.get("log"), dict)
+        and _should_log_step(env)
+    ):
+        env.extras["log"]["Locomotion/height_phase_scale"] = phase_scale.mean().item()
     return reward
 
 
@@ -1217,6 +1274,9 @@ def _action_rate_slice(
     start: int,
     stop: int,
     recovery_scale: float | None = None,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """指定动作维度的一阶变化平方和。"""
     action_delta = periodic_policy_action_delta_torch(
@@ -1227,20 +1287,54 @@ def _action_rate_slice(
     penalty = torch.sum(action_delta[:, start:stop] ** 2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
+    penalty = penalty * _episode_phase_scale(
+        env,
+        horizon_s=phase_horizon_s,
+        min_scale=phase_min_scale,
+        max_scale=phase_max_scale,
+    )
     return penalty
 
 
-def leg_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+def leg_action_rate(
+    env: ManagerBasedRlEnv,
+    recovery_scale: float | None = None,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
+) -> torch.Tensor:
     """腿部动作一阶变化平方和。"""
-    penalty = _action_rate_slice(env, 0, 4, recovery_scale=recovery_scale)
+    penalty = _action_rate_slice(
+        env,
+        0,
+        4,
+        recovery_scale=recovery_scale,
+        phase_horizon_s=phase_horizon_s,
+        phase_min_scale=phase_min_scale,
+        phase_max_scale=phase_max_scale,
+    )
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Recovery/diag_leg_action_rate"] = penalty.mean().item()
     return penalty
 
 
-def wheel_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+def wheel_action_rate(
+    env: ManagerBasedRlEnv,
+    recovery_scale: float | None = None,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
+) -> torch.Tensor:
     """轮子动作一阶变化平方和。"""
-    penalty = _action_rate_slice(env, 4, 6, recovery_scale=recovery_scale)
+    penalty = _action_rate_slice(
+        env,
+        4,
+        6,
+        recovery_scale=recovery_scale,
+        phase_horizon_s=phase_horizon_s,
+        phase_min_scale=phase_min_scale,
+        phase_max_scale=phase_max_scale,
+    )
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Recovery/diag_wheel_action_rate"] = penalty.mean().item()
     return penalty
@@ -1254,6 +1348,9 @@ def action_smoothness(
     max_penalty: float = 80.0,
     leg_scale: float = 1.0,
     wheel_scale: float = 1.0,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """惩罚动作二阶差分，压制接近直立后的高频来回抖动。"""
     action = env.action_manager.action
@@ -1296,7 +1393,15 @@ def action_smoothness(
             active = active & ~(cmd[:, 5] > 0.5)
 
     startup = env.episode_length_buf < 3
-    gated_penalty = torch.where(startup | ~active, torch.zeros_like(penalty), penalty * gate)
+    phase_scale = _episode_phase_scale(
+        env,
+        horizon_s=phase_horizon_s,
+        min_scale=phase_min_scale,
+        max_scale=phase_max_scale,
+    )
+    gated_penalty = torch.where(
+        startup | ~active, torch.zeros_like(penalty), penalty * gate * phase_scale
+    )
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         log = env.extras["log"]
@@ -1307,6 +1412,9 @@ def action_smoothness(
                 "Recovery/diag_leg_action_smoothness": _masked_mean(leg_penalty, active),
                 "Recovery/diag_wheel_action_smoothness": _masked_mean(wheel_penalty, active),
                 "Recovery/diag_action_smoothness_gate": _masked_mean(gate, active),
+                "Recovery/diag_action_smoothness_phase_scale": _masked_mean(
+                    phase_scale, active
+                ),
             }
         )
 
@@ -1394,6 +1502,9 @@ def recovery_upright_zero_velocity_penalty(
     base_ang_vel_scale: float = 0.6,
     max_penalty: float = 8.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """近直立且零指令时惩罚机身漂移、角速度和轮子空转。"""
     robot = env.scene[asset_cfg.name]
@@ -1425,7 +1536,18 @@ def recovery_upright_zero_velocity_penalty(
         + wheel_speed_sq / (float(wheel_speed_scale) ** 2)
         + base_ang_vel_sq / (float(base_ang_vel_scale) ** 2)
     )
-    result = torch.clamp(penalty, max=float(max_penalty)) * near_upright_gate * standing.float()
+    phase_scale = _episode_phase_scale(
+        env,
+        horizon_s=phase_horizon_s,
+        min_scale=phase_min_scale,
+        max_scale=phase_max_scale,
+    )
+    result = (
+        torch.clamp(penalty, max=float(max_penalty))
+        * near_upright_gate
+        * standing.float()
+        * phase_scale
+    )
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
@@ -1435,6 +1557,9 @@ def recovery_upright_zero_velocity_penalty(
                 .mean()
                 .item(),
                 "Recovery/diag_zero_velocity_gate_ratio": active.float().mean().item(),
+                "Recovery/diag_zero_velocity_phase_scale": _masked_mean(
+                    phase_scale, active
+                ),
                 "Recovery/diag_standing_near_upright_vxy_speed": _masked_mean(
                     torch.sqrt(base_speed_sq), active
                 ),
@@ -2651,17 +2776,38 @@ def recovery_wheel_contact(
 
 
 def joint_mirror(
-    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    phase_horizon_s: float | None = None,
+    phase_min_scale: float = 1.0,
+    phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """左右关节位置差的平均平方,直立门控。"""
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
     gate = _upright_factor(pg_z)
+    phase_scale = _episode_phase_scale(
+        env,
+        horizon_s=phase_horizon_s,
+        min_scale=phase_min_scale,
+        max_scale=phase_max_scale,
+    )
 
     hip_diff, knee_diff = _policy_leg_mirror_diffs(robot)
     diff = torch.stack((hip_diff, knee_diff), dim=1)
     num_pairs = 2
-    return torch.sum(diff**2, dim=1) / num_pairs * gate
+    penalty = torch.sum(diff**2, dim=1) / num_pairs * gate * phase_scale
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "Recovery/diag_joint_mirror": _masked_mean(penalty, active),
+                "Recovery/diag_joint_mirror_phase_scale": _masked_mean(
+                    phase_scale, active
+                ),
+            }
+        )
+    return penalty
 
 
 def collision(
