@@ -19,7 +19,10 @@ RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S = 1.00
 RECOVERY_WHEEL_ACTION_SCALE = 45.0
 """Recovery 策略训练时使用的左右轮 raw action -> 轮速 scale。"""
 
-RECOVERY_ACTION_CLIP = 1.0
+RECOVERY_LEG_ACTION_SCALE = 0.25
+"""Recovery 对比实验使用的四个腿部 raw action -> joint target scale。"""
+
+RECOVERY_ACTION_CLIP = 100.0
 """Recovery 策略训练时使用的 raw action clip。"""
 
 RECOVERY_DEFAULT_COMMAND_8D = (
@@ -39,9 +42,11 @@ RECOVERY_DEFAULT_STM_COMMAND_5D = RECOVERY_DEFAULT_COMMAND_8D[:5]
 
 
 def recovery_action_scale(robot_cfg: RobotConfig | None = None) -> tuple[float, ...]:
-    """返回 recovery policy 的 6D action scale，腿部沿用 robot 配置，轮子固定 45rad/s。"""
+    """返回 recovery policy 的 6D action scale，腿部固定 0.25，轮子固定 45rad/s。"""
     cfg = RobotConfig() if robot_cfg is None else robot_cfg
     action_scale = list(cfg.action_scale)
+    for index in JointGroup.LEG_ACTUATORS:
+        action_scale[index] = RECOVERY_LEG_ACTION_SCALE
     for index in JointGroup.WHEEL_ACTUATORS:
         action_scale[index] = RECOVERY_WHEEL_ACTION_SCALE
     return tuple(float(v) for v in action_scale)
