@@ -24,21 +24,49 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.height_range = (0.24, 0.30)
     command_cfg.standing_height_range = (0.24, 0.30)
 
+    phase_horizon_s = 5.0
     cfg.rewards["tracking_height"].weight = -800.0
     cfg.rewards["tracking_height"].params["use_upright_gate"] = True
     cfg.rewards["tracking_height"].params["min_upright_gate"] = 0.0
     cfg.rewards["tracking_height"].params["use_pose_end_gate"] = False
     cfg.rewards["tracking_height"].params["use_inverted_free_upright_height_gate"] = False
+    cfg.rewards["tracking_height"].params["phase_horizon_s"] = phase_horizon_s
+    cfg.rewards["tracking_height"].params["phase_min_scale"] = 0.15
+    cfg.rewards["tracking_height"].params["phase_max_scale"] = 1.0
     cfg.rewards["upward"].func = rewards.recovery_upward
     cfg.rewards["upward"].weight = 3.0
+    cfg.rewards["upright_orientation_l2"].params["phase_horizon_s"] = phase_horizon_s
+    cfg.rewards["upright_orientation_l2"].params["phase_min_scale"] = 0.15
+    cfg.rewards["upright_orientation_l2"].params["phase_max_scale"] = 1.5
+    cfg.rewards["upright_zero_velocity"].params["phase_horizon_s"] = phase_horizon_s
+    cfg.rewards["upright_zero_velocity"].params["phase_min_scale"] = 0.0
+    cfg.rewards["upright_zero_velocity"].params["phase_max_scale"] = 2.0
     cfg.rewards["leg_action_rate"].weight = -0.02
+    cfg.rewards["leg_action_rate"].params = {
+        "phase_horizon_s": phase_horizon_s,
+        "phase_min_scale": 0.3,
+        "phase_max_scale": 1.0,
+    }
     cfg.rewards["wheel_action_rate"].weight = -0.05
+    cfg.rewards["wheel_action_rate"].params = {
+        "phase_horizon_s": phase_horizon_s,
+        "phase_min_scale": 0.3,
+        "phase_max_scale": 1.0,
+    }
     cfg.rewards["action_smoothness"].weight = -0.01
+    cfg.rewards["action_smoothness"].params["phase_horizon_s"] = phase_horizon_s
+    cfg.rewards["action_smoothness"].params["phase_min_scale"] = 0.25
+    cfg.rewards["action_smoothness"].params["phase_max_scale"] = 1.0
+    cfg.rewards["joint_mirror"].weight = -0.02
+    cfg.rewards["joint_mirror"].params["phase_horizon_s"] = phase_horizon_s
+    cfg.rewards["joint_mirror"].params["phase_min_scale"] = 0.0
+    cfg.rewards["joint_mirror"].params["phase_max_scale"] = 1.0
 
     # Discovery 只保留自起主目标、安全限位、轻量动作正则，以及近直立后的稳定项。
     keep_rewards = {
         "upward",
         "dof_pos_limits",
+        "joint_mirror",
         "leg_action_rate",
         "wheel_action_rate",
         "action_smoothness",
