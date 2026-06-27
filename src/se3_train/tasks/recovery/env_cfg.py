@@ -10,7 +10,7 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from se3_shared import JointGroup
+from se3_shared import Joint
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
@@ -22,8 +22,12 @@ _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _RECOVERY_STANDING_HEIGHT_RANGE = (0.195, 0.390)
 _RECOVERY_INITIAL_HEIGHT_RANGE = (0.24, 0.30)
 _RECOVERY_WHEEL_KD = 0.08
-_RECOVERY_LEG_ACTION_SCALES = tuple(
-    _ROBOT_DEFAULTS.action_scale[i] for i in JointGroup.LEG_ACTUATORS
+_RECOVERY_FRONT_ACTION_SCALE = 0.25
+_RECOVERY_LEG_ACTION_SCALES = (
+    _RECOVERY_FRONT_ACTION_SCALE,
+    _ROBOT_DEFAULTS.action_scale[Joint.LB],
+    _RECOVERY_FRONT_ACTION_SCALE,
+    _ROBOT_DEFAULTS.action_scale[Joint.RB],
 )
 _RECOVERY_WHEEL_ACTION_SCALE = 45.0
 _RECOVERY_ACTION_CLIP = 1.0

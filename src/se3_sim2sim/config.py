@@ -40,6 +40,7 @@ _shared_robot = se3_shared.RobotConfig()
 _shared_obs = se3_shared.ObservationConfig()
 _MJCF_DIR = Path("assets/robots/serialleg/mjcf")
 _FLAT_LEG_ACTION_SCALE = 0.25
+_RECOVERY_FRONT_ACTION_SCALE = 0.25
 _RECOVERY_WHEEL_ACTION_SCALE = 45.0
 
 DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "closedchain"
@@ -91,9 +92,9 @@ def action_scale_for_task(task: str) -> tuple[float, ...]:
     task_key = task.lower()
     if "recovery" in task_key:
         return (
-            _shared_robot.action_scale[0],
+            _RECOVERY_FRONT_ACTION_SCALE,
             _shared_robot.action_scale[1],
-            _shared_robot.action_scale[2],
+            _RECOVERY_FRONT_ACTION_SCALE,
             _shared_robot.action_scale[3],
             _RECOVERY_WHEEL_ACTION_SCALE,
             _RECOVERY_WHEEL_ACTION_SCALE,
