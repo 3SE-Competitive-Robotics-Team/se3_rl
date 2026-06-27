@@ -18,7 +18,6 @@ from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared import (
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
-    periodic_policy_action_delta_torch,
     periodic_policy_action_second_difference_torch,
     policy_leg_position_error_torch,
 )
@@ -1265,6 +1264,37 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
     return penalty
 
 
+def _action_term_for_robot(env: ManagerBasedRlEnv, robot) -> object | None:
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is None:
+        return None
+    for term_name in action_manager.active_terms:
+        term = action_manager.get_term(term_name)
+        if getattr(term, "_entity", None) is robot:
+            return term
+    return None
+
+
+def _action_tensor_attr(term: object | None, name: str, shape: torch.Size) -> torch.Tensor | None:
+    value = getattr(term, name, None)
+    if isinstance(value, torch.Tensor) and value.shape == shape:
+        return value
+    return None
+
+
+def _select_action_tensor(
+    term: object | None,
+    shape: torch.Size,
+    fallback: torch.Tensor,
+    *names: str,
+) -> torch.Tensor:
+    for name in names:
+        value = _action_tensor_attr(term, name, shape)
+        if value is not None:
+            return value
+    return fallback
+
+
 def _action_rate_slice(
     env: ManagerBasedRlEnv,
     start: int,
@@ -1646,35 +1676,48 @@ def recovery_diagnostics(
     turning = torch.abs(cmd_yaw) >= 0.2
     standing = cmd_speed < 0.1
 
-    action = env.action_manager.action
-    prev_action = env.action_manager.prev_action
-    action_manager = getattr(env, "action_manager", None)
-    action_term = None
-    if action_manager is not None:
-        for term_name in action_manager.active_terms:
-            term = action_manager.get_term(term_name)
-            if getattr(term, "_entity", None) is robot:
-                action_term = term
-                break
-    unclipped_action = getattr(action_term, "unclipped_action", None)
-    if not isinstance(unclipped_action, torch.Tensor) or unclipped_action.shape != action.shape:
-        unclipped_action = action
+    actor_action = env.action_manager.action
+    prev_actor_action = env.action_manager.prev_action
+    action_term = _action_term_for_robot(env, robot)
+    action = _select_action_tensor(
+        action_term, actor_action.shape, actor_action, "policy_action", "raw_action"
+    )
+    term_cfg = getattr(action_term, "cfg", None)
+    term_clip = getattr(term_cfg, "action_clip", None)
+    prev_action = (
+        torch.clamp(prev_actor_action, -float(term_clip), float(term_clip))
+        if term_clip is not None
+        else prev_actor_action
+    )
+    unclipped_action = _select_action_tensor(
+        action_term, actor_action.shape, actor_action, "unclipped_action"
+    )
+    actor_action_abs = torch.abs(actor_action)
     action_abs = torch.abs(action)
     unclipped_action_abs = torch.abs(unclipped_action)
     action_delta = action - prev_action
+    actor_action_delta = actor_action - prev_actor_action
     max_abs_action = torch.max(action_abs, dim=1).values
     leg_action_abs = action_abs[:, :4]
     wheel_action_abs = action_abs[:, 4:6]
+    actor_leg_action_abs = actor_action_abs[:, :4]
+    actor_wheel_action_abs = actor_action_abs[:, 4:6]
     unclipped_leg_action_abs = unclipped_action_abs[:, :4]
     unclipped_wheel_action_abs = unclipped_action_abs[:, 4:6]
     max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
     max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
+    max_abs_actor_action = torch.max(actor_action_abs, dim=1).values
+    max_abs_actor_leg_action = torch.max(actor_leg_action_abs, dim=1).values
+    max_abs_actor_wheel_action = torch.max(actor_wheel_action_abs, dim=1).values
     max_abs_unclipped_action = torch.max(unclipped_action_abs, dim=1).values
     max_abs_unclipped_leg_action = torch.max(unclipped_leg_action_abs, dim=1).values
     max_abs_unclipped_wheel_action = torch.max(unclipped_wheel_action_abs, dim=1).values
     action_saturated = max_abs_action > float(action_saturation_threshold)
     leg_action_saturated = max_abs_leg_action > float(action_saturation_threshold)
     wheel_action_saturated = max_abs_wheel_action > float(action_saturation_threshold)
+    actor_action_saturated = max_abs_actor_action > float(action_saturation_threshold)
+    actor_leg_action_saturated = max_abs_actor_leg_action > float(action_saturation_threshold)
+    actor_wheel_action_saturated = max_abs_actor_wheel_action > float(action_saturation_threshold)
     unclipped_action_saturated = max_abs_unclipped_action > float(action_saturation_threshold)
     unclipped_leg_action_saturated = max_abs_unclipped_leg_action > float(
         action_saturation_threshold
@@ -1731,7 +1774,21 @@ def recovery_diagnostics(
                 "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
                 "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
                 "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
-                "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
+                "Recovery/diag_applied_max_abs_action": max_abs_action.mean().item(),
+                "Recovery/diag_applied_max_abs_leg_action": max_abs_leg_action.mean().item(),
+                "Recovery/diag_applied_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+                "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean().item(),
+                "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean().item(),
+                "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean().item(),
+                "Recovery/diag_applied_action_saturation_rate": action_saturated.float()
+                .mean()
+                .item(),
+                "Recovery/diag_raw_action_saturation_rate": actor_action_saturated.float()
+                .mean()
+                .item(),
+                "Recovery/diag_actor_action_saturation_rate": actor_action_saturated.float()
+                .mean()
+                .item(),
                 "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float()
                 .mean()
                 .item(),
@@ -1748,6 +1805,16 @@ def recovery_diagnostics(
                 .mean()
                 .item(),
                 "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
+                .mean()
+                .item(),
+                "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(
+                    action_delta, dim=1
+                )
+                .mean()
+                .item(),
+                "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
+                    actor_action_delta, dim=1
+                )
                 .mean()
                 .item(),
                 "Recovery/diag_active_target_mean_rad": active_target_mean,
@@ -1852,16 +1919,36 @@ def recovery_diagnostics(
             "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
             "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
             "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_applied_max_abs_action": max_abs_action.mean().item(),
+            "Recovery/diag_applied_max_abs_leg_action": max_abs_leg_action.mean().item(),
+            "Recovery/diag_applied_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean().item(),
+            "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean().item(),
+            "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean().item(),
             "Recovery/diag_unclipped_max_abs_action": max_abs_unclipped_action.mean().item(),
             "Recovery/diag_unclipped_max_abs_leg_action": max_abs_unclipped_leg_action.mean().item(),
             "Recovery/diag_unclipped_max_abs_wheel_action": max_abs_unclipped_wheel_action.mean().item(),
             "Recovery/diag_leg_action_abs_mean": leg_action_abs.mean().item(),
             "Recovery/diag_wheel_action_abs_mean": wheel_action_abs.mean().item(),
+            "Recovery/diag_actor_leg_action_abs_mean": actor_leg_action_abs.mean().item(),
+            "Recovery/diag_actor_wheel_action_abs_mean": actor_wheel_action_abs.mean().item(),
             "Recovery/diag_unclipped_leg_action_abs_mean": unclipped_leg_action_abs.mean().item(),
             "Recovery/diag_unclipped_wheel_action_abs_mean": unclipped_wheel_action_abs.mean().item(),
-            "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
+            "Recovery/diag_applied_action_saturation_rate": action_saturated.float().mean().item(),
+            "Recovery/diag_raw_action_saturation_rate": actor_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_actor_action_saturation_rate": actor_action_saturated.float()
+            .mean()
+            .item(),
             "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float().mean().item(),
             "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_actor_leg_action_saturation_rate": actor_leg_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_actor_wheel_action_saturation_rate": actor_wheel_action_saturated.float()
             .mean()
             .item(),
             "Recovery/diag_unclipped_raw_action_saturation_rate": unclipped_action_saturated.float()
@@ -1877,6 +1964,16 @@ def recovery_diagnostics(
                 action_saturated.float(), upright_15
             ),
             "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean().item(),
+            "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(
+                action_delta, dim=1
+            )
+            .mean()
+            .item(),
+            "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
+                actor_action_delta, dim=1
+            )
+            .mean()
+            .item(),
             "Recovery/diag_joint_error_norm_rad": joint_error_norm.mean().item(),
             "Recovery/diag_fixed_default_joint_error_norm_rad": fixed_joint_error_norm.mean().item(),
             "Recovery/diag_dynamic_default_joint_error_rad": joint_error_norm.mean().item(),
@@ -1970,6 +2067,9 @@ def recovery_diagnostics(
             log[f"Recovery/diag_action_saturation_rate_by_reset_bin/{bin_name}"] = _masked_mean(
                 action_saturated.float(), bin_mask
             )
+            log[f"Recovery/diag_actor_action_saturation_rate_by_reset_bin/{bin_name}"] = (
+                _masked_mean(actor_action_saturated.float(), bin_mask)
+            )
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_bin/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
             )
@@ -1996,11 +2096,20 @@ def recovery_diagnostics(
             log[f"Recovery/diag_action_saturation_rate_by_reset_pose/{bin_name}"] = _masked_mean(
                 action_saturated.float(), bin_mask
             )
+            log[f"Recovery/diag_actor_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(actor_action_saturated.float(), bin_mask)
+            )
             log[f"Recovery/diag_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
                 _masked_mean(leg_action_saturated.float(), bin_mask)
             )
             log[f"Recovery/diag_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
                 _masked_mean(wheel_action_saturated.float(), bin_mask)
+            )
+            log[f"Recovery/diag_actor_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(actor_leg_action_saturated.float(), bin_mask)
+            )
+            log[f"Recovery/diag_actor_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(actor_wheel_action_saturated.float(), bin_mask)
             )
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_pose/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
@@ -2042,7 +2151,16 @@ def recovery_diagnostics(
         log[f"Recovery/diag_height_error_signed_by_cmd_height/{height_name}"] = _masked_mean(
             height_error, height_mask
         )
+        log[f"Recovery/diag_applied_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(action_saturated.float(), height_mask)
+        )
         log[f"Recovery/diag_raw_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            actor_action_saturated.float(), height_mask
+        )
+        log[f"Recovery/diag_actor_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            actor_action_saturated.float(), height_mask
+        )
+        log[f"Recovery/diag_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
             action_saturated.float(), height_mask
         )
         log[f"Recovery/diag_leg_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
@@ -2050,6 +2168,12 @@ def recovery_diagnostics(
         )
         log[f"Recovery/diag_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
             _masked_mean(wheel_action_saturated.float(), height_mask)
+        )
+        log[f"Recovery/diag_actor_leg_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(actor_leg_action_saturated.float(), height_mask)
+        )
+        log[f"Recovery/diag_actor_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(actor_wheel_action_saturated.float(), height_mask)
         )
         log[f"Recovery/diag_active_rod_margin_min_by_cmd_height/{height_name}"] = _masked_min(
             min_margin, height_mask

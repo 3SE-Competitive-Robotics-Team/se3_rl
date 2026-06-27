@@ -109,7 +109,17 @@ def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """上一步的 6 个动作。"""
+    """上一步策略输出的 6 维 clipped action。"""
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is not None:
+        for term_name in getattr(action_manager, "active_terms", ()):
+            term = action_manager.get_term(term_name)
+            policy_action = getattr(term, "policy_action", None)
+            if isinstance(policy_action, torch.Tensor):
+                return _finite_clamp(policy_action)
+            raw_action = getattr(term, "raw_action", None)
+            if isinstance(raw_action, torch.Tensor):
+                return _finite_clamp(raw_action)
     return _finite_clamp(env.action_manager.action)
 
 

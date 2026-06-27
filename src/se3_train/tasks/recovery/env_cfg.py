@@ -317,7 +317,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg.rewards["tracking_height"] = RewardTermCfg(
         func=rewards.tracking_height,
-        weight=-800.0,
+        weight=0.0,
         params={
             "command_name": "velocity_height",
             "sigma": 0.0025,
@@ -331,13 +331,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
-    # 自起训练中 upward 是主目标；高度奖励提供全姿态抬升梯度，动作正则负责压住饱和翻身。
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=2.0)
+    # RobotLab Go2W 对齐实验：保留 recovery 专用项作日志/开关，但权重按 Go2W rough 表对齐。
+    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
     cfg.rewards["upright_orientation_l2"] = RewardTermCfg(
         func=rewards.recovery_upright_orientation_l2,
-        weight=-0.5,
+        weight=0.0,
         params={
             "command_name": "velocity_height",
             "gate_start_deg": 60.0,
@@ -351,7 +351,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["upright_zero_velocity"] = RewardTermCfg(
         func=rewards.recovery_upright_zero_velocity_penalty,
-        weight=-0.25,
+        weight=0.0,
         params={
             "command_name": "velocity_height",
             "command_threshold": 0.1,
@@ -367,15 +367,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards.pop("action_rate", None)
     cfg.rewards["leg_action_rate"] = RewardTermCfg(
         func=rewards.leg_action_rate,
-        weight=-0.05,
+        weight=-0.01,
     )
     cfg.rewards["wheel_action_rate"] = RewardTermCfg(
         func=rewards.wheel_action_rate,
-        weight=-0.20,
+        weight=-0.01,
     )
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
-        weight=-0.03,
+        weight=0.0,
         params={
             "command_name": "velocity_height",
             "gate_start_deg": 90.0,
@@ -387,7 +387,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["leg_torques"] = RewardTermCfg(
         func=rewards.leg_torques,
-        weight=-2.0e-4,
+        weight=-2.5e-5,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["leg_dof_acc"] = RewardTermCfg(
@@ -397,12 +397,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["leg_power"] = RewardTermCfg(
         func=rewards.leg_power,
-        weight=-1.0e-4,
+        weight=-2.0e-5,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["wheel_torques"] = RewardTermCfg(
         func=rewards.wheel_torques,
-        weight=-1.0e-4,
+        weight=0.0,
         params={"max_torque": 3.0, "asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["stand_still"] = RewardTermCfg(
@@ -448,7 +448,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["contact_forces"] = RewardTermCfg(
         func=rewards.contact_forces,
-        weight=-3.0e-4,
+        weight=-1.5e-4,
         params={
             "threshold": 20.0,
             "sensor_name": "wheel_sensor",
@@ -458,7 +458,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.rewards["wheel_air_velocity"] = RewardTermCfg(
         func=rewards.wheel_air_velocity_penalty,
-        weight=-1.0e-3,
+        weight=0.0,
         params={
             "sensor_name": "wheel_sensor",
             "force_threshold": 1.0,
