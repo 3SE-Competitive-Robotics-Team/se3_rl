@@ -24,24 +24,32 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.height_range = (0.24, 0.30)
     command_cfg.standing_height_range = (0.24, 0.30)
 
-    cfg.rewards["tracking_height"].weight = -1500.0
+    cfg.rewards["tracking_height"].weight = -800.0
+    cfg.rewards["tracking_height"].params["use_upright_gate"] = True
+    cfg.rewards["tracking_height"].params["min_upright_gate"] = 0.0
     cfg.rewards["tracking_height"].params["use_pose_end_gate"] = False
-    cfg.rewards["tracking_height"].params["use_inverted_free_upright_height_gate"] = True
+    cfg.rewards["tracking_height"].params["use_inverted_free_upright_height_gate"] = False
     cfg.rewards["upward"].func = rewards.recovery_upward
     cfg.rewards["upward"].weight = 3.0
-    cfg.rewards["recovery_progress"] = RewardTermCfg(
-        func=rewards.recovery_progress,
-        weight=1.0,
-        params={
-            "height_sensor_name": "base_height_sensor",
-            "upright_delta_scale": 0.05,
-            "height_delta_scale": 0.03,
-            "max_reward": 4.0,
-            "height_gate_start_deg": 60.0,
-            "height_gate_full_deg": 130.0,
-            "min_height_gate": 0.0,
-        },
-    )
+    cfg.rewards["leg_action_rate"].weight = -0.02
+    cfg.rewards["wheel_action_rate"].weight = -0.05
+    cfg.rewards["action_smoothness"].weight = -0.01
+
+    # Discovery 只保留自起主目标、安全限位、轻量动作正则，以及近直立后的稳定项。
+    keep_rewards = {
+        "upward",
+        "dof_pos_limits",
+        "leg_action_rate",
+        "wheel_action_rate",
+        "action_smoothness",
+        "tracking_height",
+        "upright_orientation_l2",
+        "upright_zero_velocity",
+        "diagnostics",
+    }
+    cfg.rewards = {
+        name: term for name, term in cfg.rewards.items() if name in keep_rewards
+    }
 
     cfg.curriculum = {}
     cfg.events.pop("push_robots", None)
