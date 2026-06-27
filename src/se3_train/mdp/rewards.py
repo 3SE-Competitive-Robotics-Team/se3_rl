@@ -1229,11 +1229,7 @@ def leg_power(
 def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
     """当前动作与上一动作差值的平方和。"""
     action = env.action_manager.action
-    action_delta = periodic_policy_action_delta_torch(
-        action,
-        env.action_manager.prev_action,
-        front_action_period=front_action_periods_from_env(env),
-    )
+    action_delta = action - env.action_manager.prev_action
     penalty = torch.sum(action_delta**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -1279,11 +1275,7 @@ def _action_rate_slice(
     phase_max_scale: float = 1.0,
 ) -> torch.Tensor:
     """指定动作维度的一阶变化平方和。"""
-    action_delta = periodic_policy_action_delta_torch(
-        env.action_manager.action,
-        env.action_manager.prev_action,
-        front_action_period=front_action_periods_from_env(env),
-    )
+    action_delta = env.action_manager.action - env.action_manager.prev_action
     penalty = torch.sum(action_delta[:, start:stop] ** 2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -1669,11 +1661,7 @@ def recovery_diagnostics(
         unclipped_action = action
     action_abs = torch.abs(action)
     unclipped_action_abs = torch.abs(unclipped_action)
-    action_delta = periodic_policy_action_delta_torch(
-        action,
-        prev_action,
-        front_action_period=front_action_periods_from_env(env),
-    )
+    action_delta = action - prev_action
     max_abs_action = torch.max(action_abs, dim=1).values
     leg_action_abs = action_abs[:, :4]
     wheel_action_abs = action_abs[:, 4:6]
