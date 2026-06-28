@@ -14,6 +14,8 @@ from se3_train.tasks.recovery import rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 
 _DISCOVERY_REWARD_WEIGHTS = {
+    "tracking_lin_vel": 3.0,
+    "tracking_ang_vel": 1.5,
     "upward": 1.0,
     "tracking_height": -500.0,
     "upright_zero_velocity": -0.05,
@@ -30,6 +32,30 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     """Keep discovery rewards intentionally small and fail loudly on drift."""
 
     cfg.rewards.clear()
+    cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
+        func=rewards.tracking_lin_vel,
+        weight=3.0,
+        params={
+            "command_name": "velocity_height",
+            "sigma_move": 0.25,
+            "sigma_stand": 0.05,
+            "vz_weight": 0.0,
+            "use_upright_gate": True,
+            "tracking_upright_full_cos": math.cos(math.radians(15.0)),
+        },
+    )
+    cfg.rewards["tracking_ang_vel"] = RewardTermCfg(
+        func=rewards.tracking_ang_vel,
+        weight=1.5,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.25,
+            "sigma_cmd_scale": 0.0,
+            "ratio_blend": 0.0,
+            "use_upright_gate": True,
+            "tracking_upright_full_cos": math.cos(math.radians(15.0)),
+        },
+    )
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
     cfg.rewards["tracking_height"] = RewardTermCfg(
         func=rewards.tracking_height,
