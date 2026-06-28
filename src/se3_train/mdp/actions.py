@@ -339,14 +339,16 @@ class SerialLegDelayedAction(ActionTerm):
 
     def _current_leg_action_defaults(self) -> torch.Tensor:
         """返回当前 leg action 零点姿态。"""
+        if (
+            self._closedchain or self._fourbar_surrogate
+        ) and self.cfg.height_conditioned_action_default:
+            return get_policy_default_from_height_cache(
+                self._env,
+                self.cfg.action_default_command_name,
+                device=self.device,
+                dtype=self._leg_action_scales.dtype,
+            )
         if self._fourbar_surrogate:
-            if self.cfg.height_conditioned_action_default:
-                return get_policy_default_from_height_cache(
-                    self._env,
-                    self.cfg.action_default_command_name,
-                    device=self.device,
-                    dtype=self._leg_action_scales.dtype,
-                )
             return self._current_policy_leg_defaults()
         return self._entity.data.default_joint_pos[:, self._leg_joint_ids]
 
