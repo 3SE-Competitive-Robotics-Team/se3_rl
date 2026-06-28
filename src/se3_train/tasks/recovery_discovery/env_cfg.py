@@ -16,11 +16,13 @@ from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 _DISCOVERY_REWARD_WEIGHTS = {
     "tracking_lin_vel": 3.0,
     "tracking_ang_vel": 1.5,
-    "upward": 1.0,
-    "tracking_height": -500.0,
+    "upward": 3.0,
+    "tracking_height": -1500.0,
     "upright_zero_velocity": -0.05,
-    "leg_action_rate": -0.005,
-    "wheel_action_rate": -0.005,
+    "stand_still": -2.0,
+    "joint_pos_penalty": -1.0,
+    "leg_action_rate": -0.001,
+    "wheel_action_rate": -0.001,
     "dof_pos_limits": -5.0,
     "collision": -1.0,
     "contact_forces": -1.5e-4,
@@ -56,10 +58,10 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "tracking_upright_full_cos": math.cos(math.radians(15.0)),
         },
     )
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
+    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
     cfg.rewards["tracking_height"] = RewardTermCfg(
         func=rewards.tracking_height,
-        weight=-500.0,
+        weight=-1500.0,
         params={
             "command_name": "velocity_height",
             "sigma": 0.0025,
@@ -87,13 +89,35 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
+    cfg.rewards["stand_still"] = RewardTermCfg(
+        func=rewards.stand_still,
+        weight=-2.0,
+        params={
+            "command_name": "velocity_height",
+            "command_threshold": 0.1,
+            "default_height": 0.26,
+            "height_tolerance": 40.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    cfg.rewards["joint_pos_penalty"] = RewardTermCfg(
+        func=rewards.joint_pos_penalty,
+        weight=-1.0,
+        params={
+            "command_name": "velocity_height",
+            "stand_still_scale": 5.0,
+            "velocity_threshold": 0.5,
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
     cfg.rewards["leg_action_rate"] = RewardTermCfg(
         func=rewards.leg_action_rate,
-        weight=-0.005,
+        weight=-0.001,
     )
     cfg.rewards["wheel_action_rate"] = RewardTermCfg(
         func=rewards.wheel_action_rate,
-        weight=-0.005,
+        weight=-0.001,
     )
     cfg.rewards["dof_pos_limits"] = RewardTermCfg(
         func=rewards.dof_pos_limits,
@@ -164,8 +188,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.lin_vel_x_range = (0.0, 0.0)
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
-    command_cfg.height_range = (0.24, 0.30)
-    command_cfg.standing_height_range = (0.24, 0.30)
+    command_cfg.height_range = (0.26, 0.26)
+    command_cfg.standing_height_range = (0.26, 0.26)
+    command_cfg.standing_ratio = 1.0
 
     cfg.curriculum = {}
     cfg.events.pop("push_robots", None)
@@ -174,44 +199,44 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "pos_xy_range": (-0.15, 0.15),
-            "height_offset_range": (0.0, 0.02),
-            "yaw_range": (-math.pi, math.pi),
-            "roll_jitter_range": (-math.radians(5.0), math.radians(5.0)),
-            "pitch_jitter_range": (-math.radians(5.0), math.radians(5.0)),
+            "pos_xy_range": (0.0, 0.0),
+            "height_offset_range": (0.0, 0.0),
+            "yaw_range": (0.0, 0.0),
+            "roll_jitter_range": (0.0, 0.0),
+            "pitch_jitter_range": (0.0, 0.0),
             "lin_vel_range": (0.0, 0.0),
             "ang_vel_range": (0.0, 0.0),
             "clearance_range": (0.001, 0.005),
-            "pose_weights": (0.08, 0.17, 0.17, 0.29, 0.29),
+            "pose_weights": (1.0, 0.0, 0.0, 0.0, 0.0),
             "recovery_command_height": 0.26,
             "curriculum_stages": [
                 {
                     "iteration": 0,
-                    "roll_jitter_range": (-math.radians(5.0), math.radians(5.0)),
-                    "pitch_jitter_range": (-math.radians(5.0), math.radians(5.0)),
+                    "roll_jitter_range": (0.0, 0.0),
+                    "pitch_jitter_range": (0.0, 0.0),
                     "lin_vel_range": (0.0, 0.0),
                     "ang_vel_range": (0.0, 0.0),
                 },
                 {
                     "iteration": 500,
-                    "roll_jitter_range": (-math.radians(8.0), math.radians(8.0)),
-                    "pitch_jitter_range": (-math.radians(8.0), math.radians(8.0)),
-                    "lin_vel_range": (-0.02, 0.02),
-                    "ang_vel_range": (-0.08, 0.08),
+                    "roll_jitter_range": (0.0, 0.0),
+                    "pitch_jitter_range": (0.0, 0.0),
+                    "lin_vel_range": (0.0, 0.0),
+                    "ang_vel_range": (0.0, 0.0),
                 },
                 {
                     "iteration": 1200,
-                    "roll_jitter_range": (-math.radians(12.0), math.radians(12.0)),
-                    "pitch_jitter_range": (-math.radians(12.0), math.radians(12.0)),
-                    "lin_vel_range": (-0.03, 0.03),
-                    "ang_vel_range": (-0.12, 0.12),
+                    "roll_jitter_range": (0.0, 0.0),
+                    "pitch_jitter_range": (0.0, 0.0),
+                    "lin_vel_range": (0.0, 0.0),
+                    "ang_vel_range": (0.0, 0.0),
                 },
                 {
                     "iteration": 2200,
-                    "roll_jitter_range": (-math.radians(18.0), math.radians(18.0)),
-                    "pitch_jitter_range": (-math.radians(18.0), math.radians(18.0)),
-                    "lin_vel_range": (-0.05, 0.05),
-                    "ang_vel_range": (-0.20, 0.20),
+                    "roll_jitter_range": (0.0, 0.0),
+                    "pitch_jitter_range": (0.0, 0.0),
+                    "lin_vel_range": (0.0, 0.0),
+                    "ang_vel_range": (0.0, 0.0),
                 },
             ],
             "use_iterations": True,
@@ -228,29 +253,31 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "wheel_joint_vel_range": (0.0, 0.0),
             "joint_randomization_prob": 0.0,
             "align_root_height_to_wheels": True,
+            "height_conditioned_default": True,
             "curriculum_stages": [
                 {
                     "iteration": 0,
                     "joint_offset_range": 0.0,
+                    "joint_vel_range": (0.0, 0.0),
                     "joint_randomization_prob": 0.0,
                 },
                 {
                     "iteration": 500,
-                    "joint_offset_range": 0.05,
-                    "joint_vel_range": (-0.10, 0.10),
-                    "joint_randomization_prob": 0.15,
+                    "joint_offset_range": 0.0,
+                    "joint_vel_range": (0.0, 0.0),
+                    "joint_randomization_prob": 0.0,
                 },
                 {
                     "iteration": 1200,
-                    "joint_offset_range": 0.10,
-                    "joint_vel_range": (-0.20, 0.20),
-                    "joint_randomization_prob": 0.25,
+                    "joint_offset_range": 0.0,
+                    "joint_vel_range": (0.0, 0.0),
+                    "joint_randomization_prob": 0.0,
                 },
                 {
                     "iteration": 2200,
-                    "joint_offset_range": 0.18,
-                    "joint_vel_range": (-0.35, 0.35),
-                    "joint_randomization_prob": 0.50,
+                    "joint_offset_range": 0.0,
+                    "joint_vel_range": (0.0, 0.0),
+                    "joint_randomization_prob": 0.0,
                 },
             ],
             "use_iterations": True,
