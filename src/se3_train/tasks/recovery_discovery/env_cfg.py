@@ -6,10 +6,129 @@ import math
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_train.mdp import events as mdp_events
+from se3_train.tasks.recovery import rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
+
+_DISCOVERY_REWARD_WEIGHTS = {
+    "upward": 1.0,
+    "tracking_height": -500.0,
+    "upright_zero_velocity": -0.05,
+    "leg_action_rate": -0.005,
+    "wheel_action_rate": -0.005,
+    "dof_pos_limits": -5.0,
+    "collision": -1.0,
+    "contact_forces": -1.5e-4,
+    "diagnostics": 1.0,
+}
+
+
+def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Keep discovery rewards intentionally small and fail loudly on drift."""
+
+    cfg.rewards.clear()
+    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=1.0)
+    cfg.rewards["tracking_height"] = RewardTermCfg(
+        func=rewards.tracking_height,
+        weight=-500.0,
+        params={
+            "command_name": "velocity_height",
+            "sigma": 0.0025,
+            "height_sensor_name": "base_height_sensor",
+            "kernel": "l2",
+            "use_upright_gate": True,
+            "min_upright_gate": 0.0,
+            "use_pose_end_gate": False,
+            "upright_gate_angle_deg": 30.0,
+            "inverted_gate_angle_deg": 150.0,
+        },
+    )
+    cfg.rewards["upright_zero_velocity"] = RewardTermCfg(
+        func=rewards.recovery_upright_zero_velocity_penalty,
+        weight=-0.05,
+        params={
+            "command_name": "velocity_height",
+            "command_threshold": 0.1,
+            "gate_start_deg": 45.0,
+            "gate_full_deg": 15.0,
+            "base_speed_scale": 0.15,
+            "wheel_speed_scale": 0.12,
+            "base_ang_vel_scale": 0.6,
+            "max_penalty": 8.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    cfg.rewards["leg_action_rate"] = RewardTermCfg(
+        func=rewards.leg_action_rate,
+        weight=-0.005,
+    )
+    cfg.rewards["wheel_action_rate"] = RewardTermCfg(
+        func=rewards.wheel_action_rate,
+        weight=-0.005,
+    )
+    cfg.rewards["dof_pos_limits"] = RewardTermCfg(
+        func=rewards.dof_pos_limits,
+        weight=-5.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["collision"] = RewardTermCfg(
+        func=rewards.collision,
+        weight=-1.0,
+        params={
+            "sensor_name": "collision_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "use_recovery_gate": False,
+        },
+    )
+    cfg.rewards["contact_forces"] = RewardTermCfg(
+        func=rewards.contact_forces,
+        weight=-1.5e-4,
+        params={
+            "threshold": 20.0,
+            "sensor_name": "wheel_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "use_recovery_gate": False,
+        },
+    )
+    cfg.rewards["diagnostics"] = RewardTermCfg(
+        func=rewards.recovery_diagnostics,
+        weight=1.0,
+        params={
+            "command_name": "velocity_height",
+            "base_height_sensor_name": "base_height_sensor",
+            "wheel_sensor_name": "wheel_sensor",
+            "leg_contact_sensor_name": "leg_contact_sensor",
+            "collision_sensor_name": "collision_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "force_threshold": 1.0,
+            "contact_force_threshold": 20.0,
+            "action_saturation_threshold": 0.95,
+            "active_rod_margin_warning": 0.05,
+            "log_interval_steps": 256,
+            "core_log_interval_steps": 64,
+        },
+    )
+    _assert_discovery_reward_contract(cfg)
+
+
+def _assert_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
+    actual = set(cfg.rewards)
+    expected = set(_DISCOVERY_REWARD_WEIGHTS)
+    if actual != expected:
+        raise RuntimeError(
+            "Recovery-Discovery reward contract drifted: "
+            f"missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
+        )
+    bad_weights = {
+        name: float(cfg.rewards[name].weight)
+        for name, expected_weight in _DISCOVERY_REWARD_WEIGHTS.items()
+        if abs(float(cfg.rewards[name].weight) - float(expected_weight)) > 1.0e-12
+    }
+    if bad_weights:
+        raise RuntimeError(f"Recovery-Discovery reward weight drifted: {bad_weights}")
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -113,4 +232,5 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
 
+    _configure_discovery_reward_contract(cfg)
     return cfg
