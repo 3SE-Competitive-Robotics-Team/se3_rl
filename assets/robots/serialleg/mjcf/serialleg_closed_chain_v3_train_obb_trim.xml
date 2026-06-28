@@ -5,9 +5,9 @@
     <global offwidth="1280" offheight="720" />
   </visual>
   <default>
-    <geom solref="0.004 1.5" solimp="0.85 0.99 0.005" />
+    <geom solref="0.010 1.5" solimp="0.85 0.99 0.005" />
     <joint damping="0" />
-    <equality solref="0.005 1.05" solimp="0.2 0.95 0.002 0.9 6" />
+    <equality solref="0.010 1.05" solimp="0.2 0.95 0.002 0.9 6" />
   </default>
   <asset>
     <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4" />
@@ -202,11 +202,11 @@
     <connect name="r_coupler_to_rf_calf" site1="r_coupler_end" site2="rf_coupler_closure" />
   </equality>
   <tendon>
-    <fixed name="l_active_rod_angle" limited="true" range="0 1.509535270050" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+    <fixed name="l_active_rod_angle" limited="true" range="0 1.509535270050" solreflimit="0.010 1" solimplimit="0.99 0.999 0.00001 0.5 2">
       <joint joint="lf0_Joint" coef="1" />
       <joint joint="l_drive_bar_Joint" coef="-1" />
     </fixed>
-    <fixed name="r_active_rod_angle" limited="true" range="0 1.509535270050" solreflimit="0.001 1" solimplimit="0.99 0.999 0.00001 0.5 2">
+    <fixed name="r_active_rod_angle" limited="true" range="0 1.509535270050" solreflimit="0.010 1" solimplimit="0.99 0.999 0.00001 0.5 2">
       <joint joint="r_drive_bar_Joint" coef="1" />
       <joint joint="rf0_Joint" coef="-1" />
     </fixed>
