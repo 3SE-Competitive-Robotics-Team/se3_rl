@@ -695,7 +695,7 @@ def reset_root_state_recovery_standard_poses(
     if hasattr(env, "command_manager"):
         try:
             cmd = env.command_manager.get_command("velocity_height")
-            cmd[env_ids, 0:4] = 0.0
+            cmd[env_ids, 2:4] = 0.0
             cmd[env_ids, 4] = selected_height.to(device=cmd.device, dtype=cmd.dtype)
             if cmd.shape[1] >= 8:
                 cmd[env_ids, 5] = 0.0
@@ -849,7 +849,7 @@ def reset_root_state_recovery_discovery_mixed(
             recovery_state_cache_split=recovery_state_cache_split,
             recovery_grace_steps=recovery_grace_steps,
             recovery_command_height=recovery_command_height,
-            recovery_zero_velocity_command=True,
+            recovery_zero_velocity_command=False,
         )
 
     if hasattr(env, "extras"):
