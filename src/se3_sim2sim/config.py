@@ -311,6 +311,7 @@ class ViewerConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     mode: ViewerMode = "rerun"
+    port: int = 8080
     app_id: str = "se3_sim2sim"
     spawn: bool = True
     address: str | None = None

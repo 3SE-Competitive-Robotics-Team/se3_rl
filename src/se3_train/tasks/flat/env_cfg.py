@@ -451,6 +451,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
 
     if play:
+        cfg.commands["velocity_height"].debug_vis = True
         cfg.commands["velocity_height"].pitch_range = (0.0, 0.0)
         cfg.commands["velocity_height"].roll_range = (0.0, 0.0)
         cfg.commands["velocity_height"].lin_vel_x_range = (-1.0, 1.0)
