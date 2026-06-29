@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import torch
 import tyro
 from mjlab import TYRO_FLAGS
 from mjlab.scripts import play as mjlab_play
@@ -156,6 +157,45 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         speed_index = min(range(len(speeds)), key=lambda index: abs(speeds[index] - speed))
         self._speed_index = speed_index
         self._time_multiplier = speeds[speed_index]
+
+    def _handle_custom_action(self, action: Any, payload: Any | None) -> bool:
+        """处理 SE3 自定义 Viser GUI action。"""
+        if isinstance(payload, dict) and payload.get("type") == "gui_push_robot":
+            self._handle_gui_push_robot(payload)
+            return True
+        return super()._handle_custom_action(action, payload)
+
+    def _handle_gui_push_robot(self, payload: dict[str, Any]) -> None:
+        """给选中环境一次性叠加 root velocity 扰动。"""
+        env = self.env.unwrapped
+        if bool(payload.get("all_envs", False)):
+            env_ids = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
+        else:
+            env_idx = max(0, min(int(payload.get("env_idx", self._scene.env_idx)), env.num_envs - 1))
+            env_ids = torch.tensor([env_idx], dtype=torch.int64, device=env.device)
+
+        raw_delta = payload.get("delta_velocity", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        delta = torch.as_tensor(raw_delta, dtype=torch.float32, device=env.device)
+        if delta.numel() != 6:
+            print(f"[WARN]: 忽略非法 Viser push delta: {raw_delta!r}")
+            return
+
+        asset = env.scene["robot"]
+        with self._sim_lock:
+            vel_w = asset.data.root_link_vel_w[env_ids].clone()
+            vel_w += delta.reshape(1, 6)
+            asset.write_root_link_velocity_to_sim(vel_w, env_ids=env_ids)
+            env.scene.write_data_to_sim()
+            env.sim.forward()
+            env.sim.sense()
+
+        if hasattr(self, "_scene"):
+            self._scene.request_update()
+        print(
+            "[VISER] push_robot "
+            f"env_ids={env_ids.detach().cpu().tolist()} "
+            f"delta={[round(float(value), 3) for value in delta.detach().cpu().tolist()]}"
+        )
 
     def _update_training_iter_display(self, force: bool = False) -> None:
         """低频读取训练日志，把当前 PPO iter 写入 Viser GUI。"""

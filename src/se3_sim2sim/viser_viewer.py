@@ -11,12 +11,21 @@ from pathlib import Path
 
 import mujoco
 
+from .teleop_input import CommandInputUpdate
+
 _SPEEDS = (1.0 / 8.0, 1.0 / 4.0, 1.0 / 2.0, 1.0, 2.0, 4.0)
 _TRAINING_STATUS_FILENAME = "se3_training_status.json"
 _CHECKPOINT_PATTERN = re.compile(r"model_(\d+)\.pt$")
 _NO_CHECKPOINT_OPTION = "(no model_*.pt)"
 _NORMAL_RESET_MODE = "normal"
 _RECOVERY_RESET_OPTIONS = ("left_side", "right_side", "prone", "supine")
+_COMMAND_VX_LIMIT = 1.89
+_COMMAND_YAW_LIMIT = 9.41
+_COMMAND_HEIGHT_MIN = 0.195
+_COMMAND_HEIGHT_MAX = 0.390
+_COMMAND_DEFAULT_HEIGHT = 0.260
+_PUSH_VEL_LIMIT = 2.0
+_PUSH_YAW_LIMIT = 8.0
 
 
 class ViserViewer:
@@ -33,6 +42,7 @@ class ViserViewer:
         geom_view: str = "visual",
         checkpoint_path: Path | None = None,
         policy_iteration: object = None,
+        initial_command: tuple[float, ...] | list[float] | None = None,
     ) -> None:
         import viser
         from mjviser import ViserMujocoScene
@@ -72,6 +82,19 @@ class ViserViewer:
         self._training_progress_last_update = 0.0
         self._training_progress: dict[str, object] = {}
         self._last_telemetry: dict[str, object] = {}
+        self._command_lock = threading.Lock()
+        self._command_vx = _command_value(initial_command, 0, 0.0)
+        self._command_yaw_rate = _command_value(initial_command, 1, 0.0)
+        self._command_height = _clamp(
+            _command_value(initial_command, 4, _COMMAND_DEFAULT_HEIGHT),
+            _COMMAND_HEIGHT_MIN,
+            _COMMAND_HEIGHT_MAX,
+        )
+        self._command_gui_status = "ready"
+        self._push_lock = threading.Lock()
+        self._pending_push_delta: list[float] | None = None
+        self._push_count = 0
+        self._push_status = "none"
         self._configure_geom_groups(geom_view)
         self._setup_gui()
 
@@ -153,6 +176,22 @@ class ViserViewer:
             self._checkpoint_switch_requested = None
         return requested
 
+    def consume_push_request(self) -> tuple[float, float, float, float, float, float] | None:
+        """消费 GUI 触发的一次性 root velocity 扰动。"""
+
+        with self._push_lock:
+            delta = self._pending_push_delta
+            self._pending_push_delta = None
+            if delta is None:
+                return None
+            self._push_count += 1
+            self._push_status = (
+                f"applied #{self._push_count}: "
+                f"vx={delta[0]:+.2f}, vy={delta[1]:+.2f}, yaw={delta[5]:+.2f}"
+            )
+        self._update_status_display()
+        return tuple(float(value) for value in delta)
+
     def notify_checkpoint_loaded(self, checkpoint_path: Path, policy_iteration: object) -> None:
         """主仿真线程完成 policy 切换后同步 GUI 状态。"""
 
@@ -167,6 +206,22 @@ class ViserViewer:
 
         self._checkpoint_switch_status = f"failed {Path(checkpoint_path).name}: {message}"
         self._update_status_display()
+
+    def pace(self, sim_time_s: float) -> None:
+        """CommandInputSource 兼容接口；Viser 自己在 log_state 中做播放节拍。"""
+
+        del sim_time_s
+
+    def poll(self, sim_time_s: float) -> CommandInputUpdate:
+        """返回 GUI 当前设置的速度、角速度和高度指令。"""
+
+        del sim_time_s
+        with self._command_lock:
+            return CommandInputUpdate(
+                lin_vel_x=float(self._command_vx),
+                yaw_rate=float(self._command_yaw_rate),
+                command_height=float(self._command_height),
+            )
 
     def _setup_gui(self) -> None:
         tabs = self._server.gui.add_tab_group()
@@ -261,6 +316,109 @@ class ViserViewer:
                         self._speed_index = _SPEEDS.index(1.0)
                     self._speed = float(_SPEEDS[self._speed_index])
                     self._start_wall_time = None
+                    self._update_status_display()
+
+            with self._server.gui.add_folder("Command"):
+                vx_slider = self._server.gui.add_slider(
+                    "vx (m/s)",
+                    min=-_COMMAND_VX_LIMIT,
+                    max=_COMMAND_VX_LIMIT,
+                    step=0.05,
+                    initial_value=self._command_vx,
+                )
+                yaw_slider = self._server.gui.add_slider(
+                    "yaw_rate (rad/s)",
+                    min=-_COMMAND_YAW_LIMIT,
+                    max=_COMMAND_YAW_LIMIT,
+                    step=0.05,
+                    initial_value=self._command_yaw_rate,
+                )
+                height_slider = self._server.gui.add_slider(
+                    "height (m)",
+                    min=_COMMAND_HEIGHT_MIN,
+                    max=_COMMAND_HEIGHT_MAX,
+                    step=0.005,
+                    initial_value=self._command_height,
+                )
+                command_buttons = self._server.gui.add_button_group(
+                    "Command",
+                    options=["Zero Motion", "Default Height"],
+                )
+
+                def _sync_command_from_gui(status: str = "updated") -> None:
+                    with self._command_lock:
+                        self._command_vx = float(vx_slider.value)
+                        self._command_yaw_rate = float(yaw_slider.value)
+                        self._command_height = _clamp(
+                            float(height_slider.value),
+                            _COMMAND_HEIGHT_MIN,
+                            _COMMAND_HEIGHT_MAX,
+                        )
+                    self._command_gui_status = status
+                    self._update_status_display()
+
+                @vx_slider.on_update
+                def _(_) -> None:
+                    _sync_command_from_gui()
+
+                @yaw_slider.on_update
+                def _(_) -> None:
+                    _sync_command_from_gui()
+
+                @height_slider.on_update
+                def _(_) -> None:
+                    _sync_command_from_gui()
+
+                @command_buttons.on_click
+                def _(event) -> None:
+                    if event.target.value == "Zero Motion":
+                        vx_slider.value = 0.0
+                        yaw_slider.value = 0.0
+                        _sync_command_from_gui("zero motion")
+                    elif event.target.value == "Default Height":
+                        height_slider.value = _COMMAND_DEFAULT_HEIGHT
+                        _sync_command_from_gui("default height")
+
+            with self._server.gui.add_folder("Push Robot"):
+                push_vx_slider = self._server.gui.add_slider(
+                    "delta vx (m/s)",
+                    min=-_PUSH_VEL_LIMIT,
+                    max=_PUSH_VEL_LIMIT,
+                    step=0.05,
+                    initial_value=0.8,
+                )
+                push_vy_slider = self._server.gui.add_slider(
+                    "delta vy (m/s)",
+                    min=-_PUSH_VEL_LIMIT,
+                    max=_PUSH_VEL_LIMIT,
+                    step=0.05,
+                    initial_value=0.0,
+                )
+                push_yaw_slider = self._server.gui.add_slider(
+                    "delta yaw_rate (rad/s)",
+                    min=-_PUSH_YAW_LIMIT,
+                    max=_PUSH_YAW_LIMIT,
+                    step=0.1,
+                    initial_value=0.0,
+                )
+                push_button = self._server.gui.add_button("Apply Push")
+
+                @push_button.on_click
+                def _(_) -> None:
+                    delta = [
+                        float(push_vx_slider.value),
+                        float(push_vy_slider.value),
+                        0.0,
+                        0.0,
+                        0.0,
+                        float(push_yaw_slider.value),
+                    ]
+                    with self._push_lock:
+                        self._pending_push_delta = delta
+                        self._push_status = (
+                            f"queued: vx={delta[0]:+.2f}, "
+                            f"vy={delta[1]:+.2f}, yaw={delta[5]:+.2f}"
+                        )
                     self._update_status_display()
 
             with self._server.gui.add_folder("Scene"):
@@ -463,10 +621,17 @@ class ViserViewer:
         height = _fmt_float(self._last_telemetry.get("height"))
         tilt = _fmt_float(self._last_telemetry.get("tilt_deg"))
         vx = _fmt_float(self._last_telemetry.get("base_lin_vel_x"))
+        yaw_rate = _fmt_float(_sequence_item(self._last_telemetry.get("base_ang_vel_body"), 2))
         sim_time = _fmt_seconds(self._last_telemetry.get("time"))
         wall_time = _fmt_seconds(time.perf_counter() - self._wall_start_time)
         progress_text = _format_training_progress(progress)
         policy_iteration = html.escape(str(self._policy_iteration))
+        with self._command_lock:
+            command_vx = self._command_vx
+            command_yaw_rate = self._command_yaw_rate
+            command_height = self._command_height
+        with self._push_lock:
+            push_status = self._push_status
         self._status_html.content = f"""
           <div style="font-size: 0.85em; line-height: 1.35;
                       padding: 0 1em 0.5em 1em;">
@@ -483,6 +648,13 @@ class ViserViewer:
             <strong>Height:</strong> {height} m<br/>
             <strong>Tilt:</strong> {tilt} deg<br/>
             <strong>Base vx:</strong> {vx} m/s<br/>
+            <strong>Base yaw rate:</strong> {yaw_rate} rad/s<br/>
+            <strong>Command:</strong>
+              vx={command_vx:+.2f} m/s,
+              yaw={command_yaw_rate:+.2f} rad/s,
+              h={command_height:.3f} m
+              ({html.escape(self._command_gui_status)})<br/>
+            <strong>Push:</strong> {html.escape(push_status)}<br/>
             <hr style="border:0; border-top:1px solid #ddd; margin:0.45em 0;"/>
             <strong>Training progress:</strong> {progress_text}<br/>
             <strong>iter_time:</strong> {_fmt_seconds(progress.get("iter_time_s"))}<br/>
@@ -509,6 +681,26 @@ def _fmt_float(value: object) -> str:
         return f"{float(value):.3f}"
     except (TypeError, ValueError):
         return "-"
+
+
+def _command_value(command: tuple[float, ...] | list[float] | None, index: int, default: float) -> float:
+    if command is None or len(command) <= index:
+        return float(default)
+    try:
+        return float(command[index])
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(max(float(value), float(low)), float(high))
+
+
+def _sequence_item(value: object, index: int) -> object:
+    try:
+        return value[index]  # type: ignore[index]
+    except (IndexError, TypeError):
+        return None
 
 
 def _fmt_seconds(value: object) -> str:

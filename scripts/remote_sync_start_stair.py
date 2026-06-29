@@ -6,6 +6,7 @@ import argparse
 import base64
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -73,7 +74,7 @@ def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path:
     if not args.inner_host:
         run(["scp", str(local_path), f"{args.entry_host}:{remote_path}"])
         return
-    entry_tmp = f"/tmp/{Path(remote_path).name}.entry"
+    entry_tmp = f"E:/se3_tmp/{Path(remote_path).name}.entry"
     try:
         run(["scp", str(local_path), f"{args.entry_host}:{entry_tmp}"])
         nested = f"scp {shlex.quote(entry_tmp)} {shlex.quote(args.inner_host + ':' + remote_path)}"
@@ -81,6 +82,50 @@ def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path:
     finally:
         cleanup = f"Remove-Item -Force -ErrorAction SilentlyContinue '{entry_tmp}'"
         run(["ssh", args.entry_host, cleanup])
+
+
+def rsync_to_remote_host(args: argparse.Namespace, remote_dir: str) -> None:
+    """增量同步代码到执行 kubectl 的远端主机。两跳时 laptop 只用 E 盘中转。"""
+    excludes = [
+        ".git",
+        ".venv",
+        "logs",
+        "outputs",
+        "replays",
+        ".ruff_cache",
+        "__pycache__",
+    ]
+    if not args.sync_base_model:
+        excludes.append("assets/base_model")
+    exclude_args = [arg for pattern in excludes for arg in ("--exclude", pattern)]
+    base_command = [
+        "rsync",
+        "-az",
+        "--delete",
+        *exclude_args,
+        f"{REPO_ROOT}/",
+    ]
+    if not args.inner_host:
+        run([*base_command, f"{args.entry_host}:{remote_dir}/"])
+        return
+
+    mirror_dir = f"E:/se3_tmp/se3_wheel_leg_mirror_{args.pod}"
+    run(["ssh", args.entry_host, f"New-Item -ItemType Directory -Force -Path '{mirror_dir}' | Out-Null"])
+    run([*base_command, f"{args.entry_host}:{mirror_dir}/"])
+    nested = (
+        "rsync -az --delete "
+        f"{shlex.quote(mirror_dir + '/')} {shlex.quote(args.inner_host + ':' + remote_dir + '/')}"
+    )
+    run(["ssh", args.entry_host, nested])
+
+
+def archive_remote_host_dir(args: argparse.Namespace, remote_dir: str, remote_archive: str) -> None:
+    """在执行 kubectl 的远端主机上把增量 mirror 打成本地 tar 包。"""
+    command = (
+        f"cd {shlex.quote(remote_dir)} && "
+        f"tar -czf {shlex.quote(remote_archive)} ."
+    )
+    run(ssh_args(args, command))
 
 
 def build_code_archive(archive: Path, *, include_base_model: bool = False) -> None:
@@ -103,6 +148,53 @@ def build_code_archive(archive: Path, *, include_base_model: bool = False) -> No
         command.append("--exclude=assets/base_model")
     command.append(".")
     run(command, cwd=REPO_ROOT)
+
+
+def _git_changed_paths() -> tuple[list[str], list[str]]:
+    """Return changed paths and deleted paths relative to repo root."""
+    output = run(["git", "status", "--porcelain=v1", "-z"], cwd=REPO_ROOT, capture=True)
+    changed: list[str] = []
+    deleted: list[str] = []
+    entries = output.split("\0")
+    idx = 0
+    while idx < len(entries):
+        entry = entries[idx]
+        idx += 1
+        if not entry:
+            continue
+        status = entry[:2]
+        path = entry[3:]
+        if "R" in status or "C" in status:
+            if idx < len(entries):
+                path = entries[idx]
+                idx += 1
+        if status == "!!" or status.strip():
+            if "D" in status and status != "??":
+                deleted.append(path)
+            else:
+                changed.append(path)
+    return sorted(set(changed)), sorted(set(deleted))
+
+
+def build_changed_archive(archive: Path) -> None:
+    """打包当前 git 工作区改动，要求远端已有完整 repo 基线。"""
+    if archive.exists():
+        archive.unlink()
+    changed, deleted = _git_changed_paths()
+    with tempfile.TemporaryDirectory(prefix="se3_changed_sync_") as tmp:
+        tmp_dir = Path(tmp)
+        payload_dir = tmp_dir / "payload"
+        payload_dir.mkdir()
+        for rel in changed:
+            src = REPO_ROOT / rel
+            if not src.exists() or src.is_dir():
+                continue
+            dst = payload_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        delete_file = payload_dir / ".se3_sync_deleted_paths"
+        delete_file.write_text("\n".join(deleted) + ("\n" if deleted else ""), encoding="utf-8")
+        run(["tar", "-czf", str(archive), "."], cwd=payload_dir)
 
 
 def parse_args() -> argparse.Namespace:
@@ -189,6 +281,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--watch-interval-iters", type=int, default=100)
     parser.add_argument(
+        "--sync-mode",
+        choices=("changed-tar", "rsync-host", "tar"),
+        default="changed-tar",
+        help=(
+            "changed-tar: 只同步 git 工作区改动; "
+            "rsync-host: 增量同步到 a800 host 后再 kubectl cp; tar: 旧的整包同步。"
+        ),
+    )
+    parser.add_argument(
         "--train-env",
         action="append",
         default=[],
@@ -233,6 +334,7 @@ def main() -> None:
     args = parse_args()
     archive = Path(tempfile.gettempdir()) / "se3_wheel_leg_code_sync.tar.gz"
     remote_archive = "/tmp/se3_wheel_leg_code_sync.tar.gz"
+    remote_mirror = f"/tmp/se3_wheel_leg_code_sync_{args.job_name}"
     log_path = f"/tmp/train_{args.job_name}.log"
     pid_path = f"/tmp/train_{args.job_name}.pid"
     checkpoint_file = args.load_checkpoint.replace(r"\.", ".").strip("^$")
@@ -311,8 +413,15 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
         label="预检查远端环境和训练进程",
     )
 
-    build_code_archive(archive, include_base_model=args.sync_base_model)
-    copy_to_remote_host(args, archive, remote_archive)
+    if args.sync_mode == "changed-tar":
+        build_changed_archive(archive)
+        copy_to_remote_host(args, archive, remote_archive)
+    elif args.sync_mode == "rsync-host":
+        rsync_to_remote_host(args, remote_mirror)
+        archive_remote_host_dir(args, remote_mirror, remote_archive)
+    else:
+        build_code_archive(archive, include_base_model=args.sync_base_model)
+        copy_to_remote_host(args, archive, remote_archive)
     run(
         ssh_args(
             args,
@@ -328,6 +437,12 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
 set -euo pipefail
 cd {shlex.quote(args.remote_project)}
 tar -xzf {shlex.quote(remote_archive)}
+if [ -f .se3_sync_deleted_paths ]; then
+  while IFS= read -r deleted_path; do
+    [ -n "$deleted_path" ] && rm -f -- "$deleted_path"
+  done < .se3_sync_deleted_paths
+  rm -f .se3_sync_deleted_paths
+fi
 export CUDA_COMPAT_DIR={shlex.quote(args.cuda_compat_dir)}
 export CUDA_TOOLKIT_LIB_DIR={shlex.quote(args.cuda_toolkit_lib_dir)}
 export LD_LIBRARY_PATH="$CUDA_COMPAT_DIR:$CUDA_TOOLKIT_LIB_DIR"

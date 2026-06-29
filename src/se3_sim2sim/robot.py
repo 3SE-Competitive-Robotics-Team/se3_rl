@@ -456,6 +456,14 @@ class WheelLeggedRobot:
             obs[self.runtime.observation_slices["jump_commands"]] = self.stair_ctbc.obs()
         return obs
 
+    def apply_root_velocity_delta(self, delta_velocity: np.ndarray) -> None:
+        """给 floating base 广义速度一次性叠加扰动。"""
+        delta = np.asarray(delta_velocity, dtype=np.float64)
+        if delta.shape != (6,) or not np.isfinite(delta).all():
+            raise ValueError(f"root velocity delta must be finite shape (6,), got {delta}")
+        self.data.qvel[0:6] += delta
+        self._refresh_state()
+
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
         wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
         wheel_vel = self.dof_vel[JointGroup.CTRL_WHEELS]  # rad/s，[l, r]

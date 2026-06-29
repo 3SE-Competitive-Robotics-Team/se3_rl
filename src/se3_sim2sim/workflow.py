@@ -39,6 +39,8 @@ class Sim2SimWorkflow:
         self._course = create_course(self.cfg.course, control_dt)
         self.command_source = command_source
         self.viewer = self._make_viewer()
+        if self.command_source is None and hasattr(self.viewer, "poll"):
+            self.command_source = self.viewer  # Viser GUI sliders drive sim2sim commands.
         self._viewer_default_initial_roll_rad = float(self.cfg.robot.initial_roll_rad)
         self._viewer_default_initial_pitch_rad = float(self.cfg.robot.initial_pitch_rad)
         self._viewer_default_initial_yaw_rad = float(self.cfg.robot.initial_yaw_rad)
@@ -286,6 +288,10 @@ class Sim2SimWorkflow:
                     continue
                 episode_step = max(0, step - 1 - episode_step_offset)
                 sim_time_s = episode_step * control_dt
+                push_delta = self._consume_viewer_push_request(self.viewer)
+                if push_delta is not None:
+                    self.robot.apply_root_velocity_delta(np.asarray(push_delta, dtype=np.float64))
+                    obs = self.robot.observation()
                 if self.command_source is not None:
                     self.command_source.pace(sim_time_s)
                 # --- jump_phase 更新（对齐训练端参考轨迹）---
@@ -662,9 +668,11 @@ class Sim2SimWorkflow:
                 ViserViewer(
                     model=self.robot.model,
                     control_dt=self.cfg.robot.sim_dt * self.cfg.robot.control_decimation,
+                    port=self.cfg.viewer.port,
                     geom_view=self.cfg.viewer.geom_view,
                     checkpoint_path=self.policy.checkpoint_path,
                     policy_iteration=self.policy.iteration,
+                    initial_command=self.cfg.robot.command,
                 )
             )
             return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
@@ -756,6 +764,31 @@ class Sim2SimWorkflow:
         if callable(consume):
             requested = consume()
             return None if requested is None else Path(requested)
+        return None
+
+    @staticmethod
+    def _consume_viewer_push_request(
+        viewer: object | None,
+    ) -> tuple[float, float, float, float, float, float] | None:
+        """从 viewer 或组合 viewer 中消费一次性 root velocity 扰动。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_push_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume = getattr(viewer, "consume_push_request", None)
+        if callable(consume):
+            requested = consume()
+            if requested is None:
+                return None
+            delta = tuple(float(value) for value in requested)
+            if len(delta) != 6:
+                return None
+            return delta
         return None
 
     @staticmethod

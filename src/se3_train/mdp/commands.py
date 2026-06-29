@@ -5,16 +5,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
+from mjlab.utils.lab_api.math import matrix_from_quat
 
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+    from mjlab.viewer.debug_visualizer import DebugVisualizer
+
+
+def _clamp_float(value: float, lower: float, upper: float) -> float:
+    """把标量夹到闭区间内。"""
+    return max(float(lower), min(float(upper), float(value)))
 
 
 @dataclass
@@ -52,6 +61,19 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     )
     """需要按单级台阶高度抬高 body height 的 terrain type 名称。"""
 
+    @dataclass
+    class VizCfg:
+        """速度跟踪调试可视化参数。"""
+
+        z_offset: float = 0.34
+        y_offset: float = 0.08
+        scale: float = 0.45
+        command_color: tuple[float, float, float, float] = (0.1, 0.35, 1.0, 0.85)
+        actual_color: tuple[float, float, float, float] = (0.0, 0.75, 0.45, 0.85)
+        width: float = 0.006
+
+    viz: VizCfg = field(default_factory=VizCfg)
+
     def build(self, env: ManagerBasedRlEnv) -> VelocityHeightCommandTerm:
         return VelocityHeightCommandTerm(self, env)
 
@@ -73,10 +95,244 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._pre_resampled_for_reset = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.bool
         )
+        self._robot = env.scene["robot"]
+        self._manual_command_enabled = False
+        self._manual_command_apply_all = True
+        self._manual_command_env_idx = 0
+        self._manual_vx = 0.0
+        self._manual_yaw = 0.0
+        self._manual_height = float(sum(self.cfg.height_range) * 0.5)
 
     @property
     def command(self) -> torch.Tensor:
         return self._command
+
+    def create_gui(
+        self,
+        name: str,
+        server: Any,
+        get_env_idx: Callable[[], int],
+        on_change: Callable[[], None] | None = None,
+        request_action: Callable[[str, Any], None] | None = None,
+    ) -> None:
+        """在 Viser 中创建手动速度指令控件。"""
+
+        command = self.command
+        env_idx = max(0, min(int(get_env_idx()), self.num_envs - 1))
+        if command.numel() > 0:
+            self._manual_vx = float(command[env_idx, 0].detach().item())
+            self._manual_yaw = float(command[env_idx, 1].detach().item())
+            self._manual_height = float(command[env_idx, 4].detach().item())
+
+        vx_limit = max(
+            abs(float(self.cfg.lin_vel_x_range[0])),
+            abs(float(self.cfg.lin_vel_x_range[1])),
+            1.5,
+        )
+        yaw_limit = max(
+            abs(float(self.cfg.ang_vel_yaw_range[0])),
+            abs(float(self.cfg.ang_vel_yaw_range[1])),
+            7.0,
+        )
+        height_min = min(float(self.cfg.height_range[0]), float(self.cfg.standing_height_range[0]))
+        height_max = max(float(self.cfg.height_range[1]), float(self.cfg.standing_height_range[1]))
+        self._manual_vx = _clamp_float(self._manual_vx, -vx_limit, vx_limit)
+        self._manual_yaw = _clamp_float(self._manual_yaw, -yaw_limit, yaw_limit)
+        self._manual_height = _clamp_float(self._manual_height, height_min, height_max)
+
+        with server.gui.add_folder(f"{name} manual"):
+            enabled = server.gui.add_checkbox(
+                "Manual command",
+                initial_value=self._manual_command_enabled,
+            )
+            apply_all = server.gui.add_checkbox(
+                "Apply all envs",
+                initial_value=self._manual_command_apply_all,
+            )
+            vx = server.gui.add_slider(
+                "vx (m/s)",
+                min=-vx_limit,
+                max=vx_limit,
+                step=0.05,
+                initial_value=self._manual_vx,
+            )
+            yaw = server.gui.add_slider(
+                "yaw_rate (rad/s)",
+                min=-yaw_limit,
+                max=yaw_limit,
+                step=0.05,
+                initial_value=self._manual_yaw,
+            )
+            height = server.gui.add_slider(
+                "height (m)",
+                min=height_min,
+                max=height_max,
+                step=0.005,
+                initial_value=self._manual_height,
+            )
+
+            with server.gui.add_folder("Push robot"):
+                push_apply_all = server.gui.add_checkbox(
+                    "Apply all envs",
+                    initial_value=False,
+                )
+                push_vx = server.gui.add_slider(
+                    "delta vx (m/s)",
+                    min=-2.0,
+                    max=2.0,
+                    step=0.05,
+                    initial_value=0.8,
+                )
+                push_vy = server.gui.add_slider(
+                    "delta vy (m/s)",
+                    min=-2.0,
+                    max=2.0,
+                    step=0.05,
+                    initial_value=0.0,
+                )
+                push_yaw = server.gui.add_slider(
+                    "delta yaw_rate (rad/s)",
+                    min=-8.0,
+                    max=8.0,
+                    step=0.1,
+                    initial_value=0.0,
+                )
+                push_button = server.gui.add_button("Apply Push")
+
+        def _sync_manual_command() -> None:
+            self._manual_command_enabled = bool(enabled.value)
+            self._manual_command_apply_all = bool(apply_all.value)
+            self._manual_command_env_idx = max(0, min(int(get_env_idx()), self.num_envs - 1))
+            self._manual_vx = float(vx.value)
+            self._manual_yaw = float(yaw.value)
+            self._manual_height = float(height.value)
+            if self._manual_command_enabled:
+                self._apply_manual_command()
+            if on_change is not None:
+                on_change()
+
+        @enabled.on_update
+        def _(_event: Any) -> None:
+            _sync_manual_command()
+
+        @apply_all.on_update
+        def _(_event: Any) -> None:
+            _sync_manual_command()
+
+        @vx.on_update
+        def _(_event: Any) -> None:
+            _sync_manual_command()
+
+        @yaw.on_update
+        def _(_event: Any) -> None:
+            _sync_manual_command()
+
+        @height.on_update
+        def _(_event: Any) -> None:
+            _sync_manual_command()
+
+        @push_button.on_click
+        def _(_event: Any) -> None:
+            if request_action is None:
+                return
+            request_action(
+                "CUSTOM",
+                {
+                    "type": "gui_push_robot",
+                    "env_idx": max(0, min(int(get_env_idx()), self.num_envs - 1)),
+                    "all_envs": bool(push_apply_all.value),
+                    "delta_velocity": [
+                        float(push_vx.value),
+                        float(push_vy.value),
+                        0.0,
+                        0.0,
+                        0.0,
+                        float(push_yaw.value),
+                    ],
+                },
+            )
+
+    def apply_gui_reset(self, env_ids: torch.Tensor) -> bool:
+        """reset 后立即恢复 Viser 手动指令。"""
+        if not self._manual_command_enabled:
+            return False
+        self._apply_manual_command(env_ids)
+        return True
+
+    def _apply_manual_command(self, env_ids: torch.Tensor | None = None) -> None:
+        """把 Viser 手动值写入 command 张量。"""
+        if env_ids is None:
+            if self._manual_command_apply_all:
+                env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+            else:
+                env_ids = torch.tensor(
+                    [self._manual_command_env_idx],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+        if len(env_ids) == 0:
+            return
+
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        self._command[env_ids, 0] = float(self._manual_vx)
+        self._command[env_ids, 1] = float(self._manual_yaw)
+        self._command[env_ids, 4] = float(self._manual_height)
+        self._standing_mask[env_ids] = False
+        update_policy_default_from_height_cache(
+            self._env,
+            "velocity_height",
+            env_ids=env_ids,
+            command=self._command,
+        )
+
+    def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
+        """绘制期望 vx 和实际 vx 的细箭头。"""
+        env_indices = list(visualizer.get_env_indices(self.num_envs))
+        if not env_indices:
+            return
+
+        commands = self.command.detach().cpu().numpy()
+        base_pos_ws = self._robot.data.root_link_pos_w.detach().cpu().numpy()
+        base_mat_ws = matrix_from_quat(self._robot.data.root_link_quat_w).detach().cpu().numpy()
+        lin_vel_bs = self._robot.data.root_link_lin_vel_b.detach().cpu().numpy()
+
+        command_offset = np.array([0.0, self.cfg.viz.y_offset, self.cfg.viz.z_offset])
+        actual_offset = np.array([0.0, -self.cfg.viz.y_offset, self.cfg.viz.z_offset])
+        for env_idx in env_indices:
+            base_pos_w = base_pos_ws[env_idx]
+            if not np.isfinite(base_pos_w).all() or np.linalg.norm(base_pos_w) < 1.0e-6:
+                continue
+
+            base_mat_w = base_mat_ws[env_idx]
+            command_start = base_pos_w + base_mat_w @ command_offset
+            actual_start = base_pos_w + base_mat_w @ actual_offset
+            command_vx = (
+                float(self._manual_vx)
+                if self._manual_command_enabled
+                and (self._manual_command_apply_all or env_idx == self._manual_command_env_idx)
+                else float(commands[env_idx, 0])
+            )
+            command_vec_b = np.array([command_vx, 0.0, 0.0])
+            actual_vec_b = np.array([lin_vel_bs[env_idx, 0], 0.0, 0.0])
+            command_vec_b *= self.cfg.viz.scale
+            actual_vec_b *= self.cfg.viz.scale
+
+            if np.linalg.norm(command_vec_b) > 1.0e-4:
+                visualizer.add_arrow(
+                    command_start,
+                    command_start + base_mat_w @ command_vec_b,
+                    color=self.cfg.viz.command_color,
+                    width=self.cfg.viz.width,
+                    label="期望速度",
+                )
+            if np.linalg.norm(actual_vec_b) > 1.0e-4:
+                visualizer.add_arrow(
+                    actual_start,
+                    actual_start + base_mat_w @ actual_vec_b,
+                    color=self.cfg.viz.actual_color,
+                    width=self.cfg.viz.width,
+                    label="实际速度",
+                )
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         """重置指令项，并保留 reset 事件阶段已预采样的指令。"""
@@ -381,6 +637,8 @@ class VelocityHeightCommandTerm(CommandTerm):
 
         self._command[:, 0] = lin_vel
         self._command[:, 1] = yaw_vel
+        if self._manual_command_enabled:
+            self._apply_manual_command()
 
     def _update_metrics(self) -> None:
         """更新指令指标。"""
