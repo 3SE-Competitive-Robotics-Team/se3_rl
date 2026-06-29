@@ -375,7 +375,7 @@ def enforce_recovery_active_commands(
     flat_height_range: tuple[float, float] = (0.20, 0.32),
     flat_zero_command_prob: float = 0.30,
 ) -> None:
-    """每步把 recovery active 指令限制在 recovery_finetune 最难课程范围内。"""
+    """每步把 recovery active 指令限制在 recovery discovery 后期课程范围内。"""
     del env_ids, flat_zero_command_prob
     active = getattr(env, "_recovery_reset_mask", None)
     if isinstance(active, torch.Tensor) and active.shape[0] == env.num_envs:

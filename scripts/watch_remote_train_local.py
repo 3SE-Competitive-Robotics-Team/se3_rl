@@ -28,8 +28,6 @@ _LEGACY_TRAIN_VIEW_TASKS = {
     "SE3-WheelLegged-Stair-GRU-WarmStart": "SE3-WheelLegged-Stair-GRU-TrainView",
     "SE3-WheelLegged-Stair-NoCTBC-GRU": "SE3-WheelLegged-Stair-NoCTBC-GRU-TrainView",
     "SE3-WheelLegged-Stair-NoCTBC-GRU-WarmStart": ("SE3-WheelLegged-Stair-NoCTBC-GRU-TrainView"),
-    "SE3-WheelLegged-Recovery-Stand-GRU": "SE3-WheelLegged-Recovery-Stand-GRU-TrainView",
-    "SE3-WheelLegged-Recovery-GRU": "SE3-WheelLegged-Recovery-GRU-TrainView",
     "SE3-WheelLegged-Mixed-GRU": "SE3-WheelLegged-Mixed-GRU-TrainView",
     "SE3-WheelLegged-Mixed-GRU-WarmStart": "SE3-WheelLegged-Mixed-GRU-TrainView",
     "SE3-WheelLegged-Stair-Teacher-GRU-WarmStart": ("SE3-WheelLegged-Stair-Teacher-GRU-TrainView"),
@@ -37,7 +35,7 @@ _LEGACY_TRAIN_VIEW_TASKS = {
         "SE3-WheelLegged-Universal-Final-GRU-TrainView"
     ),
 }
-_RECOVERY_STAND_TASK = "SE3-WheelLegged-Recovery-Stand-GRU"
+_RECOVERY_DISCOVERY_TASK = "SE3-WheelLegged-Recovery-Discovery-GRU"
 _WATCH_USE_TRAIN_ENV_ENV = "SE3_WATCH_USE_TRAIN_ENV"
 _WATCH_ITER_ENV = "SE3_WATCH_ITER"
 _WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
@@ -399,7 +397,7 @@ def main() -> None:
     parser.add_argument("--remote-log-dir", default="logs/rsl_rl/se3_wheel_leg")
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--local-log-dir", type=Path, default=Path("logs/remote_watch"))
-    parser.add_argument("--task", default=_RECOVERY_STAND_TASK)
+    parser.add_argument("--task", default=_RECOVERY_DISCOVERY_TASK)
     parser.add_argument(
         "--viewer-task",
         default=None,

@@ -17,7 +17,7 @@ from mjlab.utils.torch import configure_torch_backends
 import se3_train  # noqa: F401
 from se3_train.mdp.rewards import _contact_diagnostic_stats
 
-DEFAULT_TASK_NAME = "SE3-WheelLegged-Recovery-FineTune-GRU"
+DEFAULT_TASK_NAME = "SE3-WheelLegged-Recovery-Discovery-GRU"
 POSE_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
     "standing": (1.0, 0.0, 0.0, 0.0, 0.0),
     "left_side": (0.0, 1.0, 0.0, 0.0, 0.0),
@@ -254,7 +254,7 @@ def main() -> None:
     parser.add_argument(
         "--task",
         default=DEFAULT_TASK_NAME,
-        help="用于构造 eval env/runner 的 recovery task，默认 FineTune。",
+        help="用于构造 eval env/runner 的 recovery task，默认 Discovery。",
     )
     parser.add_argument("--num-envs", type=int, default=512)
     parser.add_argument("--episode-s", type=float, default=5.0)
