@@ -188,6 +188,13 @@ def parse_args() -> argparse.Namespace:
         help="生成 watch 命令时固定 height command；省略则按训练课程随机采样。",
     )
     parser.add_argument("--watch-interval-iters", type=int, default=100)
+    parser.add_argument(
+        "--train-env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="额外注入训练进程的环境变量，可重复传入。",
+    )
     return parser.parse_args()
 
 
@@ -234,6 +241,15 @@ def main() -> None:
         raise ValueError("--load-checkpoint 必须是 checkpoint 文件名或其转义形式")
     if cuda_visible_devices and not re.fullmatch(r"\d+(,\d+)*", cuda_visible_devices):
         raise ValueError("--cuda-visible-devices 必须是逗号分隔的 GPU 编号, 例如 1,2,3")
+    extra_env_lines = []
+    for item in args.train_env:
+        if "=" not in item:
+            raise ValueError("--train-env 必须形如 KEY=VALUE")
+        key, value = item.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise ValueError(f"--train-env 变量名非法: {key!r}")
+        extra_env_lines.append(f"export {key}={shlex.quote(value)}")
+    extra_env_exports = "\n".join(extra_env_lines)
 
     if cuda_visible_devices:
         active_check = f"""
@@ -377,6 +393,7 @@ export WANDB_MODE=offline
 export SE3_LOGGER=wandb
 export SE3_FULL_RESUME={full_resume_value}
 {stair_offset_line}
+{extra_env_exports}
 export PYTHONUNBUFFERED=1
 {cuda_visible_line}
 rm -f {shlex.quote(log_path)} {shlex.quote(pid_path)}

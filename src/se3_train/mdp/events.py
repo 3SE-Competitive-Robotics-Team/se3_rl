@@ -575,7 +575,7 @@ def reset_root_state_recovery_standard_poses(
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
-    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
+    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
 ) -> None:
     """按标准站立、侧躺、俯卧和仰卧姿态重置 root。"""
     if env_ids is None:
@@ -655,9 +655,39 @@ def reset_root_state_recovery_standard_poses(
         env_ids,
         torch.ones(n, device=env.device, dtype=torch.bool),
     )
-    env._recovery_command_height = float(recovery_command_height)
     command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-    command_height_buf[env_ids] = float(recovery_command_height)
+    if recovery_command_height is None:
+        env._recovery_command_height = float("nan")
+        if hasattr(env, "command_manager"):
+            try:
+                cmd = env.command_manager.get_command("velocity_height")
+                selected_height = cmd[env_ids, 4].to(
+                    device=env.device,
+                    dtype=command_height_buf.dtype,
+                )
+            except Exception:
+                selected_height = torch.full(
+                    (n,),
+                    _SHARED_ROBOT.default_base_height,
+                    device=env.device,
+                    dtype=command_height_buf.dtype,
+                )
+        else:
+            selected_height = torch.full(
+                (n,),
+                _SHARED_ROBOT.default_base_height,
+                device=env.device,
+                dtype=command_height_buf.dtype,
+            )
+    else:
+        env._recovery_command_height = float(recovery_command_height)
+        selected_height = torch.full(
+            (n,),
+            float(recovery_command_height),
+            device=env.device,
+            dtype=command_height_buf.dtype,
+        )
+    command_height_buf[env_ids] = selected_height
     env._recovery_stage_step = int(stage.get("iteration", stage.get("step", 0)))
     env._recovery_stage_prob = 1.0
     env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[0].item() / weights.sum().item())
@@ -666,7 +696,7 @@ def reset_root_state_recovery_standard_poses(
         try:
             cmd = env.command_manager.get_command("velocity_height")
             cmd[env_ids, 0:4] = 0.0
-            cmd[env_ids, 4] = float(recovery_command_height)
+            cmd[env_ids, 4] = selected_height.to(device=cmd.device, dtype=cmd.dtype)
             if cmd.shape[1] >= 8:
                 cmd[env_ids, 5] = 0.0
                 cmd[env_ids, 7] = 0.0
@@ -726,6 +756,112 @@ def reset_root_state_recovery_standard_poses(
                 "Reset/standard_pose_root_ang_vel_norm": torch.linalg.norm(vel[:, 3:6], dim=1)
                 .mean()
                 .item(),
+            }
+        )
+
+
+def reset_root_state_recovery_discovery_mixed(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    pos_xy_range: tuple[float, float] = (-0.15, 0.15),
+    height_offset_range: tuple[float, float] = (0.0, 0.02),
+    yaw_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
+    roll_jitter_range: tuple[float, float] = (-0.08726646259971647, 0.08726646259971647),
+    pitch_jitter_range: tuple[float, float] = (-0.08726646259971647, 0.08726646259971647),
+    lin_vel_range: tuple[float, float] = (0.0, 0.0),
+    ang_vel_range: tuple[float, float] = (0.0, 0.0),
+    clearance_range: tuple[float, float] = (0.001, 0.005),
+    pose_weights: tuple[float, float, float, float, float] = (0.08, 0.17, 0.17, 0.29, 0.29),
+    source_curriculum_stages: list[dict] | None = None,
+    standard_curriculum_stages: list[dict] | None = None,
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = 64,
+    offset_iter: int = 0,
+    recovery_state_cache_path: str | None = None,
+    recovery_state_cache_split: str = "train",
+    recovery_grace_steps: int = 400,
+    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
+) -> None:
+    """Discovery root reset that gradually mixes standard poses, cache states and upright poses."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    source_stage, source_progress = _active_curriculum_stage(
+        env,
+        source_curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    cache_ratio = max(0.0, float(_stage_value(source_stage, "cache_ratio", 0.0)))
+    near_upright_ratio = max(
+        0.0,
+        float(_stage_value(source_stage, "near_upright_ratio", 0.0)),
+    )
+    total_ratio = cache_ratio + near_upright_ratio
+    if total_ratio > 1.0:
+        cache_ratio /= total_ratio
+        near_upright_ratio /= total_ratio
+
+    n = int(env_ids.numel())
+    source_sample = torch.rand(n, device=env.device)
+    cache_mask = source_sample < cache_ratio
+    near_upright_mask = (source_sample >= cache_ratio) & (
+        source_sample < cache_ratio + near_upright_ratio
+    )
+    standard_mask = ~(cache_mask | near_upright_mask)
+
+    def _reset_standard_subset(local_mask: torch.Tensor, local_pose_weights: tuple[float, ...]) -> None:
+        if not local_mask.any():
+            return
+        reset_root_state_recovery_standard_poses(
+            env,
+            env_ids[local_mask],
+            asset_cfg=asset_cfg,
+            pos_xy_range=pos_xy_range,
+            height_offset_range=height_offset_range,
+            yaw_range=yaw_range,
+            roll_jitter_range=roll_jitter_range,
+            pitch_jitter_range=pitch_jitter_range,
+            lin_vel_range=lin_vel_range,
+            ang_vel_range=ang_vel_range,
+            clearance_range=clearance_range,
+            pose_weights=local_pose_weights,  # type: ignore[arg-type]
+            curriculum_stages=standard_curriculum_stages,
+            use_iterations=use_iterations,
+            steps_per_policy_iter=steps_per_policy_iter,
+            offset_iter=offset_iter,
+            recovery_command_height=recovery_command_height,
+        )
+
+    _reset_standard_subset(standard_mask, pose_weights)
+    _reset_standard_subset(near_upright_mask, (1.0, 0.0, 0.0, 0.0, 0.0))
+
+    if cache_mask.any():
+        reset_root_state_full(
+            env,
+            env_ids[cache_mask],
+            asset_cfg=asset_cfg,
+            recovery_prob=1.0,
+            recovery_state_cache_path=recovery_state_cache_path,
+            recovery_state_cache_prob=1.0,
+            recovery_state_cache_split=recovery_state_cache_split,
+            recovery_grace_steps=recovery_grace_steps,
+            recovery_command_height=recovery_command_height,
+            recovery_zero_velocity_command=True,
+        )
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Reset/source_curriculum_progress": float(source_progress),
+                "Reset/source_standard_ratio": standard_mask.float().mean().item(),
+                "Reset/source_cache_ratio": cache_mask.float().mean().item(),
+                "Reset/source_near_upright_ratio": near_upright_mask.float().mean().item(),
+                "Reset/source_cache_target_ratio": float(cache_ratio),
+                "Reset/source_near_upright_target_ratio": float(near_upright_ratio),
             }
         )
 

@@ -19,6 +19,10 @@ from mjlab.utils.lab_api.math import quat_from_euler_xyz
 
 from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared.fourbar import (
+    policy_to_closedchain_passive_pos_torch,
+    policy_to_closedchain_passive_vel_torch,
+)
 from se3_tools.recovery_state_cache import (
     _DEFAULT_MJCF,
     _DEFAULT_OUTPUT,
@@ -46,10 +50,10 @@ _FINAL_POSE_TYPE_NAMES = (
 _FINAL_POSE_NAME_TO_ID = {name: idx for idx, name in enumerate(_FINAL_POSE_TYPE_NAMES)}
 
 
-def _cache_robot_cfg() -> EntityCfg:
+def _cache_robot_cfg(mjcf_path: Path) -> EntityCfg:
     """构造无 actuator 的 recovery cache 专用机器人实体。"""
     return EntityCfg(
-        spec_fn=lambda: mujoco.MjSpec.from_file(str(_DEFAULT_MJCF)),
+        spec_fn=lambda: mujoco.MjSpec.from_file(str(mjcf_path)),
         articulation=EntityArticulationInfoCfg(actuators=()),
         init_state=EntityCfg.InitialStateCfg(
             pos=(0.0, 0.0, _SHARED_ROBOT.default_base_height),
@@ -192,10 +196,16 @@ def _sample_pose_batch(
     return quat_from_euler_xyz(roll, pitch, yaw), pose_type
 
 
-def _build_sim(num_envs: int, device: str, seed: int) -> tuple[Scene, Simulation]:
+def _build_sim(
+    num_envs: int,
+    device: str,
+    seed: int,
+    *,
+    mjcf_path: Path,
+) -> tuple[Scene, Simulation]:
     """创建只用于 settle 的 MJLab 场景和仿真器。"""
     cfg = flat_env_cfg(play=True)
-    cfg.scene.entities["robot"] = _cache_robot_cfg()
+    cfg.scene.entities["robot"] = _cache_robot_cfg(mjcf_path)
     cfg.scene.num_envs = int(num_envs)
     cfg.scene.sensors = ()
     if cfg.scene.terrain is not None:
@@ -265,8 +275,14 @@ def _sample_initial_state(
     joint_pos = default_joint_pos.clone()
     joint_vel = torch.empty_like(robot.data.default_joint_vel)
     joint_vel.uniform_(joint_vel_range[0], joint_vel_range[1], generator=generator)
+    joint_names = tuple(str(name) for name in robot.joint_names)
     wheel_names = set(JointGroup.WHEEL_NAMES)
-    wheel_ids = [index for index, name in enumerate(robot.joint_names) if name in wheel_names]
+    policy_leg_names = set(JointGroup.POLICY_LEG_NAMES)
+    passive_leg_names = set(JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES)
+    is_closedchain = policy_leg_names.issubset(joint_names) and passive_leg_names.issubset(
+        joint_names
+    )
+    wheel_ids = [index for index, name in enumerate(joint_names) if name in wheel_names]
     if wheel_ids:
         wheel_id_tensor = torch.tensor(wheel_ids, device=device, dtype=torch.long)
         joint_pos[:, wheel_id_tensor] = 0.0
@@ -277,20 +293,58 @@ def _sample_initial_state(
             device=device,
             generator=generator,
         )
-    non_wheel_ids = [
-        index for index, name in enumerate(robot.joint_names) if name not in wheel_names
-    ]
-    if non_wheel_ids:
-        non_wheel_id_tensor = torch.tensor(non_wheel_ids, device=device, dtype=torch.long)
-        joint_pos[:, non_wheel_id_tensor] += _rand_uniform(
+    if is_closedchain:
+        policy_leg_ids = [joint_names.index(name) for name in JointGroup.POLICY_LEG_NAMES]
+        passive_leg_ids = [
+            joint_names.index(name) for name in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES
+        ]
+        policy_leg_tensor = torch.tensor(policy_leg_ids, device=device, dtype=torch.long)
+        passive_leg_tensor = torch.tensor(passive_leg_ids, device=device, dtype=torch.long)
+        policy_pos = joint_pos[:, policy_leg_tensor].clone()
+        policy_pos += _rand_uniform(
             -joint_offset_range,
             joint_offset_range,
-            (num_envs, len(non_wheel_ids)),
+            (num_envs, len(policy_leg_ids)),
             device=device,
             generator=generator,
         )
+        policy_vel = joint_vel[:, policy_leg_tensor].clone()
+        joint_pos[:, policy_leg_tensor] = policy_pos
+        joint_vel[:, policy_leg_tensor] = policy_vel
+        joint_pos[:, passive_leg_tensor] = policy_to_closedchain_passive_pos_torch(policy_pos)
+        joint_vel[:, passive_leg_tensor] = policy_to_closedchain_passive_vel_torch(
+            policy_pos,
+            policy_vel,
+        )
+    else:
+        non_wheel_ids = [
+            index for index, name in enumerate(joint_names) if name not in wheel_names
+        ]
+        if non_wheel_ids:
+            non_wheel_id_tensor = torch.tensor(non_wheel_ids, device=device, dtype=torch.long)
+            joint_pos[:, non_wheel_id_tensor] += _rand_uniform(
+                -joint_offset_range,
+                joint_offset_range,
+                (num_envs, len(non_wheel_ids)),
+                device=device,
+                generator=generator,
+            )
     lower, upper = _joint_limits(robot)
     joint_pos = torch.minimum(torch.maximum(joint_pos, lower), upper)
+    if is_closedchain:
+        policy_leg_ids = [joint_names.index(name) for name in JointGroup.POLICY_LEG_NAMES]
+        passive_leg_ids = [
+            joint_names.index(name) for name in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES
+        ]
+        policy_leg_tensor = torch.tensor(policy_leg_ids, device=device, dtype=torch.long)
+        passive_leg_tensor = torch.tensor(passive_leg_ids, device=device, dtype=torch.long)
+        policy_pos = joint_pos[:, policy_leg_tensor].clone()
+        policy_vel = joint_vel[:, policy_leg_tensor].clone()
+        joint_pos[:, passive_leg_tensor] = policy_to_closedchain_passive_pos_torch(policy_pos)
+        joint_vel[:, passive_leg_tensor] = policy_to_closedchain_passive_vel_torch(
+            policy_pos,
+            policy_vel,
+        )
 
     root_vel = torch.cat(
         [
@@ -521,6 +575,7 @@ def _sample_settle_steps(
 
 def generate_cache_batched(
     *,
+    mjcf_path: Path,
     output_path: Path,
     num_states: int,
     num_envs: int,
@@ -553,7 +608,8 @@ def generate_cache_batched(
     torch.manual_seed(int(seed))
     generator = torch.Generator(device=device)
     generator.manual_seed(int(seed))
-    scene, sim = _build_sim(num_envs=num_envs, device=device, seed=seed)
+    mjcf_path = Path(mjcf_path).expanduser().resolve()
+    scene, sim = _build_sim(num_envs=num_envs, device=device, seed=seed, mjcf_path=mjcf_path)
     robot = scene["robot"]
     sim_dt = float(sim.mj_model.opt.timestep)
     if format_version not in {_FORMAT_VERSION, _FORMAT_VERSION_V3}:
@@ -572,7 +628,7 @@ def generate_cache_batched(
         name for name in (sim.mj_model.actuator(i).name for i in range(sim.mj_model.nu)) if name
     )
     pose_type_names = _FINAL_POSE_TYPE_NAMES if format_version >= 3 else _POSE_TYPE_NAMES
-    source_mjcf = _DEFAULT_MJCF.resolve()
+    source_mjcf = mjcf_path
     store: dict[str, list[np.ndarray]] = {
         "root_pos": [],
         "root_quat": [],
@@ -785,6 +841,7 @@ def generate_cache_batched(
 def main() -> None:
     """命令行入口。"""
     parser = argparse.ArgumentParser(description="用 MJLab/MJWarp 批量生成 recovery 初态缓存")
+    parser.add_argument("--mjcf", type=Path, default=_DEFAULT_MJCF)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--num-states", type=int, default=40000)
     parser.add_argument("--num-envs", type=int, default=8192)
@@ -822,6 +879,7 @@ def main() -> None:
     )
 
     generate_cache_batched(
+        mjcf_path=args.mjcf,
         output_path=output_path,
         num_states=args.num_states,
         num_envs=args.num_envs,
