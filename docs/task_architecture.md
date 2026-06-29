@@ -1,8 +1,10 @@
 # 训练任务架构
 
-`src/se3_train/tasks/` 是训练任务的唯一入口。每个子目录表示一个完整 task，目录内收拢该任务相关的环境配置、RL 配置、观测、奖励、指令、课程、事件和终止条件。
+`src/se3_train/tasks/` 是训练任务的唯一入口。注册到 `tasks/__init__.py` 的子目录表示正式 task，目录内收拢该任务相关的环境配置、RL 配置、观测、奖励、指令、课程、事件和终止条件。
 
 旧的 `src/se3_train/env_cfg.py` 和 `src/se3_train/rl_cfg.py` 汇总入口已经删除，不再恢复。新增实验必须进入 `tasks/<task>/`。
+
+`recovery/` 当前仅保留为 `recovery_discovery/` 的共享 MDP/base config 包，不注册独立 task。
 
 ## 当前任务
 
@@ -10,9 +12,7 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
-| `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，从平地 GRU checkpoint warm start |
-| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` | 倒地自启 discovery 阶段，从 recovery 配置派生 |
-| `recovery_finetune/` | `SE3-WheelLegged-Recovery-FineTune-GRU` | 倒地自启 fine-tune 阶段，使用台阶/恢复状态缓存继续训练 |
+| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` | 唯一正式倒地自启训练入口，包含 discovery、cache、height/speed/yaw command 课程 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
@@ -129,9 +129,7 @@ from se3_train.tasks import (
     flat,
     jump_finetune,
     jump_pretrain,
-    recovery,
     recovery_discovery,
-    recovery_finetune,
     rough,
     stair,
 )
@@ -139,9 +137,7 @@ from se3_train.tasks import (
 for module in (
     rough,
     flat,
-    recovery,
     recovery_discovery,
-    recovery_finetune,
     stair,
     jump_pretrain,
     jump_finetune,

@@ -182,7 +182,7 @@ def recovery_active_tracking_height(
     hard_inverted_wheel_contact_min_count: int = 2,
     hard_inverted_height_tolerance: float = 0.02,
 ) -> torch.Tensor:
-    """recovery_finetune 对齐的硬倒置高度 L2，只作用于 active recovery。"""
+    """recovery discovery 对齐的硬倒置高度 L2，只作用于 active recovery。"""
     reward = mdp_rewards.tracking_height(
         env,
         command_name=command_name,

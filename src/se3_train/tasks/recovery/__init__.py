@@ -1,26 +1,10 @@
-"""倒地自启 GRU 任务。"""
+"""Recovery discovery 共享 MDP 实现。
+
+这个包保留 reward/event/curriculum/base cfg 等共享代码，但不再注册独立
+``SE3-WheelLegged-Recovery-GRU`` 任务。正式 recovery 训练入口只保留
+``SE3-WheelLegged-Recovery-Discovery-GRU``。
+"""
 
 from __future__ import annotations
 
-from mjlab.tasks.registry import register_mjlab_task
-
-from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
-
-from .env_cfg import env_cfg
-from .rl_cfg import rl_cfg
-
-TASK_ID = "SE3-WheelLegged-Recovery-GRU"
-
-
-def register() -> None:
-    """注册倒地自启任务。"""
-    register_mjlab_task(
-        task_id=TASK_ID,
-        env_cfg=env_cfg(),
-        play_env_cfg=env_cfg(play=True),
-        rl_cfg=rl_cfg(),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
-
-
-__all__ = ["TASK_ID", "env_cfg", "register", "rl_cfg"]
+__all__: list[str] = []
