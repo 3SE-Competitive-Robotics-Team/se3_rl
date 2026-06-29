@@ -35,12 +35,6 @@
     <mesh name="visual_r_drive_bar" file="rf_calf_1_link.STL" />
     <mesh name="visual_r_coupler" file="rf_calf_2_link.STL" />
     <mesh name="visual_r_calf" file="rf_calf_3_link.STL" />
-    <mesh name="staircol_lf0_Link_00" file="sw_collision_v3/lf0_Link/lf0_Link_sw_env_00.stl" />
-    <mesh name="staircol_lf0_Link_01" file="sw_collision_v3/lf0_Link/lf0_Link_sw_env_01.stl" />
-    <mesh name="staircol_rf0_Link_00" file="sw_collision_v3/rf0_Link/rf0_Link_sw_env_00.stl" />
-    <mesh name="staircol_rf0_Link_01" file="sw_collision_v3/rf0_Link/rf0_Link_sw_env_01.stl" />
-    <mesh name="staircol_lf1_Link_00" file="sw_collision_v3/lf1_Link/lf1_Link_sw_env_00.stl" />
-    <mesh name="staircol_rf1_Link_00" file="sw_collision_v3/rf1_Link/rf1_Link_sw_env_00.stl" />
     <mesh name="stair_base_visual_coacd_mesh_00" file="stair_base_visual_coacd_32/base_visual_coacd_part_00.stl" />
     <mesh name="stair_base_visual_coacd_mesh_01" file="stair_base_visual_coacd_32/base_visual_coacd_part_01.stl" />
     <mesh name="stair_base_visual_coacd_mesh_02" file="stair_base_visual_coacd_32/base_visual_coacd_part_02.stl" />
@@ -73,6 +67,28 @@
     <mesh name="stair_base_visual_coacd_mesh_29" file="stair_base_visual_coacd_32/base_visual_coacd_part_29.stl" />
     <mesh name="stair_base_visual_coacd_mesh_30" file="stair_base_visual_coacd_32/base_visual_coacd_part_30.stl" />
     <mesh name="stair_base_visual_coacd_mesh_31" file="stair_base_visual_coacd_32/base_visual_coacd_part_31.stl" />
+    <mesh name="staircol_lf0_Link_00" file="sw_collision_v3/lf0_Link/lf0_Link_sw_env_00.stl" />
+    <mesh name="staircol_lf0_Link_01" file="sw_collision_v3/lf0_Link/lf0_Link_sw_env_01.stl" />
+    <mesh name="staircol_rf0_Link_00" file="sw_collision_v3/rf0_Link/rf0_Link_sw_env_00.stl" />
+    <mesh name="staircol_rf0_Link_01" file="sw_collision_v3/rf0_Link/rf0_Link_sw_env_01.stl" />
+    <mesh name="staircol_lf1_Link_00" file="sw_collision_v3/lf1_Link/lf1_Link_sw_env_00.stl" />
+    <mesh name="staircol_rf1_Link_00" file="sw_collision_v3/rf1_Link/rf1_Link_sw_env_00.stl" />
+    <mesh name="legcoacd_l_drive_bar_Link_00" file="leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_00.stl" />
+    <mesh name="legcoacd_l_drive_bar_Link_01" file="leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_01.stl" />
+    <mesh name="legcoacd_l_drive_bar_Link_02" file="leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_02.stl" />
+    <mesh name="legcoacd_l_drive_bar_Link_03" file="leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_03.stl" />
+    <mesh name="legcoacd_l_coupler_Link_00" file="leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_00.stl" />
+    <mesh name="legcoacd_l_coupler_Link_01" file="leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_01.stl" />
+    <mesh name="legcoacd_l_coupler_Link_02" file="leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_02.stl" />
+    <mesh name="legcoacd_l_coupler_Link_03" file="leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_03.stl" />
+    <mesh name="legcoacd_r_drive_bar_Link_00" file="leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_00.stl" />
+    <mesh name="legcoacd_r_drive_bar_Link_01" file="leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_01.stl" />
+    <mesh name="legcoacd_r_drive_bar_Link_02" file="leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_02.stl" />
+    <mesh name="legcoacd_r_drive_bar_Link_03" file="leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_03.stl" />
+    <mesh name="legcoacd_r_coupler_Link_00" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_00.stl" />
+    <mesh name="legcoacd_r_coupler_Link_01" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_01.stl" />
+    <mesh name="legcoacd_r_coupler_Link_02" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_02.stl" />
+    <mesh name="legcoacd_r_coupler_Link_03" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_03.stl" />
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1" />
@@ -145,7 +161,7 @@
             <joint name="l_wheel_Joint" type="hinge" axis="0 1 0" armature="0.005" />
             <inertial pos="-0.00007447 -0.00660229 -0.00008940" mass="0.27783378" fullinertia="0.00026503 0.00048080 0.00026516 -0.00000020 0.00000031 -0.00000025" />
             <geom type="mesh" mesh="visual_lf_wheel" pos="0 0 0" name="l_wheel_Link_visual" contype="0" conaffinity="0" group="1" />
-            <geom name="l_wheel_Link_collision_0" type="cylinder" size="0.060 0.010" pos="0 -0.015925 0" euler="1.5708 0 0" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" />
+            <geom name="l_wheel_Link_collision_0" type="cylinder" size="0.060 0.010" pos="0.000069 -0.006500 -0.000029" euler="1.5708 0 0" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" />
           </body>
         </body>
       </body>
@@ -153,11 +169,19 @@
         <joint name="l_drive_bar_Joint" type="hinge" axis="0 1 0" armature="0.01" />
         <inertial pos="0.01185501 0.01367042 0.01339557" mass="0.04635322" fullinertia="0.00002217 0.00004090 0.00001928 -0.00000004 -0.00001180 -0.00000005" />
         <geom name="l_drive_bar_Link_visual" type="mesh" mesh="visual_l_drive_bar" contype="0" conaffinity="0" group="1" />
+        <geom name="l_drive_bar_Link_coacd_col_00" mesh="legcoacd_l_drive_bar_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="l_drive_bar_Link_coacd_col_01" mesh="legcoacd_l_drive_bar_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="l_drive_bar_Link_coacd_col_02" mesh="legcoacd_l_drive_bar_Link_02" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="l_drive_bar_Link_coacd_col_03" mesh="legcoacd_l_drive_bar_Link_03" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="l_coupler_Link" pos="0.04009536 0.00690000 0.04530576">
           <joint name="l_coupler_Joint" type="hinge" axis="0 1 0" damping="1" armature="0.02" />
           <inertial pos="-0.08300337 0.00146519 0.01330427" mass="0.02321892" fullinertia="0.00000249 0.00007107 0.00006893 0.00000032 -0.00000125 -0.00000007" />
           <geom name="l_coupler_Link_visual" type="mesh" mesh="visual_l_coupler" contype="0" conaffinity="0" group="1" />
           <site name="l_coupler_end" pos="-0.16999653 0.0146 0.00108627" size="0.008" rgba="1 0.5 0 1" />
+          <geom name="l_coupler_Link_coacd_col_00" mesh="legcoacd_l_coupler_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
+          <geom name="l_coupler_Link_coacd_col_01" mesh="legcoacd_l_coupler_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
+          <geom name="l_coupler_Link_coacd_col_02" mesh="legcoacd_l_coupler_Link_02" type="mesh" group="0" contype="1" conaffinity="2" />
+          <geom name="l_coupler_Link_coacd_col_03" mesh="legcoacd_l_coupler_Link_03" type="mesh" group="0" contype="1" conaffinity="2" />
         </body>
       </body>
       <body name="rf0_Link" pos="0 -0.16885 0">
@@ -180,7 +204,7 @@
             <joint name="r_wheel_Joint" type="hinge" axis="0 -1 0" armature="0.005" />
             <inertial pos="-0.00007447 0.00660229 -0.00008940" mass="0.27783378" fullinertia="0.00026503 0.00048080 0.00026516 0.00000020 0.00000031 0.00000025" />
             <geom type="mesh" mesh="visual_rf_wheel" pos="0 0 0" name="r_wheel_Link_visual" contype="0" conaffinity="0" group="1" />
-            <geom name="r_wheel_Link_collision_0" type="cylinder" size="0.060 0.010" pos="0 0.015925 0" euler="1.5708 0 0" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" />
+            <geom name="r_wheel_Link_collision_0" type="cylinder" size="0.060 0.010" pos="-0.000069 0.006500 0.000029" euler="1.5708 0 0" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" />
           </body>
         </body>
       </body>
@@ -188,11 +212,19 @@
         <joint name="r_drive_bar_Joint" type="hinge" axis="0 -1 0" armature="0.01" />
         <inertial pos="0.01185501 -0.01367042 0.01339557" mass="0.04635322" fullinertia="0.00002217 0.00004090 0.00001928 0.00000004 -0.00001180 0.00000005" />
         <geom name="r_drive_bar_Link_visual" type="mesh" mesh="visual_r_drive_bar" contype="0" conaffinity="0" group="1" />
+        <geom name="r_drive_bar_Link_coacd_col_00" mesh="legcoacd_r_drive_bar_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="r_drive_bar_Link_coacd_col_01" mesh="legcoacd_r_drive_bar_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="r_drive_bar_Link_coacd_col_02" mesh="legcoacd_r_drive_bar_Link_02" type="mesh" group="0" contype="1" conaffinity="2" />
+        <geom name="r_drive_bar_Link_coacd_col_03" mesh="legcoacd_r_drive_bar_Link_03" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="r_coupler_Link" pos="0.040095 -0.0069 0.045306">
           <joint name="r_coupler_Joint" type="hinge" axis="0 -1 0" damping="1" armature="0.02" />
           <inertial pos="-0.08300337 -0.00146519 0.01330427" mass="0.02321892" fullinertia="0.00000249 0.00007107 0.00006893 -0.00000032 -0.00000125 0.00000007" />
           <geom name="r_coupler_Link_visual" type="mesh" mesh="visual_r_coupler" contype="0" conaffinity="0" group="1" />
           <site name="r_coupler_end" pos="-0.16999653 -0.0131 0.00108627" size="0.008" rgba="1 0.5 0 1" />
+          <geom name="r_coupler_Link_coacd_col_00" mesh="legcoacd_r_coupler_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
+          <geom name="r_coupler_Link_coacd_col_01" mesh="legcoacd_r_coupler_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
+          <geom name="r_coupler_Link_coacd_col_02" mesh="legcoacd_r_coupler_Link_02" type="mesh" group="0" contype="1" conaffinity="2" />
+          <geom name="r_coupler_Link_coacd_col_03" mesh="legcoacd_r_coupler_Link_03" type="mesh" group="0" contype="1" conaffinity="2" />
         </body>
       </body>
     </body>
