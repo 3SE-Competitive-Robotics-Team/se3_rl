@@ -12,6 +12,7 @@ from . import (
     jump_pretrain,
     recovery_discovery,
     rough,
+    rough_discovery,
     stair,
     wheel_dog,
 )
@@ -20,6 +21,7 @@ from . import (
 def register_all_tasks() -> None:
     """注册当前包内全部训练任务。"""
     rough.register()
+    rough_discovery.register()
     flat.register()
     recovery_discovery.register()
     stair.register()

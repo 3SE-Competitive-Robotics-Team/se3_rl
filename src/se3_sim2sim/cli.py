@@ -636,7 +636,9 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     action_scale = (
         recovery_action_scale() if use_recovery_action_contract else RobotConfig().action_scale
     )
-    action_clip = RECOVERY_ACTION_CLIP if use_recovery_action_contract else RobotConfig().action_clip
+    action_clip = (
+        RECOVERY_ACTION_CLIP if use_recovery_action_contract else RobotConfig().action_clip
+    )
 
     return RunConfig(
         robot=RobotConfig(
