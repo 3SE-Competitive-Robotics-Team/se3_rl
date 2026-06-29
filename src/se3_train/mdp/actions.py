@@ -276,10 +276,21 @@ class SerialLegDelayedAction(ActionTerm):
                 self._apply_ctbc_wheel_action_delta(wheel_action_delta)
 
     def apply_actions(self) -> None:
+        settle_active, settle_finished = self._consume_online_settle()
+        if settle_active.any():
+            self._raw_actions[settle_active] = 0.0
+            self._unclipped_actions[settle_active] = 0.0
+            self._policy_actions[settle_active] = 0.0
+            self._action_fifo[:, settle_active] = 0.0
+
         if self._max_delay_steps > 0:
             self._action_fifo[1:] = self._action_fifo[:-1].clone()
         self._action_fifo[0] = self._raw_actions
         self._delayed_actions = self._action_fifo[self._delay_steps, self._env_indices]
+        if settle_active.any():
+            self._delayed_actions[settle_active] = 0.0
+        if settle_finished.any():
+            self._action_fifo[:, settle_finished] = 0.0
 
         if self._fourbar_surrogate:
             policy_target = self._leg_action_to_policy_target(
@@ -331,6 +342,27 @@ class SerialLegDelayedAction(ActionTerm):
         )
 
         self._entity.set_joint_velocity_target(wheel_target, joint_ids=self._wheel_joint_ids)
+
+    def _consume_online_settle(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """消费 reset 后在线落稳倒计数，返回本步覆盖动作和刚结束的 env。"""
+        remaining = getattr(self._env, "_online_settle_remaining", None)
+        if not isinstance(remaining, torch.Tensor) or remaining.shape[0] != self.num_envs:
+            empty = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+            return empty, empty
+
+        remaining = remaining.to(device=self.device)
+        active = remaining > 0
+        if not active.any():
+            empty = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+            return empty, empty
+
+        remaining[active] -= 1
+        finished = active & (remaining <= 0)
+        if hasattr(self._env, "extras"):
+            log = self._env.extras.setdefault("log", {})
+            log["Reset/online_settle_active_rate"] = active.float().mean().item()
+            log["Reset/online_settle_remaining_max"] = remaining.clamp_min(0).max().float().item()
+        return active, finished
 
     def _current_policy_leg_defaults(self) -> torch.Tensor:
         """返回当前 env 随机化后的腿部默认位姿，坐标系与 policy 动作一致。"""

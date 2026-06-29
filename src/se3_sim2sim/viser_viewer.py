@@ -416,8 +416,7 @@ class ViserViewer:
                     with self._push_lock:
                         self._pending_push_delta = delta
                         self._push_status = (
-                            f"queued: vx={delta[0]:+.2f}, "
-                            f"vy={delta[1]:+.2f}, yaw={delta[5]:+.2f}"
+                            f"queued: vx={delta[0]:+.2f}, vy={delta[1]:+.2f}, yaw={delta[5]:+.2f}"
                         )
                     self._update_status_display()
 
@@ -683,7 +682,9 @@ def _fmt_float(value: object) -> str:
         return "-"
 
 
-def _command_value(command: tuple[float, ...] | list[float] | None, index: int, default: float) -> float:
+def _command_value(
+    command: tuple[float, ...] | list[float] | None, index: int, default: float
+) -> float:
     if command is None or len(command) <= index:
         return float(default)
     try:

@@ -110,7 +110,13 @@ def rsync_to_remote_host(args: argparse.Namespace, remote_dir: str) -> None:
         return
 
     mirror_dir = f"E:/se3_tmp/se3_wheel_leg_mirror_{args.pod}"
-    run(["ssh", args.entry_host, f"New-Item -ItemType Directory -Force -Path '{mirror_dir}' | Out-Null"])
+    run(
+        [
+            "ssh",
+            args.entry_host,
+            f"New-Item -ItemType Directory -Force -Path '{mirror_dir}' | Out-Null",
+        ]
+    )
     run([*base_command, f"{args.entry_host}:{mirror_dir}/"])
     nested = (
         "rsync -az --delete "
@@ -121,10 +127,7 @@ def rsync_to_remote_host(args: argparse.Namespace, remote_dir: str) -> None:
 
 def archive_remote_host_dir(args: argparse.Namespace, remote_dir: str, remote_archive: str) -> None:
     """在执行 kubectl 的远端主机上把增量 mirror 打成本地 tar 包。"""
-    command = (
-        f"cd {shlex.quote(remote_dir)} && "
-        f"tar -czf {shlex.quote(remote_archive)} ."
-    )
+    command = f"cd {shlex.quote(remote_dir)} && tar -czf {shlex.quote(remote_archive)} ."
     run(ssh_args(args, command))
 
 
@@ -164,10 +167,9 @@ def _git_changed_paths() -> tuple[list[str], list[str]]:
             continue
         status = entry[:2]
         path = entry[3:]
-        if "R" in status or "C" in status:
-            if idx < len(entries):
-                path = entries[idx]
-                idx += 1
+        if ("R" in status or "C" in status) and idx < len(entries):
+            path = entries[idx]
+            idx += 1
         if status == "!!" or status.strip():
             if "D" in status and status != "??":
                 deleted.append(path)

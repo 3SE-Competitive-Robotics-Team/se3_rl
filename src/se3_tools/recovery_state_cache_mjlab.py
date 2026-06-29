@@ -317,9 +317,7 @@ def _sample_initial_state(
             policy_vel,
         )
     else:
-        non_wheel_ids = [
-            index for index, name in enumerate(joint_names) if name not in wheel_names
-        ]
+        non_wheel_ids = [index for index, name in enumerate(joint_names) if name not in wheel_names]
         if non_wheel_ids:
             non_wheel_id_tensor = torch.tensor(non_wheel_ids, device=device, dtype=torch.long)
             joint_pos[:, non_wheel_id_tensor] += _rand_uniform(

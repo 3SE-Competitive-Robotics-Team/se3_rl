@@ -812,7 +812,9 @@ def reset_root_state_recovery_discovery_mixed(
     )
     standard_mask = ~(cache_mask | near_upright_mask)
 
-    def _reset_standard_subset(local_mask: torch.Tensor, local_pose_weights: tuple[float, ...]) -> None:
+    def _reset_standard_subset(
+        local_mask: torch.Tensor, local_pose_weights: tuple[float, ...]
+    ) -> None:
         if not local_mask.any():
             return
         reset_root_state_recovery_standard_poses(
@@ -864,6 +866,38 @@ def reset_root_state_recovery_discovery_mixed(
                 "Reset/source_near_upright_target_ratio": float(near_upright_ratio),
             }
         )
+
+
+def mark_online_settle(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    settle_steps: int = 12,
+    settle_attr: str = "_online_settle_remaining",
+) -> None:
+    """标记 reset 后需要用零动作在线落稳的 env。
+
+    这里不能在 reset event 里直接推进仿真，因为 MJLab 的 step 会推进所有并行
+    env。真正的 per-env settle 由动作项读取倒计数后覆盖动作完成。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long).reshape(-1)
+    if env_ids.numel() == 0:
+        return
+
+    remaining = getattr(env, settle_attr, None)
+    if not isinstance(remaining, torch.Tensor) or remaining.shape[0] != env.num_envs:
+        remaining = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        setattr(env, settle_attr, remaining)
+
+    steps = max(0, int(settle_steps))
+    remaining[env_ids] = steps
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log["Reset/online_settle_steps"] = float(steps)
+        log["Reset/online_settle_ratio"] = float(env_ids.numel()) / max(1.0, float(env.num_envs))
 
 
 def reset_root_state_full(

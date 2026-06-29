@@ -551,9 +551,7 @@ def recovery_upward(env: ManagerBasedRlEnv) -> torch.Tensor:
                 "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
                 "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
                 "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
-                "Recovery/diag_recovery_upward_linear": torch.clamp(
-                    (1.0 - pg_z) * 0.5, 0.0, 1.0
-                )
+                "Recovery/diag_recovery_upward_linear": torch.clamp((1.0 - pg_z) * 0.5, 0.0, 1.0)
                 .mean()
                 .item(),
             }
@@ -893,9 +891,7 @@ def recovery_upright_orientation_l2(
             {
                 "Recovery/diag_upright_orientation_penalty": _masked_mean(result, active),
                 "Recovery/diag_upright_orientation_gate": _masked_mean(gate, active),
-                "Recovery/diag_upright_orientation_phase_scale": _masked_mean(
-                    phase_scale, active
-                ),
+                "Recovery/diag_upright_orientation_phase_scale": _masked_mean(phase_scale, active),
                 "Recovery/diag_abs_roll_deg_turning": _masked_mean(roll_abs_deg, turning),
                 "Recovery/diag_abs_roll_deg_straight": _masked_mean(roll_abs_deg, straight),
                 "Recovery/diag_abs_roll_deg_by_yaw_cmd/low": _masked_mean(roll_abs_deg, yaw_low),
@@ -1434,9 +1430,7 @@ def action_smoothness(
                 "Recovery/diag_leg_action_smoothness": _masked_mean(leg_penalty, active),
                 "Recovery/diag_wheel_action_smoothness": _masked_mean(wheel_penalty, active),
                 "Recovery/diag_action_smoothness_gate": _masked_mean(gate, active),
-                "Recovery/diag_action_smoothness_phase_scale": _masked_mean(
-                    phase_scale, active
-                ),
+                "Recovery/diag_action_smoothness_phase_scale": _masked_mean(phase_scale, active),
             }
         )
 
@@ -1579,9 +1573,7 @@ def recovery_upright_zero_velocity_penalty(
                 .mean()
                 .item(),
                 "Recovery/diag_zero_velocity_gate_ratio": active.float().mean().item(),
-                "Recovery/diag_zero_velocity_phase_scale": _masked_mean(
-                    phase_scale, active
-                ),
+                "Recovery/diag_zero_velocity_phase_scale": _masked_mean(phase_scale, active),
                 "Recovery/diag_standing_near_upright_vxy_speed": _masked_mean(
                     torch.sqrt(base_speed_sq), active
                 ),
@@ -1807,9 +1799,7 @@ def recovery_diagnostics(
                 "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
                 .mean()
                 .item(),
-                "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(
-                    action_delta, dim=1
-                )
+                "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
                 .mean()
                 .item(),
                 "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
@@ -1964,14 +1954,10 @@ def recovery_diagnostics(
                 action_saturated.float(), upright_15
             ),
             "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean().item(),
-            "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(
-                action_delta, dim=1
-            )
+            "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
             .mean()
             .item(),
-            "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
-                actor_action_delta, dim=1
-            )
+            "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(actor_action_delta, dim=1)
             .mean()
             .item(),
             "Recovery/diag_joint_error_norm_rad": joint_error_norm.mean().item(),
@@ -2157,8 +2143,8 @@ def recovery_diagnostics(
         log[f"Recovery/diag_raw_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
             actor_action_saturated.float(), height_mask
         )
-        log[f"Recovery/diag_actor_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            actor_action_saturated.float(), height_mask
+        log[f"Recovery/diag_actor_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(actor_action_saturated.float(), height_mask)
         )
         log[f"Recovery/diag_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
             action_saturated.float(), height_mask
@@ -2914,9 +2900,7 @@ def joint_mirror(
         env.extras["log"].update(
             {
                 "Recovery/diag_joint_mirror": _masked_mean(penalty, active),
-                "Recovery/diag_joint_mirror_phase_scale": _masked_mean(
-                    phase_scale, active
-                ),
+                "Recovery/diag_joint_mirror_phase_scale": _masked_mean(phase_scale, active),
             }
         )
     return penalty

@@ -171,7 +171,9 @@ class _Se3ViserPlayViewer(ViserPlayViewer):
         if bool(payload.get("all_envs", False)):
             env_ids = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
         else:
-            env_idx = max(0, min(int(payload.get("env_idx", self._scene.env_idx)), env.num_envs - 1))
+            env_idx = max(
+                0, min(int(payload.get("env_idx", self._scene.env_idx)), env.num_envs - 1)
+            )
             env_ids = torch.tensor([env_idx], dtype=torch.int64, device=env.device)
 
         raw_delta = payload.get("delta_velocity", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
