@@ -89,6 +89,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.sim.nconmax = 256
     cfg.sim.njmax = 1040
+    cfg.sim.contact_sensor_maxmatch = 128
 
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.lin_vel_x_range = (-_DISCOVERY_MAX_LIN_VEL_X, _DISCOVERY_MAX_LIN_VEL_X)
