@@ -41,6 +41,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     cfg.sim.nconmax = 256
     cfg.sim.njmax = 1040
+    cfg.sim.contact_sensor_maxmatch = 128
 
     reset_params = cfg.events["reset_root_state"].params
     reset_params["recovery_state_cache_path"] = None
