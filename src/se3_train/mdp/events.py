@@ -576,6 +576,7 @@ def reset_root_state_recovery_standard_poses(
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
     recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
+    recovery_zero_velocity_command: bool = True,
 ) -> None:
     """按标准站立、侧躺、俯卧和仰卧姿态重置 root。"""
     if env_ids is None:
@@ -655,6 +656,7 @@ def reset_root_state_recovery_standard_poses(
         env_ids,
         torch.ones(n, device=env.device, dtype=torch.bool),
     )
+    env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
     command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
     if recovery_command_height is None:
         env._recovery_command_height = float("nan")
@@ -782,6 +784,7 @@ def reset_root_state_recovery_discovery_mixed(
     recovery_state_cache_split: str = "train",
     recovery_grace_steps: int = 400,
     recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
+    standard_recovery_zero_velocity_command: bool = True,
 ) -> None:
     """Discovery root reset that gradually mixes standard poses, cache states and upright poses."""
     if env_ids is None:
@@ -835,6 +838,7 @@ def reset_root_state_recovery_discovery_mixed(
             steps_per_policy_iter=steps_per_policy_iter,
             offset_iter=offset_iter,
             recovery_command_height=recovery_command_height,
+            recovery_zero_velocity_command=standard_recovery_zero_velocity_command,
         )
 
     _reset_standard_subset(standard_mask, pose_weights)

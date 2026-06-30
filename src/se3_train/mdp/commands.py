@@ -39,6 +39,7 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     lin_vel_deadband: float = 0.1
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1
+    moving_command_min_norm: float = 0.0
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
     height_resample_on_reset_only: bool = False
     """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
@@ -468,6 +469,7 @@ class VelocityHeightCommandTerm(CommandTerm):
                 + self.cfg.ang_vel_yaw_range[0]
             )
             lin_vel, yaw_vel = self._constrain_diff_drive_command(lin_vel, yaw_vel)
+            lin_vel, yaw_vel = self._enforce_moving_command_min_norm(lin_vel, yaw_vel)
             pitch = (
                 torch.rand(len(moving_ids), device=self.device)
                 * (self.cfg.pitch_range[1] - self.cfg.pitch_range[0])
@@ -615,6 +617,32 @@ class VelocityHeightCommandTerm(CommandTerm):
         )
         yaw_span = torch.clamp(yaw_high - yaw_low, min=0.0)
         yaw_vel = yaw_low + torch.rand_like(yaw_vel) * yaw_span
+        return lin_vel, yaw_vel
+
+    def _enforce_moving_command_min_norm(
+        self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """确保 moving 样本不会退化成近零速度指令。"""
+        min_norm = max(float(self.cfg.moving_command_min_norm), 0.0)
+        if min_norm <= 0.0 or lin_vel.numel() == 0:
+            return lin_vel, yaw_vel
+
+        speed = torch.linalg.norm(torch.stack((lin_vel, yaw_vel), dim=1), dim=1)
+        near_zero = speed < min_norm
+        if not near_zero.any():
+            return lin_vel, yaw_vel
+
+        random_sign = torch.where(
+            torch.rand(int(near_zero.sum().item()), device=self.device) < 0.5,
+            -torch.ones(int(near_zero.sum().item()), device=self.device),
+            torch.ones(int(near_zero.sum().item()), device=self.device),
+        )
+        lin_low, lin_high = self.cfg.lin_vel_x_range
+        lin_vel[near_zero] = torch.clamp(
+            random_sign * min_norm,
+            min=float(lin_low),
+            max=float(lin_high),
+        )
         return lin_vel, yaw_vel
 
     def _update_command(self) -> None:
