@@ -92,21 +92,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             cfg.curriculum["commands_vel"].params["velocity_stages"] = [
                 {
                     "iteration": 0,
-                    "lin_vel_x_range": (-0.5, 0.5),
-                    "ang_vel_yaw_range": (-1.0, 1.0),
-                },
-                {
-                    "iteration": 400,
-                    "lin_vel_x_range": (-1.0, 1.0),
-                    "ang_vel_yaw_range": (-2.5, 2.5),
-                },
-                {
-                    "iteration": 1000,
-                    "lin_vel_x_range": (-1.6, 1.6),
-                    "ang_vel_yaw_range": (-5.0, 5.0),
-                },
-                {
-                    "iteration": 1800,
                     "lin_vel_x_range": (
                         -_DISCOVERY_MAX_LIN_VEL_X,
                         _DISCOVERY_MAX_LIN_VEL_X,
