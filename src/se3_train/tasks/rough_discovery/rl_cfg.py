@@ -43,7 +43,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
             os.environ.get("SE3_SAVE_INTERVAL", "100"),
         )
     )
-    cfg.max_iterations = int(os.environ.get("SE3_ROUGH_DISCOVERY_MAX_ITERATIONS", "8000"))
+    cfg.max_iterations = int(os.environ.get("SE3_ROUGH_DISCOVERY_MAX_ITERATIONS", "5000"))
     cfg.resume = True
     cfg.load_run = os.environ.get("SE3_ROUGH_DISCOVERY_LOAD_RUN", ".*")
     cfg.load_checkpoint = os.environ.get("SE3_ROUGH_DISCOVERY_LOAD_CHECKPOINT", "model_.*\\.pt")

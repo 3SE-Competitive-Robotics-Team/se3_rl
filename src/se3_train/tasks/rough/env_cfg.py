@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from copy import deepcopy
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.terrains import TerrainEntityCfg
@@ -16,10 +16,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 
     cfg = flat_env_cfg(play=play)
+    terrain_generator = deepcopy(ROUGH_TERRAINS_CFG)
+    for name in ("pyramid_stairs", "pyramid_stairs_inv"):
+        sub_terrain = terrain_generator.sub_terrains.get(name)
+        if sub_terrain is not None and hasattr(sub_terrain, "step_height_range"):
+            sub_terrain.step_height_range = (0.0, 0.05)
 
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=replace(ROUGH_TERRAINS_CFG),
+        terrain_generator=terrain_generator,
         max_init_terrain_level=5,
     )
 

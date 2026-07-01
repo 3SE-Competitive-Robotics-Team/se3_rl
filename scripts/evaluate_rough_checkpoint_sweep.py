@@ -193,7 +193,7 @@ def run_case(
                 str(case.level),
                 "--rough-stair-step-height-range",
                 "0",
-                "0.20",
+                "0.05",
             ]
         )
         if case.origin_type is not None:
