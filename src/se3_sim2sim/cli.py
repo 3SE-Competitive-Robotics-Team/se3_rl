@@ -189,6 +189,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="mixed 使用 MJLab ROUGH_TERRAINS_CFG 完整混合 grid；也可选择单个 sub-terrain 调试。",
     )
     parser.add_argument(
+        "--rough-terrain-origin-type",
+        choices=ROUGH_TERRAIN_TYPE_CHOICES,
+        default=robot_defaults.rough_terrain_origin_type,
+        help="mixed rough grid 中放到机器人脚下的 terrain column；默认使用中间列。",
+    )
+    parser.add_argument(
         "--rough-terrain-level",
         type=int,
         default=robot_defaults.rough_terrain_level,
@@ -208,6 +214,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Policy checkpoint. Defaults to the latest logs/rsl_rl/se3_wheel_leg/*/model_*.pt.",
+    )
+    parser.add_argument(
+        "--recovery-action-contract",
+        dest="recovery_action_contract",
+        action="store_true",
+        default=None,
+        help="显式使用 recovery/rough discovery 动作合同：腿 scale=0.25，轮 scale=45，clip=100。",
+    )
+    parser.add_argument(
+        "--no-recovery-action-contract",
+        dest="recovery_action_contract",
+        action="store_false",
+        help="显式关闭 recovery 动作合同，使用共享 RobotConfig 默认动作合同。",
     )
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
@@ -580,6 +599,9 @@ def _height_conditioned_action_default_from_args(args: argparse.Namespace) -> bo
 
 def _uses_recovery_action_contract(args: argparse.Namespace, checkpoint: Path | None) -> bool:
     """判断本次 sim2sim 是否应按 recovery 训练 contract 解码 action。"""
+    explicit = getattr(args, "recovery_action_contract", None)
+    if explicit is not None:
+        return bool(explicit)
     if getattr(args, "recovery_pose", None) is not None:
         return True
     if getattr(args, "deploy_telemetry_init", None) is not None:
@@ -682,6 +704,11 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             ),
             rough_terrain=bool(args.rough_terrain),
             rough_terrain_type=str(args.rough_terrain_type),
+            rough_terrain_origin_type=(
+                None
+                if args.rough_terrain_origin_type is None
+                else str(args.rough_terrain_origin_type)
+            ),
             rough_terrain_level=int(args.rough_terrain_level),
             rough_stair_step_height_range=(
                 float(args.rough_stair_step_height_range[0]),

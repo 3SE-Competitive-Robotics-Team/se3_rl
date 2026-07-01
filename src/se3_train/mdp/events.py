@@ -276,6 +276,32 @@ def _pre_resample_command_for_reset(
         term.pre_resample_for_reset(env_ids)
 
 
+def _terrain_type_indices_by_name(
+    env: ManagerBasedRlEnv,
+    terrain_type_names: tuple[str, ...] | list[str],
+) -> tuple[int, ...]:
+    """Return terrain generator column indices for the requested sub-terrain names."""
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    sub_terrains = getattr(terrain_cfg, "sub_terrains", None)
+    if not sub_terrains:
+        return ()
+    name_to_index = {str(name): idx for idx, name in enumerate(sub_terrains)}
+    return tuple(
+        name_to_index[str(name)] for name in terrain_type_names if str(name) in name_to_index
+    )
+
+
+def _terrain_type_name_to_index(env: ManagerBasedRlEnv) -> dict[str, int]:
+    """Return terrain generator sub-terrain column indices keyed by name."""
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    sub_terrains = getattr(terrain_cfg, "sub_terrains", None)
+    if not sub_terrains:
+        return {}
+    return {str(name): idx for idx, name in enumerate(sub_terrains)}
+
+
 def _quat_z_row(quat: torch.Tensor) -> torch.Tensor:
     """返回四元数对应旋转矩阵的世界 z 行。"""
     w, x, y, z = quat.unbind(dim=-1)
@@ -762,6 +788,360 @@ def reset_root_state_recovery_standard_poses(
         )
 
 
+def _reset_root_state_stair_approach(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    *,
+    asset_cfg: SceneEntityCfg,
+    terrain_type_names: tuple[str, ...] | list[str],
+    min_level: int,
+    max_level: int,
+    distance_range: tuple[float, float],
+    lateral_range: tuple[float, float],
+    yaw_jitter_range: tuple[float, float],
+    command_vx_range: tuple[float, float],
+    root_lin_vel_x_range: tuple[float, float],
+    root_roll_jitter_range: tuple[float, float] = (0.0, 0.0),
+    root_pitch_jitter_range: tuple[float, float] = (0.0, 0.0),
+    height_offset_range: tuple[float, float] = (0.0, 0.0),
+    success_progress_extra: float = 0.60,
+    task_kind: int = 1,
+    command_name: str = "velocity_height",
+) -> None:
+    """Reset upright robots on the low side before a stair face and command forward motion."""
+    if env_ids.numel() == 0:
+        return
+
+    terrain = getattr(env.scene, "terrain", None)
+    terrain_levels = getattr(terrain, "terrain_levels", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    terrain_origins = getattr(terrain, "terrain_origins", None)
+    env_origins = getattr(terrain, "env_origins", None)
+    if not (
+        isinstance(terrain_levels, torch.Tensor)
+        and isinstance(terrain_types, torch.Tensor)
+        and isinstance(terrain_origins, torch.Tensor)
+        and isinstance(env_origins, torch.Tensor)
+    ):
+        reset_root_state_recovery_standard_poses(
+            env,
+            env_ids,
+            asset_cfg=asset_cfg,
+            pose_weights=(1.0, 0.0, 0.0, 0.0, 0.0),
+            recovery_command_height=None,
+            recovery_zero_velocity_command=False,
+        )
+        return
+
+    name_to_type_index = _terrain_type_name_to_index(env)
+    type_indices = tuple(
+        name_to_type_index[str(name)]
+        for name in terrain_type_names
+        if str(name) in name_to_type_index
+    )
+    if not type_indices:
+        reset_root_state_recovery_standard_poses(
+            env,
+            env_ids,
+            asset_cfg=asset_cfg,
+            pose_weights=(1.0, 0.0, 0.0, 0.0, 0.0),
+            recovery_command_height=None,
+            recovery_zero_velocity_command=False,
+        )
+        return
+
+    n = int(env_ids.numel())
+    device = env.device
+    type_choices = torch.tensor(type_indices, device=device, dtype=terrain_types.dtype)
+    selected_types = type_choices[
+        torch.randint(0, len(type_indices), (n,), device=device, dtype=torch.long)
+    ]
+    level_hi = max(0, min(int(max_level), int(terrain_origins.shape[0]) - 1))
+    level_lo = max(0, min(int(min_level), level_hi))
+    selected_levels = torch.randint(
+        level_lo,
+        level_hi + 1,
+        (n,),
+        device=device,
+        dtype=terrain_levels.dtype,
+    )
+    terrain_types[env_ids] = selected_types
+    terrain_levels[env_ids] = selected_levels
+    env_origins[env_ids] = terrain_origins[
+        terrain_levels[env_ids].long(),
+        terrain_types[env_ids].long(),
+    ]
+
+    _pre_resample_command_for_reset(env, env_ids, command_name=command_name)
+
+    asset: Entity = env.scene[asset_cfg.name]
+    default_root_state = asset.data.default_root_state
+    assert default_root_state is not None
+    root_states = default_root_state[env_ids].clone()
+
+    distance_low, distance_high = float(distance_range[0]), float(distance_range[1])
+    lateral_low, lateral_high = float(lateral_range[0]), float(lateral_range[1])
+    yaw_jitter_low, yaw_jitter_high = float(yaw_jitter_range[0]), float(yaw_jitter_range[1])
+    vx_low, vx_high = float(command_vx_range[0]), float(command_vx_range[1])
+    root_vx_low, root_vx_high = float(root_lin_vel_x_range[0]), float(root_lin_vel_x_range[1])
+    roll_low, roll_high = float(root_roll_jitter_range[0]), float(root_roll_jitter_range[1])
+    pitch_low, pitch_high = float(root_pitch_jitter_range[0]), float(root_pitch_jitter_range[1])
+    height_offset_low, height_offset_high = (
+        float(height_offset_range[0]),
+        float(height_offset_range[1]),
+    )
+
+    terrain_cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    terrain_size = getattr(terrain_cfg, "size", (8.0, 8.0))
+    terrain_width = float(terrain_size[0])
+    terrain_length = float(terrain_size[1])
+    terrain_half = 0.5 * min(terrain_width, terrain_length)
+    border_width = 1.0
+    step_width = 0.3
+    platform_width = 3.0
+    stair_height_range = (0.0, 0.20)
+    sub_terrains = getattr(terrain_cfg, "sub_terrains", None)
+    if sub_terrains:
+        first_type_name = str(next(iter(terrain_type_names)))
+        sub_cfg = sub_terrains.get(first_type_name)
+        if sub_cfg is not None:
+            border_width = float(getattr(sub_cfg, "border_width", border_width))
+            step_width = float(getattr(sub_cfg, "step_width", step_width))
+            platform_width = float(getattr(sub_cfg, "platform_width", platform_width))
+            stair_height_range = tuple(getattr(sub_cfg, "step_height_range", stair_height_range))
+
+    inner_half = max(0.5, terrain_half - border_width)
+    max_distance = max(0.05, terrain_half - inner_half - 0.10)
+    distance_high = max(distance_low, min(distance_high, max_distance))
+    distance = sample_uniform(
+        torch.tensor(distance_low, device=device),
+        torch.tensor(distance_high, device=device),
+        (n,),
+        device,
+    )
+    lateral = sample_uniform(
+        torch.tensor(lateral_low, device=device),
+        torch.tensor(lateral_high, device=device),
+        (n,),
+        device,
+    )
+    lateral = torch.clamp(lateral, -inner_half + 0.30, inner_half - 0.30)
+
+    inv_type_indices = tuple(
+        idx for name, idx in name_to_type_index.items() if name.endswith("_inv")
+    )
+    if inv_type_indices:
+        inv_type_tensor = torch.tensor(inv_type_indices, device=device, dtype=selected_types.dtype)
+        is_inverted_stair = (selected_types[:, None] == inv_type_tensor[None, :]).any(dim=1)
+    else:
+        is_inverted_stair = torch.zeros(n, device=device, dtype=torch.bool)
+
+    side = torch.randint(0, 4, (n,), device=device)
+    local_xy = torch.zeros((n, 2), device=device, dtype=root_states.dtype)
+    yaw_nominal = torch.zeros(n, device=device, dtype=root_states.dtype)
+    radius_regular = torch.clamp(inner_half + distance, max=terrain_half - 0.10)
+    radius_inverted = torch.clamp(inner_half - distance, min=0.10, max=inner_half - 0.10)
+    radius = torch.where(is_inverted_stair, radius_inverted, radius_regular)
+    neg_x = side == 0
+    pos_x = side == 1
+    neg_y = side == 2
+    pos_y = side == 3
+    local_xy[neg_x, 0] = -radius[neg_x]
+    local_xy[neg_x, 1] = lateral[neg_x]
+    yaw_nominal[neg_x] = torch.where(
+        is_inverted_stair[neg_x],
+        torch.full_like(yaw_nominal[neg_x], torch.pi),
+        torch.zeros_like(yaw_nominal[neg_x]),
+    )
+    local_xy[pos_x, 0] = radius[pos_x]
+    local_xy[pos_x, 1] = lateral[pos_x]
+    yaw_nominal[pos_x] = torch.where(
+        is_inverted_stair[pos_x],
+        torch.zeros_like(yaw_nominal[pos_x]),
+        torch.full_like(yaw_nominal[pos_x], torch.pi),
+    )
+    local_xy[neg_y, 0] = lateral[neg_y]
+    local_xy[neg_y, 1] = -radius[neg_y]
+    yaw_nominal[neg_y] = torch.where(
+        is_inverted_stair[neg_y],
+        torch.full_like(yaw_nominal[neg_y], -0.5 * torch.pi),
+        torch.full_like(yaw_nominal[neg_y], 0.5 * torch.pi),
+    )
+    local_xy[pos_y, 0] = lateral[pos_y]
+    local_xy[pos_y, 1] = radius[pos_y]
+    yaw_nominal[pos_y] = torch.where(
+        is_inverted_stair[pos_y],
+        torch.full_like(yaw_nominal[pos_y], 0.5 * torch.pi),
+        torch.full_like(yaw_nominal[pos_y], -0.5 * torch.pi),
+    )
+    yaw = yaw_nominal + sample_uniform(
+        torch.tensor(yaw_jitter_low, device=device),
+        torch.tensor(yaw_jitter_high, device=device),
+        (n,),
+        device,
+    )
+    roll = sample_uniform(
+        torch.tensor(roll_low, device=device),
+        torch.tensor(roll_high, device=device),
+        (n,),
+        device,
+    )
+    pitch = sample_uniform(
+        torch.tensor(pitch_low, device=device),
+        torch.tensor(pitch_high, device=device),
+        (n,),
+        device,
+    )
+
+    command_height = torch.full((n,), _SHARED_ROBOT.default_base_height, device=device)
+    command_vx = torch.zeros(n, device=device, dtype=root_states.dtype)
+    if hasattr(env, "command_manager"):
+        try:
+            term = env.command_manager.get_term(command_name)
+            cmd = env.command_manager.get_command(command_name)
+            command_height = cmd[env_ids, 4].to(device=device, dtype=root_states.dtype)
+            command_vx = sample_uniform(
+                torch.tensor(vx_low, device=cmd.device),
+                torch.tensor(vx_high, device=cmd.device),
+                (n,),
+                cmd.device,
+            ).to(dtype=cmd.dtype)
+            cmd[env_ids, 0] = command_vx
+            cmd[env_ids, 1] = 0.0
+            cmd[env_ids, 2:4] = 0.0
+            if cmd.shape[1] >= 8:
+                cmd[env_ids, 5] = 0.0
+                cmd[env_ids, 7] = 0.0
+            if hasattr(term, "_standing_mask"):
+                term._standing_mask[env_ids] = False
+            update_policy_default_from_height_cache(
+                env,
+                command_name,
+                env_ids=env_ids,
+                command=cmd,
+            )
+        except Exception:
+            pass
+
+    num_rows = max(1, int(terrain_origins.shape[0]))
+    difficulty = selected_levels.float() / float(max(1, num_rows - 1))
+    step_height_low = float(stair_height_range[0])
+    step_height_high = float(stair_height_range[1])
+    step_height = step_height_low + difficulty * (step_height_high - step_height_low)
+    num_steps_x = int(
+        (terrain_width - 2.0 * border_width - platform_width) / (2.0 * max(step_width, 1e-6))
+    )
+    num_steps_y = int(
+        (terrain_length - 2.0 * border_width - platform_width) / (2.0 * max(step_width, 1e-6))
+    )
+    num_steps = max(0, min(num_steps_x, num_steps_y))
+    total_stair_height = (num_steps + 1) * step_height
+    actual_origin_height = env_origins[env_ids, 2].to(device=device, dtype=command_height.dtype)
+    total_stair_height = torch.where(
+        actual_origin_height > 0.0,
+        actual_origin_height,
+        total_stair_height.to(dtype=command_height.dtype),
+    )
+
+    pos = root_states[:, 0:3].clone()
+    pos[:, 0:2] = env_origins[env_ids, 0:2] + local_xy
+    terrain_low_z = torch.where(
+        is_inverted_stair.to(dtype=torch.bool),
+        env_origins[env_ids, 2].to(device=device, dtype=command_height.dtype),
+        env_origins[env_ids, 2].to(device=device, dtype=command_height.dtype)
+        - total_stair_height.to(dtype=command_height.dtype),
+    )
+    height_offset = sample_uniform(
+        torch.tensor(height_offset_low, device=device),
+        torch.tensor(height_offset_high, device=device),
+        (n,),
+        device,
+    ).to(dtype=command_height.dtype)
+    pos[:, 2] = terrain_low_z + command_height + height_offset
+    new_quat = quat_mul(
+        root_states[:, 3:7],
+        quat_from_euler_xyz(roll, pitch, yaw),
+    )
+
+    vel = root_states[:, 7:13].clone()
+    root_vx = sample_uniform(
+        torch.tensor(root_vx_low, device=device),
+        torch.tensor(root_vx_high, device=device),
+        (n,),
+        device,
+    ).to(dtype=root_states.dtype)
+    vel[:, 0] = torch.cos(yaw) * root_vx
+    vel[:, 1] = torch.sin(yaw) * root_vx
+    vel[:, 2:6] = 0.0
+
+    recovery_state.set_recovery_episode(
+        env,
+        env_ids,
+        torch.ones(n, device=device, dtype=torch.bool),
+    )
+    env._recovery_zero_velocity_command = False
+    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
+    command_height_buf[env_ids] = command_height.to(dtype=command_height_buf.dtype)
+    env._recovery_stage_prob = 1.0
+    env._recovery_stage_fallen_pose_prob = 0.0
+    env._recovery_stage_cache_prob = 0.0
+    _ensure_recovery_float_buffer(env, "_recovery_init_tilt")[env_ids] = 0.0
+    _ensure_recovery_float_buffer(env, "_recovery_init_yaw")[env_ids] = yaw
+    _ensure_recovery_float_buffer(env, "_recovery_init_roll")[env_ids] = 0.0
+    _ensure_recovery_float_buffer(env, "_recovery_init_pitch")[env_ids] = 0.0
+
+    tilt_bins = getattr(env, "_reset_init_tilt_bin", None)
+    if not isinstance(tilt_bins, torch.Tensor) or tilt_bins.shape[0] != env.num_envs:
+        tilt_bins = torch.zeros(env.num_envs, device=device, dtype=torch.long)
+        env._reset_init_tilt_bin = tilt_bins
+    tilt_bins[env_ids] = 0
+    pose_buffer = getattr(env, "_reset_pose_bin", None)
+    if not isinstance(pose_buffer, torch.Tensor) or pose_buffer.shape[0] != env.num_envs:
+        pose_buffer = torch.zeros(env.num_envs, device=device, dtype=torch.long)
+        env._reset_pose_bin = pose_buffer
+    pose_buffer[env_ids] = 0
+
+    asset.write_root_link_pose_to_sim(torch.cat([pos, new_quat], dim=-1), env_ids=env_ids)
+    asset.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
+
+    if not hasattr(env, "_jump_pose_ref_pos_w"):
+        env._jump_pose_ref_pos_w = torch.zeros((env.num_envs, 3), device=device)
+    if not hasattr(env, "_jump_pose_ref_yaw"):
+        env._jump_pose_ref_yaw = torch.zeros(env.num_envs, device=device)
+    env._jump_pose_ref_pos_w[env_ids] = pos
+    env._jump_pose_ref_yaw[env_ids] = yaw
+
+    if not hasattr(env, "_rough_stair_task_mask"):
+        env._rough_stair_task_mask = torch.zeros(env.num_envs, device=device, dtype=torch.bool)
+        env._rough_stair_task_start_pos_w = torch.zeros((env.num_envs, 3), device=device)
+        env._rough_stair_task_yaw = torch.zeros(env.num_envs, device=device)
+        env._rough_stair_task_success_progress = torch.zeros(env.num_envs, device=device)
+        env._rough_stair_task_kind = torch.zeros(env.num_envs, device=device, dtype=torch.long)
+    env._rough_stair_task_mask[env_ids] = True
+    env._rough_stair_task_start_pos_w[env_ids] = pos
+    env._rough_stair_task_yaw[env_ids] = yaw
+    env._rough_stair_task_success_progress[env_ids] = torch.clamp(
+        torch.abs(distance) + float(success_progress_extra),
+        min=0.45,
+        max=2.20,
+    )
+    env._rough_stair_task_kind[env_ids] = int(task_kind)
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Reset/stair_approach_level_mean": selected_levels.float().mean().item(),
+                "Reset/stair_approach_level_max": selected_levels.float().max().item(),
+                "Reset/stair_approach_distance_mean_m": distance.mean().item(),
+                "Reset/stair_approach_command_vx_mean": command_vx.mean().item(),
+                "Reset/stair_approach_height_mean_m": command_height.mean().item(),
+                "Reset/stair_approach_inverted_ratio": is_inverted_stair.float().mean().item(),
+                "Reset/stair_approach_task_kind": float(task_kind),
+            }
+        )
+
+
 def reset_root_state_recovery_discovery_mixed(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -777,6 +1157,23 @@ def reset_root_state_recovery_discovery_mixed(
     pose_weights: tuple[float, float, float, float, float] = (0.08, 0.17, 0.17, 0.29, 0.29),
     source_curriculum_stages: list[dict] | None = None,
     standard_curriculum_stages: list[dict] | None = None,
+    stair_approach_curriculum_stages: list[dict] | None = None,
+    stair_approach_terrain_type_names: tuple[str, ...] | list[str] = ("pyramid_stairs",),
+    stair_approach_distance_range: tuple[float, float] = (0.3, 1.2),
+    stair_approach_lateral_range: tuple[float, float] = (-1.0, 1.0),
+    stair_approach_yaw_jitter_range: tuple[float, float] = (-0.15, 0.15),
+    stair_approach_command_vx_range: tuple[float, float] = (0.3, 0.8),
+    stair_approach_root_lin_vel_x_range: tuple[float, float] = (0.0, 0.2),
+    stair_contact_curriculum_stages: list[dict] | None = None,
+    stair_contact_terrain_type_names: tuple[str, ...] | list[str] = ("pyramid_stairs",),
+    stair_contact_offset_range: tuple[float, float] = (-0.08, 0.12),
+    stair_contact_lateral_range: tuple[float, float] = (-1.0, 1.0),
+    stair_contact_yaw_jitter_range: tuple[float, float] = (-0.35, 0.35),
+    stair_contact_command_vx_range: tuple[float, float] = (0.25, 0.9),
+    stair_contact_root_lin_vel_x_range: tuple[float, float] = (-0.35, 0.15),
+    stair_contact_roll_jitter_range: tuple[float, float] = (-0.12, 0.12),
+    stair_contact_pitch_jitter_range: tuple[float, float] = (-0.18, 0.18),
+    stair_contact_height_offset_range: tuple[float, float] = (-0.025, 0.025),
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
@@ -797,23 +1194,67 @@ def reset_root_state_recovery_discovery_mixed(
         steps_per_policy_iter=steps_per_policy_iter,
         offset_iter=offset_iter,
     )
+    stair_stage, stair_progress = _active_curriculum_stage(
+        env,
+        stair_approach_curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    contact_stage, contact_progress = _active_curriculum_stage(
+        env,
+        stair_contact_curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
     cache_ratio = max(0.0, float(_stage_value(source_stage, "cache_ratio", 0.0)))
     near_upright_ratio = max(
         0.0,
         float(_stage_value(source_stage, "near_upright_ratio", 0.0)),
     )
-    total_ratio = cache_ratio + near_upright_ratio
+    stair_approach_ratio = max(
+        0.0,
+        float(_stage_value(stair_stage, "ratio", 0.0)),
+    )
+    stair_approach_min_level = max(0, int(_stage_value(stair_stage, "min_level", 0)))
+    stair_approach_max_level = max(
+        stair_approach_min_level,
+        int(_stage_value(stair_stage, "max_level", stair_approach_min_level)),
+    )
+    stair_contact_ratio = max(
+        0.0,
+        float(_stage_value(contact_stage, "ratio", 0.0)),
+    )
+    stair_contact_min_level = max(0, int(_stage_value(contact_stage, "min_level", 0)))
+    stair_contact_max_level = max(
+        stair_contact_min_level,
+        int(_stage_value(contact_stage, "max_level", stair_contact_min_level)),
+    )
+    total_ratio = cache_ratio + near_upright_ratio + stair_approach_ratio + stair_contact_ratio
     if total_ratio > 1.0:
         cache_ratio /= total_ratio
         near_upright_ratio /= total_ratio
+        stair_approach_ratio /= total_ratio
+        stair_contact_ratio /= total_ratio
 
     n = int(env_ids.numel())
+    stair_task_mask = getattr(env, "_rough_stair_task_mask", None)
+    if isinstance(stair_task_mask, torch.Tensor) and stair_task_mask.shape[0] == env.num_envs:
+        stair_task_mask[env_ids] = False
     source_sample = torch.rand(n, device=env.device)
-    cache_mask = source_sample < cache_ratio
-    near_upright_mask = (source_sample >= cache_ratio) & (
-        source_sample < cache_ratio + near_upright_ratio
+    stair_contact_mask = source_sample < stair_contact_ratio
+    approach_start = stair_contact_ratio
+    stair_approach_mask = (source_sample >= approach_start) & (
+        source_sample < approach_start + stair_approach_ratio
     )
-    standard_mask = ~(cache_mask | near_upright_mask)
+    cache_start = approach_start + stair_approach_ratio
+    cache_mask = (source_sample >= cache_start) & (source_sample < cache_start + cache_ratio)
+    near_start = cache_start + cache_ratio
+    near_upright_mask = (source_sample >= near_start) & (
+        source_sample < near_start + near_upright_ratio
+    )
+    standard_mask = ~(stair_contact_mask | stair_approach_mask | cache_mask | near_upright_mask)
 
     def _reset_standard_subset(
         local_mask: torch.Tensor, local_pose_weights: tuple[float, ...]
@@ -844,6 +1285,43 @@ def reset_root_state_recovery_discovery_mixed(
     _reset_standard_subset(standard_mask, pose_weights)
     _reset_standard_subset(near_upright_mask, (1.0, 0.0, 0.0, 0.0, 0.0))
 
+    if stair_approach_mask.any():
+        _reset_root_state_stair_approach(
+            env,
+            env_ids[stair_approach_mask],
+            asset_cfg=asset_cfg,
+            terrain_type_names=stair_approach_terrain_type_names,
+            min_level=stair_approach_min_level,
+            max_level=stair_approach_max_level,
+            distance_range=stair_approach_distance_range,
+            lateral_range=stair_approach_lateral_range,
+            yaw_jitter_range=stair_approach_yaw_jitter_range,
+            command_vx_range=stair_approach_command_vx_range,
+            root_lin_vel_x_range=stair_approach_root_lin_vel_x_range,
+            success_progress_extra=0.60,
+            task_kind=1,
+        )
+
+    if stair_contact_mask.any():
+        _reset_root_state_stair_approach(
+            env,
+            env_ids[stair_contact_mask],
+            asset_cfg=asset_cfg,
+            terrain_type_names=stair_contact_terrain_type_names,
+            min_level=stair_contact_min_level,
+            max_level=stair_contact_max_level,
+            distance_range=stair_contact_offset_range,
+            lateral_range=stair_contact_lateral_range,
+            yaw_jitter_range=stair_contact_yaw_jitter_range,
+            command_vx_range=stair_contact_command_vx_range,
+            root_lin_vel_x_range=stair_contact_root_lin_vel_x_range,
+            root_roll_jitter_range=stair_contact_roll_jitter_range,
+            root_pitch_jitter_range=stair_contact_pitch_jitter_range,
+            height_offset_range=stair_contact_height_offset_range,
+            success_progress_extra=0.55,
+            task_kind=2,
+        )
+
     if cache_mask.any():
         reset_root_state_full(
             env,
@@ -866,8 +1344,18 @@ def reset_root_state_recovery_discovery_mixed(
                 "Reset/source_standard_ratio": standard_mask.float().mean().item(),
                 "Reset/source_cache_ratio": cache_mask.float().mean().item(),
                 "Reset/source_near_upright_ratio": near_upright_mask.float().mean().item(),
+                "Reset/source_stair_approach_ratio": stair_approach_mask.float().mean().item(),
+                "Reset/source_stair_contact_ratio": stair_contact_mask.float().mean().item(),
                 "Reset/source_cache_target_ratio": float(cache_ratio),
                 "Reset/source_near_upright_target_ratio": float(near_upright_ratio),
+                "Reset/source_stair_approach_target_ratio": float(stair_approach_ratio),
+                "Reset/source_stair_contact_target_ratio": float(stair_contact_ratio),
+                "Reset/stair_approach_curriculum_progress": float(stair_progress),
+                "Reset/stair_approach_target_min_level": float(stair_approach_min_level),
+                "Reset/stair_approach_target_max_level": float(stair_approach_max_level),
+                "Reset/stair_contact_curriculum_progress": float(contact_progress),
+                "Reset/stair_contact_target_min_level": float(stair_contact_min_level),
+                "Reset/stair_contact_target_max_level": float(stair_contact_max_level),
             }
         )
 

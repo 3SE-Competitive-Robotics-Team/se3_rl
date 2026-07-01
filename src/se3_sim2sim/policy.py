@@ -229,6 +229,16 @@ class PolicyRuntime:
         if isinstance(self.model, _DeterministicGRUActor):
             self.model.reset_hidden(self.device)
 
+    def hidden_state_norm(self) -> float | None:
+        """Return current recurrent hidden-state L2 norm when available."""
+        model = getattr(self, "model", None)
+        if isinstance(model, _DeterministicGRUActor):
+            hidden = model._hidden
+            if hidden is None:
+                return None
+            return float(torch.linalg.norm(hidden).detach().cpu().item())
+        return None
+
     def act(self, obs: np.ndarray) -> np.ndarray:
         if self._numpy_policy is not None:
             return self._numpy_policy.act(obs)

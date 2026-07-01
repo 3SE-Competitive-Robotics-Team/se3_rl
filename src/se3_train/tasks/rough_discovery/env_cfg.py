@@ -9,10 +9,12 @@ from copy import deepcopy
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.terrains import TerrainEntityCfg
 
 from se3_train.mdp import curriculums as mdp_curriculums
 from se3_train.mdp import events as mdp_events
+from se3_train.mdp import terminations as mdp_terminations
 from se3_train.tasks.recovery_discovery.env_cfg import env_cfg as discovery_env_cfg
 
 _DISCOVERY_MAX_LIN_VEL_X = 1.89
@@ -65,6 +67,37 @@ def _terrain_level_stages() -> list[dict[str, int]]:
         {"iteration": 4300, "max_level": 7},
         {"iteration": 5100, "max_level": 8},
         {"iteration": 5800, "max_level": _int_env("SE3_ROUGH_DISCOVERY_MAX_LEVEL", 9)},
+    ]
+
+
+def _stair_approach_stages() -> list[dict[str, float | int]]:
+    final_level = _int_env("SE3_ROUGH_DISCOVERY_MAX_LEVEL", 9)
+    return [
+        {"iteration": 0, "ratio": 0.10, "min_level": 0, "max_level": 0},
+        {"iteration": 400, "ratio": 0.15, "min_level": 0, "max_level": 1},
+        {"iteration": 800, "ratio": 0.20, "min_level": 0, "max_level": 2},
+        {"iteration": 1300, "ratio": 0.25, "min_level": 0, "max_level": 3},
+        {"iteration": 1900, "ratio": 0.30, "min_level": 0, "max_level": 4},
+        {"iteration": 2600, "ratio": 0.35, "min_level": 1, "max_level": 5},
+        {"iteration": 3400, "ratio": 0.40, "min_level": 1, "max_level": 6},
+        {"iteration": 4300, "ratio": 0.45, "min_level": 2, "max_level": 7},
+        {"iteration": 5100, "ratio": 0.45, "min_level": 2, "max_level": 8},
+        {"iteration": 5800, "ratio": 0.50, "min_level": 2, "max_level": final_level},
+    ]
+
+
+def _stair_contact_stages() -> list[dict[str, float | int]]:
+    final_level = _int_env("SE3_ROUGH_DISCOVERY_MAX_LEVEL", 9)
+    return [
+        {"iteration": 0, "ratio": 0.0, "min_level": 0, "max_level": 0},
+        {"iteration": 800, "ratio": 0.05, "min_level": 0, "max_level": 2},
+        {"iteration": 1300, "ratio": 0.10, "min_level": 0, "max_level": 3},
+        {"iteration": 1900, "ratio": 0.15, "min_level": 0, "max_level": 4},
+        {"iteration": 2600, "ratio": 0.20, "min_level": 1, "max_level": 5},
+        {"iteration": 3400, "ratio": 0.25, "min_level": 1, "max_level": 6},
+        {"iteration": 4300, "ratio": 0.30, "min_level": 2, "max_level": 7},
+        {"iteration": 5100, "ratio": 0.30, "min_level": 2, "max_level": 8},
+        {"iteration": 5800, "ratio": 0.30, "min_level": 2, "max_level": final_level},
     ]
 
 
@@ -165,7 +198,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.sim.nconmax = _int_env("SE3_ROUGH_DISCOVERY_NCONMAX", 256)
     cfg.sim.njmax = _int_env("SE3_ROUGH_DISCOVERY_NJMAX", 1040)
     cfg.sim.contact_sensor_maxmatch = _int_env("SE3_ROUGH_DISCOVERY_CONTACT_SENSOR_MAXMATCH", 128)
-    if not _bool_env("SE3_ROUGH_DISCOVERY_KEEP_WHEEL_HEIGHT_SENSOR", False):
+    if not _bool_env("SE3_ROUGH_DISCOVERY_KEEP_WHEEL_HEIGHT_SENSOR", True):
         cfg.scene.sensors = tuple(
             sensor
             for sensor in cfg.scene.sensors
@@ -186,6 +219,30 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     reset_params["recovery_state_cache_split"] = "train"
     reset_params["standard_recovery_zero_velocity_command"] = False
     reset_params["pose_weights"] = (0.80, 0.05, 0.05, 0.05, 0.05)
+    reset_params["stair_approach_curriculum_stages"] = _stair_approach_stages()
+    reset_params["stair_approach_terrain_type_names"] = (
+        "pyramid_stairs",
+        "pyramid_stairs_inv",
+    )
+    reset_params["stair_approach_distance_range"] = (0.3, 1.2)
+    reset_params["stair_approach_lateral_range"] = (-1.0, 1.0)
+    reset_params["stair_approach_yaw_jitter_range"] = (-0.15, 0.15)
+    reset_params["stair_approach_command_vx_range"] = (0.35, 0.90)
+    reset_params["stair_approach_root_lin_vel_x_range"] = (0.0, 0.20)
+    reset_params["stair_contact_curriculum_stages"] = _stair_contact_stages()
+    reset_params["stair_contact_terrain_type_names"] = (
+        "pyramid_stairs",
+        "pyramid_stairs_inv",
+    )
+    reset_params["stair_contact_offset_range"] = (-0.08, 0.12)
+    reset_params["stair_contact_lateral_range"] = (-1.0, 1.0)
+    reset_params["stair_contact_yaw_jitter_range"] = (-0.35, 0.35)
+    reset_params["stair_contact_command_vx_range"] = (0.25, 0.90)
+    reset_params["stair_contact_root_lin_vel_x_range"] = (-0.35, 0.15)
+    reset_params["stair_contact_roll_jitter_range"] = (-0.12, 0.12)
+    reset_params["stair_contact_pitch_jitter_range"] = (-0.18, 0.18)
+    reset_params["stair_contact_height_offset_range"] = (-0.025, 0.025)
+    cfg.events["reset_joints"].params["terrain_height_sensor_names"] = ("wheel_height_sensor",)
     reset_params["source_curriculum_stages"] = [
         {"iteration": 0, "cache_ratio": 0.0, "near_upright_ratio": 0.10},
         {"iteration": 600, "cache_ratio": 0.0, "near_upright_ratio": 0.15},
@@ -224,6 +281,28 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         params={
             "settle_steps": _int_env("SE3_ROUGH_DISCOVERY_SETTLE_STEPS", 12),
             "settle_attr": "_online_settle_remaining",
+        },
+    )
+    cfg.terminations["rough_stair_progress_failure"] = TerminationTermCfg(
+        func=mdp_terminations.rough_stair_progress_failure,
+        time_out=False,
+        params={
+            "command_name": "velocity_height",
+            "min_command_vx": 0.15,
+            "grace_steps": 80,
+            "max_stuck_steps": 120,
+            "min_progress_delta": 0.08,
+            "max_backward_progress": -0.35,
+            "max_backward_steps": 40,
+        },
+    )
+    cfg.terminations["rough_stair_progress_success"] = TerminationTermCfg(
+        func=mdp_terminations.rough_stair_progress_success,
+        time_out=True,
+        params={
+            "command_name": "velocity_height",
+            "min_command_vx": 0.15,
+            "min_episode_steps": 20,
         },
     )
 

@@ -46,6 +46,7 @@ class ViserViewer:
         initial_command: tuple[float, ...] | list[float] | None = None,
         yaw_pid_enabled: bool = False,
         initial_yaw_target_rad: float = 0.0,
+        rough_terrain_info: dict[str, object] | None = None,
     ) -> None:
         import viser
         from mjviser import ViserMujocoScene
@@ -82,6 +83,11 @@ class ViserViewer:
         self._checkpoint_request_lock = threading.Lock()
         self._checkpoint_switch_requested: Path | None = None
         self._checkpoint_switch_status = "ready"
+        self._gru_hidden_reset_lock = threading.Lock()
+        self._gru_hidden_reset_requested = False
+        self._gru_hidden_reset_last_time = 0.0
+        self._gru_hidden_reset_count = 0
+        self._gru_hidden_reset_status = "none"
         self._training_progress_last_update = 0.0
         self._training_progress: dict[str, object] = {}
         self._last_telemetry: dict[str, object] = {}
@@ -101,6 +107,10 @@ class ViserViewer:
         self._pending_push_delta: list[float] | None = None
         self._push_count = 0
         self._push_status = "none"
+        self._rough_terrain_info = dict(rough_terrain_info or {"enabled": False})
+        self._terrain_request_lock = threading.Lock()
+        self._terrain_level_requested: int | None = None
+        self._terrain_switch_status = "ready"
         self._configure_geom_groups(geom_view)
         self._setup_gui()
 
@@ -198,6 +208,32 @@ class ViserViewer:
         self._update_status_display()
         return tuple(float(value) for value in delta)
 
+    def consume_terrain_level_request(self) -> int | None:
+        """Consume a GUI request to switch the active rough-terrain level."""
+
+        with self._terrain_request_lock:
+            level = self._terrain_level_requested
+            self._terrain_level_requested = None
+        return None if level is None else int(level)
+
+    def notify_terrain_level_changed(self, info: dict[str, object]) -> None:
+        """Synchronize GUI status after the simulation thread switches terrain."""
+
+        self._rough_terrain_info = dict(info)
+        level = int(self._rough_terrain_info.get("level", 0))
+        selected = str(self._rough_terrain_info.get("selected_type", "unknown"))
+        self._terrain_switch_status = f"loaded L{level} {selected}"
+        rebuild = getattr(self._scene, "rebuild_visual_handles", None)
+        if callable(rebuild):
+            rebuild()
+        self._update_status_display()
+
+    def notify_terrain_level_failed(self, level: int, message: str) -> None:
+        """Synchronize GUI status after a terrain switch fails."""
+
+        self._terrain_switch_status = f"failed L{int(level)}: {message}"
+        self._update_status_display()
+
     def notify_checkpoint_loaded(self, checkpoint_path: Path, policy_iteration: object) -> None:
         """主仿真线程完成 policy 切换后同步 GUI 状态。"""
 
@@ -211,6 +247,33 @@ class ViserViewer:
         """主仿真线程加载 checkpoint 失败后同步 GUI 状态。"""
 
         self._checkpoint_switch_status = f"failed {Path(checkpoint_path).name}: {message}"
+        self._update_status_display()
+
+    def consume_gru_hidden_reset_request(self) -> bool:
+        """Consume a GUI request to reset only the recurrent policy hidden state."""
+
+        with self._gru_hidden_reset_lock:
+            requested = self._gru_hidden_reset_requested
+            self._gru_hidden_reset_requested = False
+        return bool(requested)
+
+    def notify_gru_hidden_reset(
+        self,
+        *,
+        step: int,
+        before_norm: float | None = None,
+        after_norm: float | None = None,
+    ) -> None:
+        """同步 GUI 中 GRU hidden reset 诊断状态。"""
+
+        with self._gru_hidden_reset_lock:
+            self._gru_hidden_reset_count += 1
+            before = "-" if before_norm is None else f"{before_norm:.3f}"
+            after = "-" if after_norm is None else f"{after_norm:.3f}"
+            self._gru_hidden_reset_status = (
+                f"applied #{self._gru_hidden_reset_count} at step {int(step)} "
+                f"norm {before}->{after}"
+            )
         self._update_status_display()
 
     def pace(self, sim_time_s: float) -> None:
@@ -275,6 +338,12 @@ class ViserViewer:
                         return
                     self._set_checkpoint_dropdown_value(latest.name)
                     self._request_checkpoint_switch(latest)
+
+                gru_reset_button = self._server.gui.add_button("Reset GRU Hidden")
+
+                @gru_reset_button.on_click
+                def _(_) -> None:
+                    self._request_gru_hidden_reset()
 
             with self._server.gui.add_folder("Simulation"):
                 pause_button = self._server.gui.add_button(
@@ -477,6 +546,32 @@ class ViserViewer:
                         )
                     self._update_status_display()
 
+            if bool(self._rough_terrain_info.get("enabled")):
+                with self._server.gui.add_folder("Rough Terrain"):
+                    max_level = max(0, int(self._rough_terrain_info.get("num_rows", 10)) - 1)
+                    current_level = _clamp_int(
+                        int(self._rough_terrain_info.get("level", 0)),
+                        0,
+                        max_level,
+                    )
+                    terrain_level_slider = self._server.gui.add_slider(
+                        "terrain level",
+                        min=0,
+                        max=max_level,
+                        step=1,
+                        initial_value=current_level,
+                        hint="Switch active rough terrain row and reset sim/policy.",
+                    )
+                    terrain_apply_button = self._server.gui.add_button("Apply Terrain Level")
+
+                    @terrain_apply_button.on_click
+                    def _(_) -> None:
+                        level = _clamp_int(int(terrain_level_slider.value), 0, max_level)
+                        with self._terrain_request_lock:
+                            self._terrain_level_requested = level
+                            self._terrain_switch_status = f"loading L{level}"
+                        self._update_status_display()
+
             with self._server.gui.add_folder("Scene"):
                 self._scene.create_scene_gui(
                     camera_distance=2.2,
@@ -608,6 +703,16 @@ class ViserViewer:
             self._reset_request_mode = str(mode)
         self._update_status_display()
 
+    def _request_gru_hidden_reset(self) -> None:
+        now = time.monotonic()
+        if now - self._gru_hidden_reset_last_time < 0.25:
+            return
+        self._gru_hidden_reset_last_time = now
+        with self._gru_hidden_reset_lock:
+            self._gru_hidden_reset_requested = True
+            self._gru_hidden_reset_status = "queued"
+        self._update_status_display()
+
     def _latest_checkpoint_path(self) -> Path | None:
         if self._checkpoint_path is None:
             return None
@@ -699,6 +804,17 @@ class ViserViewer:
             )
         with self._push_lock:
             push_status = self._push_status
+        with self._gru_hidden_reset_lock:
+            gru_hidden_reset_status = self._gru_hidden_reset_status
+        terrain_text = ""
+        if bool(self._rough_terrain_info.get("enabled")):
+            terrain_text = (
+                "<br/><strong>Rough terrain:</strong> "
+                f"{html.escape(str(self._rough_terrain_info.get('selected_type', 'unknown')))}"
+                f" L{int(self._rough_terrain_info.get('level', 0))}"
+                f"/col{int(self._rough_terrain_info.get('column', 0))} "
+                f"({html.escape(self._terrain_switch_status)})"
+            )
         self._status_html.content = f"""
           <div style="font-size: 0.85em; line-height: 1.35;
                       padding: 0 1em 0.5em 1em;">
@@ -722,7 +838,7 @@ class ViserViewer:
               yaw_target={math.degrees(yaw_target_rad):+.1f} deg,
               h={command_height:.3f} m
               ({html.escape(self._command_gui_status)}){yaw_pid_text}<br/>
-            <strong>Push:</strong> {html.escape(push_status)}<br/>
+            <strong>Push:</strong> {html.escape(push_status)}{terrain_text}<br/>
             <hr style="border:0; border-top:1px solid #ddd; margin:0.45em 0;"/>
             <strong>Training progress:</strong> {progress_text}<br/>
             <strong>iter_time:</strong> {_fmt_seconds(progress.get("iter_time_s"))}<br/>
@@ -731,6 +847,7 @@ class ViserViewer:
             <strong>Checkpoint iteration:</strong> {html.escape(checkpoint["checkpoint_iter"])}<br/>
             <strong>Policy iteration:</strong> {policy_iteration}<br/>
             <strong>Checkpoint switch:</strong> {html.escape(self._checkpoint_switch_status)}<br/>
+            <strong>GRU hidden reset:</strong> {html.escape(gru_hidden_reset_status)}<br/>
             <strong>Selected checkpoint:</strong> {html.escape(checkpoint["selected"])}<br/>
             <strong>Latest checkpoint:</strong> {html.escape(checkpoint["latest"])}<br/>
             <strong>Run:</strong> {html.escape(checkpoint["run"])}
@@ -778,6 +895,10 @@ def _command_value(
 
 def _clamp(value: float, low: float, high: float) -> float:
     return min(max(float(value), float(low)), float(high))
+
+
+def _clamp_int(value: int, low: int, high: int) -> int:
+    return min(max(int(value), int(low)), int(high))
 
 
 def _wrap_angle_rad(value: float) -> float:
