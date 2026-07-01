@@ -1,0 +1,230 @@
+[
+  {
+    "target": "l_drive_bar_Link",
+    "rule": {
+      "threshold": 0.06,
+      "max_convex_hull": 4,
+      "resolution": 700,
+      "mcts_nodes": 8,
+      "mcts_iterations": 35,
+      "max_ch_vertex": 72
+    },
+    "generated": [
+      {
+        "name": "legcoacd_l_drive_bar_Link_00",
+        "file": "leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_00.stl",
+        "vertices": 69,
+        "faces": 134,
+        "extents": [
+          0.062038,
+          0.0085,
+          0.069584
+        ]
+      },
+      {
+        "name": "legcoacd_l_drive_bar_Link_01",
+        "file": "leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_01.stl",
+        "vertices": 92,
+        "faces": 180,
+        "extents": [
+          0.068888,
+          0.0085,
+          0.05701
+        ]
+      },
+      {
+        "name": "legcoacd_l_drive_bar_Link_02",
+        "file": "leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_02.stl",
+        "vertices": 14,
+        "faces": 24,
+        "extents": [
+          0.032402,
+          0.001286,
+          0.024461
+        ]
+      },
+      {
+        "name": "legcoacd_l_drive_bar_Link_03",
+        "file": "leg_coacd_v1/l_drive_bar_Link/l_drive_bar_Link_coacd_03.stl",
+        "vertices": 62,
+        "faces": 120,
+        "extents": [
+          0.061444,
+          0.0085,
+          0.033726
+        ]
+      }
+    ]
+  },
+  {
+    "target": "l_coupler_Link",
+    "rule": {
+      "threshold": 0.055,
+      "max_convex_hull": 4,
+      "resolution": 700,
+      "mcts_nodes": 8,
+      "mcts_iterations": 35,
+      "max_ch_vertex": 72
+    },
+    "generated": [
+      {
+        "name": "legcoacd_l_coupler_Link_00",
+        "file": "leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_00.stl",
+        "vertices": 46,
+        "faces": 88,
+        "extents": [
+          0.069291,
+          0.009,
+          0.038714
+        ]
+      },
+      {
+        "name": "legcoacd_l_coupler_Link_01",
+        "file": "leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_01.stl",
+        "vertices": 31,
+        "faces": 58,
+        "extents": [
+          0.096957,
+          0.009,
+          0.041485
+        ]
+      },
+      {
+        "name": "legcoacd_l_coupler_Link_02",
+        "file": "leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_02.stl",
+        "vertices": 14,
+        "faces": 24,
+        "extents": [
+          0.041947,
+          0.009,
+          0.014612
+        ]
+      },
+      {
+        "name": "legcoacd_l_coupler_Link_03",
+        "file": "leg_coacd_v1/l_coupler_Link/l_coupler_Link_coacd_03.stl",
+        "vertices": 33,
+        "faces": 62,
+        "extents": [
+          0.069459,
+          0.009,
+          0.010725
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_drive_bar_Link",
+    "rule": {
+      "threshold": 0.06,
+      "max_convex_hull": 4,
+      "resolution": 700,
+      "mcts_nodes": 8,
+      "mcts_iterations": 35,
+      "max_ch_vertex": 72
+    },
+    "generated": [
+      {
+        "name": "legcoacd_r_drive_bar_Link_00",
+        "file": "leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_00.stl",
+        "vertices": 140,
+        "faces": 276,
+        "extents": [
+          0.077045,
+          0.0085,
+          0.082196
+        ]
+      },
+      {
+        "name": "legcoacd_r_drive_bar_Link_01",
+        "file": "leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_01.stl",
+        "vertices": 12,
+        "faces": 20,
+        "extents": [
+          0.015062,
+          0.000623,
+          0.013287
+        ]
+      },
+      {
+        "name": "legcoacd_r_drive_bar_Link_02",
+        "file": "leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_02.stl",
+        "vertices": 24,
+        "faces": 44,
+        "extents": [
+          0.012427,
+          0.003124,
+          0.012299
+        ]
+      },
+      {
+        "name": "legcoacd_r_drive_bar_Link_03",
+        "file": "leg_coacd_v1/r_drive_bar_Link/r_drive_bar_Link_coacd_03.stl",
+        "vertices": 45,
+        "faces": 86,
+        "extents": [
+          0.052948,
+          0.0085,
+          0.035552
+        ]
+      }
+    ]
+  },
+  {
+    "target": "r_coupler_Link",
+    "rule": {
+      "threshold": 0.055,
+      "max_convex_hull": 4,
+      "resolution": 700,
+      "mcts_nodes": 8,
+      "mcts_iterations": 35,
+      "max_ch_vertex": 72
+    },
+    "generated": [
+      {
+        "name": "legcoacd_r_coupler_Link_00",
+        "file": "leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_00.stl",
+        "vertices": 30,
+        "faces": 56,
+        "extents": [
+          0.096957,
+          0.009,
+          0.041485
+        ]
+      },
+      {
+        "name": "legcoacd_r_coupler_Link_01",
+        "file": "leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_01.stl",
+        "vertices": 48,
+        "faces": 92,
+        "extents": [
+          0.069284,
+          0.009,
+          0.038714
+        ]
+      },
+      {
+        "name": "legcoacd_r_coupler_Link_02",
+        "file": "leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_02.stl",
+        "vertices": 16,
+        "faces": 28,
+        "extents": [
+          0.041947,
+          0.009,
+          0.014661
+        ]
+      },
+      {
+        "name": "legcoacd_r_coupler_Link_03",
+        "file": "leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_03.stl",
+        "vertices": 31,
+        "faces": 58,
+        "extents": [
+          0.069559,
+          0.009,
+          0.010713
+        ]
+      }
+    ]
+  }
+]
