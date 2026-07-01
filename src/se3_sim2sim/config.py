@@ -261,8 +261,8 @@ class RobotConfig(BaseModel):
     """rough terrain 等级；按 MJLab terrain row difficulty 映射到 0-1。"""
     rough_terrain_size_m: tuple[float, float] = (8.0, 8.0)
     """rough heightfield 的全尺寸，默认对齐训练端 ROUGH_TERRAINS_CFG.size。"""
-    rough_stair_step_height_range: tuple[float, float] = (0.0, 0.20)
-    """rough pyramid stairs 的单级高度范围；默认对齐 20cm rough discovery 训练。"""
+    rough_stair_step_height_range: tuple[float, float] = (0.0, 0.05)
+    """rough pyramid stairs 的单级高度范围；默认对齐 5cm rough discovery 泛化训练。"""
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height

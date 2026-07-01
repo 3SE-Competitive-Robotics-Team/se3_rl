@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=2,
         metavar=("LOW", "HIGH"),
         default=robot_defaults.rough_stair_step_height_range,
-        help="rough pyramid stairs 单级高度范围，默认 0-20cm。",
+        help="rough pyramid stairs 单级高度范围，默认 0-5cm。",
     )
     parser.add_argument(
         "--checkpoint",
