@@ -492,6 +492,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "asset_cfg": SceneEntityCfg("robot"),
                     "align_root_height_to_wheels": True,
                     "wheel_clearance": 0.001,
+                    "full_joint_randomization": True,
+                    "full_front_joint_offset_range": 1.57,  # ±90° hip 随机化
                 },
             ),
         }
