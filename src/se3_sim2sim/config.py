@@ -255,6 +255,8 @@ class RobotConfig(BaseModel):
     """是否在原生 MuJoCo sim2sim 中添加 MJLab rough terrain。"""
     rough_terrain_type: RoughTerrainType = "mixed"
     """MJLab ROUGH_TERRAINS_CFG 的完整混合地形，或指定单个 sub-terrain 类型。"""
+    rough_terrain_origin_type: RoughTerrainType | None = None
+    """mixed rough grid 中放到机器人脚下的 terrain column；None 时使用中间列。"""
     rough_terrain_level: Annotated[int, Field(ge=0, le=9)] = 1
     """rough terrain 等级；按 MJLab terrain row difficulty 映射到 0-1。"""
     rough_terrain_size_m: tuple[float, float] = (8.0, 8.0)

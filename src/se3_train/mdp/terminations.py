@@ -30,6 +30,14 @@ if TYPE_CHECKING:
 _DEFAULT_TERMINATION_LOG_INTERVAL_STEPS = DEFAULT_DIAGNOSTIC_LOG_INTERVAL_STEPS
 
 
+def _same_shape_device(tensor: torch.Tensor | None, env: ManagerBasedRlEnv) -> bool:
+    return (
+        isinstance(tensor, torch.Tensor)
+        and tensor.shape[0] == env.num_envs
+        and str(tensor.device) == str(env.device)
+    )
+
+
 def _should_log_step(
     env: ManagerBasedRlEnv, interval: int = _DEFAULT_TERMINATION_LOG_INTERVAL_STEPS
 ) -> bool:
@@ -77,11 +85,7 @@ class BadOrientationDelayed:
         recovery_grace_steps: int = 0,
         recovery_terminate: bool = True,
     ) -> torch.Tensor:
-        if (
-            self._fail_count is None
-            or self._fail_count.shape[0] != env.num_envs
-            or self._fail_count.device != env.device
-        ):
+        if not _same_shape_device(self._fail_count, env):
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         robot = env.scene["robot"]
@@ -161,11 +165,7 @@ class RecoveryStagnation:
         pg_z = robot.data.projected_gravity_b[:, 2]
         score = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
 
-        if (
-            self._best_score is None
-            or self._best_score.shape[0] != env.num_envs
-            or self._best_score.device != env.device
-        ):
+        if not _same_shape_device(self._best_score, env):
             self._best_score = score.detach().clone()
             self._stagnation_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
@@ -203,6 +203,186 @@ class RecoveryStagnation:
 
 
 recovery_stagnation = RecoveryStagnation()
+
+
+def _rough_stair_task_state(
+    env: ManagerBasedRlEnv,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    mask = getattr(env, "_rough_stair_task_mask", None)
+    start_pos = getattr(env, "_rough_stair_task_start_pos_w", None)
+    yaw = getattr(env, "_rough_stair_task_yaw", None)
+    success_progress = getattr(env, "_rough_stair_task_success_progress", None)
+    if not (
+        isinstance(mask, torch.Tensor)
+        and mask.shape[0] == env.num_envs
+        and isinstance(start_pos, torch.Tensor)
+        and start_pos.shape[0] == env.num_envs
+        and isinstance(yaw, torch.Tensor)
+        and yaw.shape[0] == env.num_envs
+        and isinstance(success_progress, torch.Tensor)
+        and success_progress.shape[0] == env.num_envs
+    ):
+        device = env.device
+        return (
+            torch.zeros(env.num_envs, device=device, dtype=torch.bool),
+            torch.zeros((env.num_envs, 3), device=device),
+            torch.zeros(env.num_envs, device=device),
+            torch.zeros(env.num_envs, device=device),
+        )
+    return mask.to(device=env.device), start_pos, yaw, success_progress
+
+
+def _rough_stair_progress(
+    env: ManagerBasedRlEnv,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    mask, start_pos, yaw, success_progress = _rough_stair_task_state(env)
+    robot = env.scene["robot"]
+    delta_xy = robot.data.root_link_pos_w[:, 0:2] - start_pos[:, 0:2]
+    forward_xy = torch.stack((torch.cos(yaw), torch.sin(yaw)), dim=1)
+    progress = torch.sum(delta_xy * forward_xy, dim=1)
+    return mask, progress, success_progress, forward_xy
+
+
+class RoughStairProgressFailure:
+    """Terminate rough stair tasks that stop progressing while commanded forward."""
+
+    def __init__(self) -> None:
+        self._window_start_progress: torch.Tensor | None = None
+        self._window_count: torch.Tensor | None = None
+        self._stuck_count: torch.Tensor | None = None
+        self._backward_count: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        command_name: str = "velocity_height",
+        min_command_vx: float = 0.15,
+        grace_steps: int = 80,
+        max_stuck_steps: int = 120,
+        min_progress_delta: float = 0.03,
+        max_backward_progress: float = -0.35,
+        max_backward_steps: int = 40,
+    ) -> torch.Tensor:
+        active, progress, _, _ = _rough_stair_progress(env)
+        if not _same_shape_device(self._window_start_progress, env):
+            self._window_start_progress = progress.detach().clone()
+            self._window_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+            self._stuck_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+            self._backward_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+        assert self._window_start_progress is not None
+        assert self._window_count is not None
+        assert self._stuck_count is not None
+        assert self._backward_count is not None
+
+        moving_command = active
+        if hasattr(env, "command_manager"):
+            try:
+                cmd = env.command_manager.get_command(command_name)
+                moving_command = moving_command & (cmd[:, 0] > float(min_command_vx))
+            except Exception:
+                pass
+        counted = moving_command & (env.episode_length_buf > int(grace_steps))
+        reset_mask = (env.episode_length_buf <= 1) | ~active
+        self._window_start_progress[reset_mask] = progress[reset_mask]
+        self._window_count[reset_mask] = 0
+        self._stuck_count[reset_mask] = 0
+        self._backward_count[reset_mask] = 0
+
+        self._window_count[counted] += 1
+        self._window_count[~counted] = 0
+        window_complete = counted & (self._window_count >= int(max_stuck_steps))
+        window_progress = progress - self._window_start_progress
+        stuck_window = window_complete & (window_progress < float(min_progress_delta))
+        self._stuck_count[stuck_window] += 1
+        self._stuck_count[window_complete & ~stuck_window] = 0
+        self._window_start_progress[window_complete] = progress[window_complete].detach()
+        self._window_count[window_complete] = 0
+
+        backward = counted & (progress < float(max_backward_progress))
+        self._backward_count[backward] += 1
+        self._backward_count[~backward] = 0
+
+        terminated = counted & (stuck_window | (self._backward_count >= int(max_backward_steps)))
+
+        if hasattr(env, "extras") and _should_log_step(env):
+            active_count = active.sum().clamp(min=1)
+            env.extras.setdefault("log", {}).update(
+                {
+                    "RoughStair/progress_active_ratio": active.float().mean().item(),
+                    "RoughStair/progress_mean_m": (
+                        progress[active].mean().item() if active.any() else 0.0
+                    ),
+                    "RoughStair/progress_window_delta_mean_m": (
+                        window_progress[active].mean().item() if active.any() else 0.0
+                    ),
+                    "RoughStair/progress_window_steps_mean": (
+                        self._window_count[active].float().mean().item() if active.any() else 0.0
+                    ),
+                    "RoughStair/progress_stuck_steps_mean": (
+                        self._stuck_count[active].float().sum().item() / float(active_count.item())
+                    ),
+                    "RoughStair/progress_failure_termination_rate": (
+                        terminated[active].float().mean().item() if active.any() else 0.0
+                    ),
+                }
+            )
+        return terminated
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            return
+        if self._window_count is not None:
+            self._window_count[env_ids] = 0
+        if self._stuck_count is not None:
+            self._stuck_count[env_ids] = 0
+        if self._backward_count is not None:
+            self._backward_count[env_ids] = 0
+
+
+class RoughStairProgressSuccess:
+    """End rough stair tasks as a timeout once enough commanded progress is made."""
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        command_name: str = "velocity_height",
+        min_command_vx: float = 0.15,
+        min_episode_steps: int = 20,
+    ) -> torch.Tensor:
+        active, progress, success_progress, _ = _rough_stair_progress(env)
+        moving_command = active
+        if hasattr(env, "command_manager"):
+            try:
+                cmd = env.command_manager.get_command(command_name)
+                moving_command = moving_command & (cmd[:, 0] > float(min_command_vx))
+            except Exception:
+                pass
+        reached = (
+            moving_command
+            & (env.episode_length_buf > int(min_episode_steps))
+            & (success_progress > 0.0)
+            & (progress >= success_progress)
+        )
+        if hasattr(env, "extras") and _should_log_step(env):
+            env.extras.setdefault("log", {}).update(
+                {
+                    "RoughStair/progress_success_rate": (
+                        reached[active].float().mean().item() if active.any() else 0.0
+                    ),
+                    "RoughStair/progress_success_target_mean_m": (
+                        success_progress[active].mean().item() if active.any() else 0.0
+                    ),
+                }
+            )
+        return reached
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        del env_ids
+
+
+rough_stair_progress_failure = RoughStairProgressFailure()
+rough_stair_progress_success = RoughStairProgressSuccess()
 
 
 def catastrophic_state(
@@ -405,11 +585,7 @@ class LegContactDelayed:
         recovery_grace_steps: int = 0,
         recovery_terminate: bool = True,
     ) -> torch.Tensor:
-        if (
-            self._fail_count is None
-            or self._fail_count.shape[0] != env.num_envs
-            or self._fail_count.device != env.device
-        ):
+        if not _same_shape_device(self._fail_count, env):
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         sensor: ContactSensor = env.scene[sensor_name]

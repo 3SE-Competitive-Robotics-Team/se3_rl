@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
-from dataclasses import replace
 from pathlib import Path
 
 import mujoco
@@ -106,6 +105,7 @@ class WheelLeggedRobot:
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
         self.model = self._build_model(str(self.model_path), cfg)
+        self.rough_terrain_info = getattr(cfg, "_rough_terrain_info", None)
         # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -585,6 +585,70 @@ class WheelLeggedRobot:
     def diagnostics(self) -> dict[str, object]:
         return model_diagnostics(self.model)
 
+    def startup_contract(self) -> dict[str, object]:
+        """返回 sim2sim 启动时最容易误配的合同和模型语义。"""
+
+        return {
+            "model_path": str(self.model_path),
+            "fourbar_surrogate": bool(self.fourbar_surrogate),
+            "policy_joint_names": list(self.policy_joint_names),
+            "output_joint_names": list(self.output_joint_names),
+            "motor_actuator_names": list(self.motor_actuator_names),
+            "action_scale": self.action_scale.tolist(),
+            "action_clip": None if self.cfg.action_clip is None else float(self.cfg.action_clip),
+            "height_conditioned_action_default": bool(
+                self.action_decoder.height_conditioned_action_default
+            ),
+            "active_rod_action_semantics": bool(self.active_rod_action_semantics),
+            "leg_kp": float(self.leg_kp),
+            "leg_kd": float(self.leg_kd),
+            "wheel_kd": float(self.wheel_kd),
+            "sim_dt": float(self.sim_dt),
+            "control_dt": float(self.control_dt),
+            "action_delay_config": self.action_delay_cfg.model_dump(),
+            "rough_terrain": (
+                self.rough_terrain_info
+                if self.rough_terrain_info is not None
+                else {"enabled": False}
+            ),
+            "initial_command": self.command.tolist(),
+            "yaw_pid_enabled": bool(self.cfg.yaw_pid.enabled),
+            "yaw_pid_target_rad": float(self.cfg.yaw_pid.target_yaw_rad),
+            "rc_initial_output_enabled": bool(self.cfg.rc_switch.initial_output_enabled),
+            "rc_off_mode": str(self.cfg.rc_switch.off_mode),
+            "rc_event_count": len(self.cfg.rc_switch.events),
+        }
+
+    def set_rough_terrain_level(self, level: int) -> dict[str, object]:
+        """Switch the active rough-terrain row by moving the compiled terrain body."""
+
+        info = self.rough_terrain_info
+        if not isinstance(info, dict) or not info.get("enabled"):
+            raise RuntimeError("rough terrain is not enabled for this sim2sim run")
+        origins = info.get("terrain_origins")
+        if not isinstance(origins, list) or not origins:
+            raise RuntimeError("rough terrain origins were not recorded at model build time")
+        num_rows = int(info.get("num_rows", len(origins)))
+        col = int(info.get("column", 0))
+        clamped_level = max(0, min(num_rows - 1, int(level)))
+        if col < 0 or col >= len(origins[clamped_level]):
+            raise RuntimeError(f"rough terrain column {col} is out of range")
+
+        origin = np.asarray(origins[clamped_level][col], dtype=np.float64)
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "terrain")
+        if body_id < 0:
+            raise RuntimeError("compiled MuJoCo model does not contain a 'terrain' body")
+
+        self.model.body_pos[body_id] = -origin
+        mujoco.mj_forward(self.model, self.data)
+        object.__setattr__(self.cfg, "rough_terrain_level", int(clamped_level))
+        info = dict(info)
+        info["level"] = int(clamped_level)
+        info["origin"] = origin.tolist()
+        self.rough_terrain_info = info
+        object.__setattr__(self.cfg, "_rough_terrain_info", info)
+        return info
+
     def _lift_root_to_clear_floor(self) -> None:
         """如果 reset 姿态穿地，则整体上抬到可碰撞几何体离地。"""
         min_z = self._min_collision_geom_z()
@@ -871,11 +935,10 @@ class WheelLeggedRobot:
     def _add_rough_terrain(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
         """用 MJLab 的 ROUGH_TERRAINS_CFG 生成 sim2sim rough terrain。"""
 
-        from mjlab.terrains.config import ROUGH_TERRAINS_CFG
         from mjlab.terrains.terrain_generator import TerrainGenerator
 
         WheelLeggedRobot._disable_default_floor_contacts(spec)
-        terrain_cfg = deepcopy(ROUGH_TERRAINS_CFG)
+        terrain_cfg = WheelLeggedRobot._rough_discovery_terrain_cfg()
         terrain_cfg.seed = int(cfg.seed)
         terrain_cfg.size = tuple(float(v) for v in cfg.rough_terrain_size_m)
         for name in ("pyramid_stairs", "pyramid_stairs_inv"):
@@ -884,50 +947,91 @@ class WheelLeggedRobot:
                 sub_cfg.step_height_range = tuple(
                     float(v) for v in cfg.rough_stair_step_height_range
                 )
+        terrain_cfg.curriculum = True
+        terrain_cfg.num_cols = len(terrain_cfg.sub_terrains)
+
+        generator = TerrainGenerator(terrain_cfg, device="cpu")
+        generator.compile(spec)
+        terrain_body = spec.body("terrain")
+        level = max(0, min(int(terrain_cfg.num_rows) - 1, int(cfg.rough_terrain_level)))
+        terrain_names = tuple(terrain_cfg.sub_terrains.keys())
         if str(cfg.rough_terrain_type) == "mixed":
-            generator = TerrainGenerator(terrain_cfg, device="cpu")
-            generator.compile(spec)
-            terrain_body = spec.body("terrain")
-            level = max(0, min(int(terrain_cfg.num_rows) - 1, int(cfg.rough_terrain_level)))
-            col = int(getattr(generator, "_num_cols", terrain_cfg.num_cols)) // 2
-            selected_origin = np.asarray(generator.terrain_origins[level, col], dtype=np.float64)
-            terrain_body.pos = (-selected_origin).tolist()
-            for geom in terrain_body.geoms:
-                geom.group = _GROUND_GEOM_GROUP
-                if int(geom.contype) == 0 and int(geom.conaffinity) == 0:
-                    continue
-                geom.contype = 2
-                geom.conaffinity = 1
-            return
-
-        terrain_body = spec.worldbody.add_body(name="terrain")
-        sub_cfg = replace(terrain_cfg.sub_terrains[str(cfg.rough_terrain_type)])
-        sub_cfg.size = tuple(float(v) for v in cfg.rough_terrain_size_m)
-
-        level = max(0, min(9, int(cfg.rough_terrain_level)))
-        lower, upper = (float(v) for v in terrain_cfg.difficulty_range)
-        difficulty = lower + (upper - lower) * ((float(level) + 0.5) / 10.0)
-        rng = np.random.default_rng(int(cfg.seed) + 7919 + 104729 * level)
-        output = sub_cfg.function(difficulty, spec, rng)
-
-        offset = -np.asarray(output.origin, dtype=np.float64)
-        for index, terrain_geom in enumerate(output.geometries):
-            geom = terrain_geom.geom
-            if geom is None:
-                continue
-            geom.name = f"rough_terrain_{index}"
-            geom.pos = np.asarray(geom.pos, dtype=np.float64) + offset
-            geom.mass = 0.0
+            origin_type = getattr(cfg, "rough_terrain_origin_type", None)
+            if origin_type is None or str(origin_type) == "mixed":
+                col = int(getattr(generator, "_num_cols", terrain_cfg.num_cols)) // 2
+                selected_name = terrain_names[col]
+            else:
+                selected_name = str(origin_type)
+                try:
+                    col = terrain_names.index(selected_name)
+                except ValueError as exc:
+                    allowed = ", ".join(terrain_names)
+                    raise ValueError(
+                        f"unknown rough terrain origin type {selected_name!r}; allowed: {allowed}"
+                    ) from exc
+        else:
+            selected_name = str(cfg.rough_terrain_type)
+            try:
+                col = terrain_names.index(selected_name)
+            except ValueError as exc:
+                allowed = ", ".join(terrain_names)
+                raise ValueError(
+                    f"unknown rough terrain type {selected_name!r}; allowed: {allowed}"
+                ) from exc
+        selected_origin = np.asarray(generator.terrain_origins[level, col], dtype=np.float64)
+        terrain_body.pos = (-selected_origin).tolist()
+        for geom in terrain_body.geoms:
             geom.group = _GROUND_GEOM_GROUP
+            if int(geom.contype) == 0 and int(geom.conaffinity) == 0:
+                continue
             geom.contype = 2
             geom.conaffinity = 1
-            if terrain_geom.color is not None:
-                geom.rgba[:] = terrain_geom.color
+        print(
+            "sim2sim rough terrain: "
+            f"type={cfg.rough_terrain_type} selected={selected_name} "
+            f"level={level} col={col} origin={selected_origin.tolist()} "
+            f"stair_step_height_range={tuple(float(v) for v in cfg.rough_stair_step_height_range)}"
+        )
+        object.__setattr__(
+            cfg,
+            "_rough_terrain_info",
+            {
+                "enabled": True,
+                "requested_type": str(cfg.rough_terrain_type),
+                "requested_origin_type": (
+                    None
+                    if getattr(cfg, "rough_terrain_origin_type", None) is None
+                    else str(cfg.rough_terrain_origin_type)
+                ),
+                "selected_type": selected_name,
+                "level": int(level),
+                "column": int(col),
+                "origin": selected_origin.tolist(),
+                "terrain_origins": np.asarray(generator.terrain_origins).tolist(),
+                "terrain_names": list(terrain_names),
+                "num_rows": int(terrain_cfg.num_rows),
+                "num_cols": int(terrain_cfg.num_cols),
+                "curriculum": bool(terrain_cfg.curriculum),
+                "size": [float(v) for v in terrain_cfg.size],
+                "stair_step_height_range": [float(v) for v in cfg.rough_stair_step_height_range],
+            },
+        )
 
-        for index, geom in enumerate(terrain_body.geoms):
-            if not geom.name:
-                geom.name = f"rough_terrain_{index}"
-            geom.mass = 0.0
+    @staticmethod
+    def _rough_discovery_terrain_cfg():
+        """返回与 rough discovery 训练端一致的 terrain generator 配置。"""
+
+        try:
+            from se3_train.tasks.rough_discovery.env_cfg import _rough_discovery_terrain_cfg
+
+            return _rough_discovery_terrain_cfg()
+        except Exception:
+            from mjlab.terrains.config import ROUGH_TERRAINS_CFG
+
+            terrain_cfg = deepcopy(ROUGH_TERRAINS_CFG)
+            terrain_cfg.curriculum = True
+            terrain_cfg.num_cols = len(terrain_cfg.sub_terrains)
+            return terrain_cfg
 
     @staticmethod
     def _disable_default_floor_contacts(spec: mujoco.MjSpec) -> None:

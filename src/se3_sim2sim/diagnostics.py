@@ -114,6 +114,9 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "output_enabled",
         "rc_switch_event",
         "rc_policy_reset",
+        "gru_hidden_reset",
+        "gru_hidden_norm_before_reset",
+        "gru_hidden_norm_after_reset",
         "rc_off_mode_no_torque",
     ):
         if key in samples[0]:

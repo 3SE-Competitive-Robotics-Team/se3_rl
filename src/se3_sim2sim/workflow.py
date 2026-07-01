@@ -47,17 +47,65 @@ class Sim2SimWorkflow:
         self._viewer_default_initial_base_height = self.cfg.robot.initial_base_height
         self._viewer_default_command = tuple(float(value) for value in self.cfg.robot.command)
         self._viewer_default_yaw_pid_enabled = bool(self.cfg.robot.yaw_pid.enabled)
+        self.startup_contract = self._startup_contract()
+
+    def _startup_contract(self) -> dict[str, object]:
+        contract = self.robot.startup_contract()
+        contract.update(
+            {
+                "checkpoint": str(self.policy.checkpoint_path),
+                "policy_iteration": self.policy.iteration,
+                "policy_type": self.policy.policy_type,
+                "num_obs": int(self.policy.spec.num_obs),
+                "num_actions": int(self.policy.spec.num_actions),
+                "viewer_mode": str(self.cfg.viewer.mode),
+                "fixed_reset": bool(self.cfg.fixed_reset),
+                "randomize_root": bool(self.cfg.randomize_root),
+                "initial_roll_rad": float(self.cfg.robot.initial_roll_rad),
+                "initial_pitch_rad": float(self.cfg.robot.initial_pitch_rad),
+                "initial_yaw_rad": float(self.cfg.robot.initial_yaw_rad),
+                "initial_base_height": self.cfg.robot.initial_base_height,
+            }
+        )
+        return contract
+
+    def _print_startup_contract(self) -> None:
+        contract = self.startup_contract
+        rough = contract.get("rough_terrain")
+        rough_text = ""
+        if isinstance(rough, dict) and rough.get("enabled"):
+            rough_text = (
+                f" rough={rough.get('selected_type')}@L{rough.get('level')}"
+                f"/col{rough.get('column')}"
+            )
+        print(
+            "[sim2sim contract] "
+            f"model={contract['model_path']} "
+            f"policy={contract['policy_type']}@{contract['policy_iteration']} "
+            f"scale={contract['action_scale']} clip={contract['action_clip']} "
+            f"height_default={contract['height_conditioned_action_default']} "
+            f"active_rod={contract['active_rod_action_semantics']}"
+            f"{rough_text}"
+        )
 
     def run(self) -> dict[str, object]:
+        self._print_startup_contract()
         obs = self.robot.reset(fixed=self.cfg.fixed_reset, randomize_root=self.cfg.randomize_root)
         deploy_init_obs_check = self._deploy_telemetry_initial_obs_check(obs)
         if deploy_init_obs_check.get("enabled"):
-            print(
+            line = (
                 "[deploy telemetry init] "
                 f"mode={deploy_init_obs_check.get('mode', '')} "
-                f"sample={deploy_init_obs_check.get('selected_sample_index', '')} "
-                f"max_obs_err={float(deploy_init_obs_check['max_abs_error']):.3e}"
+                f"sample={deploy_init_obs_check.get('selected_sample_index', '')}"
             )
+            if deploy_init_obs_check.get("shape_mismatch"):
+                line += (
+                    f" shape_mismatch reference={deploy_init_obs_check.get('reference_shape')} "
+                    f"obs={deploy_init_obs_check.get('obs_shape')}"
+                )
+            else:
+                line += f" max_obs_err={float(deploy_init_obs_check.get('max_abs_error', 0.0)):.3e}"
+            print(line)
         pre_policy_settle = {"enabled": False}
         if self.cfg.robot.settle_base_before_policy:
             pre_policy_settle = self.robot.settle_base_before_policy(
@@ -286,6 +334,71 @@ class Sim2SimWorkflow:
                             telemetry=reset_telemetry,
                         )
                     continue
+                terrain_level_request = self._consume_viewer_terrain_level_request(self.viewer)
+                if terrain_level_request is not None:
+                    try:
+                        rough_info = self.robot.set_rough_terrain_level(terrain_level_request)
+                    except Exception as exc:
+                        self._notify_viewer_terrain_level_failed(
+                            self.viewer,
+                            terrain_level_request,
+                            str(exc),
+                        )
+                        print(
+                            "[viser] terrain level switch failed "
+                            f"L{int(terrain_level_request)}: {exc}"
+                        )
+                    else:
+                        episode_step_offset = step
+                        viewer_step_offset = step
+                        obs = self.robot.reset(
+                            fixed=self.cfg.fixed_reset,
+                            randomize_root=self.cfg.randomize_root,
+                        )
+                        self.robot.command[:] = np.asarray(
+                            self.cfg.robot.command,
+                            dtype=np.float64,
+                        )
+                        self.policy.reset()
+                        self.robot.reset_policy_io_state()
+                        obs = self.robot.observation()
+                        _next_rc_event = 0
+                        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                        _policy_memory_clean = True
+                        _interval_steps_remaining = (
+                            max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                        )
+                        _next_script_event = 0
+                        _traj_step = 0
+                        _traj_steps = self._trajectory_steps_for_height(
+                            float(self.robot.command[6])
+                        )
+                        _jump_active = self.robot.command[5] > 0.5
+                        _prev_action = None
+                        _prev_applied_action = None
+                        self._notify_viewer_terrain_level_changed(self.viewer, rough_info)
+                        mode = f"rough_terrain_level:{int(rough_info.get('level', 0))}"
+                        self._notify_viewer_reset(self.viewer, mode)
+                        print(
+                            "[viser] switched rough terrain "
+                            f"level={rough_info.get('level')} "
+                            f"type={rough_info.get('selected_type')}"
+                        )
+                        if self.viewer is not None:
+                            reset_telemetry = self.robot.telemetry(reward=0.0)
+                            reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["rc_switch_event"] = 0.0
+                            reset_telemetry["rc_policy_reset"] = 1.0
+                            reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                            reset_telemetry["target_mode"] = mode
+                            self.viewer.log_state(
+                                self.robot.model,
+                                self.robot.data,
+                                step=0,
+                                telemetry=reset_telemetry,
+                            )
+                    continue
                 episode_step = max(0, step - 1 - episode_step_offset)
                 sim_time_s = episode_step * control_dt
                 push_delta = self._consume_viewer_push_request(self.viewer)
@@ -393,6 +506,41 @@ class Sim2SimWorkflow:
                         rc_switch_event = 1.0
                     obs = self.robot.observation()
 
+                gru_hidden_reset = 0.0
+                gru_hidden_norm_before = None
+                gru_hidden_norm_after = None
+                if self._consume_viewer_gru_hidden_reset_request(self.viewer):
+                    hidden_norm = getattr(self.policy, "hidden_state_norm", None)
+                    if callable(hidden_norm):
+                        gru_hidden_norm_before = hidden_norm()
+                    self.policy.reset()
+                    if callable(hidden_norm):
+                        gru_hidden_norm_after = hidden_norm()
+                    _policy_memory_clean = True
+                    gru_hidden_reset = 1.0
+                    self._notify_viewer_gru_hidden_reset(
+                        self.viewer,
+                        step=max(0, step - viewer_step_offset),
+                        before_norm=gru_hidden_norm_before,
+                        after_norm=gru_hidden_norm_after,
+                    )
+                    before_text = (
+                        "-"
+                        if gru_hidden_norm_before is None
+                        else f"{float(gru_hidden_norm_before):.6f}"
+                    )
+                    after_text = (
+                        "-"
+                        if gru_hidden_norm_after is None
+                        else f"{float(gru_hidden_norm_after):.6f}"
+                    )
+                    print(
+                        "[viser] reset GRU hidden "
+                        f"step={max(0, step - viewer_step_offset)} "
+                        f"norm={before_text}->{after_text}"
+                    )
+                    obs = self.robot.observation()
+
                 policy_iteration = self._policy_iteration_int()
                 self.robot.update_stair_ctbc(iteration=policy_iteration)
                 obs = self.robot.observation()
@@ -418,6 +566,13 @@ class Sim2SimWorkflow:
                 info["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
                 info["rc_switch_event"] = rc_switch_event
                 info["rc_policy_reset"] = rc_policy_reset
+                info["gru_hidden_reset"] = gru_hidden_reset
+                info["gru_hidden_norm_before_reset"] = (
+                    0.0 if gru_hidden_norm_before is None else float(gru_hidden_norm_before)
+                )
+                info["gru_hidden_norm_after_reset"] = (
+                    0.0 if gru_hidden_norm_after is None else float(gru_hidden_norm_after)
+                )
                 info["rc_off_mode"] = str(rc_sched.off_mode)
                 action_now = np.asarray(info["last_action"], dtype=np.float64)
                 applied_action_now = np.asarray(info["applied_action"], dtype=np.float64)
@@ -489,6 +644,13 @@ class Sim2SimWorkflow:
                     "output_enabled": float(info.get("output_enabled", 1.0)),
                     "rc_switch_event": float(info.get("rc_switch_event", 0.0)),
                     "rc_policy_reset": float(info.get("rc_policy_reset", 0.0)),
+                    "gru_hidden_reset": float(info.get("gru_hidden_reset", 0.0)),
+                    "gru_hidden_norm_before_reset": float(
+                        info.get("gru_hidden_norm_before_reset", 0.0)
+                    ),
+                    "gru_hidden_norm_after_reset": float(
+                        info.get("gru_hidden_norm_after_reset", 0.0)
+                    ),
                     "rc_off_mode_no_torque": 1.0
                     if str(info.get("rc_off_mode", "hold-current")) == "no-torque"
                     else 0.0,
@@ -581,6 +743,7 @@ class Sim2SimWorkflow:
                 "spec": self.policy.spec.to_dict(),
             },
             "model_diagnostics": model_diag,
+            "startup_contract": self.startup_contract,
             "pre_policy_settle": pre_policy_settle,
             "initial_policy_io": initial_policy_io,
             "deploy_telemetry_init_obs_check": deploy_init_obs_check,
@@ -680,6 +843,7 @@ class Sim2SimWorkflow:
                     initial_command=self.cfg.robot.command,
                     yaw_pid_enabled=self.cfg.robot.yaw_pid.enabled,
                     initial_yaw_target_rad=self.cfg.robot.yaw_pid.target_yaw_rad,
+                    rough_terrain_info=self.robot.rough_terrain_info,
                 )
             )
             return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
@@ -799,6 +963,40 @@ class Sim2SimWorkflow:
         return None
 
     @staticmethod
+    def _consume_viewer_gru_hidden_reset_request(viewer: object | None) -> bool:
+        """从 viewer 或组合 viewer 中消费一次 GRU hidden reset 请求。"""
+        if viewer is None:
+            return False
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            return any(
+                Sim2SimWorkflow._consume_viewer_gru_hidden_reset_request(child)
+                for child in children
+            )
+        consume = getattr(viewer, "consume_gru_hidden_reset_request", None)
+        if callable(consume):
+            return bool(consume())
+        return False
+
+    @staticmethod
+    def _consume_viewer_terrain_level_request(viewer: object | None) -> int | None:
+        """从 viewer 或组合 viewer 中消费 rough terrain level 切换请求。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_terrain_level_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume = getattr(viewer, "consume_terrain_level_request", None)
+        if callable(consume):
+            requested = consume()
+            return None if requested is None else int(requested)
+        return None
+
+    @staticmethod
     def _notify_viewer_reset(viewer: object | None, mode: str = "normal") -> None:
         """通知 viewer 主线程已经完成 reset。"""
         if viewer is None:
@@ -811,6 +1009,66 @@ class Sim2SimWorkflow:
         notify = getattr(viewer, "notify_reset", None)
         if callable(notify):
             notify(mode)
+
+    @staticmethod
+    def _notify_viewer_gru_hidden_reset(
+        viewer: object | None,
+        *,
+        step: int,
+        before_norm: float | None,
+        after_norm: float | None,
+    ) -> None:
+        """通知 viewer 主线程已经完成 GRU hidden reset。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_gru_hidden_reset(
+                    child,
+                    step=step,
+                    before_norm=before_norm,
+                    after_norm=after_norm,
+                )
+            return
+        notify = getattr(viewer, "notify_gru_hidden_reset", None)
+        if callable(notify):
+            notify(step=step, before_norm=before_norm, after_norm=after_norm)
+
+    @staticmethod
+    def _notify_viewer_terrain_level_changed(
+        viewer: object | None,
+        info: dict[str, object],
+    ) -> None:
+        """通知 viewer rough terrain level 已切换。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_terrain_level_changed(child, info)
+            return
+        notify = getattr(viewer, "notify_terrain_level_changed", None)
+        if callable(notify):
+            notify(info)
+
+    @staticmethod
+    def _notify_viewer_terrain_level_failed(
+        viewer: object | None,
+        level: int,
+        message: str,
+    ) -> None:
+        """通知 viewer rough terrain level 切换失败。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_terrain_level_failed(child, level, message)
+            return
+        notify = getattr(viewer, "notify_terrain_level_failed", None)
+        if callable(notify):
+            notify(level, message)
 
     @staticmethod
     def _notify_viewer_checkpoint_loaded(
