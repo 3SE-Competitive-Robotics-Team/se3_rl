@@ -54,6 +54,15 @@ class YawPidController:
         self.command = self._clip(self.kp * self.error)
         return self.command
 
+    def set_target_yaw(self, target_yaw: float) -> None:
+        """更新目标 yaw，并重置积分/微分状态，避免旧误差残留。"""
+
+        self.target_yaw = float(wrap_angle(float(target_yaw)))
+        self.cfg.target_yaw_rad = self.target_yaw
+        self.error = float(wrap_angle(self.target_yaw - self.current_yaw))
+        self.prev_error = self.error
+        self.integral = 0.0
+
     def update(self, current_yaw: float, dt: float) -> float:
         """根据当前 yaw 和控制周期更新 yaw_rate 指令。"""
 

@@ -24,6 +24,10 @@ from se3_shared import (
 from se3_train.mdp import recovery_state
 from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.diagnostic_logging import (
+    DEFAULT_DIAGNOSTIC_LOG_INTERVAL_STEPS,
+    should_log_diagnostics,
+)
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     active_rod_angle_terms,
@@ -40,7 +44,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
-_DEFAULT_REWARD_LOG_INTERVAL_STEPS = 64
+_DEFAULT_REWARD_LOG_INTERVAL_STEPS = DEFAULT_DIAGNOSTIC_LOG_INTERVAL_STEPS
 _FOURBAR_WHEEL_RADIUS_M = 0.06
 _ACTION_SMOOTH_PREV_ATTR = "_se3_action_smooth_prev_action"
 _ACTION_SMOOTH_PREV_PREV_ATTR = "_se3_action_smooth_prev_prev_action"
@@ -82,9 +86,11 @@ def _should_log_step(
     env: ManagerBasedRlEnv, interval: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS
 ) -> bool:
     """按 policy step 降频写 host 标量日志。"""
-    step = int(getattr(env, "common_step_counter", 0))
-    interval = max(1, int(getattr(env, "_se3_reward_log_interval_steps", interval)))
-    return interval <= 1 or (step - 1) % interval == 0
+    return should_log_diagnostics(
+        env,
+        interval,
+        attr_name="_se3_reward_log_interval_steps",
+    )
 
 
 def _episode_phase_scale(
@@ -1601,19 +1607,16 @@ def recovery_diagnostics(
     contact_force_threshold: float = 35.0,
     action_saturation_threshold: float = 0.95,
     active_rod_margin_warning: float = 0.05,
-    log_interval_steps: int = 1,
-    core_log_interval_steps: int = 1,
+    log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
+    core_log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
 ) -> torch.Tensor:
     """记录 recovery one-policy 诊断量，返回 0 以避免改变奖励语义。"""
     zero = torch.zeros(env.num_envs, device=env.device)
     if not hasattr(env, "extras"):
         return zero
 
-    step = int(getattr(env, "common_step_counter", 0))
-    heavy_interval = max(1, int(log_interval_steps))
-    core_interval = max(1, int(core_log_interval_steps))
-    heavy_due = heavy_interval <= 1 or (step - 1) % heavy_interval == 0
-    core_due = core_interval <= 1 or (step - 1) % core_interval == 0
+    heavy_due = _should_log_step(env, log_interval_steps)
+    core_due = _should_log_step(env, core_log_interval_steps)
     if not heavy_due and not core_due:
         return zero
 
@@ -2201,7 +2204,7 @@ def flat_leg_contact_penalty(
     has_contact = (force_mag > float(force_threshold)).any(dim=1)
     _accumulate_command_curriculum_metric(env, "leg_contact", has_contact.float(), active)
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Locomotion/flat_leg_contact_rate"] = _masked_mean(
             has_contact.float(), active
         )
@@ -2261,7 +2264,7 @@ def flat_wheel_contact_penalty(
     contact_ratio = in_contact.float().mean(dim=1)
     penalty = 1.0 - contact_ratio
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/flat_wheel_contact_ratio": _masked_mean(contact_ratio, active),
@@ -2419,7 +2422,7 @@ def upright_wheel_contact_penalty(
     contact_ratio = in_contact.float().mean(dim=1)
     penalty = (1.0 - contact_ratio) * gate
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/upright_wheel_contact_ratio": _masked_mean(contact_ratio, active),
@@ -2486,7 +2489,7 @@ def upright_wheel_slip_penalty(
     )
     penalty = torch.clamp(penalty, max=float(max_penalty))
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/upright_idle_wheel_speed": _masked_mean(
@@ -2524,7 +2527,7 @@ def recovery_upright(
     pg_z = robot.data.projected_gravity_b[:, 2]
     upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
         cache_reset = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")
         log = {
@@ -2667,7 +2670,7 @@ def recovery_progress(
     prev_upright[active] = upright[active].detach()
     prev_height[active] = height[active].detach()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/progress_reward": reward[active].mean().item() if active.any() else 0.0,
@@ -2693,7 +2696,7 @@ def recovery_hard_tilt_upright(
     upright_half = torch.clamp(-pg_z, 0.0, 1.0)
     reward = upright_half.pow(float(power)) * hard_tilt.float()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/hard_tilt_upright_reward": _masked_mean(reward, hard_tilt),
@@ -2733,7 +2736,7 @@ def recovery_hard_tilt_supported_upright(
     reward = upright_half * supported.float() + milestone.float() * float(near_upright_bonus)
     reward = reward * hard_tilt.float()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/hard_tilt_supported_upright_reward": _masked_mean(reward, hard_tilt),
@@ -2779,7 +2782,7 @@ def recovery_stable_bonus(
         success.float() * float(per_step_bonus) + completed.float() * float(completion_bonus)
     ) * active.float()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         valid_time = episode & (time_to_success >= 0)
         ever_completed = episode & (time_to_success >= 0)
         env.extras.setdefault("log", {}).update(
@@ -2817,7 +2820,7 @@ def recovery_height(
     near_upright_gate = _smoothstep01((float(gate_start_deg) - tilt) / gate_span)
     near_upright_gate = torch.clamp(near_upright_gate, min=float(min_gate))
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         hard_tilt = _recovery_hard_tilt_mask(env)
         env.extras.setdefault("log", {}).update(
             {
@@ -2858,7 +2861,7 @@ def recovery_wheel_contact(
     gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         hard_tilt = _recovery_hard_tilt_mask(env)
         env.extras.setdefault("log", {}).update(
             {

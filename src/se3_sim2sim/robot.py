@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import mujoco
@@ -601,7 +603,8 @@ class WheelLeggedRobot:
         min_z = float("inf")
         for geom_id in geom_ids:
             if (
-                self.model.geom_type[geom_id]
+                geom_id in self._ground_geom_ids
+                or self.model.geom_type[geom_id]
                 in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_HFIELD)
                 or self.model.geom_contype[geom_id] == 0
             ):
@@ -819,6 +822,8 @@ class WheelLeggedRobot:
         spec = mujoco.MjSpec.from_file(xml_path)
         if cfg.stair_terrain:
             WheelLeggedRobot._add_stair_terrain_geoms(spec, cfg)
+        if cfg.rough_terrain:
+            WheelLeggedRobot._add_rough_terrain(spec, cfg)
 
         joint_names = tuple(joint.name for joint in spec.joints if joint.name)
         site_names = tuple(site.name for site in spec.sites if site.name)
@@ -861,6 +866,83 @@ class WheelLeggedRobot:
         model = spec.compile()
         WheelLeggedRobot._assign_ground_geom_group(model)
         return model
+
+    @staticmethod
+    def _add_rough_terrain(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
+        """用 MJLab 的 ROUGH_TERRAINS_CFG 生成 sim2sim rough terrain。"""
+
+        from mjlab.terrains.config import ROUGH_TERRAINS_CFG
+        from mjlab.terrains.terrain_generator import TerrainGenerator
+
+        WheelLeggedRobot._disable_default_floor_contacts(spec)
+        terrain_cfg = deepcopy(ROUGH_TERRAINS_CFG)
+        terrain_cfg.seed = int(cfg.seed)
+        terrain_cfg.size = tuple(float(v) for v in cfg.rough_terrain_size_m)
+        for name in ("pyramid_stairs", "pyramid_stairs_inv"):
+            sub_cfg = terrain_cfg.sub_terrains.get(name)
+            if sub_cfg is not None and hasattr(sub_cfg, "step_height_range"):
+                sub_cfg.step_height_range = tuple(
+                    float(v) for v in cfg.rough_stair_step_height_range
+                )
+        if str(cfg.rough_terrain_type) == "mixed":
+            generator = TerrainGenerator(terrain_cfg, device="cpu")
+            generator.compile(spec)
+            terrain_body = spec.body("terrain")
+            level = max(0, min(int(terrain_cfg.num_rows) - 1, int(cfg.rough_terrain_level)))
+            col = int(getattr(generator, "_num_cols", terrain_cfg.num_cols)) // 2
+            selected_origin = np.asarray(generator.terrain_origins[level, col], dtype=np.float64)
+            terrain_body.pos = (-selected_origin).tolist()
+            for geom in terrain_body.geoms:
+                geom.group = _GROUND_GEOM_GROUP
+                if int(geom.contype) == 0 and int(geom.conaffinity) == 0:
+                    continue
+                geom.contype = 2
+                geom.conaffinity = 1
+            return
+
+        terrain_body = spec.worldbody.add_body(name="terrain")
+        sub_cfg = replace(terrain_cfg.sub_terrains[str(cfg.rough_terrain_type)])
+        sub_cfg.size = tuple(float(v) for v in cfg.rough_terrain_size_m)
+
+        level = max(0, min(9, int(cfg.rough_terrain_level)))
+        lower, upper = (float(v) for v in terrain_cfg.difficulty_range)
+        difficulty = lower + (upper - lower) * ((float(level) + 0.5) / 10.0)
+        rng = np.random.default_rng(int(cfg.seed) + 7919 + 104729 * level)
+        output = sub_cfg.function(difficulty, spec, rng)
+
+        offset = -np.asarray(output.origin, dtype=np.float64)
+        for index, terrain_geom in enumerate(output.geometries):
+            geom = terrain_geom.geom
+            if geom is None:
+                continue
+            geom.name = f"rough_terrain_{index}"
+            geom.pos = np.asarray(geom.pos, dtype=np.float64) + offset
+            geom.mass = 0.0
+            geom.group = _GROUND_GEOM_GROUP
+            geom.contype = 2
+            geom.conaffinity = 1
+            if terrain_geom.color is not None:
+                geom.rgba[:] = terrain_geom.color
+
+        for index, geom in enumerate(terrain_body.geoms):
+            if not geom.name:
+                geom.name = f"rough_terrain_{index}"
+            geom.mass = 0.0
+
+    @staticmethod
+    def _disable_default_floor_contacts(spec: mujoco.MjSpec) -> None:
+        """rough terrain 开启时关闭 MJCF 默认平面碰撞，避免覆盖 MJLab 地形。"""
+
+        for geom in spec.worldbody.geoms:
+            name = str(geom.name or "").lower()
+            if (
+                int(geom.type) == int(mujoco.mjtGeom.mjGEOM_PLANE)
+                or "floor" in name
+                or "ground" in name
+            ):
+                geom.contype = 0
+                geom.conaffinity = 0
+                geom.rgba[3] = 0.0
 
     @staticmethod
     def _add_stair_terrain_geoms(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:

@@ -55,6 +55,8 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     """机体碰撞盒下边缘相对单级台阶顶部的最小安全余量(m)。"""
     body_collision_bottom_offset: float = 0.0
     """机体碰撞盒下边缘相对 base_link frame 的 z 偏移(m)。"""
+    terrain_step_height_min_clamps: tuple[tuple[float, float], ...] = ()
+    """按单级台阶高度分段抬高 height command 下限: (step_height_m, min_height_m)。"""
     terrain_step_height_type_names: tuple[str, ...] = (
         "forward_stairs",
         "inv_pyramid_stairs",
@@ -504,7 +506,7 @@ class VelocityHeightCommandTerm(CommandTerm):
         if (
             not self.cfg.terrain_aware_height
             or len(env_ids) == 0
-            or self.cfg.terrain_height_clearance <= 0.0
+            or not self._has_terrain_height_constraints()
         ):
             return sampled_height
 
@@ -518,10 +520,16 @@ class VelocityHeightCommandTerm(CommandTerm):
         count = len(env_ids)
         height_min = torch.full((count,), self.cfg.height_range[0], device=self.device)
         height_max = torch.full((count,), self.cfg.height_range[1], device=self.device)
-        if self.cfg.terrain_aware_height and count > 0 and self.cfg.terrain_height_clearance > 0.0:
+        if self.cfg.terrain_aware_height and count > 0 and self._has_terrain_height_constraints():
             height_min = self._terrain_aware_min_height(env_ids, height_min)
             height_min = torch.minimum(height_min, height_max)
         return torch.rand(count, device=self.device) * (height_max - height_min) + height_min
+
+    def _has_terrain_height_constraints(self) -> bool:
+        """是否存在基于地形的 height command 下限约束。"""
+        return self.cfg.terrain_height_clearance > 0.0 or bool(
+            self.cfg.terrain_step_height_min_clamps
+        )
 
     def _terrain_aware_min_height(
         self,
@@ -559,8 +567,12 @@ class VelocityHeightCommandTerm(CommandTerm):
         difficulty_hi = (levels.float() + 1.0) / float(num_rows)
         difficulty_hi = float(lower) + (float(upper) - float(lower)) * difficulty_hi
         difficulty_hi = torch.clamp(difficulty_hi, float(lower), float(upper))
+        difficulty_level = levels.float() / float(max(1, num_rows - 1))
+        difficulty_level = float(lower) + (float(upper) - float(lower)) * difficulty_level
+        difficulty_level = torch.clamp(difficulty_level, float(lower), float(upper))
 
         step_height = torch.zeros_like(reference)
+        sampled_step_height = torch.zeros_like(reference)
         for terrain_index, (terrain_name, sub_cfg) in enumerate(sub_terrains):
             if terrain_name not in selected_names:
                 continue
@@ -574,17 +586,30 @@ class VelocityHeightCommandTerm(CommandTerm):
             step_low = float(step_height_range[0])
             step_high = float(step_height_range[1])
             difficulty = difficulty_hi[terrain_mask]
+            sampled_difficulty = difficulty_level[terrain_mask]
             if terrain_name == "random_stairs":
                 step_height[terrain_mask] = step_high * (0.5 + 0.5 * difficulty)
+                sampled_step_height[terrain_mask] = step_high * (0.5 + 0.5 * sampled_difficulty)
             else:
                 step_height[terrain_mask] = step_low + difficulty * (step_high - step_low)
+                sampled_step_height[terrain_mask] = step_low + sampled_difficulty * (
+                    step_high - step_low
+                )
 
         required = (
             step_height
             + float(self.cfg.terrain_height_clearance)
             - float(self.cfg.body_collision_bottom_offset)
         )
-        return torch.maximum(base_min, required)
+        min_height = torch.maximum(base_min, required)
+        for step_threshold, height_floor in sorted(self.cfg.terrain_step_height_min_clamps):
+            floor = torch.full_like(reference, float(height_floor))
+            min_height = torch.where(
+                sampled_step_height >= float(step_threshold),
+                torch.maximum(min_height, floor),
+                min_height,
+            )
+        return min_height
 
     def _constrain_diff_drive_command(
         self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor

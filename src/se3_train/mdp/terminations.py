@@ -13,6 +13,10 @@ from se3_shared import (
 )
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.diagnostic_logging import (
+    DEFAULT_DIAGNOSTIC_LOG_INTERVAL_STEPS,
+    should_log_diagnostics,
+)
 from se3_train.mdp.joint_indices import (
     is_closedchain_model,
     is_fourbar_surrogate_model,
@@ -23,16 +27,18 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
     from mjlab.sensor import ContactSensor
 
-_DEFAULT_TERMINATION_LOG_INTERVAL_STEPS = 64
+_DEFAULT_TERMINATION_LOG_INTERVAL_STEPS = DEFAULT_DIAGNOSTIC_LOG_INTERVAL_STEPS
 
 
 def _should_log_step(
     env: ManagerBasedRlEnv, interval: int = _DEFAULT_TERMINATION_LOG_INTERVAL_STEPS
 ) -> bool:
     """按 policy step 降频写 termination 诊断日志。"""
-    step = int(getattr(env, "common_step_counter", 0))
-    interval = max(1, int(getattr(env, "_se3_termination_log_interval_steps", interval)))
-    return interval <= 1 or (step - 1) % interval == 0
+    return should_log_diagnostics(
+        env,
+        interval,
+        attr_name="_se3_termination_log_interval_steps",
+    )
 
 
 def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -99,24 +105,25 @@ class BadOrientationDelayed:
 
         terminated = self._fail_count > max_steps
         if hasattr(env, "extras"):
+            if _should_log_step(env):
 
-            def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
-                if not mask.any():
-                    return 0.0
-                return values[mask].float().mean().item()
+                def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
+                    if not mask.any():
+                        return 0.0
+                    return values[mask].float().mean().item()
 
-            env.extras.setdefault("log", {}).update(
-                {
-                    "Recovery/bad_orientation_raw_rate": _masked_rate(raw_bad, recovery_mask),
-                    "Recovery/bad_orientation_counted_rate": _masked_rate(bad, recovery_mask),
-                    "Recovery/bad_orientation_grace_rate": _masked_rate(
-                        in_recovery_grace, recovery_mask
-                    ),
-                    "Recovery/bad_orientation_termination_rate": _masked_rate(
-                        terminated, recovery_mask
-                    ),
-                }
-            )
+                env.extras.setdefault("log", {}).update(
+                    {
+                        "Recovery/bad_orientation_raw_rate": _masked_rate(raw_bad, recovery_mask),
+                        "Recovery/bad_orientation_counted_rate": _masked_rate(bad, recovery_mask),
+                        "Recovery/bad_orientation_grace_rate": _masked_rate(
+                            in_recovery_grace, recovery_mask
+                        ),
+                        "Recovery/bad_orientation_termination_rate": _masked_rate(
+                            terminated, recovery_mask
+                        ),
+                    }
+                )
             # reset 日志会被清空，所以先缓存逐环境诊断，由 command reset 阶段搬运到 log。
             env.extras["_bad_orientation_diag"] = {
                 "raw_bad": raw_bad.detach().clone(),
@@ -174,7 +181,7 @@ class RecoveryStagnation:
         self._stagnation_count[improved] = 0
 
         terminated = active & (self._stagnation_count >= int(max_steps))
-        if hasattr(env, "extras"):
+        if hasattr(env, "extras") and _should_log_step(env):
             env.extras.setdefault("log", {}).update(
                 {
                     "Recovery/stagnation_steps": self._stagnation_count[active]
@@ -428,7 +435,7 @@ class LegContactDelayed:
         self._fail_count[env.episode_length_buf <= 1] = 0
         terminated = self._fail_count > int(max_steps)
 
-        if hasattr(env, "extras"):
+        if hasattr(env, "extras") and _should_log_step(env):
             env.extras.setdefault("log", {}).update(
                 {
                     "Stair/diag_leg_heavy_contact_rate": has_contact.float().mean().item(),

@@ -23,6 +23,7 @@ from se3_shared import (
     wheel_xz_to_output_pos_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp.diagnostic_logging import should_log_diagnostics
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     is_closedchain_model,
@@ -358,7 +359,10 @@ class SerialLegDelayedAction(ActionTerm):
 
         remaining[active] -= 1
         finished = active & (remaining <= 0)
-        if hasattr(self._env, "extras"):
+        if hasattr(self._env, "extras") and should_log_diagnostics(
+            self._env,
+            attr_name="_se3_action_log_interval_steps",
+        ):
             log = self._env.extras.setdefault("log", {})
             log["Reset/online_settle_active_rate"] = active.float().mean().item()
             log["Reset/online_settle_remaining_max"] = remaining.clamp_min(0).max().float().item()

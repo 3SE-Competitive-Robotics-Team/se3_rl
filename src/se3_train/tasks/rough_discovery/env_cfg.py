@@ -19,6 +19,9 @@ _DISCOVERY_MAX_LIN_VEL_X = 1.89
 _DISCOVERY_MAX_ANG_VEL_YAW = 9.41
 _ROUGH_DISCOVERY_STANDING_RATIO = 0.10
 _ROUGH_DISCOVERY_MOVING_MIN_COMMAND_NORM = 0.15
+_ROUGH_DISCOVERY_STAIR_HEIGHT_MAX = 0.20
+_ROUGH_DISCOVERY_HEIGHT_MIN_CLAMPS = ((0.10, 0.28), (0.15, 0.35))
+_ROUGH_DISCOVERY_HEIGHT_TERRAIN_TYPES = ("pyramid_stairs", "pyramid_stairs_inv")
 _STEPS_PER_POLICY_ITER = 64
 _CHECKPOINT_ITER_RE = re.compile(r"model_(\d+)")
 
@@ -33,13 +36,35 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a float, got {raw!r}") from exc
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 def _terrain_level_stages() -> list[dict[str, int]]:
     return [
         {"iteration": 0, "max_level": 0},
-        {"iteration": 500, "max_level": 1},
-        {"iteration": 1000, "max_level": 2},
-        {"iteration": 1800, "max_level": 3},
-        {"iteration": 2800, "max_level": _int_env("SE3_ROUGH_DISCOVERY_MAX_LEVEL", 5)},
+        {"iteration": 400, "max_level": 1},
+        {"iteration": 800, "max_level": 2},
+        {"iteration": 1300, "max_level": 3},
+        {"iteration": 1900, "max_level": 4},
+        {"iteration": 2600, "max_level": 5},
+        {"iteration": 3400, "max_level": 6},
+        {"iteration": 4300, "max_level": 7},
+        {"iteration": 5100, "max_level": 8},
+        {"iteration": 5800, "max_level": _int_env("SE3_ROUGH_DISCOVERY_MAX_LEVEL", 9)},
     ]
 
 
@@ -79,6 +104,18 @@ def _rough_discovery_terrain_cfg():
     terrain_cfg = deepcopy(ROUGH_TERRAINS_CFG)
     terrain_cfg.curriculum = True
     terrain_cfg.num_cols = len(terrain_cfg.sub_terrains)
+    stair_height_max = _float_env(
+        "SE3_ROUGH_DISCOVERY_STAIR_HEIGHT_MAX",
+        _ROUGH_DISCOVERY_STAIR_HEIGHT_MAX,
+    )
+    for name in ("pyramid_stairs", "pyramid_stairs_inv"):
+        sub_terrain = terrain_cfg.sub_terrains.get(name)
+        if sub_terrain is not None and hasattr(sub_terrain, "step_height_range"):
+            sub_terrain.step_height_range = (0.0, stair_height_max)
+    horizontal_scale = _float_env("SE3_ROUGH_DISCOVERY_HFIELD_HORIZONTAL_SCALE", 0.2)
+    for sub_terrain in terrain_cfg.sub_terrains.values():
+        if hasattr(sub_terrain, "horizontal_scale"):
+            sub_terrain.horizontal_scale = horizontal_scale
     return terrain_cfg
 
 
@@ -125,15 +162,24 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             else _int_env("SE3_ROUGH_DISCOVERY_MAX_INIT_LEVEL", 0)
         ),
     )
-    cfg.sim.nconmax = 256
-    cfg.sim.njmax = 1040
-    cfg.sim.contact_sensor_maxmatch = 128
+    cfg.sim.nconmax = _int_env("SE3_ROUGH_DISCOVERY_NCONMAX", 256)
+    cfg.sim.njmax = _int_env("SE3_ROUGH_DISCOVERY_NJMAX", 1040)
+    cfg.sim.contact_sensor_maxmatch = _int_env("SE3_ROUGH_DISCOVERY_CONTACT_SENSOR_MAXMATCH", 128)
+    if not _bool_env("SE3_ROUGH_DISCOVERY_KEEP_WHEEL_HEIGHT_SENSOR", False):
+        cfg.scene.sensors = tuple(
+            sensor
+            for sensor in cfg.scene.sensors
+            if getattr(sensor, "name", None) != "wheel_height_sensor"
+        )
 
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.lin_vel_x_range = (-0.4, 0.4)
     command_cfg.ang_vel_yaw_range = (-0.8, 0.8)
     command_cfg.standing_ratio = _ROUGH_DISCOVERY_STANDING_RATIO
     command_cfg.moving_command_min_norm = _ROUGH_DISCOVERY_MOVING_MIN_COMMAND_NORM
+    command_cfg.terrain_aware_height = True
+    command_cfg.terrain_step_height_min_clamps = _ROUGH_DISCOVERY_HEIGHT_MIN_CLAMPS
+    command_cfg.terrain_step_height_type_names = _ROUGH_DISCOVERY_HEIGHT_TERRAIN_TYPES
 
     reset_params = cfg.events["reset_root_state"].params
     reset_params["recovery_state_cache_path"] = None

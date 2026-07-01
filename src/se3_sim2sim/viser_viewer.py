@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import threading
 import time
@@ -43,6 +44,8 @@ class ViserViewer:
         checkpoint_path: Path | None = None,
         policy_iteration: object = None,
         initial_command: tuple[float, ...] | list[float] | None = None,
+        yaw_pid_enabled: bool = False,
+        initial_yaw_target_rad: float = 0.0,
     ) -> None:
         import viser
         from mjviser import ViserMujocoScene
@@ -85,6 +88,9 @@ class ViserViewer:
         self._command_lock = threading.Lock()
         self._command_vx = _command_value(initial_command, 0, 0.0)
         self._command_yaw_rate = _command_value(initial_command, 1, 0.0)
+        self._yaw_pid_enabled = bool(yaw_pid_enabled)
+        self._yaw_target_rad = float(initial_yaw_target_rad)
+        self._yaw_target_dirty = False
         self._command_height = _clamp(
             _command_value(initial_command, 4, _COMMAND_DEFAULT_HEIGHT),
             _COMMAND_HEIGHT_MIN,
@@ -217,10 +223,15 @@ class ViserViewer:
 
         del sim_time_s
         with self._command_lock:
+            yaw_target_rad = None
+            if self._yaw_pid_enabled and self._yaw_target_dirty:
+                yaw_target_rad = float(self._yaw_target_rad)
+                self._yaw_target_dirty = False
             return CommandInputUpdate(
                 lin_vel_x=float(self._command_vx),
                 yaw_rate=float(self._command_yaw_rate),
                 command_height=float(self._command_height),
+                yaw_target_rad=yaw_target_rad,
             )
 
     def _setup_gui(self) -> None:
@@ -333,6 +344,13 @@ class ViserViewer:
                     step=0.05,
                     initial_value=self._command_yaw_rate,
                 )
+                yaw_target_slider = self._server.gui.add_slider(
+                    "yaw target (deg)",
+                    min=-180.0,
+                    max=180.0,
+                    step=1.0,
+                    initial_value=math.degrees(self._yaw_target_rad),
+                )
                 height_slider = self._server.gui.add_slider(
                     "height (m)",
                     min=_COMMAND_HEIGHT_MIN,
@@ -340,15 +358,31 @@ class ViserViewer:
                     step=0.005,
                     initial_value=self._command_height,
                 )
+                command_options = ["Zero Motion", "Default Height"]
+                if self._yaw_pid_enabled:
+                    command_options.insert(1, "Hold Yaw")
                 command_buttons = self._server.gui.add_button_group(
                     "Command",
-                    options=["Zero Motion", "Default Height"],
+                    options=command_options,
                 )
+                yaw_delta_buttons = None
+                if self._yaw_pid_enabled:
+                    yaw_delta_buttons = self._server.gui.add_button_group(
+                        "Yaw target delta (deg)",
+                        options=["-45", "-15", "+15", "+45"],
+                    )
 
-                def _sync_command_from_gui(status: str = "updated") -> None:
+                def _sync_command_from_gui(
+                    status: str = "updated", *, yaw_target_changed: bool = False
+                ) -> None:
                     with self._command_lock:
                         self._command_vx = float(vx_slider.value)
                         self._command_yaw_rate = float(yaw_slider.value)
+                        self._yaw_target_rad = _wrap_angle_rad(
+                            math.radians(float(yaw_target_slider.value))
+                        )
+                        if self._yaw_pid_enabled and yaw_target_changed:
+                            self._yaw_target_dirty = True
                         self._command_height = _clamp(
                             float(height_slider.value),
                             _COMMAND_HEIGHT_MIN,
@@ -365,6 +399,10 @@ class ViserViewer:
                 def _(_) -> None:
                     _sync_command_from_gui()
 
+                @yaw_target_slider.on_update
+                def _(_) -> None:
+                    _sync_command_from_gui(yaw_target_changed=True)
+
                 @height_slider.on_update
                 def _(_) -> None:
                     _sync_command_from_gui()
@@ -374,10 +412,29 @@ class ViserViewer:
                     if event.target.value == "Zero Motion":
                         vx_slider.value = 0.0
                         yaw_slider.value = 0.0
-                        _sync_command_from_gui("zero motion")
+                        if self._yaw_pid_enabled:
+                            yaw_target_slider.value = math.degrees(self._current_yaw_rad())
+                            _sync_command_from_gui("zero motion, hold yaw", yaw_target_changed=True)
+                        else:
+                            _sync_command_from_gui("zero motion")
+                    elif event.target.value == "Hold Yaw":
+                        yaw_target_slider.value = math.degrees(self._current_yaw_rad())
+                        _sync_command_from_gui("hold current yaw", yaw_target_changed=True)
                     elif event.target.value == "Default Height":
                         height_slider.value = _COMMAND_DEFAULT_HEIGHT
                         _sync_command_from_gui("default height")
+
+                if yaw_delta_buttons is not None:
+
+                    @yaw_delta_buttons.on_click
+                    def _(event) -> None:
+                        delta_deg = float(event.target.value)
+                        target_deg = _wrap_angle_deg(float(yaw_target_slider.value) + delta_deg)
+                        yaw_target_slider.value = target_deg
+                        _sync_command_from_gui(
+                            f"yaw target {delta_deg:+.0f} deg",
+                            yaw_target_changed=True,
+                        )
 
             with self._server.gui.add_folder("Push Robot"):
                 push_vx_slider = self._server.gui.add_slider(
@@ -628,7 +685,18 @@ class ViserViewer:
         with self._command_lock:
             command_vx = self._command_vx
             command_yaw_rate = self._command_yaw_rate
+            yaw_target_rad = self._yaw_target_rad
             command_height = self._command_height
+        yaw_pid = self._last_telemetry.get("yaw_pid")
+        yaw_pid_text = ""
+        if isinstance(yaw_pid, dict):
+            yaw_pid_text = (
+                "<br/><strong>Yaw PID:</strong> "
+                f"current={math.degrees(float(yaw_pid.get('current_yaw', 0.0))):+.1f} deg, "
+                f"target={math.degrees(float(yaw_pid.get('target_yaw', yaw_target_rad))):+.1f} deg, "
+                f"error={math.degrees(float(yaw_pid.get('error', 0.0))):+.1f} deg, "
+                f"cmd={float(yaw_pid.get('command', 0.0)):+.2f} rad/s"
+            )
         with self._push_lock:
             push_status = self._push_status
         self._status_html.content = f"""
@@ -651,8 +719,9 @@ class ViserViewer:
             <strong>Command:</strong>
               vx={command_vx:+.2f} m/s,
               yaw={command_yaw_rate:+.2f} rad/s,
+              yaw_target={math.degrees(yaw_target_rad):+.1f} deg,
               h={command_height:.3f} m
-              ({html.escape(self._command_gui_status)})<br/>
+              ({html.escape(self._command_gui_status)}){yaw_pid_text}<br/>
             <strong>Push:</strong> {html.escape(push_status)}<br/>
             <hr style="border:0; border-top:1px solid #ddd; margin:0.45em 0;"/>
             <strong>Training progress:</strong> {progress_text}<br/>
@@ -667,6 +736,20 @@ class ViserViewer:
             <strong>Run:</strong> {html.escape(checkpoint["run"])}
           </div>
           """
+
+    def _current_yaw_rad(self) -> float:
+        yaw_pid = self._last_telemetry.get("yaw_pid")
+        if isinstance(yaw_pid, dict):
+            try:
+                return _wrap_angle_rad(float(yaw_pid.get("current_yaw", self._yaw_target_rad)))
+            except (TypeError, ValueError):
+                pass
+        try:
+            return _wrap_angle_rad(
+                float(self._last_telemetry.get("base_yaw", self._yaw_target_rad))
+            )
+        except (TypeError, ValueError):
+            return _wrap_angle_rad(self._yaw_target_rad)
 
 
 def _format_speed(value: float) -> str:
@@ -695,6 +778,14 @@ def _command_value(
 
 def _clamp(value: float, low: float, high: float) -> float:
     return min(max(float(value), float(low)), float(high))
+
+
+def _wrap_angle_rad(value: float) -> float:
+    return (float(value) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _wrap_angle_deg(value: float) -> float:
+    return (float(value) + 180.0) % 360.0 - 180.0
 
 
 def _sequence_item(value: object, index: int) -> object:
