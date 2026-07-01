@@ -421,12 +421,12 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU --env.sce
 Stage2/Stage3 训练时不在配置里写死 checkpoint，交接命令显式传：
 
 ```bash
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Gait-Stage2-GRU \
+uv run se3-train SE3-WheelLegged-FlowMatch-Gait-Stage2-GRU \
   --agent.resume True \
   --agent.load-run <stage1-run> \
   --agent.load-checkpoint <stage1-checkpoint>
 
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU \
+uv run se3-train SE3-WheelLegged-FlowMatch-Gait-Stage3-GRU \
   --agent.resume True \
   --agent.load-run <stage2-run> \
   --agent.load-checkpoint <stage2-checkpoint>

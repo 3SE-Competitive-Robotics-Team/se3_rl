@@ -22,7 +22,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     else:
         cfg.resume = True
         cfg.max_iterations = int(os.environ.get("SE3_RECOVERY_FINETUNE_MAX_ITERATIONS", "5000"))
-        cfg.logger = os.environ.get("SE3_LOGGER", "wandb")
+        cfg.logger = os.environ.get("SE3_LOGGER", "tensorboard")
         cfg.load_run = os.environ.get("SE3_RECOVERY_FINETUNE_LOAD_RUN", _DEFAULT_LOAD_RUN)
         cfg.load_checkpoint = os.environ.get(
             "SE3_RECOVERY_FINETUNE_LOAD_CHECKPOINT",

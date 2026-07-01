@@ -60,7 +60,7 @@ def _resolve_play_config(task_id: str, cfg: PlayConfig) -> PlayConfig:
     """为 trained agent 自动补全本地最新 checkpoint。"""
     if cfg.agent != "trained":
         return cfg
-    if cfg.checkpoint_file is not None or cfg.wandb_run_path is not None:
+    if cfg.checkpoint_file is not None:
         return cfg
 
     experiment_name = load_rl_cfg(task_id).experiment_name
@@ -78,9 +78,7 @@ def _latest_checkpoint(base: Path, experiment_name: str) -> Path:
         else []
     )
     if not runs:
-        raise FileNotFoundError(
-            "未找到本地 checkpoint，请传 --checkpoint-file 或 --wandb-run-path。"
-        )
+        raise FileNotFoundError("未找到本地 checkpoint，请传 --checkpoint-file。")
 
     latest_run = max(runs, key=lambda path: (path.stat().st_mtime, path.name))
     candidates = list(latest_run.glob("model_*.pt"))
@@ -593,7 +591,7 @@ def _configure_viser_training_env(task_id: str, cfg: PlayConfig) -> None:
         return
 
     run_dir = _training_run_dir_from_checkpoint(cfg.checkpoint_file)
-    if run_dir is None and cfg.wandb_run_path is None:
+    if run_dir is None:
         run_dir = _latest_training_run_dir(task_id, Path(cfg.log_root))
     if run_dir is not None:
         os.environ["SE3_VISER_TRAIN_RUN_DIR"] = str(run_dir)

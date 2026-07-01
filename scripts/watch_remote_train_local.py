@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-_EXCLUDED_RUN_DIRS = {"base_model", "wandb_checkpoints"}
+_EXCLUDED_RUN_DIRS = {"base_model"}
 # Kept for compatibility only. The default path now launches the original task
 # name and asks that task to use its training env as play_env_cfg.
 _LEGACY_TRAIN_VIEW_TASKS = {

@@ -21,7 +21,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         # 直接从台阶 level 0 开始训练；保持源仓库 stair GRU 的 64-step rollout。
         # CTBC 从第 0 轮满幅启用，900->1800 轮退火，3000 轮结束训练。
         max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3000"))
-        logger = os.environ.get("SE3_LOGGER", "wandb")
+        logger = os.environ.get("SE3_LOGGER", "tensorboard")
         resume = True
 
     # 从低 std 的 34 维 GRU 基模 warm-start 时，3e-4 的首个 Adam step 会让 KL 爆炸。
@@ -72,7 +72,6 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=_NUM_STEPS_PER_ENV,
         max_iterations=max_iterations,
         logger=logger,
-        wandb_project="se3_wheel_leg",
         resume=resume,
         load_run=os.environ.get("SE3_STAIR_LOAD_RUN", _DEFAULT_LOAD_RUN),
         load_checkpoint=os.environ.get(

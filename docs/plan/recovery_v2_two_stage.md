@@ -413,7 +413,7 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU \
   --env.scene.num-envs 8 \
   --gpu-ids None
 
-uv run --env-file .env se3-train SE3-WheelLegged-Recovery-Discovery-GRU \
+uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU \
   --env.scene.num-envs 4096
 
 uv run se3-recovery-state-cache \
@@ -423,7 +423,7 @@ uv run se3-recovery-state-cache \
   --settle-s 10 \
   --output assets/recovery_states/serialleg_closedchain_recovery_v2.npz
 
-uv run --env-file .env se3-train SE3-WheelLegged-Recovery-Deploy-GRU \
+uv run se3-train SE3-WheelLegged-Recovery-Deploy-GRU \
   --agent.load-run <discovery_run> \
   --agent.load-checkpoint model_<iter>.pt \
   --env.scene.num-envs 4096

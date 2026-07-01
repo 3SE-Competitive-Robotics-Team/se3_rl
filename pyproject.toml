@@ -15,7 +15,6 @@ dependencies = [
     "rerun-sdk==0.31.4",
     "scipy==1.17.1",
     "numpy==2.4.4",
-    "wandb==0.26.1",
     "pydantic==2.13.4",
     "casadi",
     "onnxruntime>=1.26.0",

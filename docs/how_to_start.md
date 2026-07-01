@@ -122,45 +122,9 @@ git status
 git diff
 ```
 
-## 4. 申请并配置 W&B
+## 4. 跑一次 smoke
 
-训练默认把指标上传到 Weights & Biases 项目：
-
-https://wandb.ai/3se-competitive-robotics-team/se3_wheel_leg
-
-W&B API key 文档：https://docs.wandb.ai/quickstart
-
-需要做三件事：
-
-1. 注册或登录 W&B 账号。
-2. 让项目管理员把你的账号加入团队或项目。
-3. 在 W&B 个人设置里创建 API key，只保存到本地 `.env`，不要提交。
-
-从模板创建 `.env`：
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env`，填入你的 key：
-
-```bash
-WANDB_API_KEY=你的_wandb_api_key
-```
-
-`.env` 已被 `.gitignore` 忽略。
-
-训练机器无法访问 W&B 时，在 `.env` 加入离线模式：
-
-```bash
-WANDB_MODE=offline
-```
-
-**离线模式很重要**：不设 `WANDB_MODE=offline` 而 W&B 在线初始化失败时，训练会继续跑，但 checkpoint 一个都不会保存，日志里也看不出异常。网络不稳定时先加这行，事后再用 `wandb sync` 上传。正式训练前先确认在线上传可用，或把 `WANDB_MODE=offline` 作为保险。
-
-## 5. 跑一次 smoke
-
-smoke 只跑 5 轮，不上传 W&B，确认环境、MJCF、依赖和训练入口没有崩。改训练代码后先跑一次。
+smoke 只跑 5 轮，不上传日志，确认环境、MJCF、依赖和训练入口没有崩。改训练代码后先跑一次。
 
 ```bash
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
@@ -169,11 +133,11 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num
 
 训练循环正常结束，没有 Python traceback、MuJoCo 报错或 CUDA 报错，就可以进入正式训练。
 
-## 6. 开始第一次完整训练
+## 5. 开始第一次完整训练
 
 ```bash
-uv run --env-file .env se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 ```
 
 运行前确认 `.env` 存在，并已写入 W&B 配置。
@@ -194,7 +158,7 @@ uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 pkill -f "se3-train"
 ```
 
-## 7. 找到训练产物
+## 6. 找到训练产物
 
 checkpoint 在：
 
@@ -222,7 +186,7 @@ ls logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt | sort -V
 
 不要用字典序判断最新模型，`model_900.pt` 会排在 `model_1000.pt` 后面。
 
-## 8. 跑第一次 sim2sim
+## 7. 跑第一次 sim2sim
 
 sim2sim 用标准 MuJoCo CPU，可以在训练机器或本地电脑上跑。
 
@@ -243,7 +207,7 @@ uv run se3-sim2sim \
     --max-steps 200
 ```
 
-## 9. 第一次实验完成标准
+## 8. 第一次实验完成标准
 
 同时满足以下条件，这次入门实验就算完成：
 
@@ -256,7 +220,7 @@ uv run se3-sim2sim \
 
 完成后，你有了修改训练代码、重新训练、再用 sim2sim 验证的完整闭环。
 
-## 10. 常见问题
+## 9. 常见问题
 
 ### 找不到 `uv`
 
@@ -281,13 +245,9 @@ git add <被修改的文件>
 git commit
 ```
 
-### W&B 没有新 run
-
-确认 `.env` 存在，`WANDB_API_KEY` 正确，账号已加入团队，训练机器能访问 W&B。
-
 ### 训练没有 checkpoint
 
-先确认不是 smoke 模式（smoke 不下发 checkpoint）。正式训练需要带 `--env-file .env`。如果 W&B 在线初始化失败，训练可能继续跑但 checkpoint 不会保存，网络不稳定时把 `WANDB_MODE=offline` 写入 `.env` 后重新训练。
+先确认不是 smoke 模式（smoke 不下发 checkpoint）。检查 `logs/rsl_rl/` 目录下是否有对应 run 的 checkpoint 文件。
 
 ### CUDA 或 GPU 报错
 

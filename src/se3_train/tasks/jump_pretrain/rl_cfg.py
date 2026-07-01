@@ -24,7 +24,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         resume = False
     else:
         max_iterations = 1500
-        logger = os.environ.get("SE3_LOGGER", "wandb")
+        logger = os.environ.get("SE3_LOGGER", "tensorboard")
         resume = True
 
     return RslRlOnPolicyRunnerCfg(
@@ -70,7 +70,6 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=64,
         max_iterations=max_iterations,
         logger=logger,
-        wandb_project="se3_wheel_leg",
         # 从 GRU 行走基模加载，仅匹配数字迭代号，避免误加载跳跃阶段 checkpoint。
         resume=resume,
         load_run=_BASE_MODEL_DIR,

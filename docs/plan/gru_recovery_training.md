@@ -25,7 +25,7 @@ just train-recovery
 底层任务名：
 
 ```bash
-uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 4096
+uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 4096
 ```
 
 ## 网络与 PPO
@@ -232,7 +232,7 @@ wheel_contact_force > 1.0 N
 4. `Reset/mean_init_tilt_deg` 和 `Reset/max_init_tilt_deg` 符合当前课程预期。
 5. 没有新增 NaN、环境崩溃或异常终止暴涨。
 
-训练中优先看这些 wandb 指标：
+训练中优先看这些 TensorBoard 指标：
 
 | 指标 | 期望方向 | 含义 |
 |---|---|---|

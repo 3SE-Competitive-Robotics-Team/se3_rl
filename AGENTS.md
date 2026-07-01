@@ -14,29 +14,6 @@
 
 对话时出现的训练诊断指标统一在此解释。新接触的术语首次出现时应括注中文全称。
 
-### 跳跃诊断指标 (wandb — Jump/*)
-
-- `diag_mean_airborne_vz`：空中平均垂直速度（m/s），越大跳得越高
-- `diag_max_airborne_vz`：空中最大垂直速度峰值（m/s）
-- `diag_jump_success_rate`：空中且 vz > 成功阈值（1.0 m/s）的 env 比例
-- `diag_tilt_airborne_deg`：**空中姿态倾斜角（度）**，腾空阶段机身相对竖直方向的平均倾角。由 `acos(-projected_gravity_z)` 计算，0°=完全直立，>15° 通常表示 RSI 注入或域随机化过强导致空中不稳
-- `diag_complete_jumps`：完整走完 grounded→air→landing→grounded 的跳跃次数（每 iter 均值）
-- `diag_active_takeoffs`：策略主动蹬腿离地（非 RSI 注入）的次数（每 iter 均值）
-- `diag_rsi_takeoffs`：RSI 参考轨迹注入触发的蹬腿离地次数（每 iter 均值）
-- `diag_active_success_rate`：主动蹬腿中飞行高度达标的比例
-- `diag_active_takeoff_ratio_per_jump_flag`：jump_flag=1 的 env 中采取主动蹬腿的比例
-- `leg_contact_walk`：jump_flag=0（行走阶段）的 env 中腿部有地面接触的比例，正常应接近 0。轮足机器人接地点是轮子，腿部触地属于结构性异常姿态
-- `leg_contact_jump`：jump_flag=1（跳跃阶段）的 env 中腿部有地面接触的比例，空中应接近 0
-- `leg_contact_rsi`：RSI 注入窗口期（前 debounce+2 步）腿部接触比例，排查 RSI 过早触地
-- `leg_contact_landing`：跳跃 landing 阶段（stage==2）腿部接触比例，校准落地时序
-- `leg_contact_termination`：因非预期腿部触地导致 episode 终止的比例
-
-### 跳跃状态机阶段
-
-- `grounded`：双脚着地 / 行走阶段
-- `air`：腾空飞行阶段
-- `landing`：落地缓冲阶段
-
 ### 状态估计
 
 - `projected_gravity`：机身坐标系下的重力方向投影（3 维），z 分量 -1=完全直立、+1=完全倒置
@@ -74,9 +51,9 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --g
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
 # 评估 / sim2sim（纯 MuJoCo CPU + Rerun，macOS 可运行）
 uv run se3-sim2sim --max-steps 3000 --course walk-sweep
@@ -85,15 +62,15 @@ uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-
 uv run se3-sim2sim --checkpoint <checkpoint> --viewer none --max-steps 200 --print-every 20 --course walk-sweep
 
 # 清理
-rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
+rm -rf logs/ replays/ MUJOCO_LOG.TXT
 ```
 
 跳跃任务专用命令：
 
 ```bash
 # 跳跃训练
-uv run --env-file .env se3-train SE3-WheelLegged-Jump-PreTrain-GRU --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-Jump-PreTrain-GRU --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1024
 
 # 跳跃参考轨迹生成
 uv run se3-jump-to --height 0.4 --output assets/trajectories/jump_0.4m.npz
@@ -115,7 +92,7 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-e
 
 Smoke 模式特点：
 - 仅训练 5 轮
-- 不上传到 wandb
+- 不上传日志
 - 用于验证代码修改不会导致环境崩溃
 
 确认 smoke 通过后，再运行完整训练。
@@ -267,7 +244,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 - 提到远程训练机、GPU 机器、云机器、wuyingyun、无影云、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
 - 需要启动、停止、监控训练进程
-- 需要查看训练日志、wandb 数据
+- 需要查看训练日志、TensorBoard 数据
 - 需要拉取 checkpoint 到本地
 - 需要在远程机器执行 uv sync / git pull
 - 询问 tmux 会话管理
@@ -296,14 +273,6 @@ ps aux | grep se3-train | grep python | grep -v grep | awk '{print $2}' | xargs 
 # 或者用 pkill
 pkill -f "se3-train"
 ```
-
-### wandb 保存依赖
-
-**历史问题**：旧版 RSL-RL 的 checkpoint 保存逻辑为 `if self.logger.writer is not None and it % save_interval == 0`。当 wandb 初始化失败（网络超时）时 `writer=None`，会导致**整个训练过程不保存任何 checkpoint**，但训练本身正常跑、日志正常打印，极难察觉。
-
-**解决方案**：
-- 当前 `Se3OnPolicyRunner` 已给 W&B 初始化和写入加超时保护，失败后自动降级到本地 TensorBoard，并继续保存 checkpoint
-- 远程长时间训练仍应先确认代理可用，避免丢失在线日志与模型上传
 
 ### checkpoint 文件名排序
 

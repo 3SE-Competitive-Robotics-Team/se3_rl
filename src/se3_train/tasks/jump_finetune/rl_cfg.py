@@ -22,7 +22,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         resume = False
     else:
         max_iterations = 5000
-        logger = os.environ.get("SE3_LOGGER", "wandb")
+        logger = os.environ.get("SE3_LOGGER", "tensorboard")
         resume = True
 
     return RslRlOnPolicyRunnerCfg(
@@ -68,7 +68,6 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=64,
         max_iterations=max_iterations,
         logger=logger,
-        wandb_project="se3_wheel_leg",
         # 从 PreTrain checkpoint 加载，指定 run 目录避免匹配到其他 run
         resume=resume,
         load_run="2026-05-18_15-14-03",

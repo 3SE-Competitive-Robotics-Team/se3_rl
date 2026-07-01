@@ -15,7 +15,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         resume = False
     else:
         max_iterations = 5000
-        logger = os.environ.get("SE3_LOGGER", "wandb")
+        logger = os.environ.get("SE3_LOGGER", "tensorboard")
         resume = False
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
     init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "0.5"))
@@ -64,6 +64,5 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=64,
         max_iterations=max_iterations,
         logger=logger,
-        wandb_project="se3_wheel_leg",
         resume=resume,
     )
