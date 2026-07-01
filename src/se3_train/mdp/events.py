@@ -2264,7 +2264,12 @@ def randomize_pd_gains(
     kd_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """随机化 PD 增益(缩放默认增益)。"""
+    """随机化 PD 增益。
+
+    builtin <position> 执行器: gainprm[0]=stiffness, biasprm[1]=-stiffness, biasprm[2]=-damping。
+    builtin <velocity> 执行器: gainprm[0]=damping, biasprm[2]=-damping。
+    按执行器类型分别缩放 kp/kd。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -2284,17 +2289,16 @@ def randomize_pd_gains(
         env.device,
     )
 
-    # 随机化执行器增益(gainprm 和 biasprm)。
     default_gainprm = env.sim.get_default_field("actuator_gainprm")
     default_biasprm = env.sim.get_default_field("actuator_biasprm")
 
     actuator_ids = asset_cfg.actuator_ids
     if isinstance(actuator_ids, slice):
-        env.sim.model.actuator_gainprm[env_ids, :, 0] = default_gainprm[:, 0] * kp_scale
-        env.sim.model.actuator_biasprm[env_ids, :, 1] = default_biasprm[:, 1] * kp_scale
-        env.sim.model.actuator_biasprm[env_ids, :, 2] = default_biasprm[:, 2] * kd_scale
-    else:
-        for aid in actuator_ids:
+        actuator_ids = list(range(default_gainprm.shape[0]))
+
+    for aid in actuator_ids:
+        # biasprm[1] != 0 → <position> 执行器，缩放 kp。
+        if default_biasprm[aid, 1].abs() > 1e-6:
             env.sim.model.actuator_gainprm[env_ids, aid, 0] = default_gainprm[
                 aid, 0
             ] * kp_scale.squeeze(-1)
@@ -2304,24 +2308,16 @@ def randomize_pd_gains(
             env.sim.model.actuator_biasprm[env_ids, aid, 2] = default_biasprm[
                 aid, 2
             ] * kd_scale.squeeze(-1)
-    _sync_action_leg_pd_gains(env, env_ids, kp_scale, kd_scale)
-
-
-def _sync_action_leg_pd_gains(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor,
-    kp_scale: torch.Tensor,
-    kd_scale: torch.Tensor,
-) -> None:
-    """把 actuator 域随机化的同一组增益同步给自定义 action term。"""
-    action_manager = getattr(env, "action_manager", None)
-    if action_manager is None:
-        return
-    for term_name in action_manager.active_terms:
-        term = action_manager.get_term(term_name)
-        setter = getattr(term, "set_leg_pd_gain_scale", None)
-        if setter is not None:
-            setter(env_ids, kp_scale, kd_scale)
+        else:
+            # <velocity> 执行器，gainprm[0] 与 biasprm[2] 同属阻尼。
+            if default_gainprm[aid, 0].abs() > 1e-6:
+                env.sim.model.actuator_gainprm[env_ids, aid, 0] = default_gainprm[
+                    aid, 0
+                ] * kd_scale.squeeze(-1)
+            if default_biasprm[aid, 2].abs() > 1e-6:
+                env.sim.model.actuator_biasprm[env_ids, aid, 2] = default_biasprm[
+                    aid, 2
+                ] * kd_scale.squeeze(-1)
 
 
 def randomize_default_dof_pos(
