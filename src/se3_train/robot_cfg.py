@@ -2,12 +2,11 @@ import os
 from pathlib import Path
 
 import mujoco
-from mjlab.actuator import DcMotorActuatorCfg, IdealPdActuatorCfg
+from mjlab.actuator import BuiltinPositionActuatorCfg, BuiltinVelocityActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from se3_shared import DM8009P, M3508_C620_14, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_train.torque_speed_actuator import TorqueSpeedCurveActuatorCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
@@ -104,39 +103,47 @@ def _serialleg_spec_for_training(mjcf_path: Path) -> mujoco.MjSpec:
 def get_serialleg_cfg(
     *, mjcf_path: Path | None = None, wheel_kd_override: float | None = None
 ) -> EntityCfg:
-    """构造训练实体；默认沿用全局 MJCF，也允许按任务显式覆盖。"""
+    """构造训练实体；默认沿用全局 MJCF，也允许按任务显式覆盖。
+
+    执行器使用 MuJoCo 原生 builtin 元素：
+    - 腿部：``<position>`` 执行器，由 MuJoCo 在隐式积分步内完成关节级 PD 控制。
+    - 轮子：``<velocity>`` 执行器，由 MuJoCo 完成速度阻尼控制。
+
+    策略 action term 只需设置关节位置/速度目标，PD 计算和动作延迟
+    均由执行器层处理。
+    """
     mjcf_path = _resolve_mjcf_path() if mjcf_path is None else Path(mjcf_path)
     leg_joint_names = _leg_joint_names_for(mjcf_path)
-    is_fourbar_surrogate = _is_fourbar_surrogate_path(mjcf_path)
-    if is_fourbar_surrogate:
-        leg_actuator_cfg = IdealPdActuatorCfg(
-            target_names_expr=leg_joint_names,
-            stiffness=0.0,
-            damping=0.0,
-            effort_limit=float("inf"),
-        )
+
+    # 动作延迟：从共享配置转为物理步级 lag。
+    delay_cfg = _ROBOT_CFG.action_delay
+    if delay_cfg.enabled:
+        min_lag, max_lag = delay_cfg.step_bounds(_ROBOT_CFG.sim_dt)
     else:
-        leg_actuator_cfg = DcMotorActuatorCfg(
-            target_names_expr=leg_joint_names,
-            stiffness=_ROBOT_CFG.leg_kp,
-            damping=_ROBOT_CFG.leg_kd,
-            saturation_effort=DM8009P.stall_torque,
-            velocity_limit=DM8009P.no_load_speed,
-            effort_limit=DM8009P.rated_torque,
-        )
+        min_lag, max_lag = 0, 0
+
+    leg_actuator_cfg = BuiltinPositionActuatorCfg(
+        target_names_expr=leg_joint_names,
+        stiffness=_ROBOT_CFG.leg_kp,
+        damping=_ROBOT_CFG.leg_kd,
+        effort_limit=DM8009P.rated_torque,
+        delay_min_lag=min_lag,
+        delay_max_lag=max_lag,
+    )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
+    wheel_actuator_cfg = BuiltinVelocityActuatorCfg(
+        target_names_expr=_WHEEL_JOINT_NAMES,
+        damping=wheel_kd,
+        effort_limit=M3508_C620_14.rated_torque,
+        delay_min_lag=min_lag,
+        delay_max_lag=max_lag,
+    )
     return EntityCfg(
         spec_fn=lambda: _serialleg_spec_for_training(mjcf_path),
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,
-                TorqueSpeedCurveActuatorCfg(
-                    target_names_expr=_WHEEL_JOINT_NAMES,
-                    stiffness=0.0,
-                    damping=wheel_kd,
-                    effort_limit=M3508_C620_14.rated_torque,
-                    torque_speed_curve=M3508_C620_14.torque_speed_curve,
-                ),
+                wheel_actuator_cfg,
             ),
         ),
         init_state=EntityCfg.InitialStateCfg(

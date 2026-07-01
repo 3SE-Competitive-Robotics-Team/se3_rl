@@ -21,10 +21,10 @@ class ActionDelayConfig(BaseModel):
     """策略动作到 actuator target 之间的传输延迟。"""
 
     enabled: bool = True
-    delay_s: float = Field(default=0.005, ge=0.0)
+    delay_s: float = Field(default=0.0075, ge=0.0)
     randomize: bool = True
-    min_delay_s: float = Field(default=0.004, ge=0.0)
-    max_delay_s: float = Field(default=0.006, ge=0.0)
+    min_delay_s: float = Field(default=0.005, ge=0.0)
+    max_delay_s: float = Field(default=0.010, ge=0.0)
     resample: Literal["reset"] = "reset"
 
     @model_validator(mode="after")

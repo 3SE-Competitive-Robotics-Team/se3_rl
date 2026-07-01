@@ -10,8 +10,6 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCf
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 
 from se3_shared import (
-    DM8009P,
-    ActionDelayConfig,
     JointGroup,
     output_leg_length_limits_torch,
     output_leg_wheel_xz_torch,
@@ -19,7 +17,6 @@ from se3_shared import (
     output_to_policy_vel_torch,
     policy_leg_position_error_torch,
     policy_to_output_pos_torch,
-    policy_to_output_torque_torch,
     wheel_xz_to_output_pos_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -34,14 +31,18 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _SHARED_ROBOT = SharedRobotConfig()
-_DEFAULT_DELAY = _SHARED_ROBOT.action_delay
 _CTBC_SOURCE_OUTPUT_LEG_SCALE = 0.25
 _CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN = (-1.0, -1.0, 1.0, 1.0)
 
 
 @dataclass(kw_only=True)
 class SerialLegDelayedActionCfg(ActionTermCfg):
-    """6D 策略动作项，支持训练端 action 延迟。"""
+    """6D 策略动作项。
+
+    负责将策略输出的 6D raw action 转换为关节位置/速度目标并写入 Entity。
+    PD 控制和动作延迟由执行器层（BuiltinPositionActuatorCfg / BuiltinVelocityActuatorCfg
+    的 stiffness/damping/delay_min_lag/delay_max_lag）处理，本 action term 不做缓冲。
+    """
 
     leg_actuator_names: tuple[str, ...] = JointGroup.POLICY_LEG_NAMES
     wheel_actuator_names: tuple[str, ...] = JointGroup.WHEEL_NAMES
@@ -49,11 +50,6 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
         _SHARED_ROBOT.action_scale[i] for i in JointGroup.LEG_ACTUATORS
     )
     wheel_scale: float = _SHARED_ROBOT.action_scale[JointGroup.WHEEL_ACTUATORS[0]]
-    action_delay_enabled: bool = _DEFAULT_DELAY.enabled
-    action_delay_s: float = _DEFAULT_DELAY.delay_s
-    action_delay_randomize: bool = _DEFAULT_DELAY.randomize
-    action_delay_min_s: float = _DEFAULT_DELAY.min_delay_s
-    action_delay_max_s: float = _DEFAULT_DELAY.max_delay_s
     action_clip: float | None = _SHARED_ROBOT.action_clip
     height_conditioned_action_default: bool = False
     action_default_command_name: str = "velocity_height"
@@ -61,16 +57,6 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
-
-    def delay_config(self) -> ActionDelayConfig:
-        """生成共享延迟配置对象。"""
-        return ActionDelayConfig(
-            enabled=self.action_delay_enabled,
-            delay_s=self.action_delay_s,
-            randomize=self.action_delay_randomize,
-            min_delay_s=self.action_delay_min_s,
-            max_delay_s=self.action_delay_max_s,
-        )
 
 
 class SerialLegDelayedAction(ActionTerm):
@@ -105,14 +91,10 @@ class SerialLegDelayedAction(ActionTerm):
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
         self._closedchain = is_closedchain_model(self._entity)
         self._fourbar_surrogate = is_fourbar_surrogate_model(self._entity)
-        self._leg_actuator_ids = (
-            None
-            if self._fourbar_surrogate
-            else torch.tensor(
-                leg_actuator_ids(self._entity),
-                device=self.device,
-                dtype=torch.long,
-            )
+        self._leg_actuator_ids = torch.tensor(
+            leg_actuator_ids(self._entity),
+            device=self.device,
+            dtype=torch.long,
         )
         self._active_rod_angle_limits = torch.tensor(
             _SHARED_ROBOT.active_rod_angle_limits,
@@ -128,7 +110,6 @@ class SerialLegDelayedAction(ActionTerm):
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
         self._unclipped_actions = torch.zeros_like(self._raw_actions)
         self._policy_actions = torch.zeros_like(self._raw_actions)
-        self._delayed_actions = torch.zeros_like(self._raw_actions)
         self._ctbc_output_bias = torch.zeros_like(self._raw_actions)
         self._ctbc_action_delta = torch.zeros_like(self._raw_actions)
         self._ctbc_wheel_delta_xz = torch.zeros(self.num_envs, 2, 2, device=self.device)
@@ -140,28 +121,6 @@ class SerialLegDelayedAction(ActionTerm):
             self.num_envs, 2, device=self.device, dtype=torch.bool
         )
         self._env_indices = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
-        self._leg_kp = torch.full(
-            (self.num_envs, 4),
-            float(_SHARED_ROBOT.leg_kp),
-            device=self.device,
-        )
-        self._leg_kd = torch.full(
-            (self.num_envs, 4),
-            float(_SHARED_ROBOT.leg_kd),
-            device=self.device,
-        )
-
-        self._delay_cfg = cfg.delay_config()
-        self._sim_dt = float(env.physics_dt)
-        self._min_delay_steps, self._max_delay_steps = self._delay_cfg.step_bounds(self._sim_dt)
-        self._delay_steps = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-        self._action_fifo = torch.zeros(
-            self._max_delay_steps + 1,
-            self.num_envs,
-            self.action_dim,
-            device=self.device,
-        )
-        self._resample_delay(self._env_indices)
 
     @property
     def action_dim(self) -> int:
@@ -178,10 +137,6 @@ class SerialLegDelayedAction(ActionTerm):
     @property
     def policy_action(self) -> torch.Tensor:
         return self._policy_actions
-
-    @property
-    def delayed_action(self) -> torch.Tensor:
-        return self._delayed_actions
 
     @property
     def ctbc_output_bias(self) -> torch.Tensor:
@@ -224,10 +179,6 @@ class SerialLegDelayedAction(ActionTerm):
     @property
     def active_rod_angle_target_clamped(self) -> torch.Tensor:
         return self._active_rod_angle_target_clamped
-
-    @property
-    def delay_steps(self) -> torch.Tensor:
-        return self._delay_steps
 
     def process_actions(self, actions: torch.Tensor) -> None:
         incoming_actions = actions.to(self.device)
@@ -276,36 +227,21 @@ class SerialLegDelayedAction(ActionTerm):
                 self._apply_ctbc_wheel_action_delta(wheel_action_delta)
 
     def apply_actions(self) -> None:
-        if self._max_delay_steps > 0:
-            self._action_fifo[1:] = self._action_fifo[:-1].clone()
-        self._action_fifo[0] = self._raw_actions
-        self._delayed_actions = self._action_fifo[self._delay_steps, self._env_indices]
-
         if self._fourbar_surrogate:
             policy_target = self._leg_action_to_policy_target(
-                self._delayed_actions[:, :4],
+                self._raw_actions[:, :4],
                 self._current_leg_action_defaults(),
             )
             self._policy_leg_target[:] = policy_target
-            output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
+            output_target = policy_to_output_pos_torch(policy_target)
+            self._entity.set_joint_position_target(output_target, joint_ids=self._leg_joint_ids)
+            self._policy_leg_torque[:] = self._entity.data.actuator_force[:, self._leg_actuator_ids]
             output_vel = self._entity.data.joint_vel[:, self._leg_joint_ids]
-            policy_pos = output_to_policy_pos_torch(output_pos)
-            policy_vel = output_to_policy_vel_torch(output_pos, output_vel)
-            policy_error = policy_leg_position_error_torch(
-                policy_target,
-                policy_pos,
-                self._active_rod_angle_coeffs,
-            )
-            policy_torque = self._leg_kp * policy_error
-            policy_torque -= self._leg_kd * policy_vel
-            policy_torque = self._clip_active_motor_torque(policy_torque, policy_vel)
-            self._policy_leg_torque[:] = policy_torque
-            self._policy_leg_vel[:] = policy_vel
-            leg_torque = policy_to_output_torque_torch(policy_pos, policy_torque)
-            self._entity.set_joint_effort_target(leg_torque, joint_ids=self._leg_joint_ids)
+            output_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
+            self._policy_leg_vel[:] = output_to_policy_vel_torch(output_pos, output_vel)
         else:
             leg_target = self._leg_action_to_policy_target(
-                self._delayed_actions[:, :4],
+                self._raw_actions[:, :4],
                 self._current_leg_action_defaults(),
             )
             self._policy_leg_target[:] = leg_target
@@ -321,12 +257,10 @@ class SerialLegDelayedAction(ActionTerm):
                 servo_leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
             )
             self._entity.set_joint_position_target(servo_leg_target, joint_ids=self._leg_joint_ids)
-            if self._leg_actuator_ids is None:
-                raise RuntimeError("非 fourbar 模型缺少腿部 actuator 索引")
             self._policy_leg_torque[:] = self._entity.data.actuator_force[:, self._leg_actuator_ids]
             self._policy_leg_vel[:] = self._entity.data.joint_vel[:, self._leg_joint_ids]
         wheel_target = (
-            self._delayed_actions[:, 4:6] * float(self.cfg.wheel_scale)
+            self._raw_actions[:, 4:6] * float(self.cfg.wheel_scale)
             + self._entity.data.default_joint_vel[:, self._wheel_joint_ids]
         )
 
@@ -549,77 +483,16 @@ class SerialLegDelayedAction(ActionTerm):
         scale = torch.where(full_reachable, torch.ones_like(lower), lower)
         return current_wheel_xz + wheel_delta_xz * scale.unsqueeze(-1)
 
-    def set_leg_pd_gain_scale(
-        self,
-        env_ids: torch.Tensor | slice | None,
-        kp_scale: torch.Tensor,
-        kd_scale: torch.Tensor,
-    ) -> None:
-        """同步 startup 域随机化采样到 fourbar 手写腿部 PD 控制器。"""
-        if not self._fourbar_surrogate:
-            return
-        resolved_env_ids = self._resolve_env_ids(env_ids)
-        if resolved_env_ids.numel() == 0:
-            return
-        kp_scale = kp_scale.to(device=self.device).reshape(-1, 1)
-        kd_scale = kd_scale.to(device=self.device).reshape(-1, 1)
-        if kp_scale.shape[0] != resolved_env_ids.numel():
-            raise ValueError(
-                "kp_scale env 数量与 env_ids 不一致: "
-                f"{kp_scale.shape[0]} != {resolved_env_ids.numel()}"
-            )
-        if kd_scale.shape[0] != resolved_env_ids.numel():
-            raise ValueError(
-                "kd_scale env 数量与 env_ids 不一致: "
-                f"{kd_scale.shape[0]} != {resolved_env_ids.numel()}"
-            )
-        self._leg_kp[resolved_env_ids] = float(_SHARED_ROBOT.leg_kp) * kp_scale
-        self._leg_kd[resolved_env_ids] = float(_SHARED_ROBOT.leg_kd) * kd_scale
-
-    def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
-        """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
-        if not (self._closedchain or self._fourbar_surrogate):
-            return leg_target
-        target = leg_target.clone()
-        lower, upper = self._active_rod_angle_limits
-        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-            front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
-            angle = torch.clamp(
-                front_coef * target[:, front_idx] + back_coef * target[:, back_idx],
-                lower,
-                upper,
-            )
-            target[:, back_idx] = (angle - front_coef * target[:, front_idx]) / back_coef
-        return target
-
-    def _clip_active_motor_torque(
-        self, torque: torch.Tensor, velocity: torch.Tensor
-    ) -> torch.Tensor:
-        """按虚拟主动杆速度应用 DM8009P T-N 包络限幅。"""
-        saturation = float(DM8009P.stall_torque)
-        velocity_limit = float(DM8009P.no_load_speed)
-        effort_limit = float(DM8009P.rated_torque)
-        vel_at_effort_limit = velocity_limit * (1.0 + effort_limit / saturation)
-        clipped_velocity = velocity.clamp(-vel_at_effort_limit, vel_at_effort_limit)
-        top = saturation * (1.0 - clipped_velocity / velocity_limit)
-        bottom = saturation * (-1.0 - clipped_velocity / velocity_limit)
-        max_effort = torch.clamp(top, max=effort_limit)
-        min_effort = torch.clamp(bottom, min=-effort_limit)
-        return torque.clamp(min_effort, max_effort)
-
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)
         self._raw_actions[resolved_env_ids] = 0.0
         self._unclipped_actions[resolved_env_ids] = 0.0
         self._policy_actions[resolved_env_ids] = 0.0
-        self._delayed_actions[resolved_env_ids] = 0.0
         self._ctbc_output_bias[resolved_env_ids] = 0.0
         self._ctbc_action_delta[resolved_env_ids] = 0.0
         self._ctbc_wheel_delta_xz[resolved_env_ids] = 0.0
         self._policy_leg_torque[resolved_env_ids] = 0.0
         self._policy_leg_vel[resolved_env_ids] = 0.0
-        self._action_fifo[:, resolved_env_ids] = 0.0
-        self._resample_delay(resolved_env_ids)
 
     def _resolve_env_ids(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
         if env_ids is None:
@@ -627,21 +500,6 @@ class SerialLegDelayedAction(ActionTerm):
         if isinstance(env_ids, slice):
             return self._env_indices[env_ids]
         return env_ids.to(device=self.device, dtype=torch.long)
-
-    def _resample_delay(self, env_ids: torch.Tensor) -> None:
-        num_envs = int(env_ids.numel())
-        if num_envs == 0:
-            return
-        if self._min_delay_steps == self._max_delay_steps:
-            self._delay_steps[env_ids] = int(self._min_delay_steps)
-            return
-        self._delay_steps[env_ids] = torch.randint(
-            low=int(self._min_delay_steps),
-            high=int(self._max_delay_steps) + 1,
-            size=(num_envs,),
-            device=self.device,
-            dtype=torch.long,
-        )
 
 
 __all__ = [
