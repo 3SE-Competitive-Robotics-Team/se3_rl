@@ -12,7 +12,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
     else:
         max_iterations = 5000
-        logger = os.environ.get("SE3_LOGGER", "wandb")
+        logger = os.environ.get("SE3_LOGGER", "tensorboard")
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
@@ -57,5 +57,4 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         num_steps_per_env=64,
         max_iterations=max_iterations,
         logger=logger,
-        wandb_project="se3_wheel_leg",
     )

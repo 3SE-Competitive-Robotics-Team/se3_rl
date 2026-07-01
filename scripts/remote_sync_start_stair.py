@@ -373,8 +373,6 @@ export CUDA_TOOLKIT_LIB_DIR={shlex.quote(args.cuda_toolkit_lib_dir)}
 export LD_LIBRARY_PATH="$CUDA_COMPAT_DIR:$CUDA_TOOLKIT_LIB_DIR"
 export PYTHONPATH="$PWD/src${{PYTHONPATH:+:$PYTHONPATH}}"
 export MUJOCO_GL=egl
-export WANDB_MODE=offline
-export SE3_LOGGER=wandb
 export SE3_FULL_RESUME={full_resume_value}
 {stair_offset_line}
 export PYTHONUNBUFFERED=1

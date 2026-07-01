@@ -598,7 +598,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         }
 
     def _update_metrics(self) -> None:
-        """上报跳跃诊断指标到训练日志（通过 extras['log'] 传递给 wandb/tensorboard）。
+        """上报跳跃诊断指标到训练日志（通过 extras['log'] 传递给 tensorboard）。
 
         参考宇树 fzqver 的 diag_* 体系，分两类指标：
 
