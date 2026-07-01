@@ -381,7 +381,12 @@ class Sim2SimWorkflow:
                         done_reason = "user_quit"
                         break
                     self.robot.command[0] = float(command_update.lin_vel_x)
-                    self.robot.command[1] = float(command_update.yaw_rate)
+                    if self.cfg.robot.yaw_pid.enabled:
+                        if command_update.yaw_target_rad is not None:
+                            self.robot.yaw_pid.set_target_yaw(float(command_update.yaw_target_rad))
+                        self.robot.update_yaw_command()
+                    else:
+                        self.robot.command[1] = float(command_update.yaw_rate)
                     self.robot.command[4] = float(command_update.command_height)
                     if command_update.toggle_output:
                         _rc_output_enabled = not _rc_output_enabled
@@ -673,6 +678,8 @@ class Sim2SimWorkflow:
                     checkpoint_path=self.policy.checkpoint_path,
                     policy_iteration=self.policy.iteration,
                     initial_command=self.cfg.robot.command,
+                    yaw_pid_enabled=self.cfg.robot.yaw_pid.enabled,
+                    initial_yaw_target_rad=self.cfg.robot.yaw_pid.target_yaw_rad,
                 )
             )
             return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 
 import torch
@@ -35,6 +37,12 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    """读取枚举环境变量。"""
+    raw = os.environ.get(name, default).strip().lower()
+    return raw if raw in choices else default
 
 
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
@@ -127,16 +135,12 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             )
             self.current_learning_iteration = it
 
-            self.logger.log(
+            self._log_iteration(
                 it=it,
                 start_it=start_it,
                 total_it=total_it,
-                collect_time=timing.collect_s,
-                learn_time=timing.returns_s + timing.learn_s,
+                timing=timing,
                 loss_dict=loss_dict,
-                learning_rate=self.alg.learning_rate,
-                action_std=self.alg.get_policy().output_std,
-                rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
             )
             self._log_profile_scalars(it, timing)
             if not self.is_distributed or self.gpu_global_rank == 0:
@@ -158,6 +162,65 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 )
             )
             self.logger.stop_logging_writer()
+
+    def _log_iteration(
+        self,
+        *,
+        it: int,
+        start_it: int,
+        total_it: int,
+        timing: IterationTiming,
+        loss_dict: dict,
+    ) -> None:
+        """写训练日志，并允许减少 torchrunx 需要转发的 console 输出。"""
+        mode = _env_choice(
+            "SE3_CONSOLE_LOG_MODE",
+            "full",
+            {"full", "minimal", "summary", "silent"},
+        )
+        learn_time = timing.returns_s + timing.learn_s
+        print_minimal = mode in {"minimal", "summary", "silent"}
+        kwargs = {
+            "it": it,
+            "start_it": start_it,
+            "total_it": total_it,
+            "collect_time": timing.collect_s,
+            "learn_time": learn_time,
+            "loss_dict": loss_dict,
+            "learning_rate": self.alg.learning_rate,
+            "action_std": self.alg.get_policy().output_std,
+            "rnd_weight": self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
+            "print_minimal": print_minimal,
+        }
+        if mode in {"summary", "silent"}:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.logger.log(**kwargs)
+            if mode == "summary" and (not self.is_distributed or self.gpu_global_rank == 0):
+                self._print_iteration_summary(it, total_it, timing)
+        else:
+            self.logger.log(**kwargs)
+
+    def _print_iteration_summary(
+        self,
+        iteration: int,
+        total_iterations: int,
+        timing: IterationTiming,
+    ) -> None:
+        """打印单行训练摘要，保留 watcher 常用字段。"""
+        world_size = int(getattr(self.logger, "gpu_world_size", 1) or 1)
+        steps = int(self.env.num_envs) * int(self.cfg["num_steps_per_env"]) * world_size
+        fps = int(steps / timing.total_s) if timing.total_s > 0.0 else 0
+        learn_time = timing.returns_s + timing.learn_s
+        run_name = self.cfg.get("run_name")
+        prefix = f"Run name: {run_name} | " if run_name else ""
+        print(
+            f"{prefix}Learning iteration {iteration}/{total_iterations} | "
+            f"Steps per second: {fps} | "
+            f"Collection time: {timing.collect_s:.3f}s | "
+            f"Learning time: {learn_time:.3f}s | "
+            f"Iteration time: {timing.total_s:.2f}s",
+            flush=True,
+        )
 
     def _log_profile_scalars(self, iteration: int, timing: IterationTiming) -> None:
         """把 SE3 runtime profile 写入 logger 后端。"""

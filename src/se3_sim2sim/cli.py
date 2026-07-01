@@ -19,6 +19,7 @@ from .config import (
     RECOVERY_COMMAND_HEIGHT_M,
     RECOVERY_POSE_CHOICES,
     RECOVERY_POSE_RP_RAD,
+    ROUGH_TERRAIN_TYPE_CHOICES,
     SIM_MODEL_VARIANT_CHOICES,
     JumpEventConfig,
     JumpScheduleConfig,
@@ -175,6 +176,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="固定 CTBC 退火迭代数；laptop watcher 应传入 checkpoint 轮数。",
+    )
+    parser.add_argument(
+        "--rough-terrain",
+        action="store_true",
+        help="在原生 MuJoCo sim2sim 中添加 MJLab rough terrain，用于 rough discovery 值守。",
+    )
+    parser.add_argument(
+        "--rough-terrain-type",
+        choices=ROUGH_TERRAIN_TYPE_CHOICES,
+        default=robot_defaults.rough_terrain_type,
+        help="mixed 使用 MJLab ROUGH_TERRAINS_CFG 完整混合 grid；也可选择单个 sub-terrain 调试。",
+    )
+    parser.add_argument(
+        "--rough-terrain-level",
+        type=int,
+        default=robot_defaults.rough_terrain_level,
+        choices=range(10),
+        help="rough terrain 等级，按 MJLab terrain row difficulty 映射到 0-1。",
+    )
+    parser.add_argument(
+        "--rough-stair-step-height-range",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        default=robot_defaults.rough_stair_step_height_range,
+        help="rough pyramid stairs 单级高度范围，默认 0-20cm。",
     )
     parser.add_argument(
         "--checkpoint",
@@ -652,6 +679,13 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 fixed_iter=(
                     None if args.stair_ctbc_iter is None else max(0, int(args.stair_ctbc_iter))
                 ),
+            ),
+            rough_terrain=bool(args.rough_terrain),
+            rough_terrain_type=str(args.rough_terrain_type),
+            rough_terrain_level=int(args.rough_terrain_level),
+            rough_stair_step_height_range=(
+                float(args.rough_stair_step_height_range[0]),
+                float(args.rough_stair_step_height_range[1]),
             ),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),

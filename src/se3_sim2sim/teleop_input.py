@@ -23,6 +23,7 @@ class CommandInputUpdate:
     lin_vel_x: float
     yaw_rate: float
     command_height: float
+    yaw_target_rad: float | None = None
     toggle_output: bool = False
     quit_requested: bool = False
     key_events: tuple[str, ...] = ()

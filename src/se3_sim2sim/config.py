@@ -18,6 +18,16 @@ RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
 RcOffMode = Literal["no-torque", "hold-current"]
+RoughTerrainType = Literal[
+    "mixed",
+    "flat",
+    "pyramid_stairs",
+    "pyramid_stairs_inv",
+    "hf_pyramid_slope",
+    "hf_pyramid_slope_inv",
+    "random_rough",
+    "wave_terrain",
+]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
 RECOVERY_COMMAND_HEIGHT_M = se3_shared.RECOVERY_COMMAND_HEIGHT_M
 RECOVERY_POSE_CHOICES: tuple[RecoveryPose, ...] = (
@@ -26,6 +36,16 @@ RECOVERY_POSE_CHOICES: tuple[RecoveryPose, ...] = (
     "right_side",
     "prone",
     "supine",
+)
+ROUGH_TERRAIN_TYPE_CHOICES: tuple[RoughTerrainType, ...] = (
+    "mixed",
+    "flat",
+    "pyramid_stairs",
+    "pyramid_stairs_inv",
+    "hf_pyramid_slope",
+    "hf_pyramid_slope_inv",
+    "random_rough",
+    "wave_terrain",
 )
 RECOVERY_POSE_RP_RAD: dict[RecoveryPose, tuple[float, float]] = {
     "standing": (0.0, 0.0),
@@ -231,6 +251,16 @@ class RobotConfig(BaseModel):
     stair_half_width_m: Annotated[float, Field(gt=0.0)] = 2.0
     stair_ctbc: StairCtbcConfig = Field(default_factory=StairCtbcConfig)
     """原生 MuJoCo 台阶值守时使用的 CTBC 前馈注入器。"""
+    rough_terrain: bool = False
+    """是否在原生 MuJoCo sim2sim 中添加 MJLab rough terrain。"""
+    rough_terrain_type: RoughTerrainType = "mixed"
+    """MJLab ROUGH_TERRAINS_CFG 的完整混合地形，或指定单个 sub-terrain 类型。"""
+    rough_terrain_level: Annotated[int, Field(ge=0, le=9)] = 1
+    """rough terrain 等级；按 MJLab terrain row difficulty 映射到 0-1。"""
+    rough_terrain_size_m: tuple[float, float] = (8.0, 8.0)
+    """rough heightfield 的全尺寸，默认对齐训练端 ROUGH_TERRAINS_CFG.size。"""
+    rough_stair_step_height_range: tuple[float, float] = (0.0, 0.20)
+    """rough pyramid stairs 的单级高度范围；默认对齐 20cm rough discovery 训练。"""
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height
@@ -294,6 +324,12 @@ class RobotConfig(BaseModel):
     """定时跳跃调度配置。"""
     rc_switch: RcSwitchScheduleConfig = Field(default_factory=RcSwitchScheduleConfig)
     """sim2sim 中的遥控器输出使能脚本；关闭时按硬件 off 语义处理。"""
+
+    @model_validator(mode="after")
+    def _check_terrain_mode(self) -> RobotConfig:
+        if self.stair_terrain and self.rough_terrain:
+            raise ValueError("--stair-terrain and --rough-terrain cannot be enabled together")
+        return self
 
 
 class PolicyConfig(BaseModel):
