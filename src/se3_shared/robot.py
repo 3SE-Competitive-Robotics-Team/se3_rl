@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
-from math import pi, radians
+from math import radians
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -16,7 +16,6 @@ _ACTIVE_ROD_ANGLE_LIMITS: tuple[float, float] = (
     0.0,
     radians(_ACTIVE_ROD_ANGLE_RANGE_DEG),
 )
-_ACTIVE_ROD_ACTION_SCALE: float = 0.5 * (_ACTIVE_ROD_ANGLE_LIMITS[1] - _ACTIVE_ROD_ANGLE_LIMITS[0])
 
 
 class Joint(IntEnum):
@@ -153,12 +152,12 @@ class RobotConfig(BaseModel):
     default_base_height: float = 0.22
     # 腿部 action 使用 [lf0, active_angle, rf0, active_angle] 语义；active 的零点是机械夹角中点。
     action_scale: tuple[float, ...] = (
-        pi,
-        _ACTIVE_ROD_ACTION_SCALE,
-        pi,
-        _ACTIVE_ROD_ACTION_SCALE,
-        20.0,
-        20.0,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        45.0,
+        45.0,
     )
     action_clip: float | None = 100.0
     sim_dt: float = 0.005

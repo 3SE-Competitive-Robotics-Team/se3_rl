@@ -40,7 +40,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     cfg.save_interval = int(
         os.environ.get(
             "SE3_ROUGH_DISCOVERY_SAVE_INTERVAL",
-            os.environ.get("SE3_SAVE_INTERVAL", "500"),
+            os.environ.get("SE3_SAVE_INTERVAL", "100"),
         )
     )
     cfg.max_iterations = int(os.environ.get("SE3_ROUGH_DISCOVERY_MAX_ITERATIONS", "8000"))
