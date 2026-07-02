@@ -373,13 +373,20 @@ def commands_vel_adaptive(
 ) -> dict[str, torch.Tensor]:
     """ETH 风格的自适应速度指令课程：用小步长丝滑推进速度范围。
 
-    从 vx=0（纯静站）起步，用 Locomotion/tracking_lin_vel_reward 的 EMA
+    从 vx=0（纯静站）起步，用 Locomotion/tracking_lin_vel_reward_all 的 EMA
     评估策略是否适应了当前速度。EMA > advance_threshold 时小步扩大速度范围，
     只扩不缩。
 
-    Locomotion/tracking_lin_vel_reward 是未乘权重的 exp 核均值，值域 (0, 1]。
-    当前 σ=0.08 时，threshold=0.5 约对应跟踪误差 0.24 m/s，
-    threshold=0.6 约对应 0.19 m/s。
+    Locomotion/tracking_lin_vel_reward_all 是未乘权重的 exp 核均值，值域 (0, 1]，
+    按 locomotion mask（排除跳跃）取全体均值，不按 moving（|cmd_x|>=0.2）过滤。
+    必须用这个不依赖 moving 的版本：初始 lin_vel_x_range=(0,0) 时所有 env 的
+    cmd_mag 恒为 0，如果按 moving 过滤会导致该指标恒为 0、EMA 永远追不上
+    threshold，课程永久卡死在初始范围（2026-07 曾复现，807 iteration 内
+    vel_lin_x_max 无变化）。用全体均值后，cmd=0 阶段该值反映 sigma_stand
+    打分下的站立稳定度，天然给出连续、非零的推进信号。
+    当前 σ_move=0.08 时，threshold=0.5 约对应跟踪误差 0.24 m/s，
+    threshold=0.6 约对应 0.19 m/s（该换算只在 moving 段严格成立，
+    cmd=0 段走的是更松的 sigma_stand）。
     """
     del env_ids
     term = env.command_manager.get_term(command_name)
@@ -396,7 +403,7 @@ def commands_vel_adaptive(
 
     # 从 step 级日志读取跟踪奖励（Episode_Reward 在 curriculum 之后才写入）
     log = getattr(env, "extras", {}).get("log", {})
-    tracking_lin_vel = float(log.get("Locomotion/tracking_lin_vel_reward", 0.0))
+    tracking_lin_vel = float(log.get("Locomotion/tracking_lin_vel_reward_all", 0.0))
 
     ema = (1.0 - ema_alpha) * ema + ema_alpha * tracking_lin_vel
     setattr(env, _VEL_ADAPTIVE_EMA_ATTR, ema)

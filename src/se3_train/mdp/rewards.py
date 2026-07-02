@@ -596,6 +596,9 @@ def tracking_lin_vel(
                 "Locomotion/base_vx_mean": _masked_mean(lin_vel[:, 0], moving),
                 "Locomotion/base_vx_error_abs": _masked_mean(torch.abs(error_x), moving),
                 "Locomotion/tracking_lin_vel_reward": _masked_mean(reward, moving),
+                # 课程判据专用：不按 moving 过滤,cmd=0 时用 sigma_stand 打分,
+                # 避免速度范围初始为 (0,0) 时 moving mask 恒为空导致课程死锁。
+                "Locomotion/tracking_lin_vel_reward_all": _masked_mean(reward, locomotion),
                 "Locomotion/tracking_upright_gate": _masked_mean(gate, locomotion),
             }
         )
