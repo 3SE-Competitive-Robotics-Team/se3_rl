@@ -77,7 +77,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--strict-min-success-steps", type=float, default=1.0)
     parser.add_argument("--strict-height-tolerance-m", type=float, default=0.015)
     parser.add_argument("--strict-forward-progress-m", type=float, default=None)
-    parser.add_argument("--strict-step-depth-m", type=float, default=0.50)
+    parser.add_argument("--strict-step-depth-m", type=float, default=0.80)
     parser.add_argument("--strict-forward-progress-step-fraction", type=float, default=0.75)
     parser.add_argument("--strict-hold-duration-s", type=float, default=0.20)
     parser.add_argument("--strict-upright-threshold", type=float, default=-0.90)

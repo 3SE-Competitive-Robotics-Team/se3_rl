@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -19,6 +21,98 @@ if TYPE_CHECKING:
     from .config import StairCtbcConfig
     from .robot import WheelLeggedRobot
 
+_CTBC_SOURCE_OUTPUT_LEG_SCALE = 0.25
+_CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN = np.asarray((-1.0, -1.0, 1.0, 1.0), dtype=np.float64)
+_HIP_FEEDFORWARD_RATIO = 1.2
+_KNEE_FEEDFORWARD_RATIO = 2.0
+
+
+class _CtbcProfile:
+    """Piecewise-linear CTBC feedforward profile loaded from JSON."""
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        times_s: np.ndarray,
+        values: np.ndarray,
+        period_s: float,
+    ) -> None:
+        self.path = path
+        self.times_s = times_s
+        self.values = values
+        self.period_s = float(period_s)
+
+    @classmethod
+    def load(cls, path: Path | str) -> _CtbcProfile:
+        profile_path = Path(path)
+        payload = json.loads(profile_path.read_text(encoding="utf-8"))
+        points = payload.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            raise ValueError(f"CTBC profile {profile_path} must contain at least two points")
+
+        rows: list[tuple[float, float, float, float, float]] = []
+        for idx, point in enumerate(points):
+            if not isinstance(point, dict):
+                raise ValueError(f"CTBC profile point {idx} must be an object")
+            t = cls._number(point, "t", "time_s", required=True)
+            x = cls._number(point, "x_m", "x", default=0.0)
+            z = cls._number(point, "z_m", "z", default=0.0)
+            amp = cls._number(point, "amp", "amp_scale", default=0.0)
+            wheel_action = cls._number(
+                point,
+                "wheel_action",
+                "wheel_action_delta",
+                default=0.0,
+            )
+            if t < 0.0:
+                raise ValueError(f"CTBC profile point {idx} has negative time {t}")
+            rows.append((t, x, z, amp, wheel_action))
+
+        rows.sort(key=lambda row: row[0])
+        times_s = np.asarray([row[0] for row in rows], dtype=np.float64)
+        if np.any(np.diff(times_s) <= 0.0):
+            raise ValueError(f"CTBC profile {profile_path} times must be strictly increasing")
+        values = np.asarray([row[1:] for row in rows], dtype=np.float64)
+        if not np.isfinite(times_s).all() or not np.isfinite(values).all():
+            raise ValueError(f"CTBC profile {profile_path} contains non-finite values")
+
+        period_s = float(payload.get("period_s", times_s[-1]))
+        if not math.isfinite(period_s) or period_s <= 0.0:
+            raise ValueError(f"CTBC profile {profile_path} has invalid period_s={period_s!r}")
+        if period_s < float(times_s[-1]):
+            period_s = float(times_s[-1])
+        return cls(path=profile_path, times_s=times_s, values=values, period_s=period_s)
+
+    @staticmethod
+    def _number(
+        point: dict[str, object],
+        primary: str,
+        alias: str,
+        *,
+        default: float | None = None,
+        required: bool = False,
+    ) -> float:
+        raw = point.get(primary, point.get(alias, default))
+        if raw is None and required:
+            raise ValueError(f"missing required CTBC profile field {primary!r}")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"CTBC profile field {primary!r} must be numeric") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"CTBC profile field {primary!r} must be finite")
+        return value
+
+    def sample(self, phase_steps: np.ndarray, *, control_dt: float) -> np.ndarray:
+        t = np.clip(
+            np.asarray(phase_steps, dtype=np.float64) * float(control_dt), 0.0, self.period_s
+        )
+        out = np.zeros((t.shape[0], self.values.shape[1]), dtype=np.float64)
+        for col in range(self.values.shape[1]):
+            out[:, col] = np.interp(t, self.times_s, self.values[:, col])
+        return out
+
 
 class StairCtbcRuntime:
     """单环境 CTBC 状态机，保持与训练端 stair 任务的前馈语义一致。"""
@@ -26,9 +120,13 @@ class StairCtbcRuntime:
     def __init__(self, cfg: StairCtbcConfig, *, control_dt: float) -> None:
         self.cfg = cfg
         self.control_dt = float(control_dt)
+        self._profile = (
+            _CtbcProfile.load(cfg.profile_path) if cfg.profile_path is not None else None
+        )
         self.contact_window = max(1, int(cfg.contact_window))
         self.force_threshold = float(cfg.force_threshold_n)
-        self.ff_period_steps = max(1, round(float(cfg.ff_period_s) / self.control_dt))
+        period_s = self._profile.period_s if self._profile is not None else float(cfg.ff_period_s)
+        self.ff_period_steps = max(1, round(float(period_s) / self.control_dt))
         self.ff_rise_steps, self.ff_hold_steps, self.ff_return_steps = self._resolve_profile_steps(
             float(cfg.ff_rise_ratio),
             float(cfg.ff_hold_ratio),
@@ -82,7 +180,7 @@ class StairCtbcRuntime:
         stable = np.all(self._contact_buf > self.force_threshold, axis=0)
         self._cooldown[self._cooldown > 0] -= 1
         can_trigger = (self._ff_phase == -1) & (self._cooldown == 0)
-        trigger_candidates = stable & can_trigger & (not np.any(self._ff_phase >= 0))
+        trigger_candidates = stable & can_trigger
         newly_triggered = np.zeros(2, dtype=bool)
         if np.any(trigger_candidates):
             if bool(self.cfg.allow_bilateral_trigger):
@@ -126,7 +224,7 @@ class StairCtbcRuntime:
             return clipped
 
         desired = clipped.copy()
-        desired[:4] = self._apply_leg_delta(robot, desired[:4])
+        desired[:4] = self._apply_output_bias_delta(robot, desired[:4])
         desired[4:6] = self._apply_wheel_delta(desired[4:6])
         if robot.cfg.action_clip is not None:
             clip = float(robot.cfg.action_clip)
@@ -151,6 +249,7 @@ class StairCtbcRuntime:
             "ctbc_contact_right": float(self._last_contact_score[1]),
             "ctbc_complete_ff_cycles": int(self._complete_ff_cycles),
             "ctbc_action_delta": self._last_action_delta.copy().tolist(),
+            "ctbc_profile_path": (None if self._profile is None else str(self._profile.path)),
         }
 
     def _update_iter(self, iteration: int | None) -> None:
@@ -190,7 +289,28 @@ class StairCtbcRuntime:
         envelope = np.where(phase < hold_end, envelope, returning)
         return np.clip(envelope, 0.0, 1.0)
 
-    def _ff_wheel_delta_xz(self) -> np.ndarray:
+    def _ff_output_bias(self) -> np.ndarray:
+        bias = np.zeros(4, dtype=np.float64)
+        if self._kff == 0.0:
+            return bias
+        active = self._ff_phase >= 0
+        if not np.any(active):
+            return bias
+        phase = np.maximum(self._ff_phase.astype(np.float64), 0.0)
+        if self._profile is None:
+            envelope = self._ff_profile_envelope(phase) * active.astype(np.float64)
+        else:
+            envelope = self._profile.sample(phase, control_dt=self.control_dt)[:, 2]
+            envelope = envelope * active.astype(np.float64)
+        feedforward = 2.0 * float(self.cfg.ff_amplitude_rad) * envelope * float(self._kff)
+        for side_idx, (hip_idx, knee_idx) in enumerate(((0, 1), (2, 3))):
+            if not active[side_idx]:
+                continue
+            bias[hip_idx] = -feedforward[side_idx] * _HIP_FEEDFORWARD_RATIO
+            bias[knee_idx] = feedforward[side_idx] * _KNEE_FEEDFORWARD_RATIO
+        return bias
+
+    def _ff_wheel_cartesian_delta_xz(self) -> np.ndarray:
         delta = np.zeros((2, 2), dtype=np.float64)
         if self._kff == 0.0:
             return delta
@@ -198,27 +318,84 @@ class StairCtbcRuntime:
         if not np.any(active):
             return delta
         phase = np.maximum(self._ff_phase.astype(np.float64), 0.0)
-        envelope = self._ff_profile_envelope(phase) * active.astype(np.float64) * float(self._kff)
-        delta[:, 0] = -float(self.cfg.ff_x_m) * envelope
-        delta[:, 1] = float(self.cfg.ff_lift_m) * envelope
+        if self._profile is None:
+            envelope = (
+                self._ff_profile_envelope(phase) * active.astype(np.float64) * float(self._kff)
+            )
+            delta[:, 0] = -float(self.cfg.ff_x_m) * envelope
+            delta[:, 1] = float(self.cfg.ff_lift_m) * envelope
+        else:
+            samples = self._profile.sample(phase, control_dt=self.control_dt)
+            delta[:, 0] = samples[:, 0] * active.astype(np.float64) * float(self._kff)
+            delta[:, 1] = samples[:, 1] * active.astype(np.float64) * float(self._kff)
+        return delta
+
+    def _output_bias_wheel_delta_xz(
+        self,
+        robot: WheelLeggedRobot,
+        output_bias: np.ndarray,
+    ) -> np.ndarray:
+        delta = np.zeros((2, 2), dtype=np.float64)
+        has_output_bias = np.abs(output_bias.reshape(2, 2)).max(axis=1) > 0.0
+        if np.any(has_output_bias):
+            output_delta = (
+                output_bias * _CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN * _CTBC_SOURCE_OUTPUT_LEG_SCALE
+            )
+            policy_default = robot.action_decoder.policy_default(
+                command_height=float(robot.command[4]),
+                fallback_default=robot.default_dof_pos[JointGroup.CTRL_LEGS],
+            )
+            default_output = policy_to_output_pos_np(policy_default)
+            nominal_requested_output = default_output + output_delta
+            nominal_realizable_output = policy_to_output_pos_np(
+                output_to_policy_pos_np(nominal_requested_output)
+            )
+            delta = output_leg_wheel_xz_np(nominal_realizable_output) - output_leg_wheel_xz_np(
+                default_output
+            )
+        delta += self._ff_wheel_cartesian_delta_xz()
+        delta[:, 0] = np.minimum(delta[:, 0], 0.0)
+        delta[:, 1] = np.maximum(delta[:, 1], 0.0)
+        active_side = np.abs(delta).max(axis=1) > 0.0
+        delta[~active_side] = 0.0
         return delta
 
     def _ff_wheel_action_delta(self) -> np.ndarray:
-        if self._kff == 0.0 or float(self.cfg.ff_wheel_action) == 0.0:
+        if self._kff == 0.0:
+            return np.zeros(2, dtype=np.float64)
+        if self._profile is None and float(self.cfg.ff_wheel_action) == 0.0:
             return np.zeros(2, dtype=np.float64)
         active = self._ff_phase >= 0
         if not np.any(active):
             return np.zeros(2, dtype=np.float64)
         phase = np.maximum(self._ff_phase.astype(np.float64), 0.0)
-        envelope = self._ff_profile_envelope(phase) * active.astype(np.float64)
+        if self._profile is None:
+            envelope = self._ff_profile_envelope(phase) * active.astype(np.float64)
+            env_envelope = float(np.max(envelope)) * float(self._kff)
+            return np.full(2, float(self.cfg.ff_wheel_action) * env_envelope, dtype=np.float64)
+        samples = self._profile.sample(phase, control_dt=self.control_dt)
+        envelope = samples[:, 3] * active.astype(np.float64)
         env_envelope = float(np.max(envelope)) * float(self._kff)
-        return np.full(2, float(self.cfg.ff_wheel_action) * env_envelope, dtype=np.float64)
+        return np.full(2, env_envelope, dtype=np.float64)
 
-    def _apply_leg_delta(self, robot: WheelLeggedRobot, leg_action: np.ndarray) -> np.ndarray:
-        wheel_delta_xz = self._ff_wheel_delta_xz()
-        if not np.any(np.abs(wheel_delta_xz) > 0.0):
-            return leg_action
+    def _apply_output_bias_delta(
+        self,
+        robot: WheelLeggedRobot,
+        leg_action: np.ndarray,
+    ) -> np.ndarray:
+        output_bias = self._ff_output_bias()
+        has_output_bias = bool(np.any(np.abs(output_bias) > 0.0))
+        output_delta = (
+            output_bias * _CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN * _CTBC_SOURCE_OUTPUT_LEG_SCALE
+        )
         if not robot.active_rod_action_semantics:
+            if not has_output_bias:
+                return leg_action
+            leg_scale = robot.action_scale[JointGroup.LEG_ACTUATORS]
+            return np.asarray(leg_action, dtype=np.float64).reshape(4) + output_delta / leg_scale
+
+        wheel_delta_xz = self._output_bias_wheel_delta_xz(robot, output_bias)
+        if not np.any(np.abs(wheel_delta_xz) > 0.0):
             return leg_action
 
         policy_default = robot.action_decoder.policy_default(

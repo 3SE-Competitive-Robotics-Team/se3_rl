@@ -214,6 +214,21 @@ def recovery_active_lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
     return mdp_rewards.lin_vel_z(env) * _recovery_active_gate(env).float()
 
 
+def recovery_active_tracking_lin_vel(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的 x 速度跟踪奖励。"""
+    return mdp_rewards.tracking_lin_vel(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_tracking_ang_vel(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的 yaw 速度跟踪奖励。"""
+    return mdp_rewards.tracking_ang_vel(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """recovery-discovery active 阶段的 roll/pitch 角速度惩罚。"""
+    return mdp_rewards.ang_vel_xy(env) * _recovery_active_gate(env).float()
+
+
 def recovery_active_upright_orientation_l2(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -325,6 +340,46 @@ def recovery_active_wheel_air_velocity_penalty(
         asset_cfg=asset_cfg,
         log_prefix=log_prefix,
     )
+
+
+def recovery_active_stand_still(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的站立默认姿态惩罚。"""
+    return mdp_rewards.stand_still(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_joint_pos_penalty(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的腿部关节位置惩罚。"""
+    return mdp_rewards.joint_pos_penalty(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_leg_action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """recovery-discovery active 阶段的腿部 action rate 惩罚。"""
+    return mdp_rewards.leg_action_rate(env) * _recovery_active_gate(env).float()
+
+
+def recovery_active_wheel_action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """recovery-discovery active 阶段的轮部 action rate 惩罚。"""
+    return mdp_rewards.wheel_action_rate(env) * _recovery_active_gate(env).float()
+
+
+def recovery_active_action_smoothness(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的二阶 action 平滑惩罚。"""
+    return mdp_rewards.action_smoothness(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_leg_contact_penalty(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的腿部触地惩罚。"""
+    return mdp_rewards.leg_contact_penalty(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_wheel_contact_without_cmd(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段的零指令轮接触奖励。"""
+    return mdp_rewards.feet_contact_without_cmd(env, **kwargs) * _recovery_active_gate(env).float()
+
+
+def recovery_active_diagnostics(env: ManagerBasedRlEnv, **kwargs) -> torch.Tensor:
+    """recovery-discovery active 阶段沿用 recovery diagnostics。"""
+    return mdp_rewards.recovery_diagnostics(env, **kwargs) * _recovery_active_gate(env).float()
 
 
 def _wheel_body_ids(
