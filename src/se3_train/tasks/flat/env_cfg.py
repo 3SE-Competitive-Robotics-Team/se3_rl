@@ -348,6 +348,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
         "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.48),
+        "action_smoothness": RewardTermCfg(
+            func=rewards.action_smoothness,
+            weight=-0.01,
+            params={"command_name": "velocity_height"},
+        ),
         "joint_mirror": RewardTermCfg(
             func=rewards.joint_mirror,
             weight=-0.179,
