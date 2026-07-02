@@ -350,3 +350,105 @@ def _terrain_type_mask(
         if str(terrain_name) in selected:
             mask = mask | (env_terrain_types == terrain_index)
     return mask
+
+
+_VEL_ADAPTIVE_LIN_X_MAX_ATTR = "_vel_adaptive_lin_x_max"
+_VEL_ADAPTIVE_YAW_MAX_ATTR = "_vel_adaptive_yaw_max"
+_VEL_ADAPTIVE_EMA_ATTR = "_vel_adaptive_ema"
+
+
+def commands_vel_adaptive(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    *,
+    lin_vel_x_step: float = 0.2,
+    ang_vel_yaw_step: float = 1.0,
+    max_lin_vel_x: float = 2.4,
+    max_ang_vel_yaw: float = 12.0,
+    init_lin_vel_x: float = 0.0,
+    init_ang_vel_yaw: float = 0.0,
+    advance_threshold: float = 0.5,
+    ema_alpha: float = 0.05,
+) -> dict[str, torch.Tensor]:
+    """ETH 风格的自适应速度指令课程：用小步长丝滑推进速度范围。
+
+    从 vx=0（纯静站）起步，用 Locomotion/tracking_lin_vel_reward_all 的 EMA
+    评估策略是否适应了当前速度。EMA > advance_threshold 时小步扩大速度范围，
+    只扩不缩。
+
+    Locomotion/tracking_lin_vel_reward_all 是未乘权重的 exp 核均值，值域 (0, 1]，
+    按 locomotion mask（排除跳跃）取全体均值，不按 moving（|cmd_x|>=0.2）过滤。
+    必须用这个不依赖 moving 的版本：初始 lin_vel_x_range=(0,0) 时所有 env 的
+    cmd_mag 恒为 0，如果按 moving 过滤会导致该指标恒为 0、EMA 永远追不上
+    threshold，课程永久卡死在初始范围（2026-07 曾复现，807 iteration 内
+    vel_lin_x_max 无变化）。用全体均值后，cmd=0 阶段该值反映 sigma_stand
+    打分下的站立稳定度，天然给出连续、非零的推进信号。
+
+    第二个独立死锁（同一次排查发现）：`env.extras["log"]` 在 ManagerBasedRlEnv.step()
+    开头逐 step 清空（`self.extras["log"] = dict()`），而 tracking_lin_vel 只在
+    `_should_log_step` 命中时（默认每 64 step 一次）才写入这个 key；本函数在
+    `_reset_idx` 里对几乎每个 step 都会被调用（2048 个并行 env 几乎每 step 都有
+    env 到期重置）。如果对缺失 key 用 `0.0` 兜底，63/64 次读到的都是假的 0，
+    EMA 会被稀释到大约 `真实值/64`——σ_move=0.08、reward 已经接近满分 1.0 时，
+    稀释后的稳态 EMA 也只有约 0.015，永远追不上任何有意义的 threshold（哪怕
+    threshold 定得再低）。这不是"及格线"或"moving mask"问题，是把一个为降低
+    TensorBoard 写盘开销而设的节流开关，误用成了课程判据的采样开关。
+    修复方式：区分"key 缺失（这个 step 没有新样本）"和"key 存在但值为 0（真的
+    跟踪失败）"，缺失时跳过本次 EMA 更新，只用真正刷新过的样本推进 EMA。
+
+    当前 σ_move=0.08 时，threshold=0.5 约对应跟踪误差 0.24 m/s，
+    threshold=0.6 约对应 0.19 m/s（该换算只在 moving 段严格成立，
+    cmd=0 段走的是更松的 sigma_stand）。
+    """
+    del env_ids
+    term = env.command_manager.get_term(command_name)
+    cfg: VelocityHeightCommandCfg = term.cfg  # type: ignore[assignment]
+
+    if not hasattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR):
+        setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, float(init_lin_vel_x))
+        setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, float(init_ang_vel_yaw))
+        setattr(env, _VEL_ADAPTIVE_EMA_ATTR, 0.0)
+
+    lin_x_max = float(getattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR))
+    yaw_max = float(getattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR))
+    ema = float(getattr(env, _VEL_ADAPTIVE_EMA_ATTR))
+
+    # 从 step 级日志读取跟踪奖励（Episode_Reward 在 curriculum 之后才写入）。
+    # log 每 step 清空，tracking_lin_vel 每 _should_log_step 个 step 才写一次，
+    # 所以必须用 None 兜底区分“没有新样本”和“样本值真的是 0”，否则会被
+    # 未刷新的 step 稀释，EMA 永远追不上 threshold。
+    log = getattr(env, "extras", {}).get("log", {})
+    tracking_lin_vel = log.get("Locomotion/tracking_lin_vel_reward_all", None)
+
+    # advance 判定必须和 EMA 刷新绑在一起，不能每次 compute() 调用都判一次。
+    # commands_vel_adaptive 由 _reset_idx 触发，2048 个并行 env 几乎每个
+    # global step 都有到期重置，也就几乎每 step 都会调用一次本函数；但
+    # tracking_lin_vel 只在 _should_log_step 命中时（默认每 64 step 一次）
+    # 才会刷新。如果 advance 判定不绑定"这次是不是刚刷新",同一个未变化的
+    # ema 会在刷新间隔内的每一次 reset 调用上都重新判一次"> threshold",
+    # 在一个 64-step 窗口内连续触发几十次 +lin_vel_x_step,一步顶原设计的
+    # 十几步（2026-07 复测复现：iteration 21 单窗口内从 0 直接跳到 2.18,
+    # 下一次刷新就顶到 max_lin_vel_x=2.4,和 commit message 里"小步丝滑
+    # 推进,约需 10 步"的设计意图完全不符,课程等于形同虚设）。
+    if tracking_lin_vel is not None:
+        ema = (1.0 - ema_alpha) * ema + ema_alpha * float(tracking_lin_vel)
+        setattr(env, _VEL_ADAPTIVE_EMA_ATTR, ema)
+
+        if ema > float(advance_threshold):
+            lin_x_max = min(lin_x_max + float(lin_vel_x_step), float(max_lin_vel_x))
+            yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
+            setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, lin_x_max)
+            setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, yaw_max)
+
+    cfg.lin_vel_x_range = (-lin_x_max, lin_x_max)
+    cfg.ang_vel_yaw_range = (-yaw_max, yaw_max)
+
+    return {
+        "vel_lin_x_max": torch.tensor(lin_x_max),
+        "vel_yaw_max": torch.tensor(yaw_max),
+        "vel_ema": torch.tensor(ema),
+        "vel_tracking_lin_vel": torch.tensor(
+            float(tracking_lin_vel) if tracking_lin_vel is not None else float("nan")
+        ),
+    }

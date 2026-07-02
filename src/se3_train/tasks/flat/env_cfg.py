@@ -39,39 +39,6 @@ _FLAT_INITIAL_ANG_VEL_YAW_RANGE = (-1.0, 1.0)
 _FLAT_COMMAND_WHEEL_RADIUS = 0.06
 _FLAT_COMMAND_HALF_TRACK = 0.20
 _FLAT_COMMAND_WHEEL_SPEED_FRACTION = 0.9
-_STEPS_PER_POLICY_ITER = 64
-_FLAT_VELOCITY_STAGES = [
-    {
-        "iteration": 0,
-        "lin_vel_x_range": _FLAT_INITIAL_LIN_VEL_X_RANGE,
-        "ang_vel_yaw_range": _FLAT_INITIAL_ANG_VEL_YAW_RANGE,
-    },
-    {
-        "iteration": 400,
-        "lin_vel_x_range": (-0.8, 0.8),
-        "ang_vel_yaw_range": (-2.0, 2.0),
-    },
-    {
-        "iteration": 800,
-        "lin_vel_x_range": (-1.2, 1.2),
-        "ang_vel_yaw_range": (-4.0, 4.0),
-    },
-    {
-        "iteration": 1200,
-        "lin_vel_x_range": (-1.6, 1.6),
-        "ang_vel_yaw_range": (-6.0, 6.0),
-    },
-    {
-        "iteration": 1600,
-        "lin_vel_x_range": (-2.0, 2.0),
-        "ang_vel_yaw_range": (-9.0, 9.0),
-    },
-    {
-        "iteration": 2000,
-        "lin_vel_x_range": (-2.4, 2.4),
-        "ang_vel_yaw_range": (-12.0, 12.0),
-    },
-]
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -435,12 +402,17 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if not play:
         cfg.curriculum = {
             "command_vel": CurriculumTermCfg(
-                func=curriculums.commands_vel,
+                func=curriculums.commands_vel_adaptive,
                 params={
                     "command_name": "velocity_height",
-                    "use_iterations": True,
-                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
-                    "velocity_stages": _FLAT_VELOCITY_STAGES,
+                    "lin_vel_x_step": 0.2,
+                    "ang_vel_yaw_step": 1.0,
+                    "max_lin_vel_x": 2.4,
+                    "max_ang_vel_yaw": 12.0,
+                    "init_lin_vel_x": 0.0,
+                    "init_ang_vel_yaw": 0.0,
+                    "advance_threshold": 0.5,
+                    "ema_alpha": 0.05,
                 },
             ),
             "push_disturbance": CurriculumTermCfg(
