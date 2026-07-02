@@ -43,16 +43,8 @@ from .forward_stairs import BoxForwardStairsTerrainCfg
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
-_STAIR_MJCF_PATH = (
-    _PROJECT_ROOT
-    / "assets"
-    / "robots"
-    / "serialleg"
-    / "mjcf"
-    / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
-)
 _STAIR_RECOVERY_STATE_CACHE_PATH = (
-    _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_stair_v3_40k.npz"
+    _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_closedchain_stair_v3_40k.npz"
 )
 _STAIR_WHEEL_KD = 0.08
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060
@@ -213,7 +205,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = flat_env_cfg(play=play)
 
     cfg.scene.entities["robot"] = get_serialleg_cfg(
-        mjcf_path=_STAIR_MJCF_PATH,
         wheel_kd_override=_STAIR_WHEEL_KD,
     )
     cfg.scene.terrain = TerrainEntityCfg(
