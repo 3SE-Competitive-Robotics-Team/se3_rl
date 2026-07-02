@@ -227,6 +227,38 @@ class RerunViewer:
         self._log_scalar("/plots/contact/leg_right", telemetry.get("leg_contact_right", 0.0))
         self._log_scalar("/plots/contact/base", telemetry.get("base_contact", 0.0))
         self._log_scalar("/plots/contact/nonwheel", telemetry.get("nonwheel_contact", 0.0))
+        self._log_scalar("/plots/ctbc/trigger", telemetry.get("ctbc_trigger", 0.0))
+        self._log_scalar(
+            "/plots/ctbc/trigger_mode_pitch", telemetry.get("ctbc_trigger_mode_pitch", 0.0)
+        )
+        self._log_pair(
+            "/plots/ctbc/active",
+            (telemetry.get("ctbc_left_active", 0.0), telemetry.get("ctbc_right_active", 0.0)),
+        )
+        self._log_pair(
+            "/plots/ctbc/stable",
+            (telemetry.get("ctbc_stable_left", 0.0), telemetry.get("ctbc_stable_right", 0.0)),
+        )
+        self._log_pair(
+            "/plots/ctbc/contact_force_n",
+            (telemetry.get("ctbc_contact_left", 0.0), telemetry.get("ctbc_contact_right", 0.0)),
+        )
+        self._log_pair(
+            "/plots/ctbc/trigger_score",
+            (
+                telemetry.get("ctbc_trigger_score_left", 0.0),
+                telemetry.get("ctbc_trigger_score_right", 0.0),
+            ),
+        )
+        self._log_pair(
+            "/plots/ctbc/phase",
+            (telemetry.get("ctbc_phase_left", 0.0), telemetry.get("ctbc_phase_right", 0.0)),
+        )
+        self._log_scalar("/plots/ctbc/pitch_abs_deg", telemetry.get("ctbc_pitch_abs_deg", 0.0))
+        self._log_scalar(
+            "/plots/ctbc/pitch_threshold_deg",
+            telemetry.get("ctbc_pitch_threshold_deg", 0.0),
+        )
         self._log_scalar(
             "/plots/leg_alignment/wheel_lateral_distance_m",
             telemetry.get("wheel_lateral_distance", 0.0),
@@ -350,6 +382,7 @@ class RerunViewer:
                 name="Yaw Rate Tracking",
             ),
             time_series_view(origin="/plots/contact", contents="/plots/contact/**", name="Contact"),
+            time_series_view(origin="/plots/ctbc", contents="/plots/ctbc/**", name="CTBC"),
             time_series_view(
                 origin="/plots/ctrl/torque_nm",
                 contents="/plots/ctrl/torque_nm/**",

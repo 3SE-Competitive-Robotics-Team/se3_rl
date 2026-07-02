@@ -24,6 +24,8 @@ class CommandInputUpdate:
     yaw_rate: float
     command_height: float
     yaw_target_rad: float | None = None
+    terrain_level_request: int | None = None
+    terrain_level_delta: int = 0
     toggle_output: bool = False
     quit_requested: bool = False
     key_events: tuple[str, ...] = ()
@@ -149,6 +151,7 @@ class KeyboardTeleopSource:
             "[teleop] W/S/A/D 使用斜坡式速度目标；按住累加，松开平滑回零。 "
             "[teleop] R: 切换遥控器输出 | W/S: 前进/后退 | A/D: 左/右旋转 | "
             "按住 ↑/E: 连续站高 | 按住 ↓/C: 连续站低 | H: 默认站高 | "
+            "[/]: rough level -/+ | 0-9: 跳到 rough level | "
             "右侧面板: RC off 时可拖动四关节和 base 姿态 | Space/X: 清零速度 | Q/Esc: 退出"
         )
 
@@ -234,6 +237,8 @@ class KeyboardTeleopSource:
         toggle_output = False
         quit_requested = False
         clear_motion = False
+        terrain_level_request: int | None = None
+        terrain_level_delta = 0
 
         for key in keys:
             if key == "r":
@@ -261,6 +266,12 @@ class KeyboardTeleopSource:
                 self._last_up_key_at = -math.inf
                 self._last_down_key_at = -math.inf
                 self._clear_held_height_keys()
+            elif key == "[":
+                terrain_level_delta -= 1
+            elif key == "]":
+                terrain_level_delta += 1
+            elif key.isdigit():
+                terrain_level_request = int(key)
             elif key in {" ", "x"}:
                 clear_motion = True
             elif key in {"q", "\x1b", "\x03"}:
@@ -291,6 +302,8 @@ class KeyboardTeleopSource:
             lin_vel_x=self._lin_vel_x,
             yaw_rate=self._yaw_rate,
             command_height=self._command_height,
+            terrain_level_request=terrain_level_request,
+            terrain_level_delta=terrain_level_delta,
             toggle_output=toggle_output,
             quit_requested=quit_requested,
             key_events=keys,

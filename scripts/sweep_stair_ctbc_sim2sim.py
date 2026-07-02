@@ -20,6 +20,10 @@ def _parse_int_list(value: str) -> list[int]:
     return [int(item) for item in value.split(",") if item.strip()]
 
 
+def _parse_path_list(value: str) -> list[Path]:
+    return [Path(item) for item in value.split(",") if item.strip()]
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, default=Path("assets/base_model/model_4999.pt"))
@@ -28,16 +32,51 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stair-step-height", type=float, default=None)
     parser.add_argument("--stair-step-heights", type=_parse_float_list, default=None)
     parser.add_argument("--stair-half-width", type=float, default=6.0)
-    parser.add_argument("--ff-x", type=_parse_float_list, default=_parse_float_list("0.02"))
-    parser.add_argument("--ff-lift", type=_parse_float_list, default=_parse_float_list("0.02"))
     parser.add_argument(
-        "--ff-rise", type=_parse_float_list, default=_parse_float_list("0.30,0.35,0.45")
+        "--body-x",
+        "--ff-x",
+        dest="body_x",
+        type=_parse_float_list,
+        default=None,
+        help="机体系腿部平面内的轮心后撤幅值；--ff-x 保留为兼容 alias。",
     )
-    parser.add_argument("--ff-period", type=_parse_float_list, default=_parse_float_list("0.60"))
+    parser.add_argument(
+        "--body-z",
+        "--ff-lift",
+        dest="body_z",
+        type=_parse_float_list,
+        default=None,
+        help="机体系腿部平面内的轮心抬升幅值；--ff-lift 保留为兼容 alias。",
+    )
+    parser.add_argument("--leg-lengths", type=_parse_float_list, default=_parse_float_list("0.18"))
+    parser.add_argument(
+        "--swing-angles-deg",
+        type=_parse_float_list,
+        default=_parse_float_list("-35.0"),
+    )
+    parser.add_argument("--ff-rise", type=_parse_float_list, default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--duration",
+        "--ff-duration",
+        "--ff-period",
+        dest="duration",
+        type=_parse_float_list,
+        default=_parse_float_list("0.60"),
+        help="CTBC 触发后保持前馈目标的持续时间，单位秒；旧 ff-period 名称保留为 alias。",
+    )
     parser.add_argument("--ff-wheel", type=_parse_float_list, default=_parse_float_list("0.0,0.04"))
-    parser.add_argument("--ff-amp", type=_parse_float_list, default=_parse_float_list("1.70"))
+    parser.add_argument("--ff-amp", type=_parse_float_list, default=_parse_float_list("0.0"))
+    parser.add_argument(
+        "--profiles",
+        type=_parse_path_list,
+        default=None,
+        help="Comma-separated CTBC profile JSON files. When set, sim2sim uses --stair-ctbc-profile.",
+    )
+    parser.add_argument("--trigger-mode", choices=("force", "pitch"), default="pitch")
     parser.add_argument("--force-threshold", type=float, default=10.0)
     parser.add_argument("--contact-window", type=int, default=3)
+    parser.add_argument("--pitch-threshold-deg", type=float, default=6.0)
+    parser.add_argument("--pitch-window", type=int, default=3)
     parser.add_argument("--command-vx", type=float, default=1.0)
     parser.add_argument("--command-vxs", type=_parse_float_list, default=None)
     parser.add_argument("--command-height", type=float, default=0.39)
@@ -79,13 +118,16 @@ def _score(stair: dict[str, Any], rollout: dict[str, Any]) -> float:
 
 
 def _case_name(case: dict[str, Any]) -> str:
+    profile = case.get("profile")
+    profile_part = "" if profile is None else f"_profile{Path(profile).stem}"
     return (
-        f"lvl{case['level']:02d}_x{case['ff_x']:.3f}_lift{case['ff_lift']:.3f}"
-        f"_rise{case['ff_rise']:.2f}_period{case['ff_period']:.2f}"
+        f"lvl{case['level']:02d}_len{case['leg_length']:.3f}"
+        f"_swing{case['swing_angle_deg']:.1f}_dur{case['duration']:.2f}"
         f"_wheel{case['ff_wheel']:.2f}_amp{case['ff_amp']:.2f}"
         f"_vx{case['command_vx']:.2f}_h{case['command_height']:.2f}"
         f"_hold{case['hold_vx']:.2f}"
         f"_step{case['stair_step_height']:.3f}"
+        f"{profile_part}"
     ).replace(".", "p")
 
 
@@ -106,20 +148,16 @@ def _run_case(args: argparse.Namespace, case: dict[str, Any], json_path: Path) -
         "--stair-ctbc",
         "--stair-ctbc-iter",
         "0",
-        "--stair-ctbc-contact-window",
-        str(args.contact_window),
-        "--stair-ctbc-force-threshold-n",
-        str(args.force_threshold),
+        "--stair-ctbc-trigger-mode",
+        str(args.trigger_mode),
         "--stair-ctbc-ff-amplitude-rad",
         str(case["ff_amp"]),
-        "--stair-ctbc-ff-x-m",
-        str(case["ff_x"]),
-        "--stair-ctbc-ff-lift-m",
-        str(case["ff_lift"]),
-        "--stair-ctbc-ff-rise-ratio",
-        str(case["ff_rise"]),
-        "--stair-ctbc-ff-period-s",
-        str(case["ff_period"]),
+        "--stair-ctbc-leg-length-m",
+        str(case["leg_length"]),
+        "--stair-ctbc-swing-angle-deg",
+        str(case["swing_angle_deg"]),
+        "--stair-ctbc-duration-s",
+        str(case["duration"]),
         "--stair-ctbc-ff-wheel-action",
         str(case["ff_wheel"]),
         "--command",
@@ -143,8 +181,28 @@ def _run_case(args: argparse.Namespace, case: dict[str, Any], json_path: Path) -
         "--course",
         "none",
     ]
+    if args.trigger_mode == "pitch":
+        cmd.extend(
+            [
+                "--stair-ctbc-pitch-threshold-deg",
+                str(args.pitch_threshold_deg),
+                "--stair-ctbc-pitch-window",
+                str(args.pitch_window),
+            ]
+        )
+    else:
+        cmd.extend(
+            [
+                "--stair-ctbc-contact-window",
+                str(args.contact_window),
+                "--stair-ctbc-force-threshold-n",
+                str(args.force_threshold),
+            ]
+        )
     if case["stair_step_height"] > 0.0:
         cmd.extend(["--stair-step-height", str(case["stair_step_height"])])
+    if case.get("profile") is not None:
+        cmd.extend(["--stair-ctbc-profile", str(case["profile"])])
     if args.allow_bilateral_trigger:
         cmd.append("--stair-ctbc-allow-bilateral-trigger")
     if args.hold_on_support:
@@ -158,6 +216,7 @@ def _summarize(case: dict[str, Any], payload: dict[str, Any], json_path: Path) -
     row = {
         **case,
         "json": str(json_path),
+        "profile": "" if case.get("profile") is None else str(case["profile"]),
         "score": _score(stair, rollout),
         "command_vx": case["command_vx"],
         "command_height": case["command_height"],
@@ -197,6 +256,7 @@ def main() -> None:
         args.command_heights if args.command_heights is not None else [float(args.command_height)]
     )
     hold_vxs = args.hold_vxs if args.hold_vxs is not None else [float(args.hold_vx)]
+    profiles = args.profiles if args.profiles is not None else [None]
     if args.stair_step_heights is not None:
         stair_step_heights = args.stair_step_heights
     elif args.stair_step_height is not None:
@@ -206,24 +266,24 @@ def main() -> None:
     cases = [
         {
             "level": level,
-            "ff_x": ff_x,
-            "ff_lift": ff_lift,
-            "ff_rise": ff_rise,
-            "ff_period": ff_period,
+            "leg_length": leg_length,
+            "swing_angle_deg": swing_angle_deg,
+            "duration": duration,
             "ff_wheel": ff_wheel,
             "ff_amp": ff_amp,
             "command_vx": command_vx,
             "command_height": command_height,
             "hold_vx": hold_vx,
             "stair_step_height": stair_step_height,
+            "profile": profile,
         }
         for (
             level,
             stair_step_height,
-            ff_x,
-            ff_lift,
-            ff_rise,
-            ff_period,
+            profile,
+            leg_length,
+            swing_angle_deg,
+            duration,
             ff_wheel,
             ff_amp,
             command_vx,
@@ -232,10 +292,10 @@ def main() -> None:
         ) in itertools.product(
             args.levels,
             stair_step_heights,
-            args.ff_x,
-            args.ff_lift,
-            args.ff_rise,
-            args.ff_period,
+            profiles,
+            args.leg_lengths,
+            args.swing_angles_deg,
+            args.duration,
             args.ff_wheel,
             args.ff_amp,
             command_vxs,
@@ -269,13 +329,12 @@ def main() -> None:
     for row in rows[: args.top_k]:
         print(
             "score={score:.1f} level={level} h={step_height_m:.3f} "
-            "x={ff_x:.3f} lift={ff_lift:.3f} rise={ff_rise:.2f} wheel={ff_wheel:.2f} "
-            "period={ff_period:.2f} cmd_h={command_height:.2f} hold_vx={hold_vx:.2f} "
+            "len={leg_length:.3f} swing={swing_angle_deg:.1f} duration={duration:.2f} wheel={ff_wheel:.2f} "
+            "cmd_h={command_height:.2f} hold_vx={hold_vx:.2f} "
             "max_step={max_completed_step} tail_step={tail_completed_step} "
             "support={support_duration_s:.2f}s stable={stable_duration_s:.2f}s "
-            "tail_stable={tail_stable_rate:.2f} final_lr={final_left_step}/{final_right_step}".format(
-                **row
-            )
+            "tail_stable={tail_stable_rate:.2f} final_lr={final_left_step}/{final_right_step} "
+            "profile={profile}".format(**row)
         )
 
 

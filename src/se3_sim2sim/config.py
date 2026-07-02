@@ -18,6 +18,7 @@ RerunGeomView = Literal["visual", "collision", "both"]
 SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
 RcOffMode = Literal["no-torque", "hold-current"]
+CustomTerrain = Literal["none", "gap-ramp-facility", "slope-17"]
 RoughTerrainType = Literal[
     "mixed",
     "flat",
@@ -46,6 +47,11 @@ ROUGH_TERRAIN_TYPE_CHOICES: tuple[RoughTerrainType, ...] = (
     "hf_pyramid_slope_inv",
     "random_rough",
     "wave_terrain",
+)
+CUSTOM_TERRAIN_CHOICES: tuple[CustomTerrain, ...] = (
+    "none",
+    "gap-ramp-facility",
+    "slope-17",
 )
 RECOVERY_POSE_RP_RAD: dict[RecoveryPose, tuple[float, float]] = {
     "standing": (0.0, 0.0),
@@ -216,11 +222,23 @@ class StairCtbcConfig(BaseModel):
     """sim2sim 台阶 CTBC 前馈配置，与训练端默认值保持一致。"""
 
     enabled: bool = False
+    cartesian_frame: Literal["body"] = "body"
+    coordinate_mode: Literal["body_polar", "body_cartesian"] = "body_polar"
+    trigger_mode: Literal["force", "pitch"] = "pitch"
     contact_window: Annotated[int, Field(ge=1)] = 3
     force_threshold_n: Annotated[float, Field(ge=0.0)] = 10.0
-    ff_amplitude_rad: float = 1.70
-    ff_x_m: float = 0.02
-    ff_lift_m: float = 0.02
+    pitch_threshold_rad: Annotated[float, Field(ge=0.0)] = math.radians(6.0)
+    pitch_threshold_deg: Annotated[float, Field(ge=0.0)] = 6.0
+    pitch_window: Annotated[int, Field(ge=1)] = 3
+    ff_amplitude_rad: float = 0.0
+    leg_length_m: Annotated[float, Field(gt=0.0)] = 0.18
+    swing_angle_rad: float = math.radians(-35.0)
+    swing_angle_deg: float = -35.0
+    body_x_m: float = 0.20
+    body_z_m: float = 0.15
+    ff_x_m: float = 0.20
+    ff_lift_m: float = 0.15
+    ff_duration_s: Annotated[float, Field(gt=0.0)] = 0.60
     ff_period_s: Annotated[float, Field(gt=0.0)] = 0.60
     ff_rise_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.35
     ff_hold_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
@@ -231,6 +249,47 @@ class StairCtbcConfig(BaseModel):
     fixed_iter: Annotated[int, Field(ge=0)] | None = None
     obs_scale: Annotated[float, Field(gt=0.0)] = 0.01
     allow_bilateral_trigger: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_cartesian_aliases(cls, data: object) -> object:
+        """把旧 ff_x/ff_lift 字段升级成显式 body-frame 字段。"""
+
+        if isinstance(data, dict):
+            upgraded = dict(data)
+            if "body_x_m" not in upgraded and "ff_x_m" in upgraded:
+                upgraded["body_x_m"] = upgraded["ff_x_m"]
+            if "body_z_m" not in upgraded and "ff_lift_m" in upgraded:
+                upgraded["body_z_m"] = upgraded["ff_lift_m"]
+            if "swing_angle_rad" not in upgraded and "swing_angle_deg" in upgraded:
+                upgraded["swing_angle_rad"] = math.radians(float(upgraded["swing_angle_deg"]))
+            if "pitch_threshold_rad" not in upgraded and "pitch_threshold_deg" in upgraded:
+                upgraded["pitch_threshold_rad"] = math.radians(
+                    float(upgraded["pitch_threshold_deg"])
+                )
+            has_legacy_cartesian = any(
+                key in upgraded for key in ("body_x_m", "body_z_m", "ff_x_m", "ff_lift_m")
+            )
+            has_polar = any(key in upgraded for key in ("leg_length_m", "swing_angle_rad"))
+            if "coordinate_mode" not in upgraded and has_legacy_cartesian and not has_polar:
+                upgraded["coordinate_mode"] = "body_cartesian"
+            if "ff_duration_s" not in upgraded and "duration_s" in upgraded:
+                upgraded["ff_duration_s"] = upgraded["duration_s"]
+            if "ff_duration_s" not in upgraded and "ff_period_s" in upgraded:
+                upgraded["ff_duration_s"] = upgraded["ff_period_s"]
+            return upgraded
+        return data
+
+    @model_validator(mode="after")
+    def _sync_body_cartesian_aliases(self) -> StairCtbcConfig:
+        """保持新 body 字段和旧 ff 字段一致，旧字段只作为兼容入口。"""
+
+        self.ff_x_m = float(self.body_x_m)
+        self.ff_lift_m = float(self.body_z_m)
+        self.ff_period_s = float(self.ff_duration_s)
+        self.swing_angle_deg = math.degrees(float(self.swing_angle_rad))
+        self.pitch_threshold_deg = math.degrees(float(self.pitch_threshold_rad))
+        return self
 
 
 class RobotConfig(BaseModel):
@@ -265,6 +324,8 @@ class RobotConfig(BaseModel):
     """rough heightfield 的全尺寸，默认对齐训练端 ROUGH_TERRAINS_CFG.size。"""
     rough_stair_step_height_range: tuple[float, float] = (0.0, 0.05)
     """rough pyramid stairs 的单级高度范围；默认对齐 5cm rough discovery 泛化训练。"""
+    custom_terrain: CustomTerrain = "none"
+    """sim2sim 额外自定义地形；slope-17 为单个 17° 坡面。"""
     sim_dt: Annotated[float, Field(gt=0.0)] = _shared_robot.sim_dt
     control_decimation: Annotated[int, Field(ge=1)] = _shared_robot.control_decimation
     base_height: float = _shared_robot.default_base_height
@@ -331,8 +392,15 @@ class RobotConfig(BaseModel):
 
     @model_validator(mode="after")
     def _check_terrain_mode(self) -> RobotConfig:
-        if self.stair_terrain and self.rough_terrain:
-            raise ValueError("--stair-terrain and --rough-terrain cannot be enabled together")
+        terrain_modes = [
+            bool(self.stair_terrain),
+            bool(self.rough_terrain),
+            self.custom_terrain != "none",
+        ]
+        if sum(terrain_modes) > 1:
+            raise ValueError(
+                "--stair-terrain, --rough-terrain and --custom-terrain cannot be enabled together"
+            )
         return self
 
 

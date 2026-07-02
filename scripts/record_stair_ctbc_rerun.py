@@ -65,8 +65,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--ff-rise-ratio", type=float, default=None)
     parser.add_argument("--ff-hold-ratio", type=float, default=None)
     parser.add_argument("--ff-wheel-action", type=float, default=None)
+    parser.add_argument("--ctbc-profile", type=Path, default=None)
+    parser.add_argument("--trigger-mode", choices=("force", "pitch"), default=None)
     parser.add_argument("--force-threshold-n", type=float, default=None)
     parser.add_argument("--contact-window", type=int, default=None)
+    parser.add_argument("--pitch-threshold-deg", type=float, default=None)
+    parser.add_argument("--pitch-window", type=int, default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--start-x-offset-m", type=float, default=None)
     parser.add_argument("--start-y-offset-m", type=float, default=None)
@@ -249,13 +253,21 @@ def _configure_cfg(args: argparse.Namespace):
             "ff_rise_ratio": args.ff_rise_ratio,
             "ff_hold_ratio": args.ff_hold_ratio,
             "ff_wheel_action": args.ff_wheel_action,
+            "profile_path": args.ctbc_profile,
+            "trigger_mode": args.trigger_mode,
             "force_threshold_n": args.force_threshold_n,
             "contact_window": args.contact_window,
+            "pitch_threshold_deg": args.pitch_threshold_deg,
+            "pitch_window": args.pitch_window,
         }
         for name, value in overrides.items():
             if value is not None:
-                if name == "contact_window":
+                if name in {"contact_window", "pitch_window"}:
                     params[name] = int(value)
+                elif name == "profile_path":
+                    params[name] = value
+                elif name == "trigger_mode":
+                    params[name] = str(value)
                 else:
                     params[name] = float(value)
 
@@ -590,12 +602,16 @@ def _log_rollout_sample(
     force = np.zeros(2, dtype=np.float32)
     phase = np.full(2, -1.0, dtype=np.float32)
     kff = 0.0
+    ctbc_pitch_abs_deg = abs(pitch_deg)
     if state is not None:
         kff = float(state.kff)
         active = _finite_np((state.ff_phase[env_id] >= 0).float()).reshape(2)
         stable = _finite_np(state.stable_contact[env_id].float()).reshape(2)
         force = _finite_np(state.latest_contact_force[env_id]).reshape(2)
         phase = _finite_np(state.ff_phase[env_id].float()).reshape(2)
+        pitch_getter = getattr(state, "latest_pitch_abs_deg", None)
+        if isinstance(pitch_getter, torch.Tensor):
+            ctbc_pitch_abs_deg = float(torch.nan_to_num(pitch_getter[env_id]).item())
 
     ctbc_delta = _finite_np(action_term.ctbc_action_delta[env_id]).reshape(-1)
     ctbc_bias = _finite_np(action_term.ctbc_output_bias[env_id]).reshape(-1)
@@ -640,6 +656,7 @@ def _log_rollout_sample(
     _log_array(rr, "/plots/ctbc/active", active, SIDE_LABELS)
     _log_array(rr, "/plots/ctbc/stable", stable, SIDE_LABELS)
     _log_array(rr, "/plots/ctbc/force_n", force, SIDE_LABELS)
+    _log_scalar(rr, "/plots/ctbc/pitch_abs_deg", ctbc_pitch_abs_deg)
     _log_array(rr, "/plots/ctbc/phase_step", phase, SIDE_LABELS)
     _log_array(rr, "/plots/ctbc/action_delta", ctbc_delta, ACTION_LABELS)
     _log_array(rr, "/plots/ctbc/output_bias", ctbc_bias, ACTION_LABELS)
@@ -654,6 +671,7 @@ def _log_rollout_sample(
         "active_any": bool(np.any(active > 0.5)),
         "stable_any": bool(np.any(stable > 0.5)),
         "force_max_n": float(np.max(force)) if force.size else 0.0,
+        "ctbc_pitch_abs_deg": ctbc_pitch_abs_deg,
         "ctbc_delta_abs_max": float(np.max(np.abs(ctbc_delta[:4]))) if ctbc_delta.size else 0.0,
         "tilt_deg": tilt_deg,
         "pitch_deg": pitch_deg,

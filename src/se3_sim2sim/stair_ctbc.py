@@ -23,12 +23,36 @@ if TYPE_CHECKING:
 
 _CTBC_SOURCE_OUTPUT_LEG_SCALE = 0.25
 _CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN = np.asarray((-1.0, -1.0, 1.0, 1.0), dtype=np.float64)
+_BASE_BODY_NAME = "base_link"
+_WHEEL_BODY_NAMES = ("l_wheel_Link", "r_wheel_Link")
+_HIP_OFFSETS_BODY = np.asarray(
+    ((0.0, 0.16885, 0.0), (0.0, -0.16885, 0.0)),
+    dtype=np.float64,
+)
 _HIP_FEEDFORWARD_RATIO = 1.2
 _KNEE_FEEDFORWARD_RATIO = 2.0
 
 
+def _polar_to_xz_np(length_m: np.ndarray, swing_rad: np.ndarray) -> np.ndarray:
+    length = np.asarray(length_m, dtype=np.float64)
+    swing = np.asarray(swing_rad, dtype=np.float64)
+    return np.stack((length * np.sin(swing), -length * np.cos(swing)), axis=-1)
+
+
+def _profile_coordinate_mode(payload: dict[str, object]) -> str:
+    metadata = payload.get("metadata")
+    mode = metadata.get("coordinate_mode") if isinstance(metadata, dict) else None
+    if (
+        mode is None
+        and isinstance(metadata, dict)
+        and metadata.get("type") == "training_duration_polar"
+    ):
+        mode = "body_polar"
+    return "body_polar" if mode == "body_polar" else "body_cartesian"
+
+
 class _CtbcProfile:
-    """Piecewise-linear CTBC feedforward profile loaded from JSON."""
+    """从 JSON 加载的分段线性 CTBC 前馈轨迹。"""
 
     def __init__(
         self,
@@ -37,11 +61,13 @@ class _CtbcProfile:
         times_s: np.ndarray,
         values: np.ndarray,
         period_s: float,
+        coordinate_mode: str,
     ) -> None:
         self.path = path
         self.times_s = times_s
         self.values = values
         self.period_s = float(period_s)
+        self.coordinate_mode = coordinate_mode
 
     @classmethod
     def load(cls, path: Path | str) -> _CtbcProfile:
@@ -51,13 +77,46 @@ class _CtbcProfile:
         if not isinstance(points, list) or len(points) < 2:
             raise ValueError(f"CTBC profile {profile_path} must contain at least two points")
 
+        coordinate_mode = _profile_coordinate_mode(payload)
         rows: list[tuple[float, float, float, float, float]] = []
         for idx, point in enumerate(points):
             if not isinstance(point, dict):
                 raise ValueError(f"CTBC profile point {idx} must be an object")
             t = cls._number(point, "t", "time_s", required=True)
-            x = cls._number(point, "x_m", "x", default=0.0)
-            z = cls._number(point, "z_m", "z", default=0.0)
+            if coordinate_mode == "body_polar":
+                x = cls._number(
+                    point,
+                    "leg_length_m",
+                    ("length_m", "r_m", "radius_m"),
+                    default=0.18,
+                )
+                raw_swing = point.get("swing_angle_rad")
+                if raw_swing is None:
+                    for key in ("theta_rad", "angle_rad"):
+                        if key in point:
+                            raw_swing = point[key]
+                            break
+                if raw_swing is None:
+                    swing_deg = cls._number(
+                        point,
+                        "swing_angle_deg",
+                        ("theta_deg", "angle_deg"),
+                        default=-35.0,
+                    )
+                    swing_rad = math.radians(swing_deg)
+                else:
+                    try:
+                        swing_rad = float(raw_swing)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "CTBC profile field 'swing_angle_rad' must be numeric"
+                        ) from exc
+                    if not math.isfinite(swing_rad):
+                        raise ValueError("CTBC profile field 'swing_angle_rad' must be finite")
+                z = swing_rad
+            else:
+                x = cls._number(point, "body_x_m", ("x_m", "x"), default=0.0)
+                z = cls._number(point, "body_z_m", ("z_m", "z"), default=0.0)
             amp = cls._number(point, "amp", "amp_scale", default=0.0)
             wheel_action = cls._number(
                 point,
@@ -82,18 +141,32 @@ class _CtbcProfile:
             raise ValueError(f"CTBC profile {profile_path} has invalid period_s={period_s!r}")
         if period_s < float(times_s[-1]):
             period_s = float(times_s[-1])
-        return cls(path=profile_path, times_s=times_s, values=values, period_s=period_s)
+        return cls(
+            path=profile_path,
+            times_s=times_s,
+            values=values,
+            period_s=period_s,
+            coordinate_mode=coordinate_mode,
+        )
 
     @staticmethod
     def _number(
         point: dict[str, object],
         primary: str,
-        alias: str,
+        alias: str | tuple[str, ...],
         *,
         default: float | None = None,
         required: bool = False,
     ) -> float:
-        raw = point.get(primary, point.get(alias, default))
+        aliases = (alias,) if isinstance(alias, str) else alias
+        raw = point.get(primary)
+        if raw is None:
+            for key in aliases:
+                if key in point:
+                    raw = point[key]
+                    break
+        if raw is None:
+            raw = default
         if raw is None and required:
             raise ValueError(f"missing required CTBC profile field {primary!r}")
         try:
@@ -123,15 +196,21 @@ class StairCtbcRuntime:
         self._profile = (
             _CtbcProfile.load(cfg.profile_path) if cfg.profile_path is not None else None
         )
+        self.trigger_mode = str(cfg.trigger_mode)
         self.contact_window = max(1, int(cfg.contact_window))
         self.force_threshold = float(cfg.force_threshold_n)
-        period_s = self._profile.period_s if self._profile is not None else float(cfg.ff_period_s)
-        self.ff_period_steps = max(1, round(float(period_s) / self.control_dt))
-        self.ff_rise_steps, self.ff_hold_steps, self.ff_return_steps = self._resolve_profile_steps(
-            float(cfg.ff_rise_ratio),
-            float(cfg.ff_hold_ratio),
+        self.pitch_window = max(1, int(cfg.pitch_window))
+        self.pitch_threshold_rad = float(cfg.pitch_threshold_rad)
+        duration_s = (
+            self._profile.period_s if self._profile is not None else float(cfg.ff_duration_s)
         )
+        self.ff_duration_steps = max(1, round(float(duration_s) / self.control_dt))
+        self.ff_period_steps = self.ff_duration_steps
+        self.ff_rise_steps = self.ff_duration_steps
+        self.ff_hold_steps = 0
+        self.ff_return_steps = 0
         self._contact_buf = np.zeros((self.contact_window, 2), dtype=np.float64)
+        self._pitch_buf = np.zeros(self.pitch_window, dtype=np.float64)
         self._ff_phase = np.full(2, -1, dtype=np.int64)
         self._cooldown = np.zeros(2, dtype=np.int64)
         self._cooldown_steps = max(1, round(0.3 / self.control_dt))
@@ -139,7 +218,12 @@ class StairCtbcRuntime:
         self._local_iter = 0
         self._complete_ff_cycles = 0
         self._last_contact_score = np.zeros(2, dtype=np.float64)
+        self._last_trigger_score = np.zeros(2, dtype=np.float64)
+        self._last_stable = np.zeros(2, dtype=bool)
+        self._last_pitch_rad = 0.0
+        self._last_pitch_abs_deg = 0.0
         self._last_action_delta = np.zeros(6, dtype=np.float64)
+        self._ff_anchor_wheel_xz = np.full((2, 2), np.nan, dtype=np.float64)
 
     @property
     def kff(self) -> float:
@@ -157,13 +241,25 @@ class StairCtbcRuntime:
         """清空 CTBC 接触窗口、相位和上一帧注入量。"""
 
         self._contact_buf.fill(0.0)
+        self._pitch_buf.fill(0.0)
         self._ff_phase.fill(-1)
         self._cooldown.fill(0)
         self._complete_ff_cycles = 0
         self._last_contact_score.fill(0.0)
+        self._last_trigger_score.fill(0.0)
+        self._last_stable.fill(False)
+        self._last_pitch_rad = 0.0
+        self._last_pitch_abs_deg = 0.0
         self._last_action_delta.fill(0.0)
+        self._ff_anchor_wheel_xz.fill(np.nan)
 
-    def update(self, wheel_contact_score: np.ndarray, *, iteration: int | None) -> None:
+    def update(
+        self,
+        wheel_contact_score: np.ndarray,
+        *,
+        pitch_rad: float | None = None,
+        iteration: int | None,
+    ) -> None:
         """根据当前轮-台阶立面接触更新 CTBC 触发相位。"""
 
         self._update_iter(iteration)
@@ -177,25 +273,43 @@ class StairCtbcRuntime:
         self._contact_buf[1:] = self._contact_buf[:-1].copy()
         self._contact_buf[0] = score
 
-        stable = np.all(self._contact_buf > self.force_threshold, axis=0)
+        pitch_value = 0.0 if pitch_rad is None else float(pitch_rad)
+        if not math.isfinite(pitch_value):
+            pitch_value = 0.0
+        self._last_pitch_rad = pitch_value
+        pitch_abs_rad = abs(pitch_value)
+        self._last_pitch_abs_deg = math.degrees(pitch_abs_rad)
+        self._pitch_buf[1:] = self._pitch_buf[:-1].copy()
+        self._pitch_buf[0] = pitch_abs_rad
+
+        if self.trigger_mode == "pitch":
+            stable_scalar = bool(np.all(self._pitch_buf > self.pitch_threshold_rad))
+            stable = np.full(2, stable_scalar, dtype=bool)
+            trigger_score = np.full(2, self._last_pitch_abs_deg, dtype=np.float64)
+        else:
+            stable = np.all(self._contact_buf > self.force_threshold, axis=0)
+            trigger_score = score
+        self._last_stable[:] = stable
+        self._last_trigger_score[:] = trigger_score
         self._cooldown[self._cooldown > 0] -= 1
         can_trigger = (self._ff_phase == -1) & (self._cooldown == 0)
         trigger_candidates = stable & can_trigger
         newly_triggered = np.zeros(2, dtype=bool)
         if np.any(trigger_candidates):
-            if bool(self.cfg.allow_bilateral_trigger):
+            if self.trigger_mode == "pitch" or bool(self.cfg.allow_bilateral_trigger):
                 newly_triggered[:] = can_trigger & np.any(trigger_candidates)
             else:
-                side_score = np.where(trigger_candidates, score, -np.inf)
+                side_score = np.where(trigger_candidates, trigger_score, -np.inf)
                 newly_triggered[int(np.argmax(side_score))] = True
         self._ff_phase[newly_triggered] = 0
 
         active = self._ff_phase >= 0
         self._ff_phase[active] += 1
-        finished = self._ff_phase >= self.ff_period_steps
+        finished = self._ff_phase >= self.ff_duration_steps
         if np.any(finished):
             self._cooldown[finished] = self._cooldown_steps
             self._ff_phase[finished] = -1
+            self._ff_anchor_wheel_xz[finished] = np.nan
             self._complete_ff_cycles += 1
 
     def obs(self) -> np.ndarray:
@@ -245,11 +359,32 @@ class StairCtbcRuntime:
             "ctbc_phase_right": float(self.obs()[1]),
             "ctbc_kff": float(self._kff),
             "ctbc_local_iter": int(self._local_iter),
+            "ctbc_trigger_mode": str(self.trigger_mode),
+            "ctbc_trigger_mode_pitch": float(self.trigger_mode == "pitch"),
+            "ctbc_trigger_score_left": float(self._last_trigger_score[0]),
+            "ctbc_trigger_score_right": float(self._last_trigger_score[1]),
+            "ctbc_stable_left": float(self._last_stable[0]),
+            "ctbc_stable_right": float(self._last_stable[1]),
             "ctbc_contact_left": float(self._last_contact_score[0]),
             "ctbc_contact_right": float(self._last_contact_score[1]),
+            "ctbc_force_threshold_n": float(self.force_threshold),
+            "ctbc_contact_window": int(self.contact_window),
+            "ctbc_pitch_rad": float(self._last_pitch_rad),
+            "ctbc_pitch_abs_deg": float(self._last_pitch_abs_deg),
+            "ctbc_pitch_threshold_deg": float(math.degrees(self.pitch_threshold_rad)),
+            "ctbc_pitch_window": int(self.pitch_window),
             "ctbc_complete_ff_cycles": int(self._complete_ff_cycles),
             "ctbc_action_delta": self._last_action_delta.copy().tolist(),
             "ctbc_profile_path": (None if self._profile is None else str(self._profile.path)),
+            "ctbc_cartesian_frame": "body",
+            "ctbc_coordinate_mode": str(self.cfg.coordinate_mode),
+            "ctbc_duration_s": float(self.ff_duration_steps * self.control_dt),
+            "ctbc_duration_steps": int(self.ff_duration_steps),
+            "ctbc_leg_length_m": float(self.cfg.leg_length_m),
+            "ctbc_swing_angle_rad": float(self.cfg.swing_angle_rad),
+            "ctbc_swing_angle_deg": float(math.degrees(float(self.cfg.swing_angle_rad))),
+            "ctbc_body_x_m_legacy": float(self.cfg.body_x_m),
+            "ctbc_body_z_m_legacy": float(self.cfg.body_z_m),
         }
 
     def _update_iter(self, iteration: int | None) -> None:
@@ -264,30 +399,9 @@ class StairCtbcRuntime:
         span = max(1, int(self.cfg.ann_end_iter) - int(self.cfg.ann_start_iter))
         self._kff = max(0.0, 1.0 - (self._local_iter - int(self.cfg.ann_start_iter)) / span)
 
-    def _resolve_profile_steps(self, rise_ratio: float, hold_ratio: float) -> tuple[int, int, int]:
-        rise_ratio = max(0.05, min(float(rise_ratio), 0.90))
-        hold_ratio = max(0.0, min(float(hold_ratio), 0.90))
-        if rise_ratio + hold_ratio >= 0.95:
-            hold_ratio = max(0.0, 0.95 - rise_ratio)
-        rise_steps = max(1, round(self.ff_period_steps * rise_ratio))
-        hold_steps = max(0, round(self.ff_period_steps * hold_ratio))
-        if rise_steps + hold_steps >= self.ff_period_steps:
-            hold_steps = max(0, self.ff_period_steps - rise_steps - 1)
-        return_steps = max(1, self.ff_period_steps - rise_steps - hold_steps)
-        return rise_steps, hold_steps, return_steps
-
     def _ff_profile_envelope(self, phase: np.ndarray) -> np.ndarray:
-        phase = np.clip(np.asarray(phase, dtype=np.float64), 0.0, float(self.ff_period_steps))
-        rise_steps = float(self.ff_rise_steps)
-        hold_end = float(self.ff_rise_steps + self.ff_hold_steps)
-        return_steps = float(self.ff_return_steps)
-        rise_t = np.clip(phase / rise_steps, 0.0, 1.0)
-        rise = 0.5 * (1.0 - np.cos(math.pi * rise_t))
-        return_t = np.clip((phase - hold_end) / return_steps, 0.0, 1.0)
-        returning = 0.5 * (1.0 + np.cos(math.pi * return_t))
-        envelope = np.where(phase < rise_steps, rise, 1.0)
-        envelope = np.where(phase < hold_end, envelope, returning)
-        return np.clip(envelope, 0.0, 1.0)
+        phase = np.asarray(phase, dtype=np.float64)
+        return np.where(phase >= 0.0, 1.0, 0.0)
 
     def _ff_output_bias(self) -> np.ndarray:
         bias = np.zeros(4, dtype=np.float64)
@@ -310,7 +424,7 @@ class StairCtbcRuntime:
             bias[knee_idx] = feedforward[side_idx] * _KNEE_FEEDFORWARD_RATIO
         return bias
 
-    def _ff_wheel_cartesian_delta_xz(self) -> np.ndarray:
+    def _ff_wheel_target_delta_xz(self, anchor_wheel_xz: np.ndarray) -> np.ndarray:
         delta = np.zeros((2, 2), dtype=np.float64)
         if self._kff == 0.0:
             return delta
@@ -322,12 +436,23 @@ class StairCtbcRuntime:
             envelope = (
                 self._ff_profile_envelope(phase) * active.astype(np.float64) * float(self._kff)
             )
-            delta[:, 0] = -float(self.cfg.ff_x_m) * envelope
-            delta[:, 1] = float(self.cfg.ff_lift_m) * envelope
+            if self.cfg.coordinate_mode == "body_polar":
+                length = np.full(2, float(self.cfg.leg_length_m), dtype=np.float64)
+                swing = np.full(2, float(self.cfg.swing_angle_rad), dtype=np.float64)
+                target = _polar_to_xz_np(length, swing)
+                delta = (target - anchor_wheel_xz) * envelope[:, None]
+            else:
+                delta[:, 0] = -float(self.cfg.body_x_m) * envelope
+                delta[:, 1] = float(self.cfg.body_z_m) * envelope
         else:
             samples = self._profile.sample(phase, control_dt=self.control_dt)
-            delta[:, 0] = samples[:, 0] * active.astype(np.float64) * float(self._kff)
-            delta[:, 1] = samples[:, 1] * active.astype(np.float64) * float(self._kff)
+            envelope = active.astype(np.float64) * float(self._kff)
+            if self._profile.coordinate_mode == "body_polar":
+                target = _polar_to_xz_np(samples[:, 0], samples[:, 1])
+                delta = (target - anchor_wheel_xz) * envelope[:, None]
+            else:
+                delta[:, 0] = samples[:, 0] * envelope
+                delta[:, 1] = samples[:, 1] * envelope
         return delta
 
     def _output_bias_wheel_delta_xz(
@@ -353,11 +478,6 @@ class StairCtbcRuntime:
             delta = output_leg_wheel_xz_np(nominal_realizable_output) - output_leg_wheel_xz_np(
                 default_output
             )
-        delta += self._ff_wheel_cartesian_delta_xz()
-        delta[:, 0] = np.minimum(delta[:, 0], 0.0)
-        delta[:, 1] = np.maximum(delta[:, 1], 0.0)
-        active_side = np.abs(delta).max(axis=1) > 0.0
-        delta[~active_side] = 0.0
         return delta
 
     def _ff_wheel_action_delta(self) -> np.ndarray:
@@ -394,8 +514,15 @@ class StairCtbcRuntime:
             leg_scale = robot.action_scale[JointGroup.LEG_ACTUATORS]
             return np.asarray(leg_action, dtype=np.float64).reshape(4) + output_delta / leg_scale
 
-        wheel_delta_xz = self._output_bias_wheel_delta_xz(robot, output_bias)
-        if not np.any(np.abs(wheel_delta_xz) > 0.0):
+        legacy_delta_xz = self._output_bias_wheel_delta_xz(robot, output_bias)
+        ff_active = self._ff_phase >= 0
+        anchor_side = (np.abs(legacy_delta_xz).max(axis=1) > 0.0) | ff_active
+        if not np.any(anchor_side):
+            return leg_action
+        anchor_wheel_xz = self._anchored_wheel_xz_body(robot, anchor_side)
+        wheel_delta_xz = legacy_delta_xz + self._ff_wheel_target_delta_xz(anchor_wheel_xz)
+        active_side = np.any(np.abs(wheel_delta_xz) > 0.0, axis=1)
+        if not np.any(active_side):
             return leg_action
 
         policy_default = robot.action_decoder.policy_default(
@@ -404,11 +531,9 @@ class StairCtbcRuntime:
         )
         current_policy = robot.action_decoder.leg_target(leg_action, policy_default)
         current_output = policy_to_output_pos_np(current_policy)
-        current_wheel_xz = output_leg_wheel_xz_np(current_output)
-        desired_wheel_xz = current_wheel_xz + wheel_delta_xz
+        desired_wheel_xz = anchor_wheel_xz + wheel_delta_xz
         desired_output = current_output.copy()
         cartesian_desired_output = wheel_xz_to_output_pos_np(desired_wheel_xz)
-        active_side = np.any(np.abs(wheel_delta_xz) > 0.0, axis=1)
         for side_idx in range(2):
             if active_side[side_idx]:
                 sl = slice(2 * side_idx, 2 * side_idx + 2)
@@ -438,6 +563,36 @@ class StairCtbcRuntime:
             desired_action[back_idx] = (active_desired - active_default) / leg_scale[back_idx]
 
         return np.nan_to_num(desired_action, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _anchored_wheel_xz_body(
+        self,
+        robot: WheelLeggedRobot,
+        active_side: np.ndarray,
+    ) -> np.ndarray:
+        """返回触发瞬间轮心 body-frame 锚点；新触发侧按当前实际轮心初始化。"""
+
+        actual = self._actual_wheel_xz_body(robot)
+        active = np.asarray(active_side, dtype=bool).reshape(2)
+        missing = active & ~np.isfinite(self._ff_anchor_wheel_xz).all(axis=1)
+        if np.any(missing):
+            self._ff_anchor_wheel_xz[missing] = actual[missing]
+        anchored = actual.copy()
+        anchored[active] = self._ff_anchor_wheel_xz[active]
+        return anchored
+
+    def _actual_wheel_xz_body(self, robot: WheelLeggedRobot) -> np.ndarray:
+        """读取 MuJoCo 当前轮心，并转成随 base_link 旋转的髋轴局部 XZ 坐标。"""
+
+        base = robot.data.body(_BASE_BODY_NAME)
+        base_pos = np.asarray(base.xpos, dtype=np.float64).reshape(3)
+        base_rot = np.asarray(base.xmat, dtype=np.float64).reshape(3, 3)
+        wheel_xz = np.zeros((2, 2), dtype=np.float64)
+        for side_idx, body_name in enumerate(_WHEEL_BODY_NAMES):
+            wheel_pos = np.asarray(robot.data.body(body_name).xpos, dtype=np.float64).reshape(3)
+            wheel_body = base_rot.T @ (wheel_pos - base_pos) - _HIP_OFFSETS_BODY[side_idx]
+            wheel_xz[side_idx, 0] = float(wheel_body[0])
+            wheel_xz[side_idx, 1] = float(wheel_body[2])
+        return wheel_xz
 
     def _apply_wheel_delta(self, wheel_action: np.ndarray) -> np.ndarray:
         return np.asarray(wheel_action, dtype=np.float64).reshape(2) + self._ff_wheel_action_delta()

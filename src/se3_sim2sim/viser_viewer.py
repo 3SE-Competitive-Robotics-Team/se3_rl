@@ -47,6 +47,7 @@ class ViserViewer:
         yaw_pid_enabled: bool = False,
         initial_yaw_target_rad: float = 0.0,
         rough_terrain_info: dict[str, object] | None = None,
+        stair_terrain_info: dict[str, object] | None = None,
     ) -> None:
         import viser
         from mjviser import ViserMujocoScene
@@ -107,6 +108,10 @@ class ViserViewer:
         self._pending_push_delta: list[float] | None = None
         self._push_count = 0
         self._push_status = "none"
+        self._stair_terrain_info = dict(stair_terrain_info or {"enabled": False})
+        self._stair_request_lock = threading.Lock()
+        self._stair_step_height_requested: float | None = None
+        self._stair_switch_status = "ready"
         self._rough_terrain_info = dict(rough_terrain_info or {"enabled": False})
         self._terrain_request_lock = threading.Lock()
         self._terrain_level_requested: int | None = None
@@ -232,6 +237,31 @@ class ViserViewer:
         """Synchronize GUI status after a terrain switch fails."""
 
         self._terrain_switch_status = f"failed L{int(level)}: {message}"
+        self._update_status_display()
+
+    def consume_stair_step_height_request(self) -> float | None:
+        """消费 GUI 发出的程序化台阶高度更新请求。"""
+
+        with self._stair_request_lock:
+            height = self._stair_step_height_requested
+            self._stair_step_height_requested = None
+        return None if height is None else float(height)
+
+    def notify_stair_step_height_changed(self, info: dict[str, object]) -> None:
+        """主仿真线程完成台阶高度更新后同步 GUI 状态。"""
+
+        self._stair_terrain_info = dict(info)
+        height = float(self._stair_terrain_info.get("step_height_m", 0.0))
+        self._stair_switch_status = f"loaded {height:.3f} m"
+        rebuild = getattr(self._scene, "rebuild_visual_handles", None)
+        if callable(rebuild):
+            rebuild()
+        self._update_status_display()
+
+    def notify_stair_step_height_failed(self, height: float, message: str) -> None:
+        """主仿真线程更新台阶高度失败后同步 GUI 状态。"""
+
+        self._stair_switch_status = f"failed {float(height):.3f} m: {message}"
         self._update_status_display()
 
     def notify_checkpoint_loaded(self, checkpoint_path: Path, policy_iteration: object) -> None:
@@ -546,6 +576,35 @@ class ViserViewer:
                         )
                     self._update_status_display()
 
+            if bool(self._stair_terrain_info.get("enabled")):
+                with self._server.gui.add_folder("Stair Terrain"):
+                    min_height = float(self._stair_terrain_info.get("min_step_height_m", 0.02))
+                    max_height = float(self._stair_terrain_info.get("max_step_height_m", 0.25))
+                    if max_height <= min_height:
+                        max_height = min_height + 0.01
+                    current_height = _clamp(
+                        float(self._stair_terrain_info.get("step_height_m", min_height)),
+                        min_height,
+                        max_height,
+                    )
+                    stair_height_slider = self._server.gui.add_slider(
+                        "step height (m)",
+                        min=min_height,
+                        max=max_height,
+                        step=0.005,
+                        initial_value=current_height,
+                        hint="Update procedural stair geoms and reset sim/policy.",
+                    )
+                    stair_apply_button = self._server.gui.add_button("Apply Stair Height")
+
+                    @stair_apply_button.on_click
+                    def _(_) -> None:
+                        height = _clamp(float(stair_height_slider.value), min_height, max_height)
+                        with self._stair_request_lock:
+                            self._stair_step_height_requested = height
+                            self._stair_switch_status = f"loading {height:.3f} m"
+                        self._update_status_display()
+
             if bool(self._rough_terrain_info.get("enabled")):
                 with self._server.gui.add_folder("Rough Terrain"):
                     max_level = max(0, int(self._rough_terrain_info.get("num_rows", 10)) - 1)
@@ -806,6 +865,16 @@ class ViserViewer:
             push_status = self._push_status
         with self._gru_hidden_reset_lock:
             gru_hidden_reset_status = self._gru_hidden_reset_status
+        with self._stair_request_lock:
+            stair_switch_status = self._stair_switch_status
+        stair_text = ""
+        if bool(self._stair_terrain_info.get("enabled")):
+            stair_text = (
+                "<br/><strong>Stair terrain:</strong> "
+                f"h={float(self._stair_terrain_info.get('step_height_m', 0.0)):.3f} m, "
+                f"count={int(self._stair_terrain_info.get('step_count', 0))} "
+                f"({html.escape(stair_switch_status)})"
+            )
         terrain_text = ""
         if bool(self._rough_terrain_info.get("enabled")):
             terrain_text = (
@@ -838,7 +907,7 @@ class ViserViewer:
               yaw_target={math.degrees(yaw_target_rad):+.1f} deg,
               h={command_height:.3f} m
               ({html.escape(self._command_gui_status)}){yaw_pid_text}<br/>
-            <strong>Push:</strong> {html.escape(push_status)}{terrain_text}<br/>
+            <strong>Push:</strong> {html.escape(push_status)}{stair_text}{terrain_text}<br/>
             <hr style="border:0; border-top:1px solid #ddd; margin:0.45em 0;"/>
             <strong>Training progress:</strong> {progress_text}<br/>
             <strong>iter_time:</strong> {_fmt_seconds(progress.get("iter_time_s"))}<br/>

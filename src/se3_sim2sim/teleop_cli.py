@@ -27,12 +27,13 @@ DEFAULT_TELEOP_CHECKPOINTS = (
     DEFAULT_DEPLOY_NPZ.with_suffix(".onnx"),
     DEFAULT_DEPLOY_SOURCE_CHECKPOINT,
 )
+DEFAULT_TELEOP_ROUGH_CHECKPOINT = Path("assets/base_model/rough_base.pt")
 DEFAULT_MIN_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[0]
 DEFAULT_MAX_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[1]
-DEFAULT_COMMAND_LIN_ACCEL = 0.8
-DEFAULT_COMMAND_YAW_ACCEL = 1.6
-DEFAULT_COMMAND_LIN_DECAY = 0.4
-DEFAULT_COMMAND_YAW_DECAY = 2.4
+DEFAULT_COMMAND_LIN_ACCEL = 2.4
+DEFAULT_COMMAND_YAW_ACCEL = 8.0
+DEFAULT_COMMAND_LIN_DECAY = 1.2
+DEFAULT_COMMAND_YAW_DECAY = 8.0
 DEFAULT_COMMAND_HEIGHT_RATE = 0.12
 
 
@@ -150,6 +151,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="不按真实时间节拍限速，仅用于自动化调试。",
     )
     parser.add_argument(
+        "--teleop-rough",
+        action="store_true",
+        help=(
+            "一键启用 rough terrain teleop，并在未显式传 --checkpoint 时加载 "
+            "assets/base_model/rough_base.pt。"
+        ),
+    )
+    parser.add_argument(
+        "--teleop-rough-checkpoint",
+        type=Path,
+        default=DEFAULT_TELEOP_ROUGH_CHECKPOINT,
+        help="teleop rough 模式默认使用的 rough 策略 checkpoint。",
+    )
+    parser.add_argument(
+        "--teleop-slope-17",
+        "--teleop-gap-ramp",
+        dest="teleop_slope_17",
+        action="store_true",
+        help="一键启用单个 17° 坡面自定义地形。",
+    )
+    parser.add_argument(
         "--rerun-record-dir",
         type=Path,
         default=Path("logs/rerun/sim2sim_teleop"),
@@ -170,9 +192,40 @@ def _set_checkpoint_help(parser: argparse.ArgumentParser, help_text: str) -> Non
             return
 
 
+def _apply_rough_defaults(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """应用 rough teleop 的地形和 checkpoint 默认值。"""
+    if not bool(args.teleop_rough):
+        return
+    if bool(args.stair_terrain) or args.custom_terrain != "none":
+        parser.error("--teleop-rough 不能和其他地形模式同时使用")
+    args.rough_terrain = True
+    if args.checkpoint is not None:
+        return
+    checkpoint = Path(args.teleop_rough_checkpoint)
+    if not checkpoint.exists():
+        parser.error(
+            f"--teleop-rough 默认 checkpoint 不存在: {checkpoint}；"
+            "请先放入 rough 策略，或用 --checkpoint 显式指定。"
+        )
+    args.checkpoint = checkpoint
+    print(f"[teleop] rough 模式使用 checkpoint: {checkpoint}")
+
+
+def _apply_slope_defaults(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """应用 17° 单坡面 teleop 的地形默认值。"""
+    if not bool(args.teleop_slope_17):
+        return
+    if bool(args.stair_terrain) or bool(args.rough_terrain) or args.custom_terrain != "none":
+        parser.error("--teleop-slope-17 不能和其他地形模式同时使用")
+    args.custom_terrain = "slope-17"
+    print("[teleop] 启用 17° 单坡面自定义地形")
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    _apply_slope_defaults(args, parser)
+    _apply_rough_defaults(args, parser)
     _apply_default_checkpoint(args, parser)
     if args.course != CourseType.NONE.value:
         parser.error("teleop 模式由键盘接管 command[0:2]，不能同时使用 --course")
@@ -242,10 +295,25 @@ def _print_summary(summary: dict[str, object], record_to_rrd: Path | None) -> No
     rollout = summary.get("rollout")
     final = rollout.get("final", {}) if isinstance(rollout, dict) else {}
     policy = summary.get("policy", {})
+    startup_contract = summary.get("startup_contract", {})
+    rough = startup_contract.get("rough_terrain", {}) if isinstance(startup_contract, dict) else {}
+    custom = (
+        startup_contract.get("custom_terrain", {}) if isinstance(startup_contract, dict) else {}
+    )
     print("Teleop summary:")
     print(f"  done_reason={summary.get('done_reason', 'unknown')}")
     if isinstance(policy, dict):
         print(f"  checkpoint={policy.get('checkpoint', '')}")
+    if isinstance(rough, dict) and rough.get("enabled"):
+        print(
+            f"  rough={rough.get('selected_type', 'unknown')} "
+            f"level={rough.get('level', '')} column={rough.get('column', '')}"
+        )
+    if isinstance(custom, dict) and custom.get("enabled"):
+        print(
+            f"  custom={custom.get('type', 'unknown')} "
+            f"ramp_angle_deg={float(custom.get('ramp_angle_deg', 0.0)):.1f}"
+        )
     if record_to_rrd is not None:
         print(f"  Rerun saved to: {record_to_rrd}")
     if final:

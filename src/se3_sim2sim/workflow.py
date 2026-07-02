@@ -78,6 +78,12 @@ class Sim2SimWorkflow:
                 f" rough={rough.get('selected_type')}@L{rough.get('level')}"
                 f"/col{rough.get('column')}"
             )
+        custom = contract.get("custom_terrain")
+        custom_text = ""
+        if isinstance(custom, dict) and custom.get("enabled"):
+            custom_text = (
+                f" custom={custom.get('type')}@{float(custom.get('ramp_angle_deg', 0.0)):.1f}deg"
+            )
         print(
             "[sim2sim contract] "
             f"model={contract['model_path']} "
@@ -86,6 +92,7 @@ class Sim2SimWorkflow:
             f"height_default={contract['height_conditioned_action_default']} "
             f"active_rod={contract['active_rod_action_semantics']}"
             f"{rough_text}"
+            f"{custom_text}"
         )
 
     def run(self) -> dict[str, object]:
@@ -400,6 +407,72 @@ class Sim2SimWorkflow:
                                 telemetry=reset_telemetry,
                             )
                     continue
+                stair_height_request = self._consume_viewer_stair_step_height_request(self.viewer)
+                if stair_height_request is not None:
+                    try:
+                        stair_info = self.robot.set_stair_step_height(stair_height_request)
+                    except Exception as exc:
+                        self._notify_viewer_stair_step_height_failed(
+                            self.viewer,
+                            stair_height_request,
+                            str(exc),
+                        )
+                        print(
+                            "[viser] stair height switch failed "
+                            f"h={float(stair_height_request):.3f} m: {exc}"
+                        )
+                    else:
+                        episode_step_offset = step
+                        viewer_step_offset = step
+                        obs = self.robot.reset(
+                            fixed=self.cfg.fixed_reset,
+                            randomize_root=self.cfg.randomize_root,
+                        )
+                        self.robot.command[:] = np.asarray(
+                            self.cfg.robot.command,
+                            dtype=np.float64,
+                        )
+                        self.policy.reset()
+                        self.robot.reset_policy_io_state()
+                        obs = self.robot.observation()
+                        _next_rc_event = 0
+                        _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                        _policy_memory_clean = True
+                        _interval_steps_remaining = (
+                            max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                        )
+                        _next_script_event = 0
+                        _traj_step = 0
+                        _traj_steps = self._trajectory_steps_for_height(
+                            float(self.robot.command[6])
+                        )
+                        _jump_active = self.robot.command[5] > 0.5
+                        _prev_action = None
+                        _prev_applied_action = None
+                        self._notify_viewer_stair_step_height_changed(self.viewer, stair_info)
+                        mode = (
+                            f"stair_step_height:{float(stair_info.get('step_height_m', 0.0)):.3f}"
+                        )
+                        self._notify_viewer_reset(self.viewer, mode)
+                        print(
+                            "[viser] switched stair height "
+                            f"h={float(stair_info.get('step_height_m', 0.0)):.3f} m"
+                        )
+                        if self.viewer is not None:
+                            reset_telemetry = self.robot.telemetry(reward=0.0)
+                            reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["output_enabled"] = 1.0 if _rc_output_enabled else 0.0
+                            reset_telemetry["rc_switch_event"] = 0.0
+                            reset_telemetry["rc_policy_reset"] = 1.0
+                            reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                            reset_telemetry["target_mode"] = mode
+                            self.viewer.log_state(
+                                self.robot.model,
+                                self.robot.data,
+                                step=0,
+                                telemetry=reset_telemetry,
+                            )
+                    continue
                 episode_step = max(0, step - 1 - episode_step_offset)
                 sim_time_s = episode_step * control_dt
                 push_delta = self._consume_viewer_push_request(self.viewer)
@@ -506,6 +579,83 @@ class Sim2SimWorkflow:
                         _rc_output_enabled = not _rc_output_enabled
                         rc_switch_event = 1.0
                     obs = self.robot.observation()
+                    terrain_level_request = command_update.terrain_level_request
+                    if command_update.terrain_level_delta != 0:
+                        info = self.robot.rough_terrain_info
+                        current_level = 0
+                        if isinstance(info, dict):
+                            current_level = int(info.get("level", 0))
+                        terrain_level_request = current_level + int(
+                            command_update.terrain_level_delta
+                        )
+                    if terrain_level_request is not None:
+                        try:
+                            rough_info = self.robot.set_rough_terrain_level(
+                                int(terrain_level_request)
+                            )
+                        except Exception as exc:
+                            self._notify_viewer_terrain_level_failed(
+                                self.viewer,
+                                int(terrain_level_request),
+                                str(exc),
+                            )
+                            print(
+                                "[teleop] terrain level switch failed "
+                                f"L{int(terrain_level_request)}: {exc}"
+                            )
+                        else:
+                            episode_step_offset = step
+                            viewer_step_offset = step
+                            obs = self.robot.reset(
+                                fixed=self.cfg.fixed_reset,
+                                randomize_root=self.cfg.randomize_root,
+                            )
+                            self.robot.command[:] = np.asarray(
+                                self.cfg.robot.command,
+                                dtype=np.float64,
+                            )
+                            self.policy.reset()
+                            self.robot.reset_policy_io_state()
+                            obs = self.robot.observation()
+                            _next_rc_event = 0
+                            _rc_output_enabled = bool(rc_sched.initial_output_enabled)
+                            _policy_memory_clean = True
+                            _interval_steps_remaining = (
+                                max(1, round(sched.interval_s / control_dt)) if sched.enabled else 0
+                            )
+                            _next_script_event = 0
+                            _traj_step = 0
+                            _traj_steps = self._trajectory_steps_for_height(
+                                float(self.robot.command[6])
+                            )
+                            _jump_active = self.robot.command[5] > 0.5
+                            _prev_action = None
+                            _prev_applied_action = None
+                            self._notify_viewer_terrain_level_changed(self.viewer, rough_info)
+                            mode = f"rough_terrain_level:{int(rough_info.get('level', 0))}"
+                            self._notify_viewer_reset(self.viewer, mode)
+                            print(
+                                "[teleop] switched rough terrain "
+                                f"level={rough_info.get('level')} "
+                                f"type={rough_info.get('selected_type')}"
+                            )
+                            if self.viewer is not None:
+                                reset_telemetry = self.robot.telemetry(reward=0.0)
+                                reset_telemetry["rc_switch_r"] = 1.0 if _rc_output_enabled else 0.0
+                                reset_telemetry["output_enabled"] = (
+                                    1.0 if _rc_output_enabled else 0.0
+                                )
+                                reset_telemetry["rc_switch_event"] = 0.0
+                                reset_telemetry["rc_policy_reset"] = 1.0
+                                reset_telemetry["rc_off_mode"] = str(rc_sched.off_mode)
+                                reset_telemetry["target_mode"] = mode
+                                self.viewer.log_state(
+                                    self.robot.model,
+                                    self.robot.data,
+                                    step=0,
+                                    telemetry=reset_telemetry,
+                                )
+                            continue
                 if stair_hold_active:
                     self.robot.command[0] = float(self.cfg.stair_hold_vx)
                     obs = self.robot.observation()
@@ -666,6 +816,16 @@ class Sim2SimWorkflow:
                     "ctbc_phase_right": float(info.get("ctbc_phase_right", 0.0)),
                     "ctbc_contact_left": float(info.get("ctbc_contact_left", 0.0)),
                     "ctbc_contact_right": float(info.get("ctbc_contact_right", 0.0)),
+                    "ctbc_trigger_mode_pitch": float(info.get("ctbc_trigger_mode_pitch", 0.0)),
+                    "ctbc_trigger_score_left": float(info.get("ctbc_trigger_score_left", 0.0)),
+                    "ctbc_trigger_score_right": float(info.get("ctbc_trigger_score_right", 0.0)),
+                    "ctbc_stable_left": float(info.get("ctbc_stable_left", 0.0)),
+                    "ctbc_stable_right": float(info.get("ctbc_stable_right", 0.0)),
+                    "ctbc_pitch_abs_deg": float(info.get("ctbc_pitch_abs_deg", 0.0)),
+                    "ctbc_pitch_threshold_deg": float(info.get("ctbc_pitch_threshold_deg", 0.0)),
+                    "ctbc_pitch_window": float(info.get("ctbc_pitch_window", 0.0)),
+                    "ctbc_force_threshold_n": float(info.get("ctbc_force_threshold_n", 0.0)),
+                    "ctbc_contact_window": float(info.get("ctbc_contact_window", 0.0)),
                     "ctbc_complete_ff_cycles": float(info.get("ctbc_complete_ff_cycles", 0.0)),
                     "action_delay_steps": float(info["action_delay_steps"]),
                     "action_delay_s": float(info["action_delay_s"]),
@@ -878,6 +1038,7 @@ class Sim2SimWorkflow:
                     yaw_pid_enabled=self.cfg.robot.yaw_pid.enabled,
                     initial_yaw_target_rad=self.cfg.robot.yaw_pid.target_yaw_rad,
                     rough_terrain_info=self.robot.rough_terrain_info,
+                    stair_terrain_info=self.robot.stair_terrain_info,
                 )
             )
             return CompositeViewer(viewers) if len(viewers) > 1 else viewers[0]
@@ -1031,6 +1192,24 @@ class Sim2SimWorkflow:
         return None
 
     @staticmethod
+    def _consume_viewer_stair_step_height_request(viewer: object | None) -> float | None:
+        """从 viewer 或组合 viewer 中消费 stair step height 切换请求。"""
+        if viewer is None:
+            return None
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                requested = Sim2SimWorkflow._consume_viewer_stair_step_height_request(child)
+                if requested is not None:
+                    return requested
+            return None
+        consume = getattr(viewer, "consume_stair_step_height_request", None)
+        if callable(consume):
+            requested = consume()
+            return None if requested is None else float(requested)
+        return None
+
+    @staticmethod
     def _notify_viewer_reset(viewer: object | None, mode: str = "normal") -> None:
         """通知 viewer 主线程已经完成 reset。"""
         if viewer is None:
@@ -1103,6 +1282,41 @@ class Sim2SimWorkflow:
         notify = getattr(viewer, "notify_terrain_level_failed", None)
         if callable(notify):
             notify(level, message)
+
+    @staticmethod
+    def _notify_viewer_stair_step_height_changed(
+        viewer: object | None,
+        info: dict[str, object],
+    ) -> None:
+        """通知 viewer stair step height 已切换。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_stair_step_height_changed(child, info)
+            return
+        notify = getattr(viewer, "notify_stair_step_height_changed", None)
+        if callable(notify):
+            notify(info)
+
+    @staticmethod
+    def _notify_viewer_stair_step_height_failed(
+        viewer: object | None,
+        height: float,
+        message: str,
+    ) -> None:
+        """通知 viewer stair step height 切换失败。"""
+        if viewer is None:
+            return
+        children = getattr(viewer, "_viewers", None)
+        if children is not None:
+            for child in children:
+                Sim2SimWorkflow._notify_viewer_stair_step_height_failed(child, height, message)
+            return
+        notify = getattr(viewer, "notify_stair_step_height_failed", None)
+        if callable(notify):
+            notify(height, message)
 
     @staticmethod
     def _notify_viewer_checkpoint_loaded(
