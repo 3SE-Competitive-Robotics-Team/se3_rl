@@ -384,6 +384,19 @@ def commands_vel_adaptive(
     threshold，课程永久卡死在初始范围（2026-07 曾复现，807 iteration 内
     vel_lin_x_max 无变化）。用全体均值后，cmd=0 阶段该值反映 sigma_stand
     打分下的站立稳定度，天然给出连续、非零的推进信号。
+
+    第二个独立死锁（同一次排查发现）：`env.extras["log"]` 在 ManagerBasedRlEnv.step()
+    开头逐 step 清空（`self.extras["log"] = dict()`），而 tracking_lin_vel 只在
+    `_should_log_step` 命中时（默认每 64 step 一次）才写入这个 key；本函数在
+    `_reset_idx` 里对几乎每个 step 都会被调用（2048 个并行 env 几乎每 step 都有
+    env 到期重置）。如果对缺失 key 用 `0.0` 兜底，63/64 次读到的都是假的 0，
+    EMA 会被稀释到大约 `真实值/64`——σ_move=0.08、reward 已经接近满分 1.0 时，
+    稀释后的稳态 EMA 也只有约 0.015，永远追不上任何有意义的 threshold（哪怕
+    threshold 定得再低）。这不是"及格线"或"moving mask"问题，是把一个为降低
+    TensorBoard 写盘开销而设的节流开关，误用成了课程判据的采样开关。
+    修复方式：区分"key 缺失（这个 step 没有新样本）"和"key 存在但值为 0（真的
+    跟踪失败）"，缺失时跳过本次 EMA 更新，只用真正刷新过的样本推进 EMA。
+
     当前 σ_move=0.08 时，threshold=0.5 约对应跟踪误差 0.24 m/s，
     threshold=0.6 约对应 0.19 m/s（该换算只在 moving 段严格成立，
     cmd=0 段走的是更松的 sigma_stand）。
@@ -401,12 +414,16 @@ def commands_vel_adaptive(
     yaw_max = float(getattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR))
     ema = float(getattr(env, _VEL_ADAPTIVE_EMA_ATTR))
 
-    # 从 step 级日志读取跟踪奖励（Episode_Reward 在 curriculum 之后才写入）
+    # 从 step 级日志读取跟踪奖励（Episode_Reward 在 curriculum 之后才写入）。
+    # log 每 step 清空，tracking_lin_vel 每 _should_log_step 个 step 才写一次，
+    # 所以必须用 None 兜底区分“没有新样本”和“样本值真的是 0”，否则会被
+    # 未刷新的 step 稀释，EMA 永远追不上 threshold。
     log = getattr(env, "extras", {}).get("log", {})
-    tracking_lin_vel = float(log.get("Locomotion/tracking_lin_vel_reward_all", 0.0))
+    tracking_lin_vel = log.get("Locomotion/tracking_lin_vel_reward_all", None)
 
-    ema = (1.0 - ema_alpha) * ema + ema_alpha * tracking_lin_vel
-    setattr(env, _VEL_ADAPTIVE_EMA_ATTR, ema)
+    if tracking_lin_vel is not None:
+        ema = (1.0 - ema_alpha) * ema + ema_alpha * float(tracking_lin_vel)
+        setattr(env, _VEL_ADAPTIVE_EMA_ATTR, ema)
 
     if ema > float(advance_threshold):
         lin_x_max = min(lin_x_max + float(lin_vel_x_step), float(max_lin_vel_x))
@@ -421,5 +438,7 @@ def commands_vel_adaptive(
         "vel_lin_x_max": torch.tensor(lin_x_max),
         "vel_yaw_max": torch.tensor(yaw_max),
         "vel_ema": torch.tensor(ema),
-        "vel_tracking_lin_vel": torch.tensor(tracking_lin_vel),
+        "vel_tracking_lin_vel": torch.tensor(
+            float(tracking_lin_vel) if tracking_lin_vel is not None else float("nan")
+        ),
     }
