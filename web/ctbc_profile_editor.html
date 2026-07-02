@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CTBC Profile Editor</title>
+  <title>CTBC Duration Profile</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f4ef;
+      --bg: #f4f2ec;
       --ink: #20242a;
       --muted: #66717f;
-      --line: #d8d2c7;
+      --line: #d7d1c6;
       --panel: #ffffff;
       --x: #2477a8;
       --z: #248b5a;
@@ -19,9 +19,7 @@
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -42,7 +40,7 @@
       gap: 16px;
       padding: 14px 18px;
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.82);
+      background: rgba(255, 255, 255, 0.86);
       backdrop-filter: blur(10px);
       position: sticky;
       top: 0;
@@ -56,16 +54,18 @@
       letter-spacing: 0;
     }
 
-    .toolbar {
+    .toolbar,
+    .preview-controls {
       display: flex;
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
-      justify-content: flex-end;
     }
 
     button,
-    .file-button {
+    .file-button,
+    select,
+    input[type="text"] {
       border: 1px solid #bfc7cc;
       background: #fff;
       color: var(--ink);
@@ -74,14 +74,23 @@
       font: inherit;
       font-size: 13px;
       line-height: 1;
-      cursor: pointer;
       min-height: 34px;
+    }
+
+    button,
+    .file-button,
+    select {
+      cursor: pointer;
+    }
+
+    input[type="text"] {
+      min-width: 280px;
     }
 
     button.primary {
       background: #1d5f7a;
-      color: #fff;
       border-color: #1d5f7a;
+      color: #fff;
     }
 
     input[type="file"] {
@@ -101,24 +110,72 @@
       min-width: 0;
     }
 
-    .plot {
+    .preview,
+    .plot,
+    .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      margin-bottom: 12px;
       overflow: hidden;
     }
 
+    .preview,
+    .plot {
+      margin-bottom: 12px;
+    }
+
+    .preview-image-wrap {
+      position: relative;
+      background: #080808;
+    }
+
+    .preview-head,
     .plot-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 10px;
       padding: 9px 11px;
       border-bottom: 1px solid var(--line);
       font-size: 13px;
+      flex-wrap: wrap;
     }
 
-    .plot-head strong {
+    .preview-controls input[type="range"] {
+      width: 220px;
+      max-width: 38vw;
+    }
+
+    .preview-controls input[type="number"] {
+      width: 86px;
+    }
+
+    .preview img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+      background: #080808;
+    }
+
+    .preview-badge {
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--ink);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .preview-badge:empty {
+      display: none;
+    }
+
+    .plot-head strong,
+    .panel h2 {
       font-size: 13px;
       letter-spacing: 0;
     }
@@ -132,29 +189,18 @@
       display: block;
       width: 100%;
       height: 150px;
-      touch-action: none;
-      cursor: crosshair;
     }
 
     .side {
       display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
       gap: 12px;
-    }
-
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: hidden;
     }
 
     .panel h2 {
       margin: 0;
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
-      font-size: 13px;
-      letter-spacing: 0;
     }
 
     .fields {
@@ -181,35 +227,19 @@
       background: #fff;
     }
 
-    table {
-      border-collapse: collapse;
-      width: 100%;
+    .derived {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      padding: 12px;
       font-size: 12px;
+      color: var(--muted);
       font-variant-numeric: tabular-nums;
     }
 
-    th,
-    td {
-      border-bottom: 1px solid #ebe6dd;
-      padding: 6px;
-      text-align: right;
-      white-space: nowrap;
-    }
-
-    th:first-child,
-    td:first-child {
-      text-align: left;
-    }
-
-    td button {
-      min-height: 26px;
-      padding: 5px 7px;
-      font-size: 12px;
-    }
-
-    .table-wrap {
-      max-height: 230px;
-      overflow: auto;
+    .derived strong {
+      color: var(--ink);
+      font-weight: 600;
     }
 
     pre {
@@ -222,6 +252,13 @@
       line-height: 1.45;
       background: #182027;
       color: #dbe8ef;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 16px;
+      padding: 0 12px 12px;
     }
 
     @media (max-width: 900px) {
@@ -243,10 +280,17 @@
 <body>
   <main>
     <header>
-      <h1>CTBC Profile Editor</h1>
+      <h1>CTBC Duration Profile</h1>
       <div class="toolbar">
+        <select id="localProfileSelect" title="Local profiles under assets/ctbc_profiles">
+          <option value="">Local profiles</option>
+        </select>
+        <button id="openLocalBtn">Open Local</button>
         <label class="file-button" for="importFile">Import</label>
         <input id="importFile" type="file" accept="application/json,.json" />
+        <input id="savePathInput" type="text" value="assets/ctbc_profiles/stair_body_polar_default.json" />
+        <button id="saveLocalBtn">Save Local</button>
+        <button id="generateBtn">Apply Duration</button>
         <button id="copyBtn">Copy JSON</button>
         <button id="resetBtn">Reset</button>
         <button id="downloadBtn" class="primary">Download JSON</button>
@@ -254,38 +298,109 @@
     </header>
 
     <section class="workspace">
-      <div class="plots" id="plots"></div>
+      <div class="plots">
+        <section class="preview">
+          <div class="preview-head">
+            <strong>MuJoCo Preview</strong>
+            <div class="preview-controls">
+              <span id="phaseReadout">0.00s</span>
+              <input id="phaseInput" type="range" min="0" max="0.60" step="0.01" value="0.20" />
+              <input id="previewHeightInput" type="number" min="0.18" max="0.45" step="0.01" value="0.39" title="command height" />
+              <select id="previewSideSelect" title="active side">
+                <option value="both">Both</option>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+              </select>
+              <button id="playPreviewBtn">Play Preview</button>
+            </div>
+          </div>
+          <div class="preview-image-wrap">
+            <img id="robotPreview" alt="" />
+            <div class="preview-badge" id="previewBadge"></div>
+          </div>
+        </section>
+        <div id="plots"></div>
+      </div>
 
       <aside class="side">
         <section class="panel">
-          <h2>Profile</h2>
+          <h2>Duration Parameters</h2>
           <div class="fields">
             <label>
-              Period s
-              <input id="periodInput" type="number" min="0.1" max="2" step="0.01" />
+              Duration s
+              <input id="periodInput" type="number" min="0.10" max="2.00" step="0.01" value="0.60" />
             </label>
             <label>
-              Step s
-              <input id="stepInput" type="number" min="0.01" max="0.2" step="0.01" value="0.02" />
+              Control dt s
+              <input id="controlDtInput" type="number" min="0.005" max="0.05" step="0.005" value="0.02" />
+            </label>
+            <label>
+              Leg length m
+              <input id="legLengthInput" type="number" min="0.135" max="0.331" step="0.005" value="0.18" />
+            </label>
+            <label>
+              Swing angle deg
+              <input id="swingAngleInput" type="number" min="-90.00" max="60.00" step="1.00" value="-35.00" />
+            </label>
+            <label>
+              Legacy joint amp rad
+              <input id="ampRadInput" type="number" min="0.00" max="4.00" step="0.05" value="0.00" />
+            </label>
+            <label>
+              Wheel action
+              <input id="wheelActionInput" type="number" min="-2.00" max="2.00" step="0.05" value="0.00" />
+            </label>
+            <label>
+              Trigger mode
+              <select id="triggerModeInput">
+                <option value="pitch">Pitch</option>
+                <option value="force">Wheel force</option>
+              </select>
+            </label>
+            <label>
+              Trigger force N
+              <input id="forceThresholdInput" type="number" min="0.00" max="200.00" step="1.00" value="10.00" />
+            </label>
+            <label>
+              Pitch threshold deg
+              <input id="pitchThresholdInput" type="number" min="0.00" max="60.00" step="0.5" value="6.00" />
+            </label>
+            <label>
+              Trigger window
+              <input id="triggerWindowInput" type="number" min="1" max="20" step="1" value="3" />
             </label>
           </div>
+          <div class="status" id="statusText"></div>
         </section>
 
         <section class="panel">
-          <h2>Points</h2>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>t</th>
-                  <th>x</th>
-                  <th>z</th>
-                  <th>amp</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="pointRows"></tbody>
-            </table>
+          <h2>Derived</h2>
+          <div class="derived" id="derivedOut"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Record Stair Rerun</h2>
+          <div class="fields">
+            <label>
+              Vx m/s
+              <input id="recordVxInput" type="number" min="-3.0" max="3.0" step="0.05" value="1.00" />
+            </label>
+            <label>
+              Command height m
+              <input id="recordHeightInput" type="number" min="0.10" max="0.80" step="0.01" value="0.39" />
+            </label>
+            <label>
+              Stair height m
+              <input id="recordStepHeightInput" type="number" min="0.02" max="0.50" step="0.005" value="0.12" />
+            </label>
+            <label>
+              Max steps
+              <input id="recordMaxStepsInput" type="number" min="50" max="5000" step="50" value="500" />
+            </label>
+          </div>
+          <div class="status" id="recordStatusText"></div>
+          <div class="fields">
+            <button id="recordRerunBtn" class="primary">Record Stair Rerun</button>
           </div>
         </section>
 
@@ -293,39 +408,80 @@
           <h2>JSON</h2>
           <pre id="jsonOut"></pre>
         </section>
+
+        <section class="panel">
+          <h2>Commands</h2>
+          <pre id="commandOut"></pre>
+        </section>
       </aside>
     </section>
   </main>
 
   <script>
     const channels = [
-      { key: "x_m", label: "Wheel x", unit: "m", min: -0.16, max: 0.02, color: "#2477a8" },
-      { key: "z_m", label: "Wheel z", unit: "m", min: -0.02, max: 0.20, color: "#248b5a" },
-      { key: "amp", label: "Joint amp", unit: "scale", min: 0.0, max: 1.3, color: "#a9572a" },
-      { key: "wheel_action", label: "Wheel action", unit: "action", min: -0.4, max: 0.4, color: "#7047a8" },
+      { key: "leg_length_m", label: "Leg length", unit: "m", color: "#2477a8" },
+      { key: "swing_angle_deg", label: "Swing angle", unit: "deg", color: "#a9572a" },
+      { key: "x_m", label: "Derived body x", unit: "m", color: "#248b5a" },
+      { key: "z_m", label: "Derived body z", unit: "m", color: "#7047a8" },
+      { key: "amp", label: "Legacy amp envelope", unit: "scale", color: "#a9572a" },
+      { key: "wheel_action", label: "Wheel action", unit: "action", color: "#5d6570" },
     ];
 
-    const defaultPoints = [
-      { t: 0.00, x_m: 0.00, z_m: 0.00, amp: 0.00, wheel_action: 0.00 },
-      { t: 0.08, x_m: -0.09, z_m: 0.07, amp: 0.45, wheel_action: 0.00 },
-      { t: 0.20, x_m: -0.13, z_m: 0.15, amp: 1.00, wheel_action: 0.00 },
-      { t: 0.38, x_m: -0.11, z_m: 0.15, amp: 0.80, wheel_action: 0.00 },
-      { t: 0.58, x_m: -0.03, z_m: 0.05, amp: 0.25, wheel_action: 0.00 },
-      { t: 0.68, x_m: 0.00, z_m: 0.00, amp: 0.00, wheel_action: 0.00 },
-    ];
-
-    let state = {
-      period_s: 0.68,
-      points: defaultPoints.map((p) => ({ ...p })),
+    const defaults = {
+      duration_s: 0.60,
+      control_dt: 0.02,
+      ff_amplitude_rad: 0.00,
+      leg_length_m: 0.18,
+      swing_angle_deg: -35.00,
+      ff_wheel_action: 0.00,
+      trigger_mode: "pitch",
+      force_threshold_n: 10.00,
+      pitch_threshold_deg: 6.00,
+      trigger_window: 3,
     };
 
-    const plotRoot = document.getElementById("plots");
-    const periodInput = document.getElementById("periodInput");
-    const stepInput = document.getElementById("stepInput");
-    const pointRows = document.getElementById("pointRows");
-    const jsonOut = document.getElementById("jsonOut");
+    let state = { ...defaults };
+    let previewPhaseS = 0.20;
+    let previewUrl = "";
+    let previewTimer = 0;
+    let previewSerial = 0;
+    let playbackSerial = 0;
     const canvases = new Map();
-    let drag = null;
+    const apiEnabled = location.protocol !== "file:";
+
+    const plotRoot = document.getElementById("plots");
+    const localProfileSelect = document.getElementById("localProfileSelect");
+    const savePathInput = document.getElementById("savePathInput");
+    const robotPreview = document.getElementById("robotPreview");
+    const previewBadge = document.getElementById("previewBadge");
+    const phaseInput = document.getElementById("phaseInput");
+    const phaseReadout = document.getElementById("phaseReadout");
+    const previewHeightInput = document.getElementById("previewHeightInput");
+    const previewSideSelect = document.getElementById("previewSideSelect");
+    const playPreviewBtn = document.getElementById("playPreviewBtn");
+    const statusText = document.getElementById("statusText");
+    const recordStatusText = document.getElementById("recordStatusText");
+    const recordVxInput = document.getElementById("recordVxInput");
+    const recordHeightInput = document.getElementById("recordHeightInput");
+    const recordStepHeightInput = document.getElementById("recordStepHeightInput");
+    const recordMaxStepsInput = document.getElementById("recordMaxStepsInput");
+    const recordRerunBtn = document.getElementById("recordRerunBtn");
+    const jsonOut = document.getElementById("jsonOut");
+    const commandOut = document.getElementById("commandOut");
+    const derivedOut = document.getElementById("derivedOut");
+
+    const inputs = {
+      duration_s: document.getElementById("periodInput"),
+      control_dt: document.getElementById("controlDtInput"),
+      leg_length_m: document.getElementById("legLengthInput"),
+      swing_angle_deg: document.getElementById("swingAngleInput"),
+      ff_amplitude_rad: document.getElementById("ampRadInput"),
+      ff_wheel_action: document.getElementById("wheelActionInput"),
+      trigger_mode: document.getElementById("triggerModeInput"),
+      force_threshold_n: document.getElementById("forceThresholdInput"),
+      pitch_threshold_deg: document.getElementById("pitchThresholdInput"),
+      trigger_window: document.getElementById("triggerWindowInput"),
+    };
 
     function clamp(v, min, max) {
       return Math.max(min, Math.min(max, v));
@@ -336,51 +492,184 @@
       return Math.round(v * scale) / scale;
     }
 
-    function sortPoints() {
-      state.points.sort((a, b) => a.t - b.t);
-      state.period_s = Math.max(0.1, round(state.period_s, 3));
-      for (const p of state.points) {
-        p.t = clamp(round(p.t, 4), 0, state.period_s);
-      }
-      state.points[0].t = 0;
-      state.points[state.points.length - 1].t = state.period_s;
+    function pyRoundPositive(v) {
+      const floor = Math.floor(v);
+      const frac = v - floor;
+      if (frac < 0.5) return floor;
+      if (frac > 0.5) return floor + 1;
+      return floor % 2 === 0 ? floor : floor + 1;
     }
 
-    function profileJson() {
-      sortPoints();
+    function finiteNumber(value, fallback) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    }
+
+    function setStatus(text) {
+      statusText.textContent = text || "";
+    }
+
+    function setRecordStatus(text) {
+      recordStatusText.textContent = text || "";
+    }
+
+    function sanitizeParams(params) {
+      const duration = clamp(finiteNumber(params.duration_s ?? params.period_s, defaults.duration_s), 0.10, 2.00);
+      const controlDt = clamp(finiteNumber(params.control_dt, defaults.control_dt), 0.005, 0.05);
+      const triggerMode = params.trigger_mode === "force" ? "force" : "pitch";
       return {
-        version: 1,
-        period_s: state.period_s,
-        points: state.points.map((p) => ({
-          t: round(p.t, 4),
-          x_m: round(p.x_m, 4),
-          z_m: round(p.z_m, 4),
-          amp: round(p.amp, 4),
-          wheel_action: round(p.wheel_action, 4),
-        })),
+        duration_s: duration,
+        control_dt: controlDt,
+        ff_amplitude_rad: clamp(finiteNumber(params.ff_amplitude_rad, defaults.ff_amplitude_rad), 0.00, 4.00),
+        leg_length_m: clamp(finiteNumber(params.leg_length_m, defaults.leg_length_m), 0.135, 0.331),
+        swing_angle_deg: clamp(finiteNumber(params.swing_angle_deg, defaults.swing_angle_deg), -90.00, 60.00),
+        ff_wheel_action: clamp(finiteNumber(params.ff_wheel_action, defaults.ff_wheel_action), -2.00, 2.00),
+        trigger_mode: triggerMode,
+        force_threshold_n: clamp(finiteNumber(params.force_threshold_n, defaults.force_threshold_n), 0.00, 200.00),
+        pitch_threshold_deg: clamp(finiteNumber(params.pitch_threshold_deg, defaults.pitch_threshold_deg), 0.00, 60.00),
+        trigger_window: Math.round(clamp(finiteNumber(params.trigger_window, defaults.trigger_window), 1, 20)),
       };
     }
 
-    function valueToY(value, channel, height) {
-      const pad = 18;
-      const u = (value - channel.min) / (channel.max - channel.min);
-      return height - pad - u * (height - 2 * pad);
+    function readInputs() {
+      const next = {};
+      for (const [key, input] of Object.entries(inputs)) {
+        next[key] = key === "trigger_mode" ? input.value : Number(input.value);
+      }
+      state = sanitizeParams(next);
     }
 
-    function yToValue(y, channel, height) {
-      const pad = 18;
-      const u = (height - pad - y) / (height - 2 * pad);
-      return clamp(channel.min + u * (channel.max - channel.min), channel.min, channel.max);
+    function writeInputs() {
+      inputs.duration_s.value = state.duration_s.toFixed(2);
+      inputs.control_dt.value = state.control_dt.toFixed(3);
+      inputs.leg_length_m.value = state.leg_length_m.toFixed(3);
+      inputs.swing_angle_deg.value = state.swing_angle_deg.toFixed(1);
+      inputs.ff_amplitude_rad.value = state.ff_amplitude_rad.toFixed(2);
+      inputs.ff_wheel_action.value = state.ff_wheel_action.toFixed(2);
+      inputs.trigger_mode.value = state.trigger_mode;
+      inputs.force_threshold_n.value = state.force_threshold_n.toFixed(1);
+      inputs.pitch_threshold_deg.value = state.pitch_threshold_deg.toFixed(1);
+      inputs.trigger_window.value = String(state.trigger_window);
     }
 
-    function timeToX(t, width) {
-      const pad = 34;
-      return pad + (t / state.period_s) * (width - 2 * pad);
+    function samplePoints() {
+      const steps = Math.max(1, Math.round(state.duration_s / state.control_dt));
+      const points = [];
+      const swingRad = (state.swing_angle_deg * Math.PI) / 180;
+      const bodyX = round(state.leg_length_m * Math.sin(swingRad), 6);
+      const bodyZ = round(-state.leg_length_m * Math.cos(swingRad), 6);
+      const wheelAction = round(state.ff_wheel_action, 6);
+      for (let i = 0; i <= steps; i++) {
+        const t = (state.duration_s * i) / steps;
+        points.push({
+          t: round(t, 6),
+          leg_length_m: round(state.leg_length_m, 6),
+          swing_angle_rad: round(swingRad, 6),
+          swing_angle_deg: round(state.swing_angle_deg, 6),
+          body_x_m: bodyX,
+          body_z_m: bodyZ,
+          x_m: bodyX,
+          z_m: bodyZ,
+          amp: 1,
+          wheel_action: wheelAction,
+        });
+      }
+      return points;
     }
 
-    function xToTime(x, width) {
-      const pad = 34;
-      return clamp(((x - pad) / (width - 2 * pad)) * state.period_s, 0, state.period_s);
+    function profileJson() {
+      const points = samplePoints();
+      const durationSteps = Math.max(1, pyRoundPositive(state.duration_s / state.control_dt));
+      return {
+        version: 1,
+        generator: "web/ctbc_profile_editor.html",
+        period_s: round(state.duration_s, 6),
+        metadata: {
+          type: "training_duration_polar",
+          cartesian_frame: "body",
+          coordinate_mode: "body_polar",
+          duration_s: round(state.duration_s, 6),
+          control_dt: round(state.control_dt, 6),
+          ff_amplitude_rad: round(state.ff_amplitude_rad, 6),
+          leg_length_m: round(state.leg_length_m, 6),
+          swing_angle_rad: round((state.swing_angle_deg * Math.PI) / 180, 6),
+          swing_angle_deg: round(state.swing_angle_deg, 6),
+          ff_wheel_action: round(state.ff_wheel_action, 6),
+          trigger_mode: state.trigger_mode,
+          force_threshold_n: round(state.force_threshold_n, 6),
+          contact_window: state.trigger_window,
+          pitch_threshold_deg: round(state.pitch_threshold_deg, 6),
+          pitch_threshold_rad: round((state.pitch_threshold_deg * Math.PI) / 180, 6),
+          pitch_window: state.trigger_window,
+          ff_duration_steps: durationSteps,
+          ff_period_steps: durationSteps,
+        },
+        points,
+      };
+    }
+
+    function paramsFromProfile(payload) {
+      const metadata = payload.metadata || {};
+      const points = Array.isArray(payload.points) ? payload.points : [];
+      const duration = Number(
+        metadata.duration_s || payload.duration_s || payload.period_s || points[points.length - 1]?.t || defaults.duration_s
+      );
+      const firstPolarPoint =
+        points.find((p) => p.leg_length_m !== undefined || p.swing_angle_rad !== undefined) ||
+        points[0] ||
+        {};
+      const fallbackX = Number(firstPolarPoint.body_x_m ?? firstPolarPoint.x_m ?? firstPolarPoint.x ?? 0);
+      const fallbackZ = Number(firstPolarPoint.body_z_m ?? firstPolarPoint.z_m ?? firstPolarPoint.z ?? -0.18);
+      const fallbackLength = Math.sqrt(fallbackX * fallbackX + fallbackZ * fallbackZ);
+      const fallbackSwingDeg = (Math.atan2(fallbackX, -fallbackZ) * 180) / Math.PI;
+      const maxWheel = points.reduce((best, p) => {
+        const value = Number(p.wheel_action ?? p.wheel_action_delta ?? 0);
+        return Math.abs(value) > Math.abs(best) ? value : best;
+      }, 0);
+      return sanitizeParams({
+        duration_s: duration,
+        control_dt: metadata.control_dt ?? defaults.control_dt,
+        ff_amplitude_rad: metadata.ff_amplitude_rad ?? defaults.ff_amplitude_rad,
+        leg_length_m: metadata.leg_length_m ?? firstPolarPoint.leg_length_m ?? fallbackLength,
+        swing_angle_deg:
+          metadata.swing_angle_deg ??
+          firstPolarPoint.swing_angle_deg ??
+          (metadata.swing_angle_rad !== undefined
+            ? (Number(metadata.swing_angle_rad) * 180) / Math.PI
+              : firstPolarPoint.swing_angle_rad !== undefined
+              ? (Number(firstPolarPoint.swing_angle_rad) * 180) / Math.PI
+              : fallbackSwingDeg),
+        ff_wheel_action: metadata.ff_wheel_action ?? maxWheel,
+        trigger_mode: metadata.trigger_mode ?? defaults.trigger_mode,
+        force_threshold_n: metadata.force_threshold_n ?? metadata.force_threshold ?? defaults.force_threshold_n,
+        pitch_threshold_deg:
+          metadata.pitch_threshold_deg ??
+          (metadata.pitch_threshold_rad !== undefined
+            ? (Number(metadata.pitch_threshold_rad) * 180) / Math.PI
+            : defaults.pitch_threshold_deg),
+        trigger_window: metadata.pitch_window ?? metadata.trigger_window ?? metadata.contact_window ?? defaults.trigger_window,
+      });
+    }
+
+    function setProfile(payload, path = "") {
+      state = paramsFromProfile(payload);
+      if (path) savePathInput.value = path;
+      render();
+      refreshCommands();
+    }
+
+    async function apiJson(path, options = {}) {
+      if (!apiEnabled) throw new Error("Start with scripts/ctbc_profile_web.py to use local APIs");
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      });
+      const payload = await res.json();
+      if (!res.ok || payload.ok === false) throw new Error(payload.error || `HTTP ${res.status}`);
+      return payload;
     }
 
     function resizeCanvas(canvas) {
@@ -393,8 +682,37 @@
       return { width: rect.width, height: rect.height, ctx };
     }
 
+    function channelRange(points, key) {
+      const values = points.map((p) => Number(p[key] || 0));
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (key === "amp") {
+        min = 0;
+        max = Math.max(1.0, max);
+      }
+      if (min === max) {
+        min -= 0.01;
+        max += 0.01;
+      }
+      const pad = Math.max(0.01, (max - min) * 0.12);
+      return { min: min - pad, max: max + pad };
+    }
+
+    function timeToX(t, width) {
+      const pad = 34;
+      return pad + (t / state.duration_s) * (width - 2 * pad);
+    }
+
+    function valueToY(value, range, height) {
+      const pad = 18;
+      const u = (value - range.min) / (range.max - range.min);
+      return height - pad - u * (height - 2 * pad);
+    }
+
     function drawPlot(channel) {
       const canvas = canvases.get(channel.key);
+      const points = samplePoints();
+      const range = channelRange(points, channel.key);
       const { width, height, ctx } = resizeCanvas(canvas);
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = "#ffffff";
@@ -403,7 +721,7 @@
       ctx.strokeStyle = "#e5e0d7";
       ctx.lineWidth = 1;
       for (let i = 0; i <= 6; i++) {
-        const x = timeToX((state.period_s * i) / 6, width);
+        const x = timeToX((state.duration_s * i) / 6, width);
         ctx.beginPath();
         ctx.moveTo(x, 14);
         ctx.lineTo(x, height - 18);
@@ -420,83 +738,29 @@
       ctx.strokeStyle = channel.color;
       ctx.lineWidth = 2.5;
       ctx.beginPath();
-      state.points.forEach((p, i) => {
+      points.forEach((p, idx) => {
         const x = timeToX(p.t, width);
-        const y = valueToY(p[channel.key], channel, height);
-        if (i === 0) ctx.moveTo(x, y);
+        const y = valueToY(p[channel.key], range, height);
+        if (idx === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
       ctx.stroke();
 
-      for (let i = 0; i < state.points.length; i++) {
-        const p = state.points[i];
-        const x = timeToX(p.t, width);
-        const y = valueToY(p[channel.key], channel, height);
-        ctx.fillStyle = i === 0 || i === state.points.length - 1 ? "#ffffff" : channel.color;
-        ctx.strokeStyle = channel.color;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
+      const phaseX = timeToX(previewPhaseS, width);
+      ctx.strokeStyle = "rgba(32, 36, 42, 0.38)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(phaseX, 14);
+      ctx.lineTo(phaseX, height - 18);
+      ctx.stroke();
 
       ctx.fillStyle = "#66717f";
       ctx.font = "11px ui-sans-serif, system-ui";
       ctx.textAlign = "left";
-      ctx.fillText(`${channel.max} ${channel.unit}`, 8, 18);
-      ctx.fillText(`${channel.min} ${channel.unit}`, 8, height - 8);
+      ctx.fillText(`${round(range.max, 3)} ${channel.unit}`, 8, 18);
+      ctx.fillText(`${round(range.min, 3)} ${channel.unit}`, 8, height - 8);
       ctx.textAlign = "right";
-      ctx.fillText(`${state.period_s.toFixed(2)}s`, width - 8, height - 8);
-    }
-
-    function renderTable() {
-      pointRows.innerHTML = "";
-      state.points.forEach((p, idx) => {
-        const row = document.createElement("tr");
-        row.innerHTML = `
-          <td>${p.t.toFixed(2)}</td>
-          <td>${p.x_m.toFixed(3)}</td>
-          <td>${p.z_m.toFixed(3)}</td>
-          <td>${p.amp.toFixed(2)}</td>
-          <td><button data-index="${idx}">Del</button></td>
-        `;
-        row.querySelector("button").disabled = idx === 0 || idx === state.points.length - 1;
-        row.querySelector("button").addEventListener("click", () => {
-          state.points.splice(idx, 1);
-          render();
-        });
-        pointRows.appendChild(row);
-      });
-    }
-
-    function render() {
-      sortPoints();
-      periodInput.value = state.period_s.toFixed(2);
-      channels.forEach(drawPlot);
-      renderTable();
-      jsonOut.textContent = JSON.stringify(profileJson(), null, 2);
-    }
-
-    function pointerPos(canvas, event) {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top,
-        width: rect.width,
-        height: rect.height,
-      };
-    }
-
-    function nearestPoint(channel, pos) {
-      let best = { index: -1, dist: Infinity };
-      state.points.forEach((p, idx) => {
-        const dx = timeToX(p.t, pos.width) - pos.x;
-        const dy = valueToY(p[channel.key], channel, pos.height) - pos.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < best.dist) best = { index: idx, dist };
-      });
-      return best.dist <= 14 ? best.index : -1;
+      ctx.fillText(`${state.duration_s.toFixed(2)}s`, width - 8, height - 8);
     }
 
     function installPlot(channel) {
@@ -505,73 +769,42 @@
       wrap.innerHTML = `
         <div class="plot-head">
           <strong>${channel.label}</strong>
-          <span>${channel.min}..${channel.max} ${channel.unit}</span>
+          <span>${channel.unit}</span>
         </div>
         <canvas aria-label="${channel.label} curve"></canvas>
       `;
       plotRoot.appendChild(wrap);
-      const canvas = wrap.querySelector("canvas");
-      canvases.set(channel.key, canvas);
-
-      canvas.addEventListener("pointerdown", (event) => {
-        canvas.setPointerCapture(event.pointerId);
-        const pos = pointerPos(canvas, event);
-        let idx = nearestPoint(channel, pos);
-        if (idx < 0) {
-          const t = xToTime(pos.x, pos.width);
-          const value = yToValue(pos.y, channel, pos.height);
-          const p = { t, x_m: 0, z_m: 0, amp: 0, wheel_action: 0 };
-          for (const ch of channels) {
-            p[ch.key] = interpolate(ch.key, t);
-          }
-          p[channel.key] = value;
-          state.points.push(p);
-          sortPoints();
-          idx = state.points.indexOf(p);
-        }
-        drag = { channel, index: idx, pointerId: event.pointerId };
-        updateDrag(canvas, event);
-      });
-
-      canvas.addEventListener("pointermove", (event) => {
-        if (!drag || drag.pointerId !== event.pointerId || drag.channel.key !== channel.key) return;
-        updateDrag(canvas, event);
-      });
-
-      canvas.addEventListener("pointerup", () => {
-        drag = null;
-      });
-      canvas.addEventListener("pointercancel", () => {
-        drag = null;
-      });
+      canvases.set(channel.key, wrap.querySelector("canvas"));
     }
 
-    function interpolate(key, t) {
-      sortPoints();
-      if (t <= state.points[0].t) return state.points[0][key];
-      for (let i = 1; i < state.points.length; i++) {
-        const a = state.points[i - 1];
-        const b = state.points[i];
-        if (t <= b.t) {
-          const u = (t - a.t) / Math.max(1e-6, b.t - a.t);
-          return a[key] + (b[key] - a[key]) * u;
-        }
-      }
-      return state.points[state.points.length - 1][key];
+    function renderDerived() {
+      const durationSteps = Math.max(1, pyRoundPositive(state.duration_s / state.control_dt));
+      const jointPeak = 2.0 * state.ff_amplitude_rad;
+      derivedOut.innerHTML = `
+        <span>duration steps</span><strong>${durationSteps}</strong>
+        <span>duration</span><strong>${state.duration_s.toFixed(2)} s</strong>
+        <span>legacy joint peak</span><strong>${jointPeak.toFixed(2)} rad</strong>
+        <span>body-frame polar target</span><strong>${state.leg_length_m.toFixed(3)} m, ${state.swing_angle_deg.toFixed(1)} deg</strong>
+        <span>derived body x/z</span><strong>${samplePoints()[0].x_m.toFixed(3)}, ${samplePoints()[0].z_m.toFixed(3)} m</strong>
+        <span>trigger mode</span><strong>${state.trigger_mode}</strong>
+        <span>pitch trigger</span><strong>${state.pitch_threshold_deg.toFixed(1)} deg, ${state.trigger_window} frames</strong>
+        <span>force trigger</span><strong>${state.force_threshold_n.toFixed(1)} N, ${state.trigger_window} frames</strong>
+      `;
     }
 
-    function updateDrag(canvas, event) {
-      const pos = pointerPos(canvas, event);
-      const point = state.points[drag.index];
-      const channel = drag.channel;
-      const lastIdx = state.points.length - 1;
-      if (drag.index !== 0 && drag.index !== lastIdx) {
-        const prev = state.points[drag.index - 1].t + 0.01;
-        const next = state.points[drag.index + 1].t - 0.01;
-        point.t = clamp(round(xToTime(pos.x, pos.width), 4), prev, next);
+    function render() {
+      state = sanitizeParams(state);
+      writeInputs();
+      previewPhaseS = clamp(previewPhaseS, 0, state.duration_s);
+      phaseInput.max = state.duration_s.toFixed(3);
+      phaseInput.value = previewPhaseS.toFixed(3);
+      phaseReadout.textContent = `${previewPhaseS.toFixed(2)}s`;
+      channels.forEach(drawPlot);
+      renderDerived();
+      jsonOut.textContent = JSON.stringify(profileJson(), null, 2);
+      if (!robotPreview.getAttribute("src")) {
+        previewBadge.textContent = "Press Play Preview";
       }
-      point[channel.key] = round(yToValue(pos.y, channel, pos.height), 4);
-      render();
     }
 
     function downloadJson() {
@@ -581,7 +814,7 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "ctbc_profile.json";
+      a.download = "ctbc_duration_profile.json";
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -589,48 +822,268 @@
     function loadJson(file) {
       const reader = new FileReader();
       reader.onload = () => {
-        const payload = JSON.parse(String(reader.result));
-        if (!Array.isArray(payload.points) || payload.points.length < 2) {
-          throw new Error("points must contain at least two entries");
-        }
-        const period = Number(payload.period_s ?? payload.points[payload.points.length - 1].t);
-        state = {
-          period_s: period,
-          points: payload.points.map((p) => ({
-            t: Number(p.t ?? p.time_s),
-            x_m: Number(p.x_m ?? p.x ?? 0),
-            z_m: Number(p.z_m ?? p.z ?? 0),
-            amp: Number(p.amp ?? p.amp_scale ?? 0),
-            wheel_action: Number(p.wheel_action ?? p.wheel_action_delta ?? 0),
-          })),
-        };
-        render();
+        setProfile(JSON.parse(String(reader.result)));
+        setStatus(`Imported ${file.name}`);
       };
       reader.readAsText(file);
     }
 
-    channels.forEach(installPlot);
-    periodInput.addEventListener("change", () => {
-      const next = clamp(Number(periodInput.value), 0.1, 2.0);
-      state.period_s = round(next, 3);
-      state.points[state.points.length - 1].t = state.period_s;
+    async function refreshProfileList() {
+      if (!apiEnabled) {
+        setStatus("Static mode: local save/open is disabled");
+        return;
+      }
+      try {
+        const payload = await apiJson("/api/profiles");
+        const current = localProfileSelect.value;
+        localProfileSelect.innerHTML = `<option value="">Local profiles</option>`;
+        for (const path of payload.profiles || []) {
+          const option = document.createElement("option");
+          option.value = path;
+          option.textContent = path.replace("assets/ctbc_profiles/", "");
+          localProfileSelect.appendChild(option);
+        }
+        localProfileSelect.value = current;
+      } catch (err) {
+        setStatus(err.message);
+      }
+    }
+
+    async function openLocalProfile() {
+      const path = localProfileSelect.value || savePathInput.value;
+      if (!path) return;
+      try {
+        const payload = await apiJson(`/api/profile?path=${encodeURIComponent(path)}`);
+        setProfile(payload.profile, payload.path);
+        localProfileSelect.value = payload.path;
+        setStatus(`Opened ${payload.path}`);
+      } catch (err) {
+        setStatus(err.message);
+      }
+    }
+
+    async function saveLocalProfile() {
+      try {
+        const payload = await apiJson("/api/profile", {
+          method: "POST",
+          body: JSON.stringify({
+            path: savePathInput.value,
+            profile: profileJson(),
+          }),
+        });
+        setStatus(`Saved ${payload.path}`);
+        await refreshProfileList();
+        localProfileSelect.value = payload.path;
+        renderCommands(payload.commands);
+      } catch (err) {
+        setStatus(err.message);
+      }
+    }
+
+    async function generateProfile() {
+      readInputs();
+      if (apiEnabled) {
+        try {
+          const payload = await apiJson("/api/generate", {
+            method: "POST",
+            body: JSON.stringify(state),
+          });
+          setProfile(payload.profile);
+          setStatus("Applied training duration profile");
+          return;
+        } catch (err) {
+          setStatus(err.message);
+        }
+      }
       render();
-    });
+    }
+
+    function renderCommands(commands) {
+      if (!commands) {
+        commandOut.textContent = "Save or open a local profile to get runnable commands.";
+        return;
+      }
+      commandOut.textContent = [
+        "# sim2sim rerun",
+        commands.sim2sim,
+        "",
+        "# MJLab recorder",
+        commands.record,
+        "",
+        "# batch sweep",
+        commands.sweep,
+      ].join("\n");
+    }
+
+    async function refreshCommands() {
+      const path = savePathInput.value;
+      if (!apiEnabled || !path) {
+        renderCommands(null);
+        return;
+      }
+      try {
+        const payload = await apiJson(`/api/commands?path=${encodeURIComponent(path)}`);
+        renderCommands(payload.commands);
+      } catch (_) {
+        renderCommands(null);
+      }
+    }
+
+    function schedulePreviewRender() {
+      if (!apiEnabled) {
+        robotPreview.removeAttribute("src");
+        previewBadge.textContent = "";
+        return;
+      }
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(renderPreview, 120);
+    }
+
+    async function renderPreview() {
+      return renderPreviewFrame(previewPhaseS);
+    }
+
+    async function renderPreviewFrame(phaseS) {
+      const serial = ++previewSerial;
+      const hasPreviousImage = Boolean(robotPreview.getAttribute("src"));
+      previewBadge.textContent = hasPreviousImage ? "" : "Rendering...";
+      try {
+        const rect = robotPreview.getBoundingClientRect();
+        const width = Math.max(480, Math.round(rect.width || 900));
+        const height = Math.max(300, Math.round(width * 0.56));
+        const res = await fetch("/api/render_pose", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profile: profileJson(),
+            phase_s: phaseS,
+            command_height: Number(previewHeightInput.value || 0.39),
+            side: previewSideSelect.value,
+            width,
+            height,
+          }),
+        });
+        if (!res.ok) {
+          let message = `render failed: HTTP ${res.status}`;
+          try {
+            const payload = await res.json();
+            message = payload.error || message;
+          } catch (_) {}
+          throw new Error(message);
+        }
+        const blob = await res.blob();
+        if (serial !== previewSerial) return;
+        const nextUrl = URL.createObjectURL(blob);
+        robotPreview.src = nextUrl;
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = nextUrl;
+        previewBadge.textContent = "";
+      } catch (err) {
+        const message = err.message || String(err);
+        previewBadge.textContent = "Render failed";
+        setStatus(message);
+      }
+    }
+
+    async function playPreview() {
+      if (!apiEnabled) return;
+      const serial = ++playbackSerial;
+      playPreviewBtn.disabled = true;
+      playPreviewBtn.textContent = "Playing...";
+      try {
+        const frameDt = Math.max(state.control_dt, state.duration_s / 18);
+        for (let t = 0; t <= state.duration_s + 1e-6; t += frameDt) {
+          if (serial !== playbackSerial) break;
+          previewPhaseS = clamp(t, 0, state.duration_s);
+          phaseInput.value = previewPhaseS.toFixed(3);
+          phaseReadout.textContent = `${previewPhaseS.toFixed(2)}s`;
+          channels.forEach(drawPlot);
+          await renderPreviewFrame(previewPhaseS);
+        }
+      } finally {
+        if (serial === playbackSerial) {
+          playPreviewBtn.disabled = false;
+          playPreviewBtn.textContent = "Play Preview";
+        }
+      }
+    }
+
+    async function recordStairRerun() {
+      if (!apiEnabled) return;
+      readInputs();
+      render();
+      recordRerunBtn.disabled = true;
+      setRecordStatus("Starting sim2sim Rerun recording...");
+      try {
+        const payload = await apiJson("/api/record_rerun", {
+          method: "POST",
+          body: JSON.stringify({
+            profile: profileJson(),
+            command_vx: Number(recordVxInput.value || 1.0),
+            command_height: Number(recordHeightInput.value || 0.39),
+            stair_step_height: Number(recordStepHeightInput.value || 0.12),
+            max_steps: Number(recordMaxStepsInput.value || 500),
+          }),
+        });
+        setRecordStatus(
+          `Started PID ${payload.pid}. CKPT: ${payload.checkpoint}. RRD: ${payload.rerun_record}. Log: ${payload.log_path}`
+        );
+        renderCommands({
+          sim2sim: payload.command,
+          record: `tail log: ${payload.log_path}`,
+          sweep: `profile: ${payload.profile_path}`,
+        });
+      } catch (err) {
+        setRecordStatus(err.message || String(err));
+      } finally {
+        recordRerunBtn.disabled = false;
+      }
+    }
+
+    channels.forEach(installPlot);
+    for (const input of Object.values(inputs)) {
+      input.addEventListener("input", () => {
+        readInputs();
+        render();
+      });
+    }
+    playPreviewBtn.addEventListener("click", playPreview);
+    recordRerunBtn.addEventListener("click", recordStairRerun);
     document.getElementById("downloadBtn").addEventListener("click", downloadJson);
+    document.getElementById("openLocalBtn").addEventListener("click", openLocalProfile);
+    document.getElementById("saveLocalBtn").addEventListener("click", saveLocalProfile);
+    document.getElementById("generateBtn").addEventListener("click", generateProfile);
+    localProfileSelect.addEventListener("change", () => {
+      if (localProfileSelect.value) savePathInput.value = localProfileSelect.value;
+    });
+    savePathInput.addEventListener("change", refreshCommands);
+    phaseInput.addEventListener("input", () => {
+      previewPhaseS = clamp(Number(phaseInput.value), 0, state.duration_s);
+      phaseReadout.textContent = `${previewPhaseS.toFixed(2)}s`;
+      channels.forEach(drawPlot);
+    });
     document.getElementById("copyBtn").addEventListener("click", async () => {
       await navigator.clipboard.writeText(JSON.stringify(profileJson(), null, 2));
     });
     document.getElementById("resetBtn").addEventListener("click", () => {
-      state = { period_s: 0.68, points: defaultPoints.map((p) => ({ ...p })) };
+      state = { ...defaults };
+      previewPhaseS = 0.20;
       render();
+      refreshCommands();
     });
     document.getElementById("importFile").addEventListener("change", (event) => {
       const file = event.target.files && event.target.files[0];
       if (file) loadJson(file);
       event.target.value = "";
     });
-    window.addEventListener("resize", render);
+    window.addEventListener("resize", () => {
+      render();
+    });
+
     render();
+    renderCommands(null);
+    refreshProfileList();
+    refreshCommands();
   </script>
 </body>
 </html>

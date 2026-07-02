@@ -14,6 +14,7 @@ from se3_shared import (
 )
 
 from .config import (
+    CUSTOM_TERRAIN_CHOICES,
     DEFAULT_SIM_MODEL_VARIANT,
     MAX_YAW_RATE_RAD_S,
     RECOVERY_COMMAND_HEIGHT_M,
@@ -180,14 +181,73 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="固定 CTBC 退火迭代数；laptop watcher 应传入 checkpoint 轮数。",
     )
+    parser.add_argument("--stair-ctbc-trigger-mode", choices=("force", "pitch"), default=None)
     parser.add_argument("--stair-ctbc-contact-window", type=int, default=None)
     parser.add_argument("--stair-ctbc-force-threshold-n", type=float, default=None)
+    parser.add_argument("--stair-ctbc-pitch-threshold-deg", type=float, default=None)
+    parser.add_argument(
+        "--stair-ctbc-pitch-threshold-rad",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--stair-ctbc-pitch-window", type=int, default=None)
     parser.add_argument("--stair-ctbc-ff-amplitude-rad", type=float, default=None)
-    parser.add_argument("--stair-ctbc-ff-x-m", type=float, default=None)
-    parser.add_argument("--stair-ctbc-ff-lift-m", type=float, default=None)
-    parser.add_argument("--stair-ctbc-ff-period-s", type=float, default=None)
-    parser.add_argument("--stair-ctbc-ff-rise-ratio", type=float, default=None)
-    parser.add_argument("--stair-ctbc-ff-hold-ratio", type=float, default=None)
+    parser.add_argument(
+        "--stair-ctbc-leg-length-m",
+        type=float,
+        default=None,
+        help="CTBC body-frame polar 目标腿长，单位 m。",
+    )
+    parser.add_argument(
+        "--stair-ctbc-swing-angle-deg",
+        type=float,
+        default=None,
+        help="CTBC body-frame polar 目标摆角，单位 deg；0 表示竖直向下，负值向后。",
+    )
+    parser.add_argument(
+        "--stair-ctbc-swing-angle-rad",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--stair-ctbc-body-x-m",
+        "--stair-ctbc-ff-x-m",
+        dest="stair_ctbc_body_x_m",
+        type=float,
+        default=None,
+        help="CTBC 轮心在机体系腿部平面内的 x 位移幅值；旧 ff-x 参数名保留为兼容 alias。",
+    )
+    parser.add_argument(
+        "--stair-ctbc-body-z-m",
+        "--stair-ctbc-ff-lift-m",
+        dest="stair_ctbc_body_z_m",
+        type=float,
+        default=None,
+        help="CTBC 轮心在机体系腿部平面内的 z 抬升幅值；旧 ff-lift 参数名保留为兼容 alias。",
+    )
+    parser.add_argument(
+        "--stair-ctbc-duration-s",
+        "--stair-ctbc-ff-duration-s",
+        "--stair-ctbc-ff-period-s",
+        dest="stair_ctbc_duration_s",
+        type=float,
+        default=None,
+        help="CTBC 触发后保持前馈目标的持续时间，单位秒；旧 ff-period 名称保留为 alias。",
+    )
+    parser.add_argument(
+        "--stair-ctbc-ff-rise-ratio",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--stair-ctbc-ff-hold-ratio",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--stair-ctbc-ff-wheel-action", type=float, default=None)
     parser.add_argument("--stair-ctbc-profile", type=Path, default=None)
     parser.add_argument("--stair-ctbc-allow-bilateral-trigger", action="store_true")
@@ -222,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("LOW", "HIGH"),
         default=robot_defaults.rough_stair_step_height_range,
         help="rough pyramid stairs 单级高度范围，默认 0-5cm。",
+    )
+    parser.add_argument(
+        "--custom-terrain",
+        choices=CUSTOM_TERRAIN_CHOICES,
+        default=robot_defaults.custom_terrain,
+        help="启用 sim2sim 自定义地形。slope-17 为单个 17° 坡面。",
     )
     parser.add_argument(
         "--checkpoint",
@@ -633,13 +699,46 @@ def _stair_ctbc_config_from_args(args: argparse.Namespace) -> StairCtbcConfig:
         enabled=bool(args.stair_ctbc),
         fixed_iter=None if args.stair_ctbc_iter is None else max(0, int(args.stair_ctbc_iter)),
     )
+    polar_requested = (
+        args.stair_ctbc_leg_length_m is not None
+        or args.stair_ctbc_swing_angle_deg is not None
+        or args.stair_ctbc_swing_angle_rad is not None
+    )
+    cartesian_requested = (
+        args.stair_ctbc_body_x_m is not None or args.stair_ctbc_body_z_m is not None
+    )
+    swing_angle_rad = args.stair_ctbc_swing_angle_rad
+    if swing_angle_rad is None and args.stair_ctbc_swing_angle_deg is not None:
+        swing_angle_rad = math.radians(float(args.stair_ctbc_swing_angle_deg))
+    pitch_threshold_rad = args.stair_ctbc_pitch_threshold_rad
+    if pitch_threshold_rad is None and args.stair_ctbc_pitch_threshold_deg is not None:
+        pitch_threshold_rad = math.radians(float(args.stair_ctbc_pitch_threshold_deg))
     overrides = {
+        "coordinate_mode": (
+            "body_polar" if polar_requested else "body_cartesian" if cartesian_requested else None
+        ),
+        "trigger_mode": args.stair_ctbc_trigger_mode,
         "contact_window": args.stair_ctbc_contact_window,
         "force_threshold_n": args.stair_ctbc_force_threshold_n,
+        "pitch_threshold_rad": pitch_threshold_rad,
+        "pitch_threshold_deg": (
+            args.stair_ctbc_pitch_threshold_deg
+            if args.stair_ctbc_pitch_threshold_deg is not None
+            else None
+        ),
+        "pitch_window": args.stair_ctbc_pitch_window,
         "ff_amplitude_rad": args.stair_ctbc_ff_amplitude_rad,
-        "ff_x_m": args.stair_ctbc_ff_x_m,
-        "ff_lift_m": args.stair_ctbc_ff_lift_m,
-        "ff_period_s": args.stair_ctbc_ff_period_s,
+        "leg_length_m": args.stair_ctbc_leg_length_m,
+        "swing_angle_rad": swing_angle_rad,
+        "swing_angle_deg": (
+            args.stair_ctbc_swing_angle_deg if args.stair_ctbc_swing_angle_deg is not None else None
+        ),
+        "body_x_m": args.stair_ctbc_body_x_m,
+        "body_z_m": args.stair_ctbc_body_z_m,
+        "ff_x_m": args.stair_ctbc_body_x_m,
+        "ff_lift_m": args.stair_ctbc_body_z_m,
+        "ff_duration_s": args.stair_ctbc_duration_s,
+        "ff_period_s": args.stair_ctbc_duration_s,
         "ff_rise_ratio": args.stair_ctbc_ff_rise_ratio,
         "ff_hold_ratio": args.stair_ctbc_ff_hold_ratio,
         "ff_wheel_action": args.stair_ctbc_ff_wheel_action,
@@ -755,6 +854,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
                 float(args.rough_stair_step_height_range[0]),
                 float(args.rough_stair_step_height_range[1]),
             ),
+            custom_terrain=str(args.custom_terrain),
             sim_dt=float(args.sim_dt),
             control_decimation=int(args.control_decimation),
             initial_roll_rad=initial_roll_rad,

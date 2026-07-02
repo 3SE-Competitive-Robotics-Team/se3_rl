@@ -36,6 +36,12 @@ _SHARED_ROBOT = SharedRobotConfig()
 _RESET_FLOOR_CLEARANCE_M = 0.01
 _BASE_CONTACT_PENETRATION_M = 0.001
 _GROUND_GEOM_GROUP = 2
+_SIMPLE_SLOPE_ANGLE_DEG = 17.0
+_SIMPLE_SLOPE_START_X_M = 1.0
+_SIMPLE_SLOPE_RUN_M = 4.0
+_SIMPLE_SLOPE_APPROACH_LENGTH_M = 3.0
+_SIMPLE_SLOPE_WIDTH_M = 4.0
+_SIMPLE_SLOPE_THICKNESS_M = 0.15
 
 
 def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
@@ -54,6 +60,49 @@ def _model_has_joints(model: mujoco.MjModel, names: tuple[str, ...]) -> bool:
     """判断模型是否包含一组关节。"""
     available = set(_model_joint_names(model))
     return all(name in available for name in names)
+
+
+def _simple_slope_vertices(
+    *,
+    start_x: float,
+    end_x: float,
+    half_width: float,
+    thickness: float,
+    height: float,
+) -> list[float]:
+    """生成单坡面实体的顶点，顶面从 z=0 连续上升。"""
+
+    vertices = (
+        (start_x, -half_width, -thickness),
+        (start_x, half_width, -thickness),
+        (end_x, -half_width, -thickness),
+        (end_x, half_width, -thickness),
+        (start_x, -half_width, 0.0),
+        (start_x, half_width, 0.0),
+        (end_x, -half_width, height),
+        (end_x, half_width, height),
+    )
+    return [coord for vertex in vertices for coord in vertex]
+
+
+def _simple_slope_faces() -> list[int]:
+    """单坡面实体的三角面索引。"""
+
+    faces = (
+        (0, 2, 3),
+        (0, 3, 1),  # 底面
+        (0, 1, 5),
+        (0, 5, 4),  # 坡脚低端面
+        (2, 6, 7),
+        (2, 7, 3),  # 坡顶高端面
+        (4, 6, 7),
+        (4, 7, 5),  # 17° 坡面
+        (0, 4, 6),
+        (0, 6, 2),  # 前侧面
+        (1, 3, 7),
+        (1, 7, 5),  # 后侧面
+    )
+    return [index for face in faces for index in face]
 
 
 def _model_site_names(model: mujoco.MjModel) -> tuple[str, ...]:
@@ -105,7 +154,10 @@ class WheelLeggedRobot:
         if not self.model_path.exists():
             raise FileNotFoundError(f"MJCF model not found: {self.model_path}")
         self.model = self._build_model(str(self.model_path), cfg)
+        self.stair_terrain_info = self._build_stair_terrain_info()
+        object.__setattr__(self.cfg, "_stair_terrain_info", self.stair_terrain_info)
         self.rough_terrain_info = getattr(cfg, "_rough_terrain_info", None)
+        self.custom_terrain_info = getattr(cfg, "_custom_terrain_info", None)
         # sim_dt > 0 和 control_decimation >= 1 已由 RobotConfig(BaseModel) 在构造时校验
         self.model.opt.timestep = float(cfg.sim_dt)
         self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -284,8 +336,10 @@ class WheelLeggedRobot:
 
         if self.stair_ctbc is None:
             return
+        pitch_rad = float(np.arctan2(self.projected_gravity[0], -self.projected_gravity[2]))
         self.stair_ctbc.update(
             self._stair_ctbc_step_contact_score,
+            pitch_rad=pitch_rad,
             iteration=iteration,
         )
 
@@ -491,8 +545,12 @@ class WheelLeggedRobot:
         wheel_clearance = min(wheel_clearance_l, wheel_clearance_r)  # 取两轮最低
         stair_step_height = 0.0
         if self.cfg.stair_terrain:
-            low, high = (float(v) for v in self.cfg.stair_step_height_range)
-            stair_step_height = low + (float(self.cfg.stair_terrain_level) / 9.0) * (high - low)
+            stair_step_height = float(
+                self.stair_terrain_info.get(
+                    "step_height_m",
+                    self._stair_step_height_from_cfg(self.cfg),
+                )
+            )
         wheel_delta_b = rotate_inverse(self.base_quat, l_wheel_pos - r_wheel_pos)
         wheel_lateral_distance = abs(float(wheel_delta_b[1]))
         wheel_fore_aft_offset = abs(float(wheel_delta_b[0]))
@@ -640,6 +698,16 @@ class WheelLeggedRobot:
                 if self.rough_terrain_info is not None
                 else {"enabled": False}
             ),
+            "stair_terrain": (
+                self.stair_terrain_info
+                if self.stair_terrain_info is not None
+                else {"enabled": False}
+            ),
+            "custom_terrain": (
+                self.custom_terrain_info
+                if self.custom_terrain_info is not None
+                else {"enabled": False}
+            ),
             "initial_command": self.command.tolist(),
             "yaw_pid_enabled": bool(self.cfg.yaw_pid.enabled),
             "yaw_pid_target_rad": float(self.cfg.yaw_pid.target_yaw_rad),
@@ -676,6 +744,43 @@ class WheelLeggedRobot:
         info["origin"] = origin.tolist()
         self.rough_terrain_info = info
         object.__setattr__(self.cfg, "_rough_terrain_info", info)
+        return info
+
+    def set_stair_step_height(self, step_height_m: float) -> dict[str, object]:
+        """运行时更新程序化台阶高度，并保持 MuJoCo 碰撞体同步。"""
+
+        info = self.stair_terrain_info
+        if not isinstance(info, dict) or not info.get("enabled"):
+            raise RuntimeError("stair terrain is not enabled for this sim2sim run")
+        min_height = float(info.get("min_step_height_m", 0.02))
+        max_height = float(info.get("max_step_height_m", 0.25))
+        if max_height <= min_height:
+            raise RuntimeError("invalid stair height slider range")
+        requested_height = float(step_height_m)
+        if not np.isfinite(requested_height):
+            raise ValueError(f"stair step height must be finite, got {step_height_m}")
+        clamped_height = max(min_height, min(max_height, requested_height))
+        step_count = int(info.get("step_count", self.cfg.stair_step_count))
+        for idx in range(step_count):
+            geom_id = mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                f"stair_terrain_step_{idx}",
+            )
+            if geom_id < 0:
+                raise RuntimeError(f"compiled MuJoCo model is missing stair_terrain_step_{idx}")
+            height = clamped_height * float(idx + 1)
+            self.model.geom_pos[geom_id, 2] = 0.5 * height
+            self.model.geom_size[geom_id, 2] = 0.5 * height
+            self.model.geom_rbound[geom_id] = float(np.linalg.norm(self.model.geom_size[geom_id]))
+
+        mujoco.mj_forward(self.model, self.data)
+        info = dict(info)
+        info["step_height_m"] = float(clamped_height)
+        info["requested_step_height_m"] = float(requested_height)
+        info["runtime_override"] = True
+        self.stair_terrain_info = info
+        object.__setattr__(self.cfg, "_stair_terrain_info", info)
         return info
 
     def _lift_root_to_clear_floor(self) -> None:
@@ -767,6 +872,40 @@ class WheelLeggedRobot:
             if geom_name.startswith("stair_terrain_step_"):
                 stair_geoms.add(int(geom_id))
         return stair_geoms
+
+    @staticmethod
+    def _stair_step_height_from_cfg(cfg: RobotConfig) -> float:
+        """按 sim2sim 台阶课程 level 计算当前单级高度。"""
+
+        low, high = (float(v) for v in cfg.stair_step_height_range)
+        level = max(0, min(9, int(cfg.stair_terrain_level)))
+        return low + (float(level) / 9.0) * (high - low)
+
+    def _build_stair_terrain_info(self) -> dict[str, object]:
+        """记录 GUI 和 telemetry 需要的程序化台阶参数。"""
+
+        if not bool(self.cfg.stair_terrain):
+            return {"enabled": False}
+        low, high = (float(v) for v in self.cfg.stair_step_height_range)
+        step_height = self._stair_step_height_from_cfg(self.cfg)
+        min_height = min(low, high, step_height)
+        max_height = max(low, high, step_height)
+        if max_height - min_height < 1e-6:
+            min_height = max(0.01, step_height - 0.10)
+            max_height = max(step_height + 0.10, 0.25)
+        return {
+            "enabled": True,
+            "level": int(max(0, min(9, int(self.cfg.stair_terrain_level)))),
+            "step_height_m": float(step_height),
+            "min_step_height_m": float(min_height),
+            "max_step_height_m": float(max_height),
+            "height_range_m": [float(low), float(high)],
+            "step_count": int(self.cfg.stair_step_count),
+            "step_depth_m": float(self.cfg.stair_step_depth_m),
+            "start_x_m": float(self.cfg.stair_start_x_m),
+            "half_width_m": float(self.cfg.stair_half_width_m),
+            "runtime_override": False,
+        }
 
     def _stair_riser_wheel_contact_score(self) -> np.ndarray:
         """估计左右轮撞到台阶立面的接触强度。"""
@@ -944,6 +1083,8 @@ class WheelLeggedRobot:
             WheelLeggedRobot._add_stair_terrain_geoms(spec, cfg)
         if cfg.rough_terrain:
             WheelLeggedRobot._add_rough_terrain(spec, cfg)
+        if cfg.custom_terrain != "none":
+            WheelLeggedRobot._add_custom_terrain(spec, cfg)
 
         joint_names = tuple(joint.name for joint in spec.joints if joint.name)
         site_names = tuple(site.name for site in spec.sites if site.name)
@@ -1090,6 +1231,145 @@ class WheelLeggedRobot:
             return terrain_cfg
 
     @staticmethod
+    def _add_custom_terrain(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
+        """添加训练端自定义地形到 sim2sim 模型。"""
+
+        if cfg.custom_terrain == "slope-17":
+            WheelLeggedRobot._add_simple_slope_terrain(spec, cfg)
+            return
+        if cfg.custom_terrain == "gap-ramp-facility":
+            WheelLeggedRobot._add_gap_ramp_facility_terrain(spec, cfg)
+            return
+        raise ValueError(f"unsupported custom terrain: {cfg.custom_terrain}")
+
+    @staticmethod
+    def _add_simple_slope_terrain(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
+        """添加单个 17° 坡面，保留默认无限平地作为基底。"""
+
+        angle_rad = math.radians(_SIMPLE_SLOPE_ANGLE_DEG)
+        ramp_height = math.tan(angle_rad) * _SIMPLE_SLOPE_RUN_M
+        start_x = _SIMPLE_SLOPE_START_X_M
+        end_x = start_x + _SIMPLE_SLOPE_RUN_M
+        flat_start_x = start_x - _SIMPLE_SLOPE_APPROACH_LENGTH_M
+        half_width = 0.5 * _SIMPLE_SLOPE_WIDTH_M
+        thickness = _SIMPLE_SLOPE_THICKNESS_M
+
+        terrain_body = spec.worldbody.add_body(name="terrain", pos=[0.0, 0.0, 0.0])
+        terrain_body.add_geom(
+            name="slope17_approach_flat",
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            pos=[
+                0.5 * (flat_start_x + start_x),
+                0.0,
+                -0.5 * thickness,
+            ],
+            size=[
+                0.5 * _SIMPLE_SLOPE_APPROACH_LENGTH_M,
+                half_width,
+                0.5 * thickness,
+            ],
+            contype=2,
+            conaffinity=1,
+            condim=3,
+            group=_GROUND_GEOM_GROUP,
+            friction=[0.8, 0.005, 0.0001],
+            rgba=[0.45, 0.56, 0.40, 1.0],
+        )
+
+        mesh_name = "slope17_wedge_mesh"
+        spec.add_mesh(
+            name=mesh_name,
+            uservert=_simple_slope_vertices(
+                start_x=start_x,
+                end_x=end_x,
+                half_width=half_width,
+                thickness=thickness,
+                height=ramp_height,
+            ),
+            userface=_simple_slope_faces(),
+        )
+        terrain_body.add_geom(
+            name="slope17_ramp",
+            type=mujoco.mjtGeom.mjGEOM_MESH,
+            meshname=mesh_name,
+            contype=2,
+            conaffinity=1,
+            condim=3,
+            group=_GROUND_GEOM_GROUP,
+            friction=[0.8, 0.005, 0.0001],
+            rgba=[0.38, 0.45, 0.55, 1.0],
+        )
+
+        print(
+            "sim2sim custom terrain: "
+            f"type=slope-17 angle_deg={_SIMPLE_SLOPE_ANGLE_DEG:.1f} "
+            f"start_x={start_x:.3f}m run={_SIMPLE_SLOPE_RUN_M:.3f}m "
+            f"height={ramp_height:.3f}m"
+        )
+        object.__setattr__(
+            cfg,
+            "_custom_terrain_info",
+            {
+                "enabled": True,
+                "type": "slope-17",
+                "ramp_angle_deg": float(_SIMPLE_SLOPE_ANGLE_DEG),
+                "ramp_start_x_m": float(start_x),
+                "ramp_run_m": float(_SIMPLE_SLOPE_RUN_M),
+                "ramp_height_m": float(ramp_height),
+                "approach_length_m": float(_SIMPLE_SLOPE_APPROACH_LENGTH_M),
+                "width_m": float(_SIMPLE_SLOPE_WIDTH_M),
+            },
+        )
+
+    @staticmethod
+    def _add_gap_ramp_facility_terrain(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
+        """添加 17° 坑坡设施地形。"""
+
+        from mjlab.terrains.terrain_generator import TerrainGenerator
+
+        from se3_train.terrains import GapRampFacilitySpec, gap_ramp_facility_terrain_cfg
+
+        WheelLeggedRobot._disable_default_floor_contacts(spec)
+        terrain_cfg = gap_ramp_facility_terrain_cfg()
+        terrain_cfg.seed = int(cfg.seed)
+        generator = TerrainGenerator(terrain_cfg, device="cpu")
+        generator.compile(spec)
+
+        terrain_body = spec.body("terrain")
+        origin = np.asarray(generator.terrain_origins[0, 0], dtype=np.float64)
+        terrain_body.pos = (-origin).tolist()
+        for geom in terrain_body.geoms:
+            geom.group = _GROUND_GEOM_GROUP
+            if int(geom.contype) == 0 and int(geom.conaffinity) == 0:
+                continue
+            geom.contype = 2
+            geom.conaffinity = 1
+
+        facility = GapRampFacilitySpec()
+        print(
+            "sim2sim custom terrain: "
+            f"type=gap-ramp-facility ramp_angle_deg={facility.ramp_angle_deg:.1f} "
+            f"pit_length={facility.pit_length:.3f}m ramp_height={facility.ramp_height:.3f}m "
+            f"origin={origin.tolist()}"
+        )
+        object.__setattr__(
+            cfg,
+            "_custom_terrain_info",
+            {
+                "enabled": True,
+                "type": "gap-ramp-facility",
+                "ramp_angle_deg": float(facility.ramp_angle_deg),
+                "pit_length_m": float(facility.pit_length),
+                "ramp_height_m": float(facility.ramp_height),
+                "ramp_horizontal_run_m": float(facility.ramp_horizontal_run),
+                "left_platform_height_m": float(facility.left_platform_height),
+                "right_platform_height_m": float(facility.right_platform_height),
+                "origin": origin.tolist(),
+                "size": [float(v) for v in terrain_cfg.size],
+            },
+        )
+
+    @staticmethod
     def _disable_default_floor_contacts(spec: mujoco.MjSpec) -> None:
         """rough terrain 开启时关闭 MJCF 默认平面碰撞，避免覆盖 MJLab 地形。"""
 
@@ -1108,9 +1388,7 @@ class WheelLeggedRobot:
     def _add_stair_terrain_geoms(spec: mujoco.MjSpec, cfg: RobotConfig) -> None:
         """在原生 MuJoCo sim2sim 中添加与训练课程同尺度的台阶碰撞体。"""
 
-        low, high = (float(v) for v in cfg.stair_step_height_range)
-        level = max(0, min(9, int(cfg.stair_terrain_level)))
-        step_height = low + (float(level) / 9.0) * (high - low)
+        step_height = WheelLeggedRobot._stair_step_height_from_cfg(cfg)
         step_depth = float(cfg.stair_step_depth_m)
         half_width = float(cfg.stair_half_width_m)
         start_x = float(cfg.stair_start_x_m)

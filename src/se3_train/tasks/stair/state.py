@@ -19,8 +19,27 @@ _HIP_FEEDFORWARD_RATIO: float = 1.2
 _KNEE_FEEDFORWARD_RATIO: float = 2.0
 
 
+def _polar_to_xz_torch(length_m: torch.Tensor, swing_rad: torch.Tensor) -> torch.Tensor:
+    return torch.stack(
+        (length_m * torch.sin(swing_rad), -length_m * torch.cos(swing_rad)),
+        dim=-1,
+    )
+
+
+def _profile_coordinate_mode(payload: dict[str, object]) -> str:
+    metadata = payload.get("metadata")
+    mode = metadata.get("coordinate_mode") if isinstance(metadata, dict) else None
+    if (
+        mode is None
+        and isinstance(metadata, dict)
+        and metadata.get("type") == "training_duration_polar"
+    ):
+        mode = "body_polar"
+    return "body_polar" if mode == "body_polar" else "body_cartesian"
+
+
 class _CtbcProfile:
-    """Piecewise-linear CTBC feedforward profile loaded from JSON."""
+    """从 JSON 加载的分段线性 CTBC 前馈轨迹。"""
 
     def __init__(
         self,
@@ -29,11 +48,13 @@ class _CtbcProfile:
         times_s: torch.Tensor,
         values: torch.Tensor,
         period_s: float,
+        coordinate_mode: str,
     ) -> None:
         self.path = path
         self.times_s = times_s
         self.values = values
         self.period_s = float(period_s)
+        self.coordinate_mode = coordinate_mode
 
     @classmethod
     def load(cls, path: Path | str, *, device: torch.device | str) -> _CtbcProfile:
@@ -43,13 +64,40 @@ class _CtbcProfile:
         if not isinstance(points, list) or len(points) < 2:
             raise ValueError(f"CTBC profile {profile_path} must contain at least two points")
 
+        coordinate_mode = _profile_coordinate_mode(payload)
         rows: list[tuple[float, float, float, float, float]] = []
         for idx, point in enumerate(points):
             if not isinstance(point, dict):
                 raise ValueError(f"CTBC profile point {idx} must be an object")
             t = cls._number(point, "t", "time_s", required=True)
-            x = cls._number(point, "x_m", "x", default=0.0)
-            z = cls._number(point, "z_m", "z", default=0.0)
+            if coordinate_mode == "body_polar":
+                x = cls._number(
+                    point,
+                    "leg_length_m",
+                    ("length_m", "r_m", "radius_m"),
+                    default=0.18,
+                )
+                raw_swing = point.get("swing_angle_rad")
+                if raw_swing is None:
+                    for key in ("theta_rad", "angle_rad"):
+                        if key in point:
+                            raw_swing = point[key]
+                            break
+                if raw_swing is None:
+                    swing_deg = cls._number(
+                        point,
+                        "swing_angle_deg",
+                        ("theta_deg", "angle_deg"),
+                        default=-35.0,
+                    )
+                    z = math.radians(swing_deg)
+                else:
+                    z = float(raw_swing)
+                    if not math.isfinite(z):
+                        raise ValueError("CTBC profile field 'swing_angle_rad' must be finite")
+            else:
+                x = cls._number(point, "body_x_m", ("x_m", "x"), default=0.0)
+                z = cls._number(point, "body_z_m", ("z_m", "z"), default=0.0)
             amp = cls._number(point, "amp", "amp_scale", default=0.0)
             wheel_action = cls._number(
                 point,
@@ -76,18 +124,32 @@ class _CtbcProfile:
         values_t = torch.tensor(values, device=device, dtype=torch.float32)
         if not torch.isfinite(times_t).all() or not torch.isfinite(values_t).all():
             raise ValueError(f"CTBC profile {profile_path} contains non-finite values")
-        return cls(path=profile_path, times_s=times_t, values=values_t, period_s=period_s)
+        return cls(
+            path=profile_path,
+            times_s=times_t,
+            values=values_t,
+            period_s=period_s,
+            coordinate_mode=coordinate_mode,
+        )
 
     @staticmethod
     def _number(
         point: dict[str, object],
         primary: str,
-        alias: str,
+        alias: str | tuple[str, ...],
         *,
         default: float | None = None,
         required: bool = False,
     ) -> float:
-        raw = point.get(primary, point.get(alias, default))
+        aliases = (alias,) if isinstance(alias, str) else alias
+        raw = point.get(primary)
+        if raw is None:
+            for key in aliases:
+                if key in point:
+                    raw = point[key]
+                    break
+        if raw is None:
+            raw = default
         if raw is None and required:
             raise ValueError(f"missing required CTBC profile field {primary!r}")
         try:
@@ -129,11 +191,20 @@ class StairClimbState:
         self,
         num_envs: int,
         device: torch.device | str,
+        trigger_mode: str = "pitch",
         contact_window: int = 3,
         force_threshold_n: float = 10.0,
+        pitch_threshold_rad: float = math.radians(6.0),
+        pitch_threshold_deg: float | None = None,
+        pitch_window: int = 3,
         ff_amplitude_rad: float = 1.70,
+        coordinate_mode: str = "body_polar",
+        leg_length_m: float = 0.18,
+        swing_angle_rad: float = math.radians(-35.0),
+        swing_angle_deg: float | None = None,
         ff_x_m: float = 0.02,
         ff_lift_m: float = 0.02,
+        ff_duration_s: float | None = None,
         ff_period_s: float = 0.6,
         ff_rise_ratio: float = 0.35,
         ff_hold_ratio: float = 0.0,
@@ -153,16 +224,36 @@ class StairClimbState:
         )
         self.contact_window = contact_window
         self.force_threshold = force_threshold_n
+        self.trigger_mode = "pitch" if trigger_mode == "pitch" else "force"
+        self.pitch_threshold_rad = (
+            float(pitch_threshold_rad)
+            if pitch_threshold_deg is None
+            else math.radians(float(pitch_threshold_deg))
+        )
+        self.pitch_window = max(1, int(pitch_window))
         self.ff_amplitude = ff_amplitude_rad
+        self.coordinate_mode = "body_polar" if coordinate_mode == "body_polar" else "body_cartesian"
+        self.leg_length_m = float(leg_length_m)
+        self.swing_angle_rad = (
+            float(swing_angle_rad)
+            if swing_angle_deg is None
+            else math.radians(float(swing_angle_deg))
+        )
         self.ff_x_m = ff_x_m
         self.ff_lift_m = ff_lift_m
         self.ff_wheel_action = float(ff_wheel_action)
         self.control_dt = control_dt
-        period_s = self._profile.period_s if self._profile is not None else ff_period_s
-        self.ff_period_steps = max(1, round(period_s / control_dt))
-        self.ff_rise_steps, self.ff_hold_steps, self.ff_return_steps = self._resolve_profile_steps(
-            ff_rise_ratio, ff_hold_ratio
+        del ff_rise_ratio, ff_hold_ratio
+        duration_s = (
+            self._profile.period_s
+            if self._profile is not None
+            else float(ff_period_s if ff_duration_s is None else ff_duration_s)
         )
+        self.ff_duration_steps = max(1, round(duration_s / control_dt))
+        self.ff_period_steps = self.ff_duration_steps
+        self.ff_rise_steps = self.ff_duration_steps
+        self.ff_hold_steps = 0
+        self.ff_return_steps = 0
         self.ff_start = int(ff_start_iter)
         self.ann_start = max(int(ann_start_iter), self.ff_start)
         self.ann_end = max(int(ann_end_iter), self.ann_start)
@@ -170,7 +261,12 @@ class StairClimbState:
         self.allow_bilateral_trigger = bool(allow_bilateral_trigger)
 
         self._contact_buf = torch.zeros(contact_window, num_envs, 2, device=device)
+        self._pitch_buf = torch.zeros(self.pitch_window, num_envs, device=device)
         self._stable = torch.zeros(num_envs, 2, dtype=torch.bool, device=device)
+        self._pitch_stable = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self._last_pitch_rad = torch.zeros(num_envs, device=device)
+        self._last_pitch_abs_deg = torch.zeros(num_envs, device=device)
+        self._trigger_score = torch.zeros(num_envs, 2, device=device)
         self._riser_contact_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
         self._ff_phase = torch.full((num_envs, 2), -1, dtype=torch.long, device=device)
         self._cooldown_steps = max(1, round(0.3 / control_dt))
@@ -210,18 +306,9 @@ class StairClimbState:
         rise_ratio: float,
         hold_ratio: float,
     ) -> tuple[int, int, int]:
-        """把前馈 profile 比例转换成 rise/hold/return 三段步数。"""
-        rise_ratio = max(0.05, min(float(rise_ratio), 0.90))
-        hold_ratio = max(0.0, min(float(hold_ratio), 0.90))
-        if rise_ratio + hold_ratio >= 0.95:
-            hold_ratio = max(0.0, 0.95 - rise_ratio)
-
-        rise_steps = max(1, round(self.ff_period_steps * rise_ratio))
-        hold_steps = max(0, round(self.ff_period_steps * hold_ratio))
-        if rise_steps + hold_steps >= self.ff_period_steps:
-            hold_steps = max(0, self.ff_period_steps - rise_steps - 1)
-        return_steps = max(1, self.ff_period_steps - rise_steps - hold_steps)
-        return rise_steps, hold_steps, return_steps
+        """保留旧诊断字段的 duration 步数映射。"""
+        del rise_ratio, hold_ratio
+        return self.ff_duration_steps, 0, 0
 
     def update_iter(self, iteration: int) -> None:
         """更新当前 stair 阶段内的相对训练迭代数和前馈退火权重。"""
@@ -249,7 +336,7 @@ class StairClimbState:
         if self._fixed_iter is not None:
             self.update_iter(self._fixed_iter)
 
-    def step(self, wheel_contact_xy: torch.Tensor) -> None:
+    def step(self, wheel_contact_xy: torch.Tensor, pitch_rad: torch.Tensor | None = None) -> None:
         """根据当前轮子水平接触力更新触发窗口和前馈相位。"""
         wheel_contact_xy = torch.nan_to_num(
             wheel_contact_xy.to(device=self.device),
@@ -260,8 +347,29 @@ class StairClimbState:
         self._contact_buf[1:] = self._contact_buf[:-1].clone()
         self._contact_buf[0] = wheel_contact_xy
 
-        above = self._contact_buf > self.force_threshold
-        self._stable = above.all(dim=0)
+        if pitch_rad is None:
+            pitch_value = torch.zeros(self.num_envs, device=self.device)
+        else:
+            pitch_value = torch.nan_to_num(
+                pitch_rad.to(device=self.device).reshape(self.num_envs),
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+        self._last_pitch_rad[:] = pitch_value
+        pitch_abs_rad = torch.abs(pitch_value)
+        self._last_pitch_abs_deg[:] = torch.rad2deg(pitch_abs_rad)
+        self._pitch_buf[1:] = self._pitch_buf[:-1].clone()
+        self._pitch_buf[0] = pitch_abs_rad
+
+        if self.trigger_mode == "pitch":
+            self._pitch_stable = (self._pitch_buf > float(self.pitch_threshold_rad)).all(dim=0)
+            self._stable = self._pitch_stable.unsqueeze(-1).expand(-1, 2).clone()
+            self._trigger_score[:] = self._last_pitch_abs_deg.unsqueeze(-1).expand(-1, 2)
+        else:
+            above = self._contact_buf > self.force_threshold
+            self._stable = above.all(dim=0)
+            self._trigger_score[:] = wheel_contact_xy
         stable_any = self._stable.any(dim=-1)
         self._riser_contact_steps[stable_any] += 1
         self._riser_contact_steps[~stable_any] = 0
@@ -269,12 +377,12 @@ class StairClimbState:
         self._cooldown[self._cooldown > 0] -= 1
         can_trigger = (self._ff_phase == -1) & (self._cooldown == 0)
         trigger_candidates = self._stable & can_trigger
-        if self.allow_bilateral_trigger:
+        if self.trigger_mode == "pitch" or self.allow_bilateral_trigger:
             newly_triggered = can_trigger & trigger_candidates.any(dim=-1, keepdim=True)
         else:
             newly_triggered = self._select_single_trigger_side(
                 trigger_candidates,
-                wheel_contact_xy,
+                self._trigger_score,
             )
         self._ff_phase[newly_triggered] = 0
 
@@ -294,7 +402,7 @@ class StairClimbState:
         active = self._ff_phase >= 0
         self._ff_phase[active] += 1
 
-        finished = self._ff_phase >= self.ff_period_steps
+        finished = self._ff_phase >= self.ff_duration_steps
         self._cooldown[finished] = self._cooldown_steps
         self._ff_phase[finished] = -1
         self._complete_ff_cycle_count[finished.any(dim=-1)] += 1
@@ -333,28 +441,38 @@ class StairClimbState:
                 envelope = self._ff_profile_envelope(phase)
             else:
                 envelope = self._profile.sample(phase, control_dt=self.control_dt)[:, 2]
-            cosine_val = 2.0 * self.ff_amplitude * envelope
-            cosine_val = cosine_val * active_mask.float()
-            bias[:, hip_idx] = -cosine_val * _HIP_FEEDFORWARD_RATIO * self._kff
-            bias[:, knee_idx] = cosine_val * _KNEE_FEEDFORWARD_RATIO * self._kff
+            bias_value = 2.0 * self.ff_amplitude * envelope
+            bias_value = bias_value * active_mask.float()
+            bias[:, hip_idx] = -bias_value * _HIP_FEEDFORWARD_RATIO * self._kff
+            bias[:, knee_idx] = bias_value * _KNEE_FEEDFORWARD_RATIO * self._kff
         return bias
 
     def _ff_profile_envelope(self, phase: torch.Tensor) -> torch.Tensor:
-        """返回 rise-hold-return 三段式前馈包络。"""
-        phase = torch.clamp(phase, min=0.0, max=float(self.ff_period_steps))
-        rise_steps = float(self.ff_rise_steps)
-        hold_end = float(self.ff_rise_steps + self.ff_hold_steps)
-        return_steps = float(self.ff_return_steps)
+        """返回 duration 内恒定为 1 的前馈包络。"""
+        return torch.where(phase >= 0.0, torch.ones_like(phase), torch.zeros_like(phase))
 
-        rise_t = torch.clamp(phase / rise_steps, 0.0, 1.0)
-        rise = 0.5 * (1.0 - torch.cos(math.pi * rise_t))
-
-        return_t = torch.clamp((phase - hold_end) / return_steps, 0.0, 1.0)
-        returning = 0.5 * (1.0 + torch.cos(math.pi * return_t))
-
-        envelope = torch.where(phase < rise_steps, rise, torch.ones_like(phase))
-        envelope = torch.where(phase < hold_end, envelope, returning)
-        return torch.clamp(envelope, 0.0, 1.0)
+    def ff_wheel_target_xz(self) -> torch.Tensor:
+        """返回机体系 hip-relative 极坐标目标转换出的绝对轮心 XZ。"""
+        target = torch.full((self.num_envs, 2, 2), float("nan"), device=self.device)
+        if self._kff == 0.0:
+            return target
+        active = self._ff_phase >= 0
+        if not active.any():
+            return target
+        phase = torch.clamp(self._ff_phase.float(), min=0.0)
+        if self._profile is None:
+            if self.coordinate_mode != "body_polar":
+                return target
+            length = torch.full_like(phase, float(self.leg_length_m))
+            swing = torch.full_like(phase, float(self.swing_angle_rad))
+            polar_target = _polar_to_xz_torch(length, swing)
+        elif self._profile.coordinate_mode == "body_polar":
+            samples = self._profile.sample(phase, control_dt=self.control_dt)
+            polar_target = _polar_to_xz_torch(samples[:, :, 0], samples[:, :, 1])
+        else:
+            return target
+        target[active] = polar_target[active]
+        return target
 
     def ff_wheel_delta_xz(self) -> torch.Tensor:
         """返回当前轮端 Cartesian 前馈位移，语义为 x 后退、z 抬升。"""
@@ -368,11 +486,15 @@ class StairClimbState:
                 continue
             phase = torch.clamp(self._ff_phase[:, side].float(), min=0.0)
             if self._profile is None:
+                if self.coordinate_mode == "body_polar":
+                    continue
                 envelope = self._ff_profile_envelope(phase)
                 envelope = envelope * active_mask.float() * float(self._kff)
                 delta[:, side, 0] = -float(self.ff_x_m) * envelope
                 delta[:, side, 1] = float(self.ff_lift_m) * envelope
             else:
+                if self._profile.coordinate_mode == "body_polar":
+                    continue
                 samples = self._profile.sample(phase, control_dt=self.control_dt)
                 active = active_mask.float() * float(self._kff)
                 delta[:, side, 0] = samples[:, 0] * active
@@ -569,7 +691,12 @@ class StairClimbState:
 
     def reset(self, env_ids: torch.Tensor) -> None:
         self._contact_buf[:, env_ids] = 0.0
+        self._pitch_buf[:, env_ids] = 0.0
         self._stable[env_ids] = False
+        self._pitch_stable[env_ids] = False
+        self._last_pitch_rad[env_ids] = 0.0
+        self._last_pitch_abs_deg[env_ids] = 0.0
+        self._trigger_score[env_ids] = 0.0
         self._riser_contact_steps[env_ids] = 0
         self._ff_phase[env_ids] = -1
         self._cooldown[env_ids] = 0
@@ -604,6 +731,18 @@ class StairClimbState:
         return self._contact_buf[0].clone()
 
     @property
+    def latest_pitch_rad(self) -> torch.Tensor:
+        return self._last_pitch_rad.clone()
+
+    @property
+    def latest_pitch_abs_deg(self) -> torch.Tensor:
+        return self._last_pitch_abs_deg.clone()
+
+    @property
+    def trigger_score(self) -> torch.Tensor:
+        return self._trigger_score.clone()
+
+    @property
     def stable_contact(self) -> torch.Tensor:
         return self._stable.clone()
 
@@ -635,6 +774,16 @@ class StairClimbState:
             ),
             "Stair/diag_ctbc_kff": self._kff,
             "Stair/diag_ctbc_local_iter": float(self._iter),
+            "Stair/diag_ctbc_trigger_mode_pitch": float(self.trigger_mode == "pitch"),
+            "Stair/diag_ctbc_force_threshold_n": float(self.force_threshold),
+            "Stair/diag_ctbc_contact_window": float(self.contact_window),
+            "Stair/diag_ctbc_pitch_abs_deg": float(self._last_pitch_abs_deg.mean().item()),
+            "Stair/diag_ctbc_pitch_threshold_deg": float(math.degrees(self.pitch_threshold_rad)),
+            "Stair/diag_ctbc_pitch_window": float(self.pitch_window),
+            "Stair/diag_ctbc_coordinate_mode_polar": float(self.coordinate_mode == "body_polar"),
+            "Stair/diag_ctbc_leg_length_m": float(self.leg_length_m),
+            "Stair/diag_ctbc_swing_angle_deg": float(math.degrees(self.swing_angle_rad)),
+            "Stair/diag_ctbc_ff_duration_steps": float(self.ff_duration_steps),
             "Stair/diag_ctbc_ff_rise_steps": float(self.ff_rise_steps),
             "Stair/diag_ctbc_ff_hold_steps": float(self.ff_hold_steps),
             "Stair/diag_ctbc_ff_return_steps": float(self.ff_return_steps),

@@ -263,10 +263,34 @@ class SerialLegDelayedAction(ActionTerm):
                         self._raw_actions[:, :4],
                         self._ctbc_wheel_delta_xz,
                     )
+                target_fn = getattr(state, "ff_wheel_target_xz", None)
+                if callable(target_fn):
+                    target_xz = target_fn().to(
+                        device=self.device,
+                        dtype=self._ctbc_wheel_delta_xz.dtype,
+                    )
+                    if torch.isfinite(target_xz).all(dim=-1).any():
+                        action_delta = self._ctbc_wheel_target_to_action_delta(
+                            self._raw_actions[:, :4],
+                            target_xz,
+                            target_blend=float(state.kff),
+                        )
             else:
                 wheel_delta_fn = getattr(state, "ff_wheel_delta_xz", None)
+                target_fn = getattr(state, "ff_wheel_target_xz", None)
                 action_delta = None
-                if callable(wheel_delta_fn):
+                if callable(target_fn):
+                    target_xz = target_fn().to(
+                        device=self.device,
+                        dtype=self._ctbc_wheel_delta_xz.dtype,
+                    )
+                    if torch.isfinite(target_xz).all(dim=-1).any():
+                        action_delta = self._ctbc_wheel_target_to_action_delta(
+                            self._raw_actions[:, :4],
+                            target_xz,
+                            target_blend=float(state.kff),
+                        )
+                if action_delta is None and callable(wheel_delta_fn):
                     self._ctbc_wheel_delta_xz[:] = wheel_delta_fn()
                     action_delta = self._ctbc_wheel_delta_to_action_delta(
                         self._raw_actions[:, :4],
@@ -543,6 +567,75 @@ class SerialLegDelayedAction(ActionTerm):
             )
         action_delta = torch.zeros_like(leg_action)
         action_delta[active_env_ids] = desired_action - active_leg_action
+        return torch.nan_to_num(action_delta, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _ctbc_wheel_target_to_action_delta(
+        self,
+        leg_action: torch.Tensor,
+        wheel_target_xz: torch.Tensor,
+        *,
+        target_blend: float,
+    ) -> torch.Tensor:
+        """把机体系绝对轮心 XZ 目标反解成当前 action 语义下的增量。"""
+        if not (self._closedchain or self._fourbar_surrogate):
+            return torch.zeros_like(leg_action)
+
+        active_side = torch.isfinite(wheel_target_xz).all(dim=-1)
+        active_env_ids = active_side.any(dim=1).nonzero().flatten()
+        if active_env_ids.numel() == 0:
+            return torch.zeros_like(leg_action)
+
+        active_leg_action = leg_action[active_env_ids]
+        active_side = active_side[active_env_ids]
+        active_target_xz = wheel_target_xz[active_env_ids]
+        policy_default = self._current_leg_action_defaults()[active_env_ids]
+        current_policy = self._leg_action_to_policy_target(
+            active_leg_action,
+            policy_default,
+            update_active_targets=False,
+        )
+        current_output = policy_to_output_pos_torch(current_policy)
+        current_wheel_xz = output_leg_wheel_xz_torch(current_output)
+        blend = torch.as_tensor(
+            max(0.0, min(1.0, float(target_blend))),
+            device=current_wheel_xz.device,
+            dtype=current_wheel_xz.dtype,
+        )
+        raw_delta = torch.where(
+            active_side.unsqueeze(-1),
+            (active_target_xz - current_wheel_xz) * blend,
+            torch.zeros_like(current_wheel_xz),
+        )
+        desired_wheel_xz = self._reachable_ctbc_wheel_target(current_wheel_xz, raw_delta)
+        cartesian_desired_output = wheel_xz_to_output_pos_torch(desired_wheel_xz)
+        active_joint = active_side.repeat_interleave(2, dim=1)
+        desired_output = torch.where(active_joint, cartesian_desired_output, current_output)
+        desired_policy = output_to_policy_pos_torch(desired_output)
+
+        desired_action = torch.zeros_like(active_leg_action)
+        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+            front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
+            if self.cfg.height_conditioned_action_default:
+                active_default = (
+                    front_coef * policy_default[:, front_idx]
+                    + back_coef * policy_default[:, back_idx]
+                )
+            else:
+                active_default = self._active_rod_angle_mid
+            active_desired = (
+                front_coef * desired_policy[:, front_idx] + back_coef * desired_policy[:, back_idx]
+            )
+            desired_action[:, front_idx] = (
+                desired_policy[:, front_idx] - policy_default[:, front_idx]
+            ) / self._leg_action_scales[front_idx]
+            desired_action[:, back_idx] = (active_desired - active_default) / (
+                self._leg_action_scales[back_idx]
+            )
+        action_delta = torch.zeros_like(leg_action)
+        action_delta[active_env_ids] = desired_action - active_leg_action
+        full_delta = torch.zeros_like(self._ctbc_wheel_delta_xz)
+        full_delta[active_env_ids] = desired_wheel_xz - current_wheel_xz
+        self._ctbc_wheel_delta_xz[:] = torch.nan_to_num(full_delta, nan=0.0, posinf=0.0, neginf=0.0)
         return torch.nan_to_num(action_delta, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _apply_ctbc_action_delta(self, action_delta: torch.Tensor) -> None:

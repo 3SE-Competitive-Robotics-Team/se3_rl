@@ -688,11 +688,20 @@ def reset_joints_stair_shared(
 def init_stair_climb_state(
     env,
     env_ids: torch.Tensor | None,
+    trigger_mode: str = "pitch",
     contact_window: int = 3,
     force_threshold_n: float = 10.0,
+    pitch_threshold_rad: float = math.radians(6.0),
+    pitch_threshold_deg: float | None = None,
+    pitch_window: int = 3,
     ff_amplitude_rad: float = 1.70,
+    coordinate_mode: str = "body_polar",
+    leg_length_m: float = 0.18,
+    swing_angle_rad: float = math.radians(-35.0),
+    swing_angle_deg: float | None = None,
     ff_x_m: float = 0.02,
     ff_lift_m: float = 0.02,
+    ff_duration_s: float | None = None,
     ff_period_s: float = 0.6,
     ff_rise_ratio: float = 0.35,
     ff_hold_ratio: float = 0.0,
@@ -712,11 +721,20 @@ def init_stair_climb_state(
     env.stair_climb_state = StairClimbState(
         num_envs=env.num_envs,
         device=env.device,
+        trigger_mode=trigger_mode,
         contact_window=contact_window,
         force_threshold_n=force_threshold_n,
+        pitch_threshold_rad=pitch_threshold_rad,
+        pitch_threshold_deg=pitch_threshold_deg,
+        pitch_window=pitch_window,
         ff_amplitude_rad=ff_amplitude_rad,
+        coordinate_mode=coordinate_mode,
+        leg_length_m=leg_length_m,
+        swing_angle_rad=swing_angle_rad,
+        swing_angle_deg=swing_angle_deg,
         ff_x_m=ff_x_m,
         ff_lift_m=ff_lift_m,
+        ff_duration_s=ff_duration_s,
         ff_period_s=ff_period_s,
         ff_rise_ratio=ff_rise_ratio,
         ff_hold_ratio=ff_hold_ratio,
@@ -833,7 +851,17 @@ def step_stair_climb_state(
         wheel_xy[inactive_ids] = 0.0
         state.reset(inactive_ids)
 
-    state.step(wheel_xy)
+    robot = env.scene["robot"]
+    projected_gravity = torch.nan_to_num(
+        robot.data.projected_gravity_b,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    pitch_rad = torch.atan2(projected_gravity[:, 0], -projected_gravity[:, 2])
+    if inactive_ids.numel() > 0:
+        pitch_rad[inactive_ids] = 0.0
+    state.step(wheel_xy, pitch_rad=pitch_rad)
     iteration = int(env.common_step_counter) // max(1, int(num_steps_per_env))
     state.update_iter(iteration)
 
