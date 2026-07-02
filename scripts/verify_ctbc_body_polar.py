@@ -39,8 +39,8 @@ def _xz_to_polar(xz: np.ndarray) -> tuple[float, float]:
 
 
 def main() -> None:
-    length_m = 0.18
-    swing_deg = -35.0
+    length_m = 0.24
+    swing_deg = 10.0
     swing_rad = math.radians(swing_deg)
     target_xz = _polar_to_xz(length_m, swing_rad)
     target_for_ik = np.stack((target_xz, target_xz), axis=0)

@@ -75,7 +75,7 @@ class _CtbcProfile:
                     point,
                     "leg_length_m",
                     ("length_m", "r_m", "radius_m"),
-                    default=0.18,
+                    default=0.24,
                 )
                 raw_swing = point.get("swing_angle_rad")
                 if raw_swing is None:
@@ -88,7 +88,7 @@ class _CtbcProfile:
                         point,
                         "swing_angle_deg",
                         ("theta_deg", "angle_deg"),
-                        default=-35.0,
+                        default=10.0,
                     )
                     z = math.radians(swing_deg)
                 else:
@@ -199,8 +199,8 @@ class StairClimbState:
         pitch_window: int = 3,
         ff_amplitude_rad: float = 1.70,
         coordinate_mode: str = "body_polar",
-        leg_length_m: float = 0.18,
-        swing_angle_rad: float = math.radians(-35.0),
+        leg_length_m: float = 0.24,
+        swing_angle_rad: float = math.radians(10.0),
         swing_angle_deg: float | None = None,
         ff_x_m: float = 0.02,
         ff_lift_m: float = 0.02,
