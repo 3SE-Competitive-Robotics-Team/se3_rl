@@ -421,15 +421,25 @@ def commands_vel_adaptive(
     log = getattr(env, "extras", {}).get("log", {})
     tracking_lin_vel = log.get("Locomotion/tracking_lin_vel_reward_all", None)
 
+    # advance 判定必须和 EMA 刷新绑在一起，不能每次 compute() 调用都判一次。
+    # commands_vel_adaptive 由 _reset_idx 触发，2048 个并行 env 几乎每个
+    # global step 都有到期重置，也就几乎每 step 都会调用一次本函数；但
+    # tracking_lin_vel 只在 _should_log_step 命中时（默认每 64 step 一次）
+    # 才会刷新。如果 advance 判定不绑定"这次是不是刚刷新",同一个未变化的
+    # ema 会在刷新间隔内的每一次 reset 调用上都重新判一次"> threshold",
+    # 在一个 64-step 窗口内连续触发几十次 +lin_vel_x_step,一步顶原设计的
+    # 十几步（2026-07 复测复现：iteration 21 单窗口内从 0 直接跳到 2.18,
+    # 下一次刷新就顶到 max_lin_vel_x=2.4,和 commit message 里"小步丝滑
+    # 推进,约需 10 步"的设计意图完全不符,课程等于形同虚设）。
     if tracking_lin_vel is not None:
         ema = (1.0 - ema_alpha) * ema + ema_alpha * float(tracking_lin_vel)
         setattr(env, _VEL_ADAPTIVE_EMA_ATTR, ema)
 
-    if ema > float(advance_threshold):
-        lin_x_max = min(lin_x_max + float(lin_vel_x_step), float(max_lin_vel_x))
-        yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
-        setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, lin_x_max)
-        setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, yaw_max)
+        if ema > float(advance_threshold):
+            lin_x_max = min(lin_x_max + float(lin_vel_x_step), float(max_lin_vel_x))
+            yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
+            setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, lin_x_max)
+            setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, yaw_max)
 
     cfg.lin_vel_x_range = (-lin_x_max, lin_x_max)
     cfg.ang_vel_yaw_range = (-yaw_max, yaw_max)
