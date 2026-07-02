@@ -21,6 +21,18 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_STANDING_HEIGHT = SharedRobotConfig().default_base_height
+DEFAULT_LEVEL_AWARE_HEIGHT_FLOORS: tuple[tuple[int, int, float], ...] = (
+    (0, 0, 0.195),
+    (1, 1, 0.195),
+    (2, 2, 0.195),
+    (3, 3, 0.210),
+    (4, 4, 0.2266666667),
+    (5, 5, 0.2433333333),
+    (6, 6, 0.260),
+    (7, 7, 0.2766666667),
+    (8, 8, 0.2933333333),
+    (9, 9, 0.310),
+)
 
 
 def stair_terrain_levels(
@@ -363,6 +375,72 @@ def stair_terrain_levels(
     }
 
 
+def stair_level_aware_command_height_floor(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | slice | None,
+    command_name: str,
+    level_height_floors: tuple[tuple[int, int, float], ...] = DEFAULT_LEVEL_AWARE_HEIGHT_FLOORS,
+    step_height_range: tuple[float, float] = (0.05, 0.20),
+    terrain_type_names: tuple[str, ...] = ("forward_stairs",),
+    enable_terrain_aware_height: bool = True,
+) -> dict[str, torch.Tensor]:
+    """把按台阶等级定义的高度下限写入 command 配置。
+
+    command 生成器按台阶高度阈值做 clamp；这里保留按 level 编写课程的方式，
+    再根据当前地形行数把每组起始 level 转成等价的台阶高度阈值。
+    """
+    term = env.command_manager.get_term(command_name)
+    cfg = term.cfg
+    if hasattr(cfg, "terrain_aware_height"):
+        cfg.terrain_aware_height = bool(enable_terrain_aware_height)
+    if hasattr(cfg, "terrain_step_height_type_names"):
+        cfg.terrain_step_height_type_names = tuple(str(name) for name in terrain_type_names)
+
+    terrain = env.scene.terrain
+    num_rows = _terrain_num_rows(terrain)
+    clamps = level_height_floor_clamps(
+        level_height_floors=level_height_floors,
+        num_rows=num_rows,
+        step_height_range=step_height_range,
+    )
+    if hasattr(cfg, "terrain_step_height_min_clamps"):
+        cfg.terrain_step_height_min_clamps = clamps
+
+    ids = _env_ids_tensor(env, env_ids)
+    active_floor = _level_height_floors_for_envs(
+        env,
+        ids,
+        level_height_floors=level_height_floors,
+        terrain_type_names=terrain_type_names,
+    )
+    active = active_floor > 0.0
+    zero = torch.tensor(0.0, device=env.device)
+    return {
+        "height_floor_min": torch.min(active_floor[active]) if torch.any(active) else zero,
+        "height_floor_max": torch.max(active_floor[active]) if torch.any(active) else zero,
+        "height_floor_mean": _masked_mean(active_floor, active),
+        "height_floor_active_rate": active.float().mean() if active.numel() > 0 else zero,
+        "height_floor_clamp_count": torch.tensor(float(len(clamps)), device=env.device),
+    }
+
+
+def level_height_floor_clamps(
+    level_height_floors: tuple[tuple[int, int, float], ...] = DEFAULT_LEVEL_AWARE_HEIGHT_FLOORS,
+    num_rows: int = 10,
+    step_height_range: tuple[float, float] = (0.05, 0.20),
+) -> tuple[tuple[float, float], ...]:
+    """把 level 高度下限分组转成 command 使用的台阶高度阈值。"""
+    clamps: list[tuple[float, float]] = []
+    for level_min, _level_max, height_floor in level_height_floors:
+        threshold = _step_height_for_level_index(
+            int(level_min),
+            num_rows=num_rows,
+            step_height_range=step_height_range,
+        )
+        clamps.append((threshold, float(height_floor)))
+    return tuple(sorted(clamps, key=lambda item: item[0]))
+
+
 def _set_walking_phase_terrain(
     env: ManagerBasedRlEnv,
     terrain,
@@ -425,6 +503,48 @@ def _step_height_for_levels(
     min_height, max_height = (float(step_height_range[0]), float(step_height_range[1]))
     alpha = torch.clamp(levels, min=0.0, max=float(num_rows)) / float(num_rows)
     return min_height + alpha * (max_height - min_height)
+
+
+def _step_height_for_level_index(
+    level: int,
+    *,
+    num_rows: int,
+    step_height_range: tuple[float, float],
+) -> float:
+    row_max = max(1, int(num_rows) - 1)
+    clamped_level = min(max(0, int(level)), row_max)
+    min_height, max_height = (float(step_height_range[0]), float(step_height_range[1]))
+    alpha = float(clamped_level) / float(row_max)
+    return min_height + alpha * (max_height - min_height)
+
+
+def _terrain_num_rows(terrain) -> int:
+    generator_cfg = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    return max(1, int(getattr(generator_cfg, "num_rows", 10)))
+
+
+def _level_height_floors_for_envs(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    *,
+    level_height_floors: tuple[tuple[int, int, float], ...],
+    terrain_type_names: tuple[str, ...],
+) -> torch.Tensor:
+    terrain = env.scene.terrain
+    if terrain is None or not isinstance(getattr(terrain, "terrain_levels", None), torch.Tensor):
+        return torch.zeros(env_ids.shape, device=env.device)
+
+    levels = terrain.terrain_levels[env_ids].long()
+    active_mask = _terrain_type_mask(terrain, env_ids, terrain_type_names, env.device)
+    floors = torch.zeros(env_ids.shape, device=env.device)
+    for level_min, level_max, height_floor in level_height_floors:
+        level_mask = (levels >= int(level_min)) & (levels <= int(level_max))
+        floors = torch.where(
+            active_mask & level_mask,
+            torch.full_like(floors, float(height_floor)),
+            floors,
+        )
+    return floors
 
 
 def _set_env_levels(
@@ -530,8 +650,11 @@ def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
 
 
 __all__ = [
+    "DEFAULT_LEVEL_AWARE_HEIGHT_FLOORS",
     "commands_height",
     "commands_vel",
+    "level_height_floor_clamps",
     "push_disturbance",
+    "stair_level_aware_command_height_floor",
     "stair_terrain_levels",
 ]

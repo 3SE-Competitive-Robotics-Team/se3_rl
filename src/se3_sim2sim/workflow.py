@@ -184,6 +184,7 @@ class Sim2SimWorkflow:
         if sched.enabled:
             _interval_steps_remaining = max(1, round(sched.interval_s / control_dt))
         _jump_active = self.robot.command[5] > 0.5  # 当前是否处于跳跃意图激活状态
+        stair_hold_active = False
 
         # --- 历程初始化 ---
         if self._course is not None and self.cfg.course.mode == CourseType.JUMP_SWEEP:
@@ -505,6 +506,9 @@ class Sim2SimWorkflow:
                         _rc_output_enabled = not _rc_output_enabled
                         rc_switch_event = 1.0
                     obs = self.robot.observation()
+                if stair_hold_active:
+                    self.robot.command[0] = float(self.cfg.stair_hold_vx)
+                    obs = self.robot.observation()
 
                 gru_hidden_reset = 0.0
                 gru_hidden_norm_before = None
@@ -601,7 +605,20 @@ class Sim2SimWorkflow:
                     "step": float(step),
                     "time": float(info["time"]),
                     "height": float(info["height"]),
+                    "base_x": float(info.get("base_x", 0.0)),
+                    "base_y": float(info.get("base_y", 0.0)),
                     "reset_floor_lift_m": float(info.get("reset_floor_lift_m", 0.0)),
+                    "wheel_x_left": float(info.get("wheel_x_left", 0.0)),
+                    "wheel_x_right": float(info.get("wheel_x_right", 0.0)),
+                    "wheel_z_left": float(info.get("wheel_z_left", 0.0)),
+                    "wheel_z_right": float(info.get("wheel_z_right", 0.0)),
+                    "wheel_bottom_z_left": float(info.get("wheel_bottom_z_left", 0.0)),
+                    "wheel_bottom_z_right": float(info.get("wheel_bottom_z_right", 0.0)),
+                    "stair_step_height_m": float(info.get("stair_step_height_m", 0.0)),
+                    "stair_step_depth_m": float(info.get("stair_step_depth_m", 0.0)),
+                    "stair_start_x_m": float(info.get("stair_start_x_m", 0.0)),
+                    "stair_step_count": float(info.get("stair_step_count", 0.0)),
+                    "stair_half_width_m": float(info.get("stair_half_width_m", 0.0)),
                     "wheel_clearance": float(info.get("wheel_clearance", 0.0)),
                     "wheel_clearance_left": float(info.get("wheel_clearance_left", 0.0)),
                     "wheel_clearance_right": float(info.get("wheel_clearance_right", 0.0)),
@@ -614,6 +631,10 @@ class Sim2SimWorkflow:
                     "wheel_full_contact": float(info.get("wheel_full_contact", 0.0)),
                     "wheel_contact_left": float(info.get("wheel_contact_left", 0.0)),
                     "wheel_contact_right": float(info.get("wheel_contact_right", 0.0)),
+                    "wheel_stair_contact_left": float(info.get("wheel_stair_contact_left", 0.0)),
+                    "wheel_stair_contact_right": float(info.get("wheel_stair_contact_right", 0.0)),
+                    "wheel_floor_contact_left": float(info.get("wheel_floor_contact_left", 0.0)),
+                    "wheel_floor_contact_right": float(info.get("wheel_floor_contact_right", 0.0)),
                     "leg_contact": float(info.get("leg_contact", 0.0)),
                     "leg_contact_left": float(info.get("leg_contact_left", 0.0)),
                     "leg_contact_right": float(info.get("leg_contact_right", 0.0)),
@@ -638,6 +659,14 @@ class Sim2SimWorkflow:
                     "applied_action_delta_l2": float(np.linalg.norm(applied_action_delta)),
                     "applied_action_delta_max_abs": float(np.max(np.abs(applied_action_delta))),
                     "applied_action_delta_sq_sum": float(np.sum(np.square(applied_action_delta))),
+                    "ctbc_trigger": float(info.get("ctbc_trigger", 0.0)),
+                    "ctbc_left_active": float(info.get("ctbc_left_active", 0.0)),
+                    "ctbc_right_active": float(info.get("ctbc_right_active", 0.0)),
+                    "ctbc_phase_left": float(info.get("ctbc_phase_left", 0.0)),
+                    "ctbc_phase_right": float(info.get("ctbc_phase_right", 0.0)),
+                    "ctbc_contact_left": float(info.get("ctbc_contact_left", 0.0)),
+                    "ctbc_contact_right": float(info.get("ctbc_contact_right", 0.0)),
+                    "ctbc_complete_ff_cycles": float(info.get("ctbc_complete_ff_cycles", 0.0)),
                     "action_delay_steps": float(info["action_delay_steps"]),
                     "action_delay_s": float(info["action_delay_s"]),
                     "rc_switch_r": float(info.get("rc_switch_r", 1.0)),
@@ -654,6 +683,7 @@ class Sim2SimWorkflow:
                     "rc_off_mode_no_torque": 1.0
                     if str(info.get("rc_off_mode", "hold-current")) == "no-torque"
                     else 0.0,
+                    "stair_hold_active": 1.0 if stair_hold_active else 0.0,
                     "closed_chain_reset_position_residual_m": float(
                         info.get("closed_chain_reset_position_residual_m", 0.0)
                     ),
@@ -663,6 +693,10 @@ class Sim2SimWorkflow:
                 }
                 if collect_samples:
                     samples.append(sample)
+                if self.cfg.stair_hold_on_support and not stair_hold_active:
+                    support_step = self._stair_support_step(info)
+                    if support_step >= int(self.cfg.stair_hold_min_step):
+                        stair_hold_active = True
                 if self.viewer is not None and step % max(1, int(self.cfg.viewer.log_every)) == 0:
                     viewer_step = max(0, step - viewer_step_offset)
                     self.viewer.log_state(
@@ -1195,6 +1229,43 @@ class Sim2SimWorkflow:
             "finite": bool(np.isfinite(arr).all()),
             "terms": terms,
         }
+
+    @staticmethod
+    def _stair_support_step(info: dict[str, object]) -> int:
+        """返回当前左右轮共同支撑的台阶级数，未共同支撑时返回 0。"""
+        step_height = float(info.get("stair_step_height_m", 0.0))
+        step_depth = float(info.get("stair_step_depth_m", 0.0))
+        start_x = float(info.get("stair_start_x_m", 0.0))
+        step_count = round(float(info.get("stair_step_count", 0.0)))
+        if step_height <= 0.0 or step_depth <= 0.0 or step_count <= 0:
+            return 0
+        if float(info.get("wheel_stair_contact_left", 0.0)) <= 0.5:
+            return 0
+        if float(info.get("wheel_stair_contact_right", 0.0)) <= 0.5:
+            return 0
+
+        left_step = int(
+            np.clip(
+                np.floor((float(info.get("wheel_x_left", 0.0)) - start_x) / step_depth) + 1,
+                0,
+                step_count,
+            )
+        )
+        right_step = int(
+            np.clip(
+                np.floor((float(info.get("wheel_x_right", 0.0)) - start_x) / step_depth) + 1,
+                0,
+                step_count,
+            )
+        )
+        if left_step <= 0 or left_step != right_step:
+            return 0
+        z_tol = max(0.035, 0.35 * step_height)
+        left_err = abs(float(info.get("wheel_bottom_z_left", 0.0)) - left_step * step_height)
+        right_err = abs(float(info.get("wheel_bottom_z_right", 0.0)) - right_step * step_height)
+        if left_err > z_tol or right_err > z_tol:
+            return 0
+        return left_step
 
     @staticmethod
     def _fmt(values: object) -> str:

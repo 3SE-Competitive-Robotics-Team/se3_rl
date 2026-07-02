@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import torch
 
+from se3_train.mdp import events as mdp_events
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.tasks.flat.events import *  # noqa: F403
 from se3_train.tasks.stair.state import StairClimbState
@@ -17,6 +21,7 @@ from se3_train.tasks.stair.terrain_curriculum import (
 _TASK_MODE_STAIR = 0
 _TASK_MODE_RECOVERY = 1
 _TASK_MODE_FLAT = 2
+_TASK_MODE_SHARED = _TASK_MODE_RECOVERY
 
 
 def _ensure_long_buffer(env, name: str) -> torch.Tensor:
@@ -102,7 +107,26 @@ def _normalized_task_mode_probs(
     recovery_prob: float,
     flat_prob: float,
     device: torch.device,
+    *,
+    merge_shared: bool = False,
 ) -> torch.Tensor:
+    if merge_shared:
+        shared_prob = max(float(recovery_prob), 0.0) + max(float(flat_prob), 0.0)
+        probs = torch.tensor(
+            [
+                max(float(stair_prob), 0.0),
+                shared_prob,
+                0.0,
+            ],
+            device=device,
+            dtype=torch.float32,
+        )
+        total = float(probs.sum().item())
+        if total <= 1.0e-6:
+            probs[0] = 1.0
+            return probs
+        return probs / total
+
     probs = torch.tensor(
         [
             max(float(stair_prob), 0.0),
@@ -185,6 +209,28 @@ def _sample_balanced_task_modes(
     return local_mode[torch.randperm(num_new, device=env.device)]
 
 
+def _sync_shared_mode_masks(env, env_ids: torch.Tensor, local_mode: torch.Tensor) -> None:
+    shared = local_mode == _TASK_MODE_SHARED
+    recovery_mask = _ensure_bool_buffer(env, "_stair_recovery_mode_mask")
+    shared_mask = _ensure_bool_buffer(env, "_stair_shared_mode_mask")
+    flat_zero_mask = _ensure_bool_buffer(env, "_stair_flat_zero_command_mask")
+    recovery_mask[env_ids] = shared
+    shared_mask[env_ids] = shared
+    flat_zero_mask[env_ids] = False
+
+    recovery_active = _ensure_bool_buffer(env, "_recovery_reset_mask")
+    recovery_episode = _ensure_bool_buffer(env, "_recovery_episode_mask")
+    recovery_active[env_ids] = shared
+    recovery_episode[env_ids] = shared
+
+
+def _shared_mode_ids(env, env_ids: torch.Tensor, task_mode: torch.Tensor) -> torch.Tensor:
+    shared_mask = getattr(env, "_stair_shared_mode_mask", None)
+    if isinstance(shared_mask, torch.Tensor) and shared_mask.shape[0] == env.num_envs:
+        return env_ids[shared_mask[env_ids].to(device=env.device, dtype=torch.bool)]
+    return env_ids[task_mode[env_ids] == _TASK_MODE_SHARED]
+
+
 def _apply_command_ranges(
     env,
     env_ids: torch.Tensor,
@@ -230,28 +276,30 @@ def sample_stair_task_mode(
     """reset 前采样 stair/recovery rehearsal mode，并同步地形 origin。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-    probs = _normalized_task_mode_probs(stair_prob, recovery_prob, flat_prob, env.device)
+    probs = _normalized_task_mode_probs(
+        stair_prob,
+        recovery_prob,
+        flat_prob,
+        env.device,
+        merge_shared=True,
+    )
     task_mode = _ensure_long_buffer(env, "_stair_task_mode")
     if balance_occupancy:
         local_mode = _sample_balanced_task_modes(env, env_ids, task_mode, probs)
     else:
         stair_p = float(probs[0].item())
-        recovery_p = float(probs[1].item())
         r = torch.rand(env_ids.numel(), device=env.device)
         local_mode = torch.full(
             (env_ids.numel(),), _TASK_MODE_STAIR, device=env.device, dtype=torch.long
         )
-        local_mode[(r >= stair_p) & (r < stair_p + recovery_p)] = _TASK_MODE_RECOVERY
-        local_mode[r >= stair_p + recovery_p] = _TASK_MODE_FLAT
+        local_mode[r >= stair_p] = _TASK_MODE_SHARED
 
-    recovery_mask = _ensure_bool_buffer(env, "_stair_recovery_mode_mask")
     task_mode[env_ids] = local_mode
-    recovery_mask[env_ids] = local_mode == _TASK_MODE_RECOVERY
+    _sync_shared_mode_masks(env, env_ids, local_mode)
 
     iteration = _active_iteration(env, steps_per_policy_iter)
     stair_ids = env_ids[local_mode == _TASK_MODE_STAIR]
-    recovery_ids = env_ids[local_mode == _TASK_MODE_RECOVERY]
-    flat_ids = env_ids[local_mode == _TASK_MODE_FLAT]
+    shared_ids = env_ids[local_mode == _TASK_MODE_SHARED]
     if stair_ids.numel() > 0:
         terrain_levels, _ = sample_levels(
             env,
@@ -263,8 +311,88 @@ def sample_stair_task_mode(
             bucket_weight_stages=bucket_weight_stages,
         )
         _set_terrain_levels(env, stair_ids, stair_terrain_type_name, terrain_levels)
-    _set_terrain(env, recovery_ids, recovery_terrain_type_name, 0)
-    _set_terrain(env, flat_ids, flat_terrain_type_name, 0)
+    _set_terrain(env, shared_ids, recovery_terrain_type_name, 0)
+
+
+def _active_stage(
+    iteration: int,
+    stages: tuple[dict, ...] | list[dict] | None,
+) -> dict:
+    active: dict = {}
+    for stage in sorted(tuple(stages or ()), key=lambda item: int(item.get("iteration", 0))):
+        if iteration >= int(stage.get("iteration", 0)):
+            active = stage
+        else:
+            break
+    return active
+
+
+def sample_stair_shared_task_mode(
+    env,
+    env_ids: torch.Tensor | None,
+    stair_prob: float = 0.85,
+    shared_prob: float = 0.15,
+    mixture_stages: tuple[dict, ...] | list[dict] | None = None,
+    stair_terrain_type_name: str = "forward_stairs",
+    shared_terrain_type_name: str = "flat",
+    max_level_stages: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_MAX_STAGES,
+    level_buckets: tuple[tuple[int, int], ...] = DEFAULT_LEVEL_BUCKETS,
+    bucket_weight_stages: tuple[
+        tuple[int, tuple[float, ...]],
+        ...,
+    ] = DEFAULT_BUCKET_WEIGHT_STAGES,
+    steps_per_policy_iter: int = 64,
+    balance_occupancy: bool = True,
+) -> None:
+    """采样台阶和 shared rehearsal 模式，并把环境放到对应地形。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    iteration = _active_iteration(env, steps_per_policy_iter)
+    stage = _active_stage(iteration, mixture_stages)
+    stair_prob = float(stage.get("stair_prob", stair_prob))
+    shared_prob = float(stage.get("shared_prob", shared_prob))
+
+    probs = _normalized_task_mode_probs(
+        stair_prob,
+        shared_prob,
+        0.0,
+        env.device,
+        merge_shared=True,
+    )
+    task_mode = _ensure_long_buffer(env, "_stair_task_mode")
+    if balance_occupancy:
+        local_mode = _sample_balanced_task_modes(env, env_ids, task_mode, probs)
+    else:
+        stair_p = float(probs[0].item())
+        local_mode = torch.full(
+            (env_ids.numel(),), _TASK_MODE_STAIR, device=env.device, dtype=torch.long
+        )
+        local_mode[torch.rand(env_ids.numel(), device=env.device) >= stair_p] = _TASK_MODE_SHARED
+
+    task_mode[env_ids] = local_mode
+    _sync_shared_mode_masks(env, env_ids, local_mode)
+
+    shared_mask = local_mode == _TASK_MODE_SHARED
+    stair_ids = env_ids[local_mode == _TASK_MODE_STAIR]
+    shared_ids = env_ids[shared_mask]
+    if stair_ids.numel() > 0:
+        terrain_levels, _ = sample_levels(
+            env,
+            env.scene.terrain,
+            stair_ids.numel(),
+            iteration,
+            max_level_stages=max_level_stages,
+            level_buckets=level_buckets,
+            bucket_weight_stages=bucket_weight_stages,
+        )
+        _set_terrain_levels(env, stair_ids, stair_terrain_type_name, terrain_levels)
+    _set_terrain(env, shared_ids, shared_terrain_type_name, 0)
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log["Stair/task_mode_stair_target"] = float(probs[0].item())
+        log["Stair/task_mode_shared_target"] = float(probs[1].item())
+        log["Stair/task_mode_shared_rate"] = float(shared_mask.float().mean().item())
 
 
 def apply_stair_task_mode_commands(
@@ -278,6 +406,9 @@ def apply_stair_task_mode_commands(
     flat_ang_vel_yaw_range: tuple[float, float] = (-1.5, 1.5),
     flat_height_range: tuple[float, float] = (0.20, 0.32),
     flat_zero_command_prob: float = 0.30,
+    shared_lin_vel_x_range: tuple[float, float] | None = None,
+    shared_ang_vel_yaw_range: tuple[float, float] | None = None,
+    shared_height_range: tuple[float, float] | None = None,
 ) -> None:
     """reset 后按 recovery mode 重采样倒地自起指令。"""
     if env_ids is None:
@@ -285,15 +416,15 @@ def apply_stair_task_mode_commands(
     task_mode = _ensure_long_buffer(env, "_stair_task_mode")
     flat_zero_mask = _ensure_bool_buffer(env, "_stair_flat_zero_command_mask")
     flat_zero_mask[env_ids] = False
-    recovery_ids = env_ids[task_mode[env_ids] == _TASK_MODE_RECOVERY]
+    shared_ids = _shared_mode_ids(env, env_ids, task_mode)
     flat_ids = env_ids[task_mode[env_ids] == _TASK_MODE_FLAT]
     _apply_command_ranges(
         env,
-        recovery_ids,
+        shared_ids,
         command_name,
-        recovery_lin_vel_x_range,
-        recovery_ang_vel_yaw_range,
-        recovery_height_range,
+        shared_lin_vel_x_range or recovery_lin_vel_x_range,
+        shared_ang_vel_yaw_range or recovery_ang_vel_yaw_range,
+        shared_height_range or recovery_height_range,
     )
     _apply_command_ranges(
         env,
@@ -308,6 +439,26 @@ def apply_stair_task_mode_commands(
         zero_ids = flat_ids[torch.rand(flat_ids.numel(), device=env.device) < zero_prob]
         flat_zero_mask[zero_ids] = True
         _apply_flat_zero_commands(env, zero_ids, command_name)
+
+
+def apply_stair_shared_rehearsal_commands(
+    env,
+    env_ids: torch.Tensor | None,
+    command_name: str = "velocity_height",
+    lin_vel_x_range: tuple[float, float] = (-1.89, 1.89),
+    ang_vel_yaw_range: tuple[float, float] = (-9.41, 9.41),
+    height_range: tuple[float, float] = (0.195, 0.390),
+) -> None:
+    """给 shared rehearsal 环境写入 recovery-discovery 最难指令范围。"""
+    apply_stair_task_mode_commands(
+        env,
+        env_ids,
+        command_name=command_name,
+        shared_lin_vel_x_range=lin_vel_x_range,
+        shared_ang_vel_yaw_range=ang_vel_yaw_range,
+        shared_height_range=height_range,
+        flat_zero_command_prob=0.0,
+    )
 
 
 def _clamp_command_ranges(
@@ -374,6 +525,9 @@ def enforce_recovery_active_commands(
     flat_ang_vel_yaw_range: tuple[float, float] = (-1.5, 1.5),
     flat_height_range: tuple[float, float] = (0.20, 0.32),
     flat_zero_command_prob: float = 0.30,
+    shared_lin_vel_x_range: tuple[float, float] | None = None,
+    shared_ang_vel_yaw_range: tuple[float, float] | None = None,
+    shared_height_range: tuple[float, float] | None = None,
 ) -> None:
     """每步把 recovery active 指令限制在 recovery discovery 后期课程范围内。"""
     del env_ids, flat_zero_command_prob
@@ -383,9 +537,9 @@ def enforce_recovery_active_commands(
             env,
             active.to(device=env.device, dtype=torch.bool).nonzero().flatten(),
             command_name,
-            recovery_lin_vel_x_range,
-            recovery_ang_vel_yaw_range,
-            recovery_height_range,
+            shared_lin_vel_x_range or recovery_lin_vel_x_range,
+            shared_ang_vel_yaw_range or recovery_ang_vel_yaw_range,
+            shared_height_range or recovery_height_range,
         )
 
     task_mode = getattr(env, "_stair_task_mode", None)
@@ -409,23 +563,146 @@ def enforce_recovery_active_commands(
             _apply_flat_zero_commands(env, zero_ids, command_name)
 
 
+def enforce_shared_rehearsal_commands(
+    env,
+    env_ids: torch.Tensor | None,
+    command_name: str = "velocity_height",
+    lin_vel_x_range: tuple[float, float] = (-1.89, 1.89),
+    ang_vel_yaw_range: tuple[float, float] = (-9.41, 9.41),
+    height_range: tuple[float, float] = (0.195, 0.390),
+) -> None:
+    """把 shared rehearsal 指令持续夹到 recovery-discovery 最难范围。"""
+    enforce_recovery_active_commands(
+        env,
+        env_ids,
+        command_name=command_name,
+        shared_lin_vel_x_range=lin_vel_x_range,
+        shared_ang_vel_yaw_range=ang_vel_yaw_range,
+        shared_height_range=height_range,
+        flat_zero_command_prob=0.0,
+    )
+
+
+def reset_root_state_stair_shared(
+    env,
+    env_ids: torch.Tensor | None,
+    asset_cfg,
+    shared_state_cache_path: str | None,
+    shared_state_cache_split: str = "train",
+    shared_recovery_grace_steps: int = 400,
+    steps_per_policy_iter: int = 64,
+) -> None:
+    """台阶环境按直立状态 reset，shared 环境按 recovery-discovery 最难采样 reset。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    task_mode = _ensure_long_buffer(env, "_stair_task_mode")
+    shared = task_mode[env_ids].to(device=env.device, dtype=torch.long) == _TASK_MODE_SHARED
+    stair_ids = env_ids[~shared]
+    shared_ids = env_ids[shared]
+
+    if stair_ids.numel() > 0:
+        mdp_events.reset_root_state_full(
+            env,
+            stair_ids,
+            asset_cfg=asset_cfg,
+            recovery_prob=0.0,
+            recovery_grace_steps=shared_recovery_grace_steps,
+            recovery_command_height=None,
+            recovery_zero_velocity_command=False,
+        )
+    if shared_ids.numel() > 0:
+        mdp_events.reset_root_state_recovery_discovery_mixed(
+            env,
+            shared_ids,
+            asset_cfg=asset_cfg,
+            pos_xy_range=(-0.15, 0.15),
+            height_offset_range=(0.0, 0.02),
+            yaw_range=(-math.pi, math.pi),
+            roll_jitter_range=(-math.radians(5.0), math.radians(5.0)),
+            pitch_jitter_range=(-math.radians(5.0), math.radians(5.0)),
+            lin_vel_range=(0.0, 0.0),
+            ang_vel_range=(0.0, 0.0),
+            clearance_range=(0.001, 0.005),
+            pose_weights=(0.08, 0.17, 0.17, 0.29, 0.29),
+            recovery_command_height=None,
+            recovery_state_cache_path=shared_state_cache_path,
+            recovery_state_cache_split=shared_state_cache_split,
+            recovery_grace_steps=shared_recovery_grace_steps,
+            standard_recovery_zero_velocity_command=False,
+            source_curriculum_stages=[
+                {
+                    "iteration": 0,
+                    "cache_ratio": 0.70,
+                    "near_upright_ratio": 0.05,
+                }
+            ],
+            standard_curriculum_stages=[
+                {
+                    "iteration": 0,
+                    "roll_jitter_range": (-math.radians(20.0), math.radians(20.0)),
+                    "pitch_jitter_range": (-math.radians(20.0), math.radians(20.0)),
+                    "lin_vel_range": (-0.08, 0.08),
+                    "ang_vel_range": (-0.30, 0.30),
+                }
+            ],
+            use_iterations=True,
+            steps_per_policy_iter=steps_per_policy_iter,
+        )
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        total = max(1, int(env_ids.numel()))
+        log["Reset/stair_shared_reset_rate"] = float(shared_ids.numel()) / float(total)
+
+
+def reset_joints_stair_shared(
+    env,
+    env_ids: torch.Tensor | None,
+    asset_cfg,
+    shared_joint_offset_range: float = 0.25,
+    shared_joint_vel_range: tuple[float, float] = (-0.50, 0.50),
+    shared_joint_randomization_prob: float = 0.75,
+    **kwargs,
+) -> None:
+    """台阶模式使用默认关节，shared 模式使用 discovery 最难关节随机。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    task_mode = _ensure_long_buffer(env, "_stair_task_mode")
+    shared = task_mode[env_ids].to(device=env.device, dtype=torch.long) == _TASK_MODE_SHARED
+    stair_ids = env_ids[~shared]
+    shared_ids = env_ids[shared]
+    if stair_ids.numel() > 0:
+        mdp_events.reset_joints(env, stair_ids, asset_cfg=asset_cfg, **kwargs)
+    if shared_ids.numel() > 0:
+        shared_kwargs = dict(kwargs)
+        shared_kwargs.update(
+            {
+                "joint_offset_range": float(shared_joint_offset_range),
+                "joint_vel_range": shared_joint_vel_range,
+                "joint_randomization_prob": float(shared_joint_randomization_prob),
+            }
+        )
+        mdp_events.reset_joints(env, shared_ids, asset_cfg=asset_cfg, **shared_kwargs)
+
+
 def init_stair_climb_state(
     env,
     env_ids: torch.Tensor | None,
     contact_window: int = 3,
-    force_threshold_n: float = 30.0,
-    ff_amplitude_rad: float = 1.2,
-    ff_x_m: float = 0.025,
-    ff_lift_m: float = 0.085,
+    force_threshold_n: float = 10.0,
+    ff_amplitude_rad: float = 1.70,
+    ff_x_m: float = 0.02,
+    ff_lift_m: float = 0.02,
     ff_period_s: float = 0.6,
-    ff_rise_ratio: float = 0.25,
-    ff_hold_ratio: float = 0.45,
+    ff_rise_ratio: float = 0.35,
+    ff_hold_ratio: float = 0.0,
     ff_wheel_action: float = 0.0,
     ff_start_iter: int = 0,
     ann_start_iter: int = 900,
     ann_end_iter: int = 1800,
     phantom_trigger_iter: int = 0,
-    allow_bilateral_trigger: bool = True,
+    allow_bilateral_trigger: bool = False,
+    profile_path: Path | str | None = None,
 ) -> None:
     """startup 事件：在 env 上挂载 CTBC 状态机。"""
     del env_ids
@@ -450,6 +727,7 @@ def init_stair_climb_state(
         ann_end_iter=ann_end_iter,
         phantom_trigger_iter=phantom_trigger_iter,
         allow_bilateral_trigger=allow_bilateral_trigger,
+        profile_path=profile_path,
     )
 
 
@@ -564,10 +842,15 @@ def step_stair_climb_state(
 
 
 __all__ = [
+    "apply_stair_shared_rehearsal_commands",
     "apply_stair_task_mode_commands",
     "enforce_recovery_active_commands",
+    "enforce_shared_rehearsal_commands",
     "init_stair_climb_state",
+    "reset_joints_stair_shared",
+    "reset_root_state_stair_shared",
     "reset_stair_climb_state",
+    "sample_stair_shared_task_mode",
     "sample_stair_task_mode",
     "set_fixed_stair_terrain",
     "set_train_view_iteration",
