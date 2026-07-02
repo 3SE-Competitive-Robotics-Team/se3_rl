@@ -348,6 +348,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
         "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.48),
+        "action_smoothness": RewardTermCfg(
+            func=rewards.action_smoothness,
+            weight=-0.01,
+            params={"command_name": "velocity_height"},
+        ),
         "joint_mirror": RewardTermCfg(
             func=rewards.joint_mirror,
             weight=-0.179,
@@ -475,6 +480,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     if play:
         cfg.commands["velocity_height"].pitch_range = (0.0, 0.0)
         cfg.commands["velocity_height"].roll_range = (0.0, 0.0)
+        cfg.commands["velocity_height"].lin_vel_x_range = (-1.0, 1.0)
+        cfg.commands["velocity_height"].ang_vel_yaw_range = (0.0, 0.0)
         cfg.events = {
             "reset_scene_to_default": EventTermCfg(
                 func=lambda env, env_ids: None,
@@ -492,6 +499,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "asset_cfg": SceneEntityCfg("robot"),
                     "align_root_height_to_wheels": True,
                     "wheel_clearance": 0.001,
+                    "full_joint_randomization": True,
+                    "full_front_joint_offset_range": 1.57,  # ±90° hip 随机化
                 },
             ),
         }
@@ -514,6 +523,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "asset_cfg": SceneEntityCfg("robot"),
                     "align_root_height_to_wheels": True,
                     "wheel_clearance": 0.001,
+                    "full_joint_randomization": True,
+                    "full_front_joint_offset_range": 1.57,  # ±90° hip 随机化
                 },
             ),
             "friction": EventTermCfg(

@@ -5,7 +5,6 @@ from __future__ import annotations
 from mjlab.envs.mdp.rewards import is_alive
 
 from se3_train.mdp.jump_rewards import (
-    action_smoothness_no_jump,
     flat_base_lin_vel_z_no_jump,
     flat_wheel_center_alignment_no_jump,
     flat_wheel_contact_penalty_no_jump,
@@ -14,6 +13,7 @@ from se3_train.mdp.jump_rewards import (
 )
 from se3_train.mdp.rewards import (
     action_rate,
+    action_smoothness,
     ang_vel_xy,
     angular_momentum,
     bad_tilt,
@@ -41,7 +41,7 @@ from se3_train.mdp.rewards import (
 
 __all__ = [
     "action_rate",
-    "action_smoothness_no_jump",
+    "action_smoothness",
     "ang_vel_xy",
     "angular_momentum",
     "bad_tilt",

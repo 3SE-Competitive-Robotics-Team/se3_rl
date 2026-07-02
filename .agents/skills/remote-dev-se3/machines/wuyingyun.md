@@ -17,7 +17,7 @@
 | 主机名 | pntlgaolhyg69qw |
 | 仓库路径 | `~/project/se3_rl` |
 | uv 路径 | `~/.local/bin/uv`（需 `source ~/.local/bin/env` 激活） |
-| zellij | `~/.local/bin/zellij`（已安装） |
+| tmux | `/usr/bin/tmux`（3.2a，会话持久化） |
 | GitHub SSH key | `~/.ssh/github_wuyinyun`（ed25519，账号 `XiaoPengYouCode`） |
 
 ## 本机 SSH 配置
@@ -75,6 +75,36 @@ boring close wuyingyun-proxy
 ```
 
 切换网络后 boring 会自动重连，无需手动重建。
+
+## Git 同步
+
+GitHub SSH（走 Mihomo 7897）不稳定时常断连。优先用 HTTPS 代理（boring 隧道 17890 → 本机 tinyproxy 7890）拉取代码：
+
+```bash
+ssh wuyingyun "source ~/.local/bin/env && cd ~/project/se3_rl && \
+  export https_proxy=http://127.0.0.1:17890 && \
+  git -c url.'https://github.com/'.insteadOf='git@github.com:' fetch origin && \
+  git -c url.'https://github.com/'.insteadOf='git@github.com:' checkout <branch> && \
+  git -c url.'https://github.com/'.insteadOf='git@github.com:' pull --ff-only origin <branch>"
+```
+
+前提：本机 tinyproxy 必须在 7890 端口运行（`brew services start tinyproxy`），boring 隧道必须开启（`boring open wuyingyun-proxy`）。
+
+## tmux 会话管理
+
+```bash
+# 创建会话跑训练
+ssh wuyingyun "tmux new-session -d -s <session_name> 'source ~/.local/bin/env && cd ~/project/se3_rl && <command> 2>&1 | tee /tmp/<log>.log'"
+
+# 查看状态
+ssh wuyingyun "tmux has-session -t <session_name> && echo 'running'"
+
+# 附加到会话（查看输出）
+ssh -t wuyingyun "tmux attach -t <session_name>"
+
+# 杀掉会话=停止训练
+ssh wuyingyun "tmux kill-session -t <session_name>"
+```
 
 ## wuyingyun 特有的依赖问题
 
