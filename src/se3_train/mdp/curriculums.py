@@ -350,3 +350,69 @@ def _terrain_type_mask(
         if str(terrain_name) in selected:
             mask = mask | (env_terrain_types == terrain_index)
     return mask
+
+
+_VEL_ADAPTIVE_LIN_X_MAX_ATTR = "_vel_adaptive_lin_x_max"
+_VEL_ADAPTIVE_YAW_MAX_ATTR = "_vel_adaptive_yaw_max"
+_VEL_ADAPTIVE_EMA_ATTR = "_vel_adaptive_ema"
+
+
+def commands_vel_adaptive(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    *,
+    lin_vel_x_step: float = 0.2,
+    ang_vel_yaw_step: float = 1.0,
+    max_lin_vel_x: float = 2.4,
+    max_ang_vel_yaw: float = 12.0,
+    init_lin_vel_x: float = 0.0,
+    init_ang_vel_yaw: float = 0.0,
+    advance_threshold: float = 0.5,
+    ema_alpha: float = 0.05,
+) -> dict[str, torch.Tensor]:
+    """ETH 风格的自适应速度指令课程：用小步长丝滑推进速度范围。
+
+    从 vx=0（纯静站）起步，用 Locomotion/tracking_lin_vel_reward 的 EMA
+    评估策略是否适应了当前速度。EMA > advance_threshold 时小步扩大速度范围，
+    只扩不缩。
+
+    Locomotion/tracking_lin_vel_reward 是未乘权重的 exp 核均值，值域 (0, 1]。
+    当前 σ=0.08 时，threshold=0.5 约对应跟踪误差 0.24 m/s，
+    threshold=0.6 约对应 0.19 m/s。
+    """
+    del env_ids
+    term = env.command_manager.get_term(command_name)
+    cfg: VelocityHeightCommandCfg = term.cfg  # type: ignore[assignment]
+
+    if not hasattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR):
+        setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, float(init_lin_vel_x))
+        setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, float(init_ang_vel_yaw))
+        setattr(env, _VEL_ADAPTIVE_EMA_ATTR, 0.0)
+
+    lin_x_max = float(getattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR))
+    yaw_max = float(getattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR))
+    ema = float(getattr(env, _VEL_ADAPTIVE_EMA_ATTR))
+
+    # 从 step 级日志读取跟踪奖励（Episode_Reward 在 curriculum 之后才写入）
+    log = getattr(env, "extras", {}).get("log", {})
+    tracking_lin_vel = float(log.get("Locomotion/tracking_lin_vel_reward", 0.0))
+
+    ema = (1.0 - ema_alpha) * ema + ema_alpha * tracking_lin_vel
+    setattr(env, _VEL_ADAPTIVE_EMA_ATTR, ema)
+
+    if ema > float(advance_threshold):
+        lin_x_max = min(lin_x_max + float(lin_vel_x_step), float(max_lin_vel_x))
+        yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
+        setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, lin_x_max)
+        setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, yaw_max)
+
+    cfg.lin_vel_x_range = (-lin_x_max, lin_x_max)
+    cfg.ang_vel_yaw_range = (-yaw_max, yaw_max)
+
+    return {
+        "vel_lin_x_max": torch.tensor(lin_x_max),
+        "vel_yaw_max": torch.tensor(yaw_max),
+        "vel_ema": torch.tensor(ema),
+        "vel_tracking_lin_vel": torch.tensor(tracking_lin_vel),
+    }
