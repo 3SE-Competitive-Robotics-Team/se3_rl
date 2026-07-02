@@ -88,7 +88,7 @@ class _CtbcProfile:
                     point,
                     "leg_length_m",
                     ("length_m", "r_m", "radius_m"),
-                    default=0.18,
+                    default=0.24,
                 )
                 raw_swing = point.get("swing_angle_rad")
                 if raw_swing is None:
@@ -101,7 +101,7 @@ class _CtbcProfile:
                         point,
                         "swing_angle_deg",
                         ("theta_deg", "angle_deg"),
-                        default=-35.0,
+                        default=10.0,
                     )
                     swing_rad = math.radians(swing_deg)
                 else:

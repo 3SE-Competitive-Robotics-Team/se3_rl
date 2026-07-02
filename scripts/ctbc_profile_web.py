@@ -334,11 +334,11 @@ def _validate_profile(payload: object) -> dict[str, object]:
             "wheel_action": float(point.get("wheel_action", point.get("wheel_action_delta", 0.0))),
         }
         if coordinate_mode == "body_polar":
-            leg_length = float(point.get("leg_length_m", point.get("length_m", 0.18)))
+            leg_length = float(point.get("leg_length_m", point.get("length_m", 0.24)))
             swing_rad = point.get("swing_angle_rad", point.get("theta_rad"))
             if swing_rad is None:
                 swing_rad = math.radians(
-                    float(point.get("swing_angle_deg", point.get("theta_deg", -35.0)))
+                    float(point.get("swing_angle_deg", point.get("theta_deg", 10.0)))
                 )
             else:
                 swing_rad = float(swing_rad)
@@ -839,8 +839,8 @@ class CtbcProfileHandler(BaseHTTPRequestHandler):
         duration_s = float(payload.get("duration_s", payload.get("period_s", 0.60)))
         control_dt = float(payload.get("control_dt", 0.02))
         ff_amplitude_rad = float(payload.get("ff_amplitude_rad", 0.0))
-        leg_length_m = float(payload.get("leg_length_m", 0.18))
-        swing_angle_deg = float(payload.get("swing_angle_deg", -35.0))
+        leg_length_m = float(payload.get("leg_length_m", 0.24))
+        swing_angle_deg = float(payload.get("swing_angle_deg", 10.0))
         swing_angle_rad = float(payload.get("swing_angle_rad", math.radians(swing_angle_deg)))
         ff_wheel_action = float(payload.get("ff_wheel_action", 0.0))
         trigger_mode = str(payload.get("trigger_mode", DEFAULT_TRIGGER_MODE))

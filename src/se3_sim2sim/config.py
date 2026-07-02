@@ -231,9 +231,9 @@ class StairCtbcConfig(BaseModel):
     pitch_threshold_deg: Annotated[float, Field(ge=0.0)] = 6.0
     pitch_window: Annotated[int, Field(ge=1)] = 3
     ff_amplitude_rad: float = 0.0
-    leg_length_m: Annotated[float, Field(gt=0.0)] = 0.18
-    swing_angle_rad: float = math.radians(-35.0)
-    swing_angle_deg: float = -35.0
+    leg_length_m: Annotated[float, Field(gt=0.0)] = 0.24
+    swing_angle_rad: float = math.radians(10.0)
+    swing_angle_deg: float = 10.0
     body_x_m: float = 0.20
     body_z_m: float = 0.15
     ff_x_m: float = 0.20

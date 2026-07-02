@@ -48,11 +48,11 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="机体系腿部平面内的轮心抬升幅值；--ff-lift 保留为兼容 alias。",
     )
-    parser.add_argument("--leg-lengths", type=_parse_float_list, default=_parse_float_list("0.18"))
+    parser.add_argument("--leg-lengths", type=_parse_float_list, default=_parse_float_list("0.24"))
     parser.add_argument(
         "--swing-angles-deg",
         type=_parse_float_list,
-        default=_parse_float_list("-35.0"),
+        default=_parse_float_list("10.0"),
     )
     parser.add_argument("--ff-rise", type=_parse_float_list, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
