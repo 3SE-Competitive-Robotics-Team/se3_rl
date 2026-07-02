@@ -89,6 +89,9 @@ class RerunViewer:
 
     def _should_log_geom(self, model: mujoco.MjModel, geom_id: int) -> bool:
         """按 Rerun 显示模式筛选 MJCF 几何。"""
+        geom_name = self._geom_name(model, geom_id)
+        if geom_name.startswith("stair_terrain_step_"):
+            return True
         if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_PLANE):
             return True
         if self.geom_view == "both":

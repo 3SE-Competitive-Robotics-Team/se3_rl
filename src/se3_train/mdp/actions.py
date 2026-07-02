@@ -245,19 +245,35 @@ class SerialLegDelayedAction(ActionTerm):
         state = getattr(self._env, "stair_climb_state", None)
         if state is not None and state.kff != 0.0:
             recovery_active = getattr(self._env, "_recovery_reset_mask", None)
-            wheel_delta_fn = getattr(state, "ff_wheel_delta_xz", None)
-            if callable(wheel_delta_fn):
-                self._ctbc_wheel_delta_xz[:] = wheel_delta_fn()
-                action_delta = self._ctbc_wheel_delta_to_action_delta(
-                    self._raw_actions[:, :4],
-                    self._ctbc_wheel_delta_xz,
-                )
-            else:
+            bias_fn = getattr(state, "ff_bias", None)
+            if callable(bias_fn):
                 self._ctbc_output_bias[:] = state.ff_bias()
                 action_delta = self._ctbc_output_bias_to_action_delta(
                     self._raw_actions[:, :4],
                     self._ctbc_output_bias[:, :4],
                 )
+                wheel_delta_fn = getattr(state, "ff_wheel_delta_xz", None)
+                if callable(wheel_delta_fn):
+                    retreat_delta_xz = wheel_delta_fn().to(
+                        device=self.device,
+                        dtype=self._ctbc_wheel_delta_xz.dtype,
+                    )
+                    self._ctbc_wheel_delta_xz += retreat_delta_xz
+                    action_delta = self._ctbc_wheel_delta_to_action_delta(
+                        self._raw_actions[:, :4],
+                        self._ctbc_wheel_delta_xz,
+                    )
+            else:
+                wheel_delta_fn = getattr(state, "ff_wheel_delta_xz", None)
+                action_delta = None
+                if callable(wheel_delta_fn):
+                    self._ctbc_wheel_delta_xz[:] = wheel_delta_fn()
+                    action_delta = self._ctbc_wheel_delta_to_action_delta(
+                        self._raw_actions[:, :4],
+                        self._ctbc_wheel_delta_xz,
+                    )
+            if action_delta is None:
+                return
             if (
                 isinstance(recovery_active, torch.Tensor)
                 and recovery_active.shape[0] == self.num_envs

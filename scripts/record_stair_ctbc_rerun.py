@@ -58,7 +58,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--terrain-level", type=int, default=0)
     parser.add_argument("--command-vx", type=float, default=0.6)
     parser.add_argument("--command-yaw", type=float, default=0.0)
-    parser.add_argument("--command-height", type=float, default=0.32)
+    parser.add_argument("--command-height", type=float, default=0.39)
     parser.add_argument("--ff-x-m", type=float, default=None)
     parser.add_argument("--ff-lift-m", type=float, default=None)
     parser.add_argument("--ff-period-s", type=float, default=None)
@@ -254,7 +254,10 @@ def _configure_cfg(args: argparse.Namespace):
         }
         for name, value in overrides.items():
             if value is not None:
-                params[name] = int(value) if name == "contact_window" else float(value)
+                if name == "contact_window":
+                    params[name] = int(value)
+                else:
+                    params[name] = float(value)
 
         cfg.events["init_stair_climb_state"] = replace(term, params=params)
     return cfg
@@ -410,16 +413,21 @@ def _log_rgb_frame(rr, image: np.ndarray, *, jpeg_quality: int) -> None:
 
 
 def _log_static_stair(rr, terrain_origin: np.ndarray, step_height: float = 0.05) -> None:
+    step_depth = 0.80
+    half_width = 6.0
     for idx in range(6):
         height = step_height * float(idx + 1)
         center = [
-            float(terrain_origin[0]) + 1.0 + idx * 0.5 + 0.25,
+            float(terrain_origin[0]) + 1.0 + idx * step_depth + 0.5 * step_depth,
             float(terrain_origin[1]),
             float(terrain_origin[2]) + 0.5 * height,
         ]
         rr.log(
             f"/world/stair/positive_x_step_{idx}",
-            rr.Boxes3D(half_sizes=[0.25, 2.0, 0.5 * height], colors=[145, 145, 145, 120]),
+            rr.Boxes3D(
+                half_sizes=[0.5 * step_depth, half_width, 0.5 * height],
+                colors=[145, 145, 145, 120],
+            ),
             static=True,
         )
         rr.log(
@@ -563,6 +571,9 @@ def _log_rollout_sample(
     tilt_deg = float(
         torch.rad2deg(torch.acos(torch.clamp(-projected_gravity[2], -1.0, 1.0))).item()
     )
+    pitch_deg = float(
+        torch.rad2deg(torch.atan2(projected_gravity[0], -projected_gravity[2])).item()
+    )
     base_vx = _scalar(torch.nan_to_num(robot.data.root_link_lin_vel_b[env_id, 0]))
     cmd_vx = 0.0
     cmd_height = 0.0
@@ -612,6 +623,7 @@ def _log_rollout_sample(
     upper_supported_np = _finite_np(upper_supported.float()).reshape(2)
 
     _log_scalar(rr, "/plots/state/tilt_deg", tilt_deg)
+    _log_scalar(rr, "/plots/state/pitch_deg", pitch_deg)
     _log_scalar(rr, "/plots/state/cmd_vx_mps", cmd_vx)
     _log_scalar(rr, "/plots/state/base_vx_mps", base_vx)
     _log_scalar(rr, "/plots/state/cmd_height_m", cmd_height)
@@ -644,6 +656,7 @@ def _log_rollout_sample(
         "force_max_n": float(np.max(force)) if force.size else 0.0,
         "ctbc_delta_abs_max": float(np.max(np.abs(ctbc_delta[:4]))) if ctbc_delta.size else 0.0,
         "tilt_deg": tilt_deg,
+        "pitch_deg": pitch_deg,
         "cmd_vx_mps": cmd_vx,
         "base_vx_mps": base_vx,
         "cmd_height_m": cmd_height,

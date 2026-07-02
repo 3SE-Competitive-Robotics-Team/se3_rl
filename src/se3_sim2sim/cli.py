@@ -134,6 +134,7 @@ def _parse_rc_switch_script(value: str) -> tuple[RcSwitchEventConfig, ...]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SE3 MuJoCo sim2sim workflow")
+    run_defaults = RunConfig()
     robot_defaults = RobotConfig()
     delay_defaults = robot_defaults.action_delay
     yaw_defaults = robot_defaults.yaw_pid
@@ -166,6 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=range(10),
         help="台阶课程等级，0=5cm，9=20cm。",
     )
+    parser.add_argument("--stair-step-height", type=float, default=None)
+    parser.add_argument("--stair-half-width", type=float, default=robot_defaults.stair_half_width_m)
     parser.add_argument(
         "--stair-ctbc",
         action="store_true",
@@ -177,6 +180,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="固定 CTBC 退火迭代数；laptop watcher 应传入 checkpoint 轮数。",
     )
+    parser.add_argument("--stair-ctbc-contact-window", type=int, default=None)
+    parser.add_argument("--stair-ctbc-force-threshold-n", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-amplitude-rad", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-x-m", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-lift-m", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-period-s", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-rise-ratio", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-hold-ratio", type=float, default=None)
+    parser.add_argument("--stair-ctbc-ff-wheel-action", type=float, default=None)
+    parser.add_argument("--stair-ctbc-profile", type=Path, default=None)
+    parser.add_argument("--stair-ctbc-allow-bilateral-trigger", action="store_true")
     parser.add_argument(
         "--rough-terrain",
         action="store_true",
@@ -276,6 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--print-every", type=int, default=100)
     parser.add_argument("--print-debug", action="store_true")
     parser.add_argument("--json-output", type=Path, default=None)
+    parser.add_argument("--stair-hold-on-support", action="store_true")
+    parser.add_argument("--stair-hold-vx", type=float, default=run_defaults.stair_hold_vx)
+    parser.add_argument("--stair-hold-min-step", type=int, default=run_defaults.stair_hold_min_step)
     parser.add_argument("--random-reset", action="store_true")
     parser.add_argument("--randomize-root", action="store_true")
     parser.add_argument(
@@ -611,6 +628,29 @@ def _uses_recovery_action_contract(args: argparse.Namespace, checkpoint: Path | 
     return "recovery" in checkpoint.as_posix().lower()
 
 
+def _stair_ctbc_config_from_args(args: argparse.Namespace) -> StairCtbcConfig:
+    cfg = StairCtbcConfig(
+        enabled=bool(args.stair_ctbc),
+        fixed_iter=None if args.stair_ctbc_iter is None else max(0, int(args.stair_ctbc_iter)),
+    )
+    overrides = {
+        "contact_window": args.stair_ctbc_contact_window,
+        "force_threshold_n": args.stair_ctbc_force_threshold_n,
+        "ff_amplitude_rad": args.stair_ctbc_ff_amplitude_rad,
+        "ff_x_m": args.stair_ctbc_ff_x_m,
+        "ff_lift_m": args.stair_ctbc_ff_lift_m,
+        "ff_period_s": args.stair_ctbc_ff_period_s,
+        "ff_rise_ratio": args.stair_ctbc_ff_rise_ratio,
+        "ff_hold_ratio": args.stair_ctbc_ff_hold_ratio,
+        "ff_wheel_action": args.stair_ctbc_ff_wheel_action,
+        "profile_path": args.stair_ctbc_profile,
+        "allow_bilateral_trigger": (True if args.stair_ctbc_allow_bilateral_trigger else None),
+    }
+    return cfg.model_copy(
+        update={key: value for key, value in overrides.items() if value is not None}
+    )
+
+
 def config_from_args(args: argparse.Namespace) -> RunConfig:
     action_delay = ActionDelayConfig(
         enabled=not bool(args.no_action_delay),
@@ -688,6 +728,10 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     action_clip = (
         RECOVERY_ACTION_CLIP if use_recovery_action_contract else RobotConfig().action_clip
     )
+    stair_step_height_range = RobotConfig().stair_step_height_range
+    if args.stair_step_height is not None:
+        fixed_stair_height = float(args.stair_step_height)
+        stair_step_height_range = (fixed_stair_height, fixed_stair_height)
 
     return RunConfig(
         robot=RobotConfig(
@@ -696,12 +740,9 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             seed=int(args.seed),
             stair_terrain=bool(args.stair_terrain),
             stair_terrain_level=int(args.stair_terrain_level),
-            stair_ctbc=StairCtbcConfig(
-                enabled=bool(args.stair_ctbc),
-                fixed_iter=(
-                    None if args.stair_ctbc_iter is None else max(0, int(args.stair_ctbc_iter))
-                ),
-            ),
+            stair_step_height_range=stair_step_height_range,
+            stair_half_width_m=float(args.stair_half_width),
+            stair_ctbc=_stair_ctbc_config_from_args(args),
             rough_terrain=bool(args.rough_terrain),
             rough_terrain_type=str(args.rough_terrain_type),
             rough_terrain_origin_type=(
@@ -786,6 +827,9 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         print_debug=bool(args.print_debug),
         course=CourseConfig(mode=CourseType(args.course)),
         json_output=args.json_output,
+        stair_hold_on_support=bool(args.stair_hold_on_support),
+        stair_hold_vx=float(args.stair_hold_vx),
+        stair_hold_min_step=max(1, int(args.stair_hold_min_step)),
         terminate_on_fall=bool(args.terminate_on_fall),
         fail_tilt_deg=float(args.fail_tilt_deg),
         fail_height_m=float(args.fail_height_m),

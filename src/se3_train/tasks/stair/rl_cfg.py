@@ -19,8 +19,8 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         resume = False
     else:
         # 直接从台阶 level 0 开始训练；保持源仓库 stair GRU 的 64-step rollout。
-        # CTBC 从第 0 轮满幅启用，900->1800 轮退火，3000 轮结束训练。
-        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3000"))
+        # CTBC 第 0-200 轮满幅启用，200->500 轮退火，之后进入无辅助台阶课程。
+        max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3200"))
         logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
 

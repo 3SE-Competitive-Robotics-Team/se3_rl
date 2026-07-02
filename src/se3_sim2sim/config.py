@@ -216,16 +216,18 @@ class StairCtbcConfig(BaseModel):
     """sim2sim 台阶 CTBC 前馈配置，与训练端默认值保持一致。"""
 
     enabled: bool = False
-    contact_window: Annotated[int, Field(ge=1)] = 1
-    force_threshold_n: Annotated[float, Field(ge=0.0)] = 5.0
-    ff_x_m: float = 0.025
-    ff_lift_m: float = 0.095
+    contact_window: Annotated[int, Field(ge=1)] = 3
+    force_threshold_n: Annotated[float, Field(ge=0.0)] = 10.0
+    ff_amplitude_rad: float = 1.70
+    ff_x_m: float = 0.02
+    ff_lift_m: float = 0.02
     ff_period_s: Annotated[float, Field(gt=0.0)] = 0.60
-    ff_rise_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.25
-    ff_hold_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
-    ff_wheel_action: float = 0.22
-    ann_start_iter: Annotated[int, Field(ge=0)] = 900
-    ann_end_iter: Annotated[int, Field(ge=0)] = 1800
+    ff_rise_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.35
+    ff_hold_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+    ff_wheel_action: float = 0.0
+    profile_path: Path | None = None
+    ann_start_iter: Annotated[int, Field(ge=0)] = 200
+    ann_end_iter: Annotated[int, Field(ge=0)] = 500
     fixed_iter: Annotated[int, Field(ge=0)] | None = None
     obs_scale: Annotated[float, Field(gt=0.0)] = 0.01
     allow_bilateral_trigger: bool = False
@@ -246,9 +248,9 @@ class RobotConfig(BaseModel):
     stair_step_height_range: tuple[float, float] = (0.05, 0.20)
     """台阶高度范围，与训练端 stair terrain 课程保持一致。"""
     stair_step_count: Annotated[int, Field(ge=1, le=20)] = 6
-    stair_step_depth_m: Annotated[float, Field(gt=0.0)] = 0.5
+    stair_step_depth_m: Annotated[float, Field(gt=0.0)] = 0.8
     stair_start_x_m: float = 1.0
-    stair_half_width_m: Annotated[float, Field(gt=0.0)] = 2.0
+    stair_half_width_m: Annotated[float, Field(gt=0.0)] = 6.0
     stair_ctbc: StairCtbcConfig = Field(default_factory=StairCtbcConfig)
     """原生 MuJoCo 台阶值守时使用的 CTBC 前馈注入器。"""
     rough_terrain: bool = False
@@ -380,6 +382,9 @@ class RunConfig(BaseModel):
     print_debug: bool = False
     json_output: Path | None = None
     course: CourseConfig = Field(default_factory=CourseConfig)
+    stair_hold_on_support: bool = False
+    stair_hold_vx: float = 0.10
+    stair_hold_min_step: int = 1
     termination: Termination = Field(default_factory=Termination)
     terminate_on_fall: bool = False
     fail_tilt_deg: float = 80.0

@@ -70,6 +70,15 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
             )
             result["wheel_clearance_abs_diff"] = _stats(np.abs(left_clearance - right_clearance))
     for key in (
+        "base_x",
+        "base_y",
+        "wheel_x_left",
+        "wheel_x_right",
+        "wheel_z_left",
+        "wheel_z_right",
+        "wheel_bottom_z_left",
+        "wheel_bottom_z_right",
+        "stair_half_width_m",
         "leg_clearance",
         "base_clearance",
         "wheel_lateral_distance",
@@ -84,6 +93,10 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "wheel_full_contact",
         "wheel_contact_left",
         "wheel_contact_right",
+        "wheel_stair_contact_left",
+        "wheel_stair_contact_right",
+        "wheel_floor_contact_left",
+        "wheel_floor_contact_right",
         "leg_contact",
         "leg_contact_left",
         "leg_contact_right",
@@ -110,6 +123,14 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "applied_action_delta_l2",
         "applied_action_delta_max_abs",
         "applied_action_delta_sq_sum",
+        "ctbc_trigger",
+        "ctbc_left_active",
+        "ctbc_right_active",
+        "ctbc_phase_left",
+        "ctbc_phase_right",
+        "ctbc_contact_left",
+        "ctbc_contact_right",
+        "ctbc_complete_ff_cycles",
         "rc_switch_r",
         "output_enabled",
         "rc_switch_event",
@@ -118,12 +139,172 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
         "gru_hidden_norm_before_reset",
         "gru_hidden_norm_after_reset",
         "rc_off_mode_no_torque",
+        "stair_hold_active",
     ):
         if key in samples[0]:
             values = np.asarray([s[key] for s in samples], dtype=np.float64)
             result[key] = _stats(values)
+    stair = _stair_climb_diagnostics(samples)
+    if stair:
+        result["stair_climb"] = stair
     result["final"] = samples[-1]
     return result
+
+
+def _stair_climb_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
+    required = (
+        "wheel_x_left",
+        "wheel_x_right",
+        "wheel_bottom_z_left",
+        "wheel_bottom_z_right",
+        "stair_step_height_m",
+        "stair_step_depth_m",
+        "stair_start_x_m",
+        "stair_step_count",
+        "wheel_contact_left",
+        "wheel_contact_right",
+        "wheel_stair_contact_left",
+        "wheel_stair_contact_right",
+        "nonwheel_contact",
+        "base_lin_vel_x",
+        "wheel_lin_vel",
+    )
+    if not all(key in samples[0] for key in required):
+        return {}
+
+    time = np.asarray([s["time"] for s in samples], dtype=np.float64)
+    left_x = np.asarray([s["wheel_x_left"] for s in samples], dtype=np.float64)
+    right_x = np.asarray([s["wheel_x_right"] for s in samples], dtype=np.float64)
+    left_z = np.asarray([s["wheel_bottom_z_left"] for s in samples], dtype=np.float64)
+    right_z = np.asarray([s["wheel_bottom_z_right"] for s in samples], dtype=np.float64)
+    left_contact = (
+        np.asarray([s["wheel_stair_contact_left"] for s in samples], dtype=np.float64) > 0.5
+    )
+    right_contact = (
+        np.asarray([s["wheel_stair_contact_right"] for s in samples], dtype=np.float64) > 0.5
+    )
+    nonwheel_contact = np.asarray([s["nonwheel_contact"] for s in samples], dtype=np.float64) > 0.5
+    base_y = np.asarray([s.get("base_y", 0.0) for s in samples], dtype=np.float64)
+    base_vx = np.asarray([s["base_lin_vel_x"] for s in samples], dtype=np.float64)
+    wheel_vx = np.asarray([s["wheel_lin_vel"] for s in samples], dtype=np.float64)
+
+    step_height = float(samples[0]["stair_step_height_m"])
+    step_depth = float(samples[0]["stair_step_depth_m"])
+    start_x = float(samples[0]["stair_start_x_m"])
+    half_width = float(samples[0].get("stair_half_width_m", 0.0))
+    step_count = round(float(samples[0]["stair_step_count"]))
+    if step_height <= 0.0 or step_depth <= 0.0 or step_count <= 0:
+        return {}
+    lateral_in_stair = np.ones_like(base_y, dtype=bool)
+    if half_width > 0.0:
+        lateral_in_stair = np.abs(base_y) <= half_width
+
+    left_step = _wheel_step_index(left_x, start_x, step_depth, step_count)
+    right_step = _wheel_step_index(right_x, start_x, step_depth, step_count)
+    left_support_height = left_step.astype(np.float64) * step_height
+    right_support_height = right_step.astype(np.float64) * step_height
+    z_tol = max(0.035, 0.35 * step_height)
+    left_on_step = (left_step >= 1) & left_contact & (np.abs(left_z - left_support_height) <= z_tol)
+    right_on_step = (
+        (right_step >= 1) & right_contact & (np.abs(right_z - right_support_height) <= z_tol)
+    )
+    both_on_step = left_on_step & right_on_step
+    same_step = both_on_step & (left_step == right_step)
+    completed_step = np.minimum(left_step, right_step)
+    completed_step = np.where(same_step, completed_step, 0)
+    stable = same_step & (~nonwheel_contact) & (np.abs(base_vx) < 0.35) & (np.abs(wheel_vx) < 0.8)
+
+    dt = _median_dt(time)
+    tail_count = max(1, round(1.0 / dt)) if dt > 0.0 else min(len(samples), 50)
+    tail = slice(max(0, len(samples) - tail_count), len(samples))
+    first_support_idx = _first_true_index(same_step)
+    first_stable_idx = _first_true_index(stable)
+
+    max_completed_step = int(np.max(completed_step)) if completed_step.size else 0
+    final_completed_step = int(completed_step[-1]) if completed_step.size else 0
+    tail_completed_step = int(np.max(completed_step[tail])) if completed_step.size else 0
+    tail_stable_rate = float(np.mean(stable[tail]))
+    stable_duration_s = _longest_true_duration(stable, dt)
+    return {
+        "step_height_m": float(step_height),
+        "step_depth_m": float(step_depth),
+        "max_completed_step": max_completed_step,
+        "final_completed_step": final_completed_step,
+        "tail_completed_step": tail_completed_step,
+        "task_success": bool(final_completed_step >= 1 and tail_stable_rate >= 0.5),
+        "climbed_first_step": bool(max_completed_step >= 1),
+        "final_on_step": bool(final_completed_step >= 1),
+        "tail_on_step_rate": float(np.mean(both_on_step[tail])),
+        "tail_same_step_rate": float(np.mean(same_step[tail])),
+        "tail_lateral_in_stair_rate": float(np.mean(lateral_in_stair[tail])),
+        "support_rate": float(np.mean(same_step)),
+        "support_duration_s": _longest_true_duration(same_step, dt),
+        "stable_rate": float(np.mean(stable)),
+        "stable_duration_s": stable_duration_s,
+        "tail_stable_rate": tail_stable_rate,
+        "nonwheel_contact_rate_after_support": _rate_after(nonwheel_contact, first_support_idx),
+        "first_support_time_s": _time_at(time, first_support_idx),
+        "first_stable_time_s": _time_at(time, first_stable_idx),
+        "final_left_step": int(left_step[-1]),
+        "final_right_step": int(right_step[-1]),
+        "final_base_y_m": float(base_y[-1]),
+        "final_lateral_in_stair": bool(lateral_in_stair[-1]),
+        "final_left_height_error_m": float(left_z[-1] - left_support_height[-1]),
+        "final_right_height_error_m": float(right_z[-1] - right_support_height[-1]),
+    }
+
+
+def _wheel_step_index(
+    x: np.ndarray,
+    start_x: float,
+    step_depth: float,
+    step_count: int,
+) -> np.ndarray:
+    raw = np.floor((x - start_x) / step_depth).astype(np.int64) + 1
+    return np.clip(raw, 0, int(step_count))
+
+
+def _median_dt(time: np.ndarray) -> float:
+    if time.size < 2:
+        return 0.0
+    diff = np.diff(time)
+    diff = diff[np.isfinite(diff) & (diff > 0.0)]
+    if diff.size == 0:
+        return 0.0
+    return float(np.median(diff))
+
+
+def _longest_true_duration(mask: np.ndarray, dt: float) -> float:
+    if mask.size == 0 or dt <= 0.0:
+        return 0.0
+    longest = 0
+    current = 0
+    for value in mask:
+        if bool(value):
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return float(longest * dt)
+
+
+def _first_true_index(mask: np.ndarray) -> int | None:
+    indices = np.nonzero(mask)[0]
+    if indices.size == 0:
+        return None
+    return int(indices[0])
+
+
+def _time_at(time: np.ndarray, idx: int | None) -> float | None:
+    if idx is None:
+        return None
+    return float(time[idx])
+
+
+def _rate_after(mask: np.ndarray, idx: int | None) -> float:
+    if idx is None or idx >= mask.size:
+        return 0.0
+    return float(np.mean(mask[idx:]))
 
 
 def _names(model: mujoco.MjModel, obj_type: mujoco.mjtObj, count: int) -> list[str]:

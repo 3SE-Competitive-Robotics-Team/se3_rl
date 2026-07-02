@@ -200,6 +200,7 @@ class WheelLeggedRobot:
         self.last_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_clipped_policy_action = np.zeros(runtime.policy.num_actions, dtype=np.float64)
         self.last_ctbc_action_delta = np.zeros(runtime.policy.num_actions, dtype=np.float64)
+        self._stair_ctbc_step_contact_score = np.zeros(2, dtype=np.float64)
         self.last_ctrl = np.zeros(6, dtype=np.float64)
         self.reset_floor_lift_m = 0.0
         self.closed_chain_reset_position_residual_m = 0.0
@@ -254,6 +255,7 @@ class WheelLeggedRobot:
         self.last_policy_action.fill(0.0)
         self.last_clipped_policy_action.fill(0.0)
         self.last_ctbc_action_delta.fill(0.0)
+        self._stair_ctbc_step_contact_score.fill(0.0)
         self.action_fifo.fill(0.0)
         self.action_delay_steps = self._sample_action_delay_steps()
         self.last_ctrl.fill(0.0)
@@ -283,7 +285,7 @@ class WheelLeggedRobot:
         if self.stair_ctbc is None:
             return
         self.stair_ctbc.update(
-            self._stair_riser_wheel_contact_score(),
+            self._stair_ctbc_step_contact_score,
             iteration=iteration,
         )
 
@@ -384,6 +386,7 @@ class WheelLeggedRobot:
         self.last_clipped_policy_action[:] = action
         self.last_action[:] = action
         execution_action = self._apply_stair_ctbc(action)
+        self._stair_ctbc_step_contact_score.fill(0.0)
         for _ in range(self.decimation):
             self._refresh_state()
             self.action_fifo[1:] = self.action_fifo[:-1].copy()
@@ -393,6 +396,7 @@ class WheelLeggedRobot:
             ctrl = self._compute_pd_torques(applied_action)
             self.data.ctrl[self.motor_ctrl_ids] = ctrl
             mujoco.mj_step(self.model, self.data)
+            self._accumulate_stair_ctbc_contact_score()
         self._refresh_state()
         self.step_count += 1
         obs = self.observation()
@@ -408,11 +412,13 @@ class WheelLeggedRobot:
         self.reset_policy_io_state()
         self._refresh_state()
         leg_hold_target = self.dof_pos[JointGroup.CTRL_LEGS].copy()
+        self._stair_ctbc_step_contact_score.fill(0.0)
         for _ in range(self.decimation):
             self._refresh_state()
             ctrl = self._compute_hold_current_torques(leg_hold_target)
             self.data.ctrl[self.motor_ctrl_ids] = ctrl
             mujoco.mj_step(self.model, self.data)
+            self._accumulate_stair_ctbc_contact_score()
         self._refresh_state()
         self.step_count += 1
         obs = self.observation()
@@ -428,10 +434,12 @@ class WheelLeggedRobot:
         """按真机 output disabled 语义推进一步：电机失能，不输出力矩。"""
         self.reset_policy_io_state()
         self._refresh_state()
+        self._stair_ctbc_step_contact_score.fill(0.0)
         for _ in range(self.decimation):
             self.data.ctrl[self.motor_ctrl_ids] = 0.0
             self.last_ctrl.fill(0.0)
             mujoco.mj_step(self.model, self.data)
+            self._accumulate_stair_ctbc_contact_score()
         self._refresh_state()
         self.step_count += 1
         obs = self.observation()
@@ -481,6 +489,10 @@ class WheelLeggedRobot:
         wheel_clearance_l = l_wheel_z - wheel_radius  # 左轮最低点离地高度
         wheel_clearance_r = r_wheel_z - wheel_radius  # 右轮最低点离地高度
         wheel_clearance = min(wheel_clearance_l, wheel_clearance_r)  # 取两轮最低
+        stair_step_height = 0.0
+        if self.cfg.stair_terrain:
+            low, high = (float(v) for v in self.cfg.stair_step_height_range)
+            stair_step_height = low + (float(self.cfg.stair_terrain_level) / 9.0) * (high - low)
         wheel_delta_b = rotate_inverse(self.base_quat, l_wheel_pos - r_wheel_pos)
         wheel_lateral_distance = abs(float(wheel_delta_b[1]))
         wheel_fore_aft_offset = abs(float(wheel_delta_b[0]))
@@ -506,7 +518,20 @@ class WheelLeggedRobot:
             "step": int(self.step_count),
             "time": float(self.data.time),
             "height": float(self.data.qpos[2]),  # baselink z 高度
+            "base_x": float(self.data.qpos[0]),
+            "base_y": float(self.data.qpos[1]),
             "reset_floor_lift_m": float(self.reset_floor_lift_m),
+            "wheel_x_left": float(l_wheel_pos[0]),
+            "wheel_x_right": float(r_wheel_pos[0]),
+            "wheel_z_left": float(l_wheel_z),
+            "wheel_z_right": float(r_wheel_z),
+            "wheel_bottom_z_left": float(wheel_clearance_l),
+            "wheel_bottom_z_right": float(wheel_clearance_r),
+            "stair_step_height_m": float(stair_step_height),
+            "stair_step_depth_m": float(self.cfg.stair_step_depth_m),
+            "stair_start_x_m": float(self.cfg.stair_start_x_m),
+            "stair_step_count": float(self.cfg.stair_step_count),
+            "stair_half_width_m": float(self.cfg.stair_half_width_m),
             "wheel_clearance": float(wheel_clearance),  # 轮子最低点离地高度
             "wheel_clearance_left": float(wheel_clearance_l),  # 左轮最低点离地高度
             "wheel_clearance_right": float(wheel_clearance_r),  # 右轮最低点离地高度
@@ -520,6 +545,10 @@ class WheelLeggedRobot:
             "wheel_full_contact": float(contact["wheel_full_contact"]),
             "wheel_contact_left": float(contact["wheel_contact_left"]),
             "wheel_contact_right": float(contact["wheel_contact_right"]),
+            "wheel_stair_contact_left": float(contact["wheel_stair_contact_left"]),
+            "wheel_stair_contact_right": float(contact["wheel_stair_contact_right"]),
+            "wheel_floor_contact_left": float(contact["wheel_floor_contact_left"]),
+            "wheel_floor_contact_right": float(contact["wheel_floor_contact_right"]),
             "leg_contact": float(contact["leg_contact"]),
             "leg_contact_left": float(contact["leg_contact_left"]),
             "leg_contact_right": float(contact["leg_contact_right"]),
@@ -779,10 +808,22 @@ class WheelLeggedRobot:
             score[side] += contact_score
         return score
 
+    def _accumulate_stair_ctbc_contact_score(self) -> None:
+        if self.stair_ctbc is None:
+            return
+        self._stair_ctbc_step_contact_score[:] = np.maximum(
+            self._stair_ctbc_step_contact_score,
+            self._stair_riser_wheel_contact_score(),
+        )
+
     def _ground_contact_state(self) -> dict[str, bool]:
         """返回轮子、腿和 base 是否正在与地面接触。"""
         left_wheel = False
         right_wheel = False
+        left_wheel_stair = False
+        right_wheel_stair = False
+        left_wheel_floor = False
+        right_wheel_floor = False
         left_leg = False
         right_leg = False
         base = False
@@ -798,8 +839,19 @@ class WheelLeggedRobot:
             else:
                 continue
 
+            is_stair = geom1 in self._stair_geom_ids or geom2 in self._stair_geom_ids
             left_wheel = left_wheel or other in self._left_wheel_geom_ids
             right_wheel = right_wheel or other in self._right_wheel_geom_ids
+            left_wheel_stair = left_wheel_stair or (is_stair and other in self._left_wheel_geom_ids)
+            right_wheel_stair = right_wheel_stair or (
+                is_stair and other in self._right_wheel_geom_ids
+            )
+            left_wheel_floor = left_wheel_floor or (
+                (not is_stair) and other in self._left_wheel_geom_ids
+            )
+            right_wheel_floor = right_wheel_floor or (
+                (not is_stair) and other in self._right_wheel_geom_ids
+            )
             left_leg = left_leg or other in self._left_leg_geom_ids
             right_leg = right_leg or other in self._right_leg_geom_ids
             base = base or other in self._base_geom_ids
@@ -811,6 +863,10 @@ class WheelLeggedRobot:
             "wheel_full_contact": left_wheel and right_wheel,
             "wheel_contact_left": left_wheel,
             "wheel_contact_right": right_wheel,
+            "wheel_stair_contact_left": left_wheel_stair,
+            "wheel_stair_contact_right": right_wheel_stair,
+            "wheel_floor_contact_left": left_wheel_floor,
+            "wheel_floor_contact_right": right_wheel_floor,
             "leg_contact": leg,
             "leg_contact_left": left_leg,
             "leg_contact_right": right_leg,
