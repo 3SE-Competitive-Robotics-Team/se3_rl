@@ -460,6 +460,41 @@ def _contact_mask(
     return _contact_force_max(env, sensor_name) > float(force_threshold_n)
 
 
+def stair_base_collision_force_penalty(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "collision_sensor",
+    force_threshold_n: float = 10.0,
+    force_scale_n: float = 80.0,
+    max_penalty: float = 5.0,
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """按 base 撞击台阶的接触力扣分，避免高速顶台阶成为局部最优。"""
+    terrain_mask = _terrain_type_mask(env, terrain_type_names)
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
+    active = terrain_mask & stair_mode
+    force = _contact_force_max(env, sensor_name)
+    excess = torch.clamp(force - float(force_threshold_n), min=0.0)
+    penalty = torch.clamp(
+        excess / max(float(force_scale_n), 1.0e-6),
+        min=0.0,
+        max=float(max_penalty),
+    )
+    result = _finite(penalty * active.float())
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        contact = force > float(force_threshold_n)
+        env.extras["log"].update(
+            {
+                "Stair/diag_base_contact_force_mean_n": _masked_mean(force, active),
+                "Stair/diag_base_contact_force_max_n": force[active].max().item()
+                if active.any()
+                else 0.0,
+                "Stair/diag_base_contact_rate": _masked_mean(contact.float(), active),
+                "Stair/diag_base_collision_penalty": _masked_mean(result, active),
+            }
+        )
+    return result
+
+
 def _radial_distance(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
     origins = getattr(env.scene, "env_origins", None)
@@ -490,6 +525,17 @@ def _lateral_y_offset(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torc
     root_y = _finite(robot.data.root_link_pos_w[:, 1])
     origin_y = origins[:, 1].to(device=env.device)
     return _finite(root_y - origin_y)
+
+
+def _yaw_from_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    """从 wxyz 四元数提取世界系 yaw。"""
+    w, x, y, z = quat.unbind(dim=-1)
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+    """把角度包到 [-pi, pi]。"""
+    return torch.atan2(torch.sin(angle), torch.cos(angle))
 
 
 def _signed_x_velocity(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -799,6 +845,55 @@ def _ctbc_phase_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
     return weight
 
 
+def ctbc_scaled_tracking_height(
+    env: ManagerBasedRlEnv,
+    ctbc_active_scale: float = 0.2,
+    stair_mode_scale: float = 1.0,
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+    **kwargs,
+) -> torch.Tensor:
+    """CTBC 前馈介入时软化高度惩罚，避免上阶瞬态被控高项压回去。"""
+    reward = mdp_rewards.tracking_height(env, **kwargs)
+    ctbc_weight = _ctbc_trigger_weight(env)
+    active = _task_mode_mask(env, (_TASK_MODE_STAIR,)) & _terrain_type_mask(
+        env,
+        terrain_type_names,
+    )
+    scale = torch.ones(env.num_envs, device=env.device)
+    base_scale = min(max(float(stair_mode_scale), 0.0), 1.0)
+    active_scale = min(max(float(ctbc_active_scale), 0.0), 1.0)
+    active_ctbc = torch.clamp(ctbc_weight, min=0.0, max=1.0)
+    stair_scale = base_scale + (active_scale - base_scale) * active_ctbc
+    scale = torch.where(active, stair_scale, scale)
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"]["Stair/diag_ctbc_tracking_height_scale"] = scale.mean().item()
+    return _finite(reward * scale)
+
+
+def stair_scaled_upward(
+    env: ManagerBasedRlEnv,
+    stair_scale: float = 0.3,
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """在台阶模式降低全局直立正奖励，避免站稳不走吞没速度目标。"""
+    reward = mdp_rewards.upward(env)
+    stair_active = _task_mode_mask(env, (_TASK_MODE_STAIR,)) & _terrain_type_mask(
+        env,
+        terrain_type_names,
+    )
+    scale = torch.ones(env.num_envs, device=env.device)
+    scale = torch.where(
+        stair_active,
+        torch.full_like(scale, min(max(float(stair_scale), 0.0), 1.0)),
+        scale,
+    )
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        log = env.extras["log"]
+        log["Stair/diag_upward_reward_scale"] = scale.mean().item()
+        log["Stair/diag_upward_reward_stair_scale"] = _masked_mean(scale, stair_active)
+    return _finite(reward * scale)
+
+
 def _ctbc_active_side_mask(env: ManagerBasedRlEnv, width: int) -> torch.Tensor:
     """返回当前 CTBC 相位要求摆动的轮侧 mask。"""
     state = _get_stair_state(env)
@@ -832,7 +927,7 @@ def stair_phase_forward_progress(
     command_name: str,
     sigma: float = 0.25,
     radial_velocity_blend: float = 0.75,
-    radial_min_distance: float = 0.12,
+    ratio_blend: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
     walking_phase_iterations: int = 800,
@@ -849,7 +944,7 @@ def stair_phase_forward_progress(
             command_name=command_name,
             sigma=sigma,
             radial_velocity_blend=radial_velocity_blend,
-            radial_min_distance=radial_min_distance,
+            ratio_blend=ratio_blend,
             asset_cfg=asset_cfg,
         )
         * gate
@@ -970,9 +1065,6 @@ def stair_height_gain(
 def stair_climb_progress(
     env: ManagerBasedRlEnv,
     max_height_gain: float = 1.0,
-    max_radial_progress: float = 4.0,
-    radial_weight: float = 0.25,
-    standing_height: float = _DEFAULT_STANDING_HEIGHT,
     height_sensor_name: str = "wheel_height_sensor",
     contact_sensor_name: str = "wheel_sensor",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -985,9 +1077,14 @@ def stair_climb_progress(
     riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
     """奖励左右轮真实支撑地形的新增抬升量。"""
-    del max_radial_progress, radial_weight, standing_height
     state = _get_stair_state(env)
     if state is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,)).float()
+    terrain_mask = _terrain_type_mask(env, terrain_type_names).float()
+    gate = stair_mode * terrain_mask
+    if not torch.any(gate):
         return torch.zeros(env.num_envs, device=env.device)
 
     height_gain = stair_wheel_support_rise(
@@ -1004,6 +1101,7 @@ def stair_climb_progress(
         riser_contact_force_threshold_n=riser_contact_force_threshold_n,
         riser_normal_z_max=riser_normal_z_max,
     )
+    height_gain = height_gain * gate
     radial_progress = torch.zeros_like(height_gain)
     height_delta, radial_delta = state.climb_progress_delta(
         height_gain,
@@ -1013,7 +1111,7 @@ def stair_climb_progress(
     )
     progress_delta = height_delta + radial_delta
     reward = progress_delta / max(float(env.step_dt), 1.0e-6) * _upright_gate(env)
-    return _finite(reward)
+    return _finite(reward * gate)
 
 
 def stair_support_height(
@@ -1295,24 +1393,65 @@ def stair_forward_progress(
     command_name: str,
     sigma: float = 0.25,
     radial_velocity_blend: float = 0.75,
-    radial_min_distance: float = 0.12,
+    ratio_blend: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """台阶场景向外爬升速度跟踪，避免车身歪后沿自身 x 轴跑下台阶。"""
+    """台阶场景向外爬升速度跟踪，避免大误差 exp 核早早失去梯度。"""
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
     lin_vel = _finite(robot.data.root_link_lin_vel_b[:, 0])
     command = _finite(cmd[:, 0])
     body_score = torch.exp(-((lin_vel - command) ** 2) / sigma)
 
-    del radial_min_distance
     signed_x_vel = _signed_x_velocity(env, asset_cfg)
     signed_x_command = torch.clamp(command, min=0.0)
     signed_x_score = torch.exp(-((signed_x_vel - signed_x_command) ** 2) / sigma)
 
     blend = min(max(float(radial_velocity_blend), 0.0), 1.0)
-    score = (1.0 - blend) * body_score + blend * signed_x_score
+    exp_score = (1.0 - blend) * body_score + blend * signed_x_score
+    forward_ratio = torch.clamp(
+        signed_x_vel / torch.clamp(signed_x_command, min=0.2),
+        min=0.0,
+        max=1.0,
+    )
+    ratio_weight = min(max(float(ratio_blend), 0.0), 1.0)
+    score = (1.0 - ratio_weight) * exp_score + ratio_weight * forward_ratio
     return _finite(score * _upright_gate(env))
+
+
+def stair_velocity_error_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    command_threshold: float = 0.5,
+    deadband_mps: float = 0.15,
+    error_scale_mps: float = 0.8,
+    max_penalty: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """非饱和地惩罚台阶模式下有高速指令但实际 +x 速度不足。"""
+    command = env.command_manager.get_command(command_name)[:, 0]
+    commanded_forward = command > float(command_threshold)
+    terrain_mask = _terrain_type_mask(env, terrain_type_names)
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
+    active = commanded_forward & terrain_mask & stair_mode
+    signed_x_vel = _signed_x_velocity(env, asset_cfg)
+    deficit = torch.clamp(command - signed_x_vel - float(deadband_mps), min=0.0)
+    penalty = torch.clamp(
+        deficit / max(float(error_scale_mps), 1.0e-6),
+        min=0.0,
+        max=float(max_penalty),
+    )
+    result = _finite(penalty * active.float() * _upright_gate(env))
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+        env.extras["log"].update(
+            {
+                "Stair/diag_velocity_error_penalty": _masked_mean(result, active),
+                "Stair/diag_velocity_error_deficit_mps": _masked_mean(deficit, active),
+                "Stair/diag_velocity_error_active_rate": active.float().mean().item(),
+            }
+        )
+    return result
 
 
 def _radial_velocity(
@@ -1378,6 +1517,44 @@ def stair_radial_retreat(
     return _finite(retreat * commanded_forward.float() * terrain_mask.float() * _upright_gate(env))
 
 
+def stair_lateral_offset_penalty(
+    env: ManagerBasedRlEnv,
+    deadband_m: float = 0.25,
+    full_penalty_m: float = 0.55,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """惩罚偏离台阶中心线，避免绕到侧边在平地上拿速度奖励。"""
+    terrain_mask = _terrain_type_mask(env, terrain_type_names)
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
+    active = terrain_mask & stair_mode
+    offset = torch.abs(_lateral_y_offset(env, asset_cfg))
+    span = max(float(full_penalty_m) - float(deadband_m), 1.0e-6)
+    penalty = torch.clamp((offset - float(deadband_m)) / span, min=0.0, max=1.0)
+    return _finite(penalty * active.float() * _upright_gate(env))
+
+
+def stair_heading_error_penalty(
+    env: ManagerBasedRlEnv,
+    deadband_deg: float = 12.0,
+    full_penalty_deg: float = 60.0,
+    yaw_reference: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
+) -> torch.Tensor:
+    """惩罚朝向偏离台阶 +x 方向，避免 body-frame vx 伪装成上台阶进度。"""
+    terrain_mask = _terrain_type_mask(env, terrain_type_names)
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
+    active = terrain_mask & stair_mode
+    robot = env.scene[asset_cfg.name]
+    yaw_error = torch.abs(_wrap_to_pi(_yaw_from_wxyz(robot.data.root_link_quat_w) - yaw_reference))
+    deadband = torch.deg2rad(torch.tensor(float(deadband_deg), device=env.device))
+    full = torch.deg2rad(torch.tensor(float(full_penalty_deg), device=env.device))
+    span = torch.clamp(full - deadband, min=1.0e-6)
+    penalty = torch.clamp((yaw_error - deadband) / span, min=0.0, max=1.0)
+    return _finite(penalty * active.float() * _upright_gate(env))
+
+
 def stair_riser_stall(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1402,23 +1579,19 @@ def stair_riser_stall(
 def stair_commanded_stall(
     env: ManagerBasedRlEnv,
     command_name: str,
-    command_threshold: float = 0.2,
-    forward_speed_threshold: float = 0.15,
-    vertical_speed_threshold: float = 0.04,
+    command_threshold: float = 0.5,
+    forward_speed_threshold: float = 0.4,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     terrain_type_names: tuple[str, ...] = _STAIR_TERRAIN_TYPES,
 ) -> torch.Tensor:
-    """惩罚有前进指令但既不前进也不爬升的台阶停滞。"""
-    robot = env.scene["robot"]
+    """惩罚有前进指令但不沿台阶 +x 前进的停滞。"""
     command = env.command_manager.get_command(command_name)
     commanded_forward = command[:, 0] > float(command_threshold)
-    slow_forward = robot.data.root_link_lin_vel_b[:, 0] < float(forward_speed_threshold)
-    slow_vertical = torch.abs(robot.data.root_link_lin_vel_w[:, 2]) < float(
-        vertical_speed_threshold
-    )
+    slow_forward = _signed_x_velocity(env, asset_cfg) < float(forward_speed_threshold)
     terrain_mask = _terrain_type_mask(env, terrain_type_names)
-    return (
-        commanded_forward & slow_forward & slow_vertical & terrain_mask
-    ).float() * _upright_gate(env)
+    stair_mode = _task_mode_mask(env, (_TASK_MODE_STAIR,))
+    active = commanded_forward & slow_forward & terrain_mask & stair_mode
+    return active.float() * _upright_gate(env)
 
 
 def leg_torques_no_ctbc(
@@ -1670,6 +1843,16 @@ def stair_diagnostics(
             record=True,
         )
         valid_success = success_components["valid"]
+        base_force = _contact_force_max(env, base_contact_sensor_name)
+        leg_force = _contact_force_max(env, leg_contact_sensor_name)
+        base_contact = base_force > float(illegal_contact_force_threshold_n)
+        leg_contact = leg_force > float(illegal_contact_force_threshold_n)
+        riser_contact = _wheel_riser_contact_mask(
+            env,
+            riser_contact_sensor_name,
+            riser_contact_force_threshold_n,
+            riser_normal_z_max,
+        ).any(dim=1)
         action_term = env.action_manager.get_term("delayed_action")
         ctbc_delta = getattr(action_term, "ctbc_action_delta", None)
         if not isinstance(ctbc_delta, torch.Tensor):
@@ -1730,8 +1913,39 @@ def stair_diagnostics(
                     success_components["legal_contact_ok"].float(),
                     valid_success,
                 ),
+                "Stair/strict_success_base_contact_ok_rate": _masked_mean(
+                    (~base_contact & valid_success).float(),
+                    valid_success,
+                ),
+                "Stair/strict_success_leg_contact_ok_rate": _masked_mean(
+                    (~leg_contact & valid_success).float(),
+                    valid_success,
+                ),
                 "Stair/strict_success_riser_clear_rate": _masked_mean(
                     success_components["riser_clear"].float(),
+                    valid_success,
+                ),
+                "Stair/diag_strict_base_contact_rate": _masked_mean(
+                    base_contact.float(),
+                    valid_success,
+                ),
+                "Stair/diag_strict_leg_contact_rate": _masked_mean(
+                    leg_contact.float(),
+                    valid_success,
+                ),
+                "Stair/diag_strict_riser_contact_rate": _masked_mean(
+                    riser_contact.float(),
+                    valid_success,
+                ),
+                "Stair/diag_strict_base_contact_force_mean_n": _masked_mean(
+                    base_force,
+                    valid_success,
+                ),
+                "Stair/diag_strict_base_contact_force_max_n": (
+                    base_force[valid_success].max().item() if valid_success.any() else 0.0
+                ),
+                "Stair/diag_strict_leg_contact_force_mean_n": _masked_mean(
+                    leg_force,
                     valid_success,
                 ),
                 "Stair/strict_success_duration_s": _masked_mean(
@@ -1778,6 +1992,7 @@ __all__ = [
     *_FLAT_REWARD_ALL,
     "action_rate_no_ctbc",
     "contact_forces_no_ctbc",
+    "ctbc_scaled_tracking_height",
     "flat_mode_leg_contact_penalty",
     "flat_mode_tracking_lin_vel",
     "flat_mode_wheel_contact_penalty",
@@ -1790,6 +2005,7 @@ __all__ = [
     "recovery_active_upright_zero_velocity_penalty",
     "recovery_active_wheel_air_velocity_penalty",
     "recovery_stagnation_penalty",
+    "stair_scaled_upward",
     "stair_climb_progress",
     "stair_commanded_stall",
     "stair_contact_number",
@@ -1797,7 +2013,9 @@ __all__ = [
     "stair_feet_air_time",
     "stair_feet_clearance",
     "stair_forward_progress",
+    "stair_heading_error_penalty",
     "stair_height_gain",
+    "stair_lateral_offset_penalty",
     "stair_max_x_progress",
     "stair_phase_forward_progress",
     "stair_radial_retreat",
@@ -1810,8 +2028,10 @@ __all__ = [
     "stair_support_descent",
     "stair_support_height",
     "stair_terrain_level",
+    "stair_velocity_error_penalty",
     "stair_wheel_support_rise",
     "stair_wheel_fore_aft_offset_penalty",
     "stair_wheel_swing_zero_vel",
     "stand_still_no_ctbc",
+    "stair_base_collision_force_penalty",
 ]
