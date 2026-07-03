@@ -157,7 +157,57 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
     stair = _stair_climb_diagnostics(samples)
     if stair:
         result["stair_climb"] = stair
+    ctbc_pulse = _ctbc_contact_pulse_diagnostics(samples)
+    if ctbc_pulse:
+        result["ctbc_contact_pulse"] = ctbc_pulse
     result["final"] = samples[-1]
+    return result
+
+
+def _ctbc_contact_pulse_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
+    required = (
+        "time",
+        "ctbc_contact_left",
+        "ctbc_contact_right",
+        "ctbc_force_threshold_n",
+    )
+    if not all(key in samples[0] for key in required):
+        return {}
+
+    time = np.asarray([s["time"] for s in samples], dtype=np.float64)
+    threshold = float(samples[0]["ctbc_force_threshold_n"])
+    contact = np.column_stack(
+        (
+            np.asarray([s["ctbc_contact_left"] for s in samples], dtype=np.float64),
+            np.asarray([s["ctbc_contact_right"] for s in samples], dtype=np.float64),
+        )
+    )
+    above = contact > threshold
+    dt = _median_dt(time)
+    result: dict[str, object] = {
+        "threshold_n": threshold,
+        "contact_above_threshold_side_rate": float(np.mean(above)),
+        "contact_above_threshold_any_rate": float(np.mean(np.any(above, axis=1))),
+        "contact_above_threshold_max_streak_steps": _longest_true_streak(above),
+        "contact_above_threshold_max_duration_s": _longest_true_duration_2d(above, dt),
+        "contact_score_max_n": float(np.max(contact)),
+        "contact_score_mean_n": float(np.mean(contact)),
+    }
+    if "ctbc_stable_left" in samples[0] and "ctbc_stable_right" in samples[0]:
+        stable = np.column_stack(
+            (
+                np.asarray([s["ctbc_stable_left"] for s in samples], dtype=np.float64) > 0.5,
+                np.asarray([s["ctbc_stable_right"] for s in samples], dtype=np.float64) > 0.5,
+            )
+        )
+        result.update(
+            {
+                "stable_side_rate": float(np.mean(stable)),
+                "stable_any_rate": float(np.mean(np.any(stable, axis=1))),
+                "stable_max_streak_steps": _longest_true_streak(stable),
+                "stable_max_duration_s": _longest_true_duration_2d(stable, dt),
+            }
+        )
     return result
 
 
@@ -296,6 +346,24 @@ def _longest_true_duration(mask: np.ndarray, dt: float) -> float:
         else:
             current = 0
     return float(longest * dt)
+
+
+def _longest_true_streak(mask: np.ndarray) -> int:
+    if mask.size == 0:
+        return 0
+    values = mask.reshape(mask.shape[0], -1)
+    longest = 0
+    current = np.zeros(values.shape[1], dtype=np.int64)
+    for row in values:
+        current = np.where(row, current + 1, 0)
+        longest = max(longest, int(np.max(current)))
+    return int(longest)
+
+
+def _longest_true_duration_2d(mask: np.ndarray, dt: float) -> float:
+    if dt <= 0.0:
+        return 0.0
+    return float(_longest_true_streak(mask) * dt)
 
 
 def _first_true_index(mask: np.ndarray) -> int | None:

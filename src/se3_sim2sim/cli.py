@@ -22,6 +22,7 @@ from .config import (
     RECOVERY_POSE_RP_RAD,
     ROUGH_TERRAIN_TYPE_CHOICES,
     SIM_MODEL_VARIANT_CHOICES,
+    STAIR_COLLISION_SHAPE_CHOICES,
     JumpEventConfig,
     JumpScheduleConfig,
     PolicyConfig,
@@ -170,6 +171,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--stair-step-height", type=float, default=None)
     parser.add_argument("--stair-half-width", type=float, default=robot_defaults.stair_half_width_m)
+    parser.add_argument(
+        "--stair-collision-shape",
+        choices=STAIR_COLLISION_SHAPE_CHOICES,
+        default=robot_defaults.stair_collision_shape,
+        help="程序化台阶碰撞体形状：box 为原始方台阶，beveled 只倒前上沿用于轮子锐边接触 A/B。",
+    )
+    parser.add_argument(
+        "--stair-bevel-size",
+        type=float,
+        default=robot_defaults.stair_bevel_size_m,
+        help="--stair-collision-shape beveled 时的前上沿倒角尺寸，单位 m。",
+    )
     parser.add_argument(
         "--stair-ctbc",
         action="store_true",
@@ -841,6 +854,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
             stair_terrain_level=int(args.stair_terrain_level),
             stair_step_height_range=stair_step_height_range,
             stair_half_width_m=float(args.stair_half_width),
+            stair_collision_shape=str(args.stair_collision_shape),
+            stair_bevel_size_m=float(args.stair_bevel_size),
             stair_ctbc=_stair_ctbc_config_from_args(args),
             rough_terrain=bool(args.rough_terrain),
             rough_terrain_type=str(args.rough_terrain_type),

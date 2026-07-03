@@ -564,29 +564,43 @@ def copy_checkpoint_to_local(
         return local_checkpoint_path(args, local), local
 
 
-def local_viewer_pids() -> list[int]:
+def local_viewer_pids(port: int | None = None) -> list[int]:
     command = (
         "Get-CimInstance Win32_Process | "
         "Where-Object { $_.CommandLine -match 'se3-sim2sim|se3_sim2sim\\.cli' } | "
-        "Select-Object -ExpandProperty ProcessId"
+        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
     )
     result = run(["powershell", "-NoProfile", "-Command", command], timeout=20.0, check=False)
+    text = result.stdout.strip()
+    if not text:
+        return []
+    try:
+        rows = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(rows, dict):
+        rows = [rows]
     pids: list[int] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if line.isdigit() and int(line) != os.getpid():
-            pids.append(int(line))
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        command_line = str(row.get("CommandLine") or "")
+        if port is not None and re.search(rf"--viser-port\s+{int(port)}\b", command_line) is None:
+            continue
+        pid = row.get("ProcessId")
+        if isinstance(pid, int) and pid != os.getpid():
+            pids.append(pid)
     return pids
 
 
-def stop_viewer(proc: subprocess.Popen[str] | None) -> None:
+def stop_viewer(proc: subprocess.Popen[str] | None, port: int | None = None) -> None:
     if proc is not None and proc.poll() is None:
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-    for old in local_viewer_pids():
+    for old in local_viewer_pids(port):
         if os.name == "nt":
             run(["taskkill", "/PID", str(old), "/T", "/F"], timeout=30.0, check=False)
         else:
@@ -617,6 +631,10 @@ def start_viewer(
             str(args.control_decimation),
             "--viewer",
             "viser",
+            "--viser-port",
+            str(args.viser_port),
+            "--geom-view",
+            args.geom_view,
             "--device",
             args.device,
             "--print-every",
@@ -659,6 +677,17 @@ def start_viewer(
                 "0",
             ]
         )
+        if args.stair_step_height is not None:
+            command.extend(["--stair-step-height", str(args.stair_step_height)])
+        if args.stair_collision_shape != "box":
+            command.extend(
+                [
+                    "--stair-collision-shape",
+                    args.stair_collision_shape,
+                    "--stair-bevel-size",
+                    str(args.stair_bevel_size),
+                ]
+            )
     if args.mode == "stair" and args.fixed_ctbc_iter:
         command.extend(["--stair-ctbc-iter", str(iteration)])
     print("[local-viser-watch] launching viewer:")
@@ -666,7 +695,7 @@ def start_viewer(
     return subprocess.Popen(command, stdout=stdout, stderr=stderr, cwd=Path.cwd())
 
 
-def wait_for_viser(timeout_s: float = 90.0) -> bool:
+def wait_for_viser(port: int, timeout_s: float = 90.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         result = run(
@@ -679,7 +708,7 @@ def wait_for_viser(timeout_s: float = 90.0) -> bool:
                 "%{http_code}",
                 "--max-time",
                 "5",
-                "http://127.0.0.1:8080/",
+                f"http://127.0.0.1:{port}/",
             ],
             timeout=10.0,
             check=False,
@@ -747,6 +776,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--command-vx", type=float, default=1.2)
     parser.add_argument("--command-height", type=float, default=0.32)
+    parser.add_argument("--stair-step-height", type=float, default=None)
+    parser.add_argument("--stair-collision-shape", choices=("box", "beveled"), default="box")
+    parser.add_argument("--stair-bevel-size", type=float, default=0.006)
+    parser.add_argument("--viser-port", type=int, default=8080)
+    parser.add_argument("--geom-view", choices=("visual", "collision", "both"), default="both")
     parser.add_argument(
         "--recovery-pose",
         choices=("standing", "left_side", "right_side", "prone", "supine"),
@@ -800,10 +834,12 @@ def main() -> None:
                         if source == "remote"
                         else max(0, min(9, args.terrain_level if args.terrain_level >= 0 else 3))
                     )
-                    stop_viewer(viewer_proc)
+                    stop_viewer(viewer_proc, args.viser_port)
                     viewer_proc = start_viewer(args, local_path, ckpt.iteration, level)
-                    if wait_for_viser():
-                        print("[local-viser-watch] viser ready http://127.0.0.1:8080/")
+                    if wait_for_viser(args.viser_port):
+                        print(
+                            f"[local-viser-watch] viser ready http://127.0.0.1:{args.viser_port}/"
+                        )
                     else:
                         print(
                             "[local-viser-watch] viser did not become ready in time",

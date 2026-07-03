@@ -105,6 +105,56 @@ def _simple_slope_faces() -> list[int]:
     return [index for face in faces for index in face]
 
 
+def _beveled_stair_vertices(
+    *,
+    start_x: float,
+    end_x: float,
+    half_width: float,
+    height: float,
+    bevel: float,
+) -> list[float]:
+    """生成前上沿倒角台阶的凸多面体顶点。"""
+
+    z_bevel_low = height - bevel
+    vertices = (
+        (start_x, -half_width, 0.0),
+        (start_x, half_width, 0.0),
+        (end_x, -half_width, 0.0),
+        (end_x, half_width, 0.0),
+        (start_x, -half_width, z_bevel_low),
+        (start_x, half_width, z_bevel_low),
+        (start_x + bevel, -half_width, height),
+        (start_x + bevel, half_width, height),
+        (end_x, -half_width, height),
+        (end_x, half_width, height),
+    )
+    return [coord for vertex in vertices for coord in vertex]
+
+
+def _beveled_stair_faces() -> list[int]:
+    """生成前上沿倒角台阶的三角面索引。"""
+
+    faces = (
+        (0, 2, 3),
+        (0, 3, 1),
+        (0, 1, 5),
+        (0, 5, 4),
+        (4, 5, 7),
+        (4, 7, 6),
+        (6, 7, 9),
+        (6, 9, 8),
+        (2, 8, 9),
+        (2, 9, 3),
+        (0, 4, 6),
+        (0, 6, 8),
+        (0, 8, 2),
+        (1, 3, 9),
+        (1, 9, 7),
+        (1, 7, 5),
+    )
+    return [index for face in faces for index in face]
+
+
 def _model_site_names(model: mujoco.MjModel) -> tuple[str, ...]:
     """读取模型中的 site 名称。"""
     names: list[str] = []
@@ -752,6 +802,11 @@ class WheelLeggedRobot:
         info = self.stair_terrain_info
         if not isinstance(info, dict) or not info.get("enabled"):
             raise RuntimeError("stair terrain is not enabled for this sim2sim run")
+        if self.cfg.stair_collision_shape != "box":
+            raise RuntimeError(
+                "runtime stair height switching only supports box stair collision; "
+                "restart sim2sim to change beveled stair height"
+            )
         min_height = float(info.get("min_step_height_m", 0.02))
         max_height = float(info.get("max_step_height_m", 0.25))
         if max_height <= min_height:
@@ -904,6 +959,8 @@ class WheelLeggedRobot:
             "step_depth_m": float(self.cfg.stair_step_depth_m),
             "start_x_m": float(self.cfg.stair_start_x_m),
             "half_width_m": float(self.cfg.stair_half_width_m),
+            "collision_shape": str(self.cfg.stair_collision_shape),
+            "bevel_size_m": float(self.cfg.stair_bevel_size_m),
             "runtime_override": False,
         }
 
@@ -1392,6 +1449,16 @@ class WheelLeggedRobot:
         step_depth = float(cfg.stair_step_depth_m)
         half_width = float(cfg.stair_half_width_m)
         start_x = float(cfg.stair_start_x_m)
+        if cfg.stair_collision_shape == "beveled":
+            WheelLeggedRobot._add_beveled_stair_terrain_geoms(
+                spec,
+                cfg,
+                step_height=step_height,
+                step_depth=step_depth,
+                half_width=half_width,
+                start_x=start_x,
+            )
+            return
         for idx in range(int(cfg.stair_step_count)):
             height = step_height * float(idx + 1)
             spec.worldbody.add_geom(
@@ -1409,6 +1476,55 @@ class WheelLeggedRobot:
                 group=_GROUND_GEOM_GROUP,
                 friction=[0.8, 0.005, 0.0001],
                 rgba=[0.35, 0.37, 0.33, 1.0],
+            )
+
+    @staticmethod
+    def _add_beveled_stair_terrain_geoms(
+        spec: mujoco.MjSpec,
+        cfg: RobotConfig,
+        *,
+        step_height: float,
+        step_depth: float,
+        half_width: float,
+        start_x: float,
+    ) -> None:
+        """添加前上沿倒角的程序化台阶碰撞体，用于轮子锐边接触 A/B。"""
+
+        bevel = float(cfg.stair_bevel_size_m)
+        max_bevel = min(0.45 * step_height, 0.25 * step_depth)
+        if bevel <= 0.0 or bevel > max_bevel:
+            raise ValueError(
+                "--stair-bevel-size must be in "
+                f"(0, {max_bevel:.4f}] for step_height={step_height:.4f}m "
+                f"and step_depth={step_depth:.4f}m, got {bevel:.4f}m"
+            )
+        faces = _beveled_stair_faces()
+        for idx in range(int(cfg.stair_step_count)):
+            x0 = start_x + idx * step_depth
+            x1 = x0 + step_depth
+            height = step_height * float(idx + 1)
+            mesh_name = f"stair_terrain_step_{idx}_beveled_mesh"
+            spec.add_mesh(
+                name=mesh_name,
+                uservert=_beveled_stair_vertices(
+                    start_x=x0,
+                    end_x=x1,
+                    half_width=half_width,
+                    height=height,
+                    bevel=bevel,
+                ),
+                userface=faces,
+            )
+            spec.worldbody.add_geom(
+                name=f"stair_terrain_step_{idx}",
+                type=mujoco.mjtGeom.mjGEOM_MESH,
+                meshname=mesh_name,
+                contype=2,
+                conaffinity=1,
+                condim=3,
+                group=_GROUND_GEOM_GROUP,
+                friction=[0.8, 0.005, 0.0001],
+                rgba=[0.35, 0.37, 0.33, 0.45],
             )
 
     @staticmethod

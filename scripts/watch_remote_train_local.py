@@ -373,6 +373,29 @@ def _stop_viewer(proc: subprocess.Popen | None) -> None:
         proc.wait(timeout=10)
 
 
+def _stop_existing_viser_port(port: int | None) -> None:
+    if port is None or os.name != "nt":
+        return
+    command = (
+        f"Get-NetTCPConnection -LocalPort {int(port)} -State Listen -ErrorAction SilentlyContinue | "
+        "Select-Object -ExpandProperty OwningProcess"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.isdigit() or int(line) == os.getpid():
+            continue
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"Stop-Process -Id {int(line)} -Force"],
+            check=False,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copy remote checkpoints and view the real training scene locally."
@@ -486,6 +509,7 @@ def main() -> None:
                             f"using local checkpoint model_{local_iter}.pt"
                         )
                         _stop_viewer(viewer_proc)
+                        _stop_existing_viser_port(args.viser_port)
                         viewer_proc = _launch_viewer(args, local_ckpt)
                         last_iter = local_iter
                 print(
@@ -524,6 +548,7 @@ def main() -> None:
                 if args.dry_run:
                     raise SystemExit(0)
                 _stop_viewer(viewer_proc)
+                _stop_existing_viser_port(args.viser_port)
                 viewer_proc = _launch_viewer(args, local_ckpt)
                 last_iter = iteration
                 if args.once:

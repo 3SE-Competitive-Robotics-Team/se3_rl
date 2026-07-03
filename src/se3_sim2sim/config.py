@@ -19,6 +19,7 @@ SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
 RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
 RcOffMode = Literal["no-torque", "hold-current"]
 CustomTerrain = Literal["none", "gap-ramp-facility", "slope-17"]
+StairCollisionShape = Literal["box", "beveled"]
 RoughTerrainType = Literal[
     "mixed",
     "flat",
@@ -53,6 +54,7 @@ CUSTOM_TERRAIN_CHOICES: tuple[CustomTerrain, ...] = (
     "gap-ramp-facility",
     "slope-17",
 )
+STAIR_COLLISION_SHAPE_CHOICES: tuple[StairCollisionShape, ...] = ("box", "beveled")
 RECOVERY_POSE_RP_RAD: dict[RecoveryPose, tuple[float, float]] = {
     "standing": (0.0, 0.0),
     "left_side": (0.5 * math.pi, 0.0),
@@ -224,16 +226,16 @@ class StairCtbcConfig(BaseModel):
     enabled: bool = False
     cartesian_frame: Literal["body"] = "body"
     coordinate_mode: Literal["body_polar", "body_cartesian"] = "body_polar"
-    trigger_mode: Literal["force", "pitch"] = "pitch"
-    contact_window: Annotated[int, Field(ge=1)] = 3
+    trigger_mode: Literal["force", "pitch"] = "force"
+    contact_window: Annotated[int, Field(ge=1)] = 1
     force_threshold_n: Annotated[float, Field(ge=0.0)] = 10.0
-    pitch_threshold_rad: Annotated[float, Field(ge=0.0)] = math.radians(6.0)
-    pitch_threshold_deg: Annotated[float, Field(ge=0.0)] = 6.0
-    pitch_window: Annotated[int, Field(ge=1)] = 3
+    pitch_threshold_rad: Annotated[float, Field(ge=0.0)] = math.radians(10.0)
+    pitch_threshold_deg: Annotated[float, Field(ge=0.0)] = 10.0
+    pitch_window: Annotated[int, Field(ge=1)] = 5
     ff_amplitude_rad: float = 0.0
-    leg_length_m: Annotated[float, Field(gt=0.0)] = 0.24
-    swing_angle_rad: float = math.radians(10.0)
-    swing_angle_deg: float = 10.0
+    leg_length_m: Annotated[float, Field(gt=0.0)] = 0.18
+    swing_angle_rad: float = math.radians(14.0)
+    swing_angle_deg: float = 14.0
     body_x_m: float = 0.20
     body_z_m: float = 0.15
     ff_x_m: float = 0.20
@@ -242,7 +244,7 @@ class StairCtbcConfig(BaseModel):
     ff_period_s: Annotated[float, Field(gt=0.0)] = 0.60
     ff_rise_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.35
     ff_hold_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
-    ff_wheel_action: float = 0.0
+    ff_wheel_action: float = 0.2
     profile_path: Path | None = None
     ann_start_iter: Annotated[int, Field(ge=0)] = 200
     ann_end_iter: Annotated[int, Field(ge=0)] = 500
@@ -310,6 +312,10 @@ class RobotConfig(BaseModel):
     stair_step_depth_m: Annotated[float, Field(gt=0.0)] = 0.8
     stair_start_x_m: float = 1.0
     stair_half_width_m: Annotated[float, Field(gt=0.0)] = 6.0
+    stair_collision_shape: StairCollisionShape = "box"
+    """程序化台阶碰撞体形状；box 用于对照，beveled 用于轮子-台阶锐边诊断。"""
+    stair_bevel_size_m: Annotated[float, Field(ge=0.0)] = 0.006
+    """beveled 台阶前上沿倒角尺寸，单位 m。"""
     stair_ctbc: StairCtbcConfig = Field(default_factory=StairCtbcConfig)
     """原生 MuJoCo 台阶值守时使用的 CTBC 前馈注入器。"""
     rough_terrain: bool = False

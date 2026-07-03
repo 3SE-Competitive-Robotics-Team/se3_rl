@@ -21,7 +21,7 @@ _KNEE_FEEDFORWARD_RATIO: float = 2.0
 
 def _polar_to_xz_torch(length_m: torch.Tensor, swing_rad: torch.Tensor) -> torch.Tensor:
     return torch.stack(
-        (length_m * torch.sin(swing_rad), -length_m * torch.cos(swing_rad)),
+        (-length_m * torch.sin(swing_rad), -length_m * torch.cos(swing_rad)),
         dim=-1,
     )
 
@@ -75,7 +75,7 @@ class _CtbcProfile:
                     point,
                     "leg_length_m",
                     ("length_m", "r_m", "radius_m"),
-                    default=0.24,
+                    default=0.18,
                 )
                 raw_swing = point.get("swing_angle_rad")
                 if raw_swing is None:
@@ -88,7 +88,7 @@ class _CtbcProfile:
                         point,
                         "swing_angle_deg",
                         ("theta_deg", "angle_deg"),
-                        default=10.0,
+                        default=14.0,
                     )
                     z = math.radians(swing_deg)
                 else:
@@ -191,16 +191,16 @@ class StairClimbState:
         self,
         num_envs: int,
         device: torch.device | str,
-        trigger_mode: str = "pitch",
-        contact_window: int = 3,
+        trigger_mode: str = "force",
+        contact_window: int = 1,
         force_threshold_n: float = 10.0,
-        pitch_threshold_rad: float = math.radians(6.0),
+        pitch_threshold_rad: float = math.radians(10.0),
         pitch_threshold_deg: float | None = None,
-        pitch_window: int = 3,
+        pitch_window: int = 5,
         ff_amplitude_rad: float = 1.70,
         coordinate_mode: str = "body_polar",
-        leg_length_m: float = 0.24,
-        swing_angle_rad: float = math.radians(10.0),
+        leg_length_m: float = 0.18,
+        swing_angle_rad: float = math.radians(14.0),
         swing_angle_deg: float | None = None,
         ff_x_m: float = 0.02,
         ff_lift_m: float = 0.02,
@@ -208,7 +208,7 @@ class StairClimbState:
         ff_period_s: float = 0.6,
         ff_rise_ratio: float = 0.35,
         ff_hold_ratio: float = 0.0,
-        ff_wheel_action: float = 0.0,
+        ff_wheel_action: float = 0.2,
         control_dt: float = 0.02,
         ff_start_iter: int = 0,
         ann_start_iter: int = 900,

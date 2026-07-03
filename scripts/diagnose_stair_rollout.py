@@ -326,23 +326,35 @@ def _fix_scene_for_feedforward(cfg, args: argparse.Namespace) -> None:
 
     if "reset_root_state" in cfg.events:
         params = dict(cfg.events["reset_root_state"].params or {})
-        params["recovery_prob"] = 0.0
-        params["recovery_state_cache_prob"] = 0.0
+        if "shared_state_cache_path" in params:
+            params["shared_recovery_grace_steps"] = 0
+        else:
+            params["recovery_prob"] = 0.0
+            params["recovery_state_cache_prob"] = 0.0
         cfg.events["reset_root_state"] = replace(cfg.events["reset_root_state"], params=params)
-    if "sample_stair_task_mode" in cfg.events:
-        params = dict(cfg.events["sample_stair_task_mode"].params or {})
+    for sample_event_name in ("sample_stair_task_mode", "sample_stair_shared_task_mode"):
+        if sample_event_name not in cfg.events:
+            continue
+        params = dict(cfg.events[sample_event_name].params or {})
         params["stair_prob"] = 1.0
-        params["recovery_prob"] = 0.0
+        if sample_event_name == "sample_stair_task_mode":
+            params["recovery_prob"] = 0.0
+        else:
+            params["shared_prob"] = 0.0
+        params["mixture_stages"] = ({"iteration": 0, "stair_prob": 1.0, "shared_prob": 0.0},)
         if args.terrain_level is not None:
             level = max(0, int(args.terrain_level))
             params["max_level_stages"] = ((0, level),)
             params["level_buckets"] = ((level, level),)
             params["bucket_weight_stages"] = ((0, (1.0,)),)
-        cfg.events["sample_stair_task_mode"] = replace(
-            cfg.events["sample_stair_task_mode"],
+        cfg.events[sample_event_name] = replace(
+            cfg.events[sample_event_name],
             params=params,
         )
+        break
+    cfg.events.pop("apply_stair_shared_rehearsal_commands", None)
     cfg.events.pop("enforce_recovery_active_commands", None)
+    cfg.events.pop("enforce_shared_rehearsal_commands", None)
 
 
 def _maybe_manual_trigger(
@@ -415,6 +427,8 @@ def _state_snapshot(base_env) -> dict[str, Any]:
         "ctbc_force_mean_now": _mean(state.latest_contact_force),
         "ctbc_force_max_now": _max(state.latest_contact_force),
         "ctbc_cycles_mean": _mean(state.complete_ff_cycle_count.float()),
+        "ctbc_force_threshold_n": float(state.force_threshold),
+        "ctbc_contact_window": int(state.contact_window),
         "ctbc_ff_x_m": float(state.ff_x_m),
         "ctbc_ff_lift_m": float(state.ff_lift_m),
         "ctbc_ff_period_steps": float(state.ff_period_steps),
@@ -494,8 +508,11 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
     active_sum = 0.0
     stable_sum = 0.0
+    stable_side_sum = 0.0
     force_sum = 0.0
     force_max = 0.0
+    force_above_sum = 0.0
+    force_above_any_sum = 0.0
     raw_sat_sum = 0.0
     unclipped_sat_sum = 0.0
     active_rod_clamp_sum = 0.0
@@ -567,6 +584,15 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     contact_both_sum = 0.0
     wheel_height_sum = 0.0
     wheel_bottom_clearance_abs_sum = 0.0
+    force_above_streak = torch.zeros(
+        base_env.num_envs,
+        2,
+        device=base_env.device,
+        dtype=torch.long,
+    )
+    force_above_max_streak = torch.zeros_like(force_above_streak)
+    stable_streak = torch.zeros_like(force_above_streak)
+    stable_max_streak = torch.zeros_like(force_above_streak)
     samples = 0
 
     for step in range(steps):
@@ -586,10 +612,30 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         state = getattr(base_env, "stair_climb_state", None)
         if state is not None:
             active_sum += _mean(state.contact_triggered().float())
-            stable_sum += _mean(state.stable_contact.any(dim=-1).float())
+            stable_side = state.stable_contact
+            stable_sum += _mean(stable_side.any(dim=-1).float())
+            stable_side_sum += _mean(stable_side.float())
             force = state.latest_contact_force
             force_sum += _mean(force)
             force_max = max(force_max, _max(force))
+            force_above = force > float(state.force_threshold)
+            force_above_sum += _mean(force_above.float())
+            force_above_any_sum += _mean(force_above.any(dim=-1).float())
+            force_above_streak = torch.where(
+                force_above,
+                force_above_streak + 1,
+                torch.zeros_like(force_above_streak),
+            )
+            force_above_max_streak = torch.maximum(
+                force_above_max_streak,
+                force_above_streak,
+            )
+            stable_streak = torch.where(
+                stable_side,
+                stable_streak + 1,
+                torch.zeros_like(stable_streak),
+            )
+            stable_max_streak = torch.maximum(stable_max_streak, stable_streak)
 
         raw_action = getattr(action_term, "raw_action", base_env.action_manager.action)
         unclipped_action = getattr(action_term, "unclipped_action", raw_action)
@@ -887,8 +933,25 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "done_rate_per_step": done_sum / denom,
         "ctbc_active_rate": active_sum / denom,
         "ctbc_stable_contact_rate": stable_sum / denom,
+        "ctbc_stable_side_rate": stable_side_sum / denom,
         "ctbc_force_mean_n": force_sum / denom,
         "ctbc_force_max_n": force_max,
+        "ctbc_force_above_threshold_rate": force_above_sum / denom,
+        "ctbc_force_above_threshold_any_rate": force_above_any_sum / denom,
+        "ctbc_force_above_threshold_max_streak_steps_mean": _mean(force_above_max_streak.float()),
+        "ctbc_force_above_threshold_max_streak_steps_max": int(force_above_max_streak.max().item()),
+        "ctbc_force_above_threshold_max_duration_s_mean": _mean(
+            force_above_max_streak.float() * float(base_env.step_dt)
+        ),
+        "ctbc_force_above_threshold_max_duration_s_max": _max(
+            force_above_max_streak.float() * float(base_env.step_dt)
+        ),
+        "ctbc_stable_max_streak_steps_mean": _mean(stable_max_streak.float()),
+        "ctbc_stable_max_streak_steps_max": int(stable_max_streak.max().item()),
+        "ctbc_stable_max_duration_s_mean": _mean(
+            stable_max_streak.float() * float(base_env.step_dt)
+        ),
+        "ctbc_stable_max_duration_s_max": _max(stable_max_streak.float() * float(base_env.step_dt)),
         "ctbc_action_delta_abs_max_mean": delta_abs_sum / denom,
         "ctbc_action_delta_abs_peak": delta_abs_peak,
         "raw_action_saturation_rate": raw_sat_sum / denom,
