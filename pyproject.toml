@@ -17,8 +17,8 @@ dependencies = [
     "numpy==2.4.4",
     "pydantic==2.13.4",
     "casadi",
-    "onnxruntime>=1.26.0",
-    "onnx>=1.21.0",
+    "onnxruntime>=1.27.0",
+    "onnx>=1.22.0",
 ]
 
 [project.scripts]
