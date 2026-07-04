@@ -197,7 +197,8 @@ def export_onnx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"加载 checkpoint: {checkpoint_path}")
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    # weights_only=True: 仅反序列化 tensor，避免 pickle 安全风险
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     actor_state = extract_actor_state_dict(payload)
     spec = infer_spec(actor_state)
 
@@ -276,10 +277,19 @@ def export_onnx(
         f.unlink(missing_ok=True)
     print("导出完成")
 
-    # 验证：跑一次推理对比
+    # 验证：PyTorch 和 ONNX Runtime 输出对比
     with torch.no_grad():
         action_pt, hidden_pt = model(dummy_obs, dummy_hidden)
     print(f"PyTorch 推理: action={action_pt.numpy().round(4)}, hidden_norm={hidden_pt.norm():.4f}")
+
+    import numpy as np
+    import onnxruntime as ort
+
+    session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
+    onnx_out = session.run(None, {"obs": dummy_obs.numpy(), "hidden_in": dummy_hidden.numpy()})
+    if not np.allclose(action_pt.numpy(), onnx_out[0], atol=1e-2):
+        raise RuntimeError("ONNX 输出与 PyTorch 输出不一致")
+    print(f"ONNX Runtime 验证通过: action={onnx_out[0].round(4)}")
 
 
 def main() -> None:
