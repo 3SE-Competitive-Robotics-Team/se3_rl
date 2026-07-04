@@ -405,6 +405,12 @@ def commands_vel_adaptive(
     term = env.command_manager.get_term(command_name)
     cfg: VelocityHeightCommandCfg = term.cfg  # type: ignore[assignment]
 
+    # 课程状态仅存在于 env 内存对象上，未持久化到 checkpoint。
+    # Warm-start（阶段切换）有意清空课程，行为正确；
+    # SE3_FULL_RESUME（崩溃恢复）也会丢失课程进度，当前无伤大雅——
+    # 实际训练中几乎没有续训需求，即使真触发也只是退回 vx=0 重新爬坡。
+    # 若未来需要持久化：在 runner.save() 中把这三个值写入 checkpoint，
+    # 在 SE3_FULL_RESUME 的 load() 路径中 setattr 回 env 即可。
     if not hasattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR):
         setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, float(init_lin_vel_x))
         setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, float(init_ang_vel_yaw))
