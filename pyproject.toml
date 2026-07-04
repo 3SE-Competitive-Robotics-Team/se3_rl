@@ -18,6 +18,7 @@ dependencies = [
     "pydantic==2.13.4",
     "casadi",
     "onnxruntime>=1.26.0",
+    "onnx>=1.21.0",
 ]
 
 [project.scripts]
