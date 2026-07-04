@@ -382,7 +382,7 @@ def commands_vel_adaptive(
     必须用这个不依赖 moving 的版本：初始 lin_vel_x_range=(0,0) 时所有 env 的
     cmd_mag 恒为 0，如果按 moving 过滤会导致该指标恒为 0、EMA 永远追不上
     threshold，课程永久卡死在初始范围（2026-07 曾复现，807 iteration 内
-    vel_lin_x_max 无变化）。用全体均值后，cmd=0 阶段该值反映 sigma_stand
+    lin_vel_x_max 无变化）。用全体均值后，cmd=0 阶段该值反映 sigma_stand
     打分下的站立稳定度，天然给出连续、非零的推进信号。
 
     第二个独立死锁（同一次排查发现）：`env.extras["log"]` 在 ManagerBasedRlEnv.step()
@@ -445,8 +445,8 @@ def commands_vel_adaptive(
     cfg.ang_vel_yaw_range = (-yaw_max, yaw_max)
 
     return {
-        "vel_lin_x_max": torch.tensor(lin_x_max),
-        "vel_yaw_max": torch.tensor(yaw_max),
+        "lin_vel_x_max": torch.tensor(lin_x_max),
+        "ang_vel_yaw_max": torch.tensor(yaw_max),
         "vel_ema": torch.tensor(ema),
         "vel_tracking_lin_vel": torch.tensor(
             float(tracking_lin_vel) if tracking_lin_vel is not None else float("nan")
