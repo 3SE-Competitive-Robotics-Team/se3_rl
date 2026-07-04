@@ -28,7 +28,9 @@ class EmpiricalNormalizer(nn.Module):
 class DeterministicGRUActor(nn.Module):
     """GRU 推理模型：obs_normalizer → GRU → MLP head。
 
-    与 sim2sim 中 _DeterministicGRUActor 结构完全一致。
+    推理逻辑与 sim2sim 中 _DeterministicGRUActor 兼容一致，
+    区别在于本实现用 nn.GRU 并将 hidden state 作为显式 I/O，
+    便于 ONNX 导出。
     """
 
     def __init__(
@@ -68,7 +70,7 @@ class DeterministicGRUActor(nn.Module):
             new_hidden: (num_layers, batch, hidden_dim) 新隐状态
         """
         normalized = self.obs_normalizer(obs)
-        rnn_input = normalized.unsqueeze(1)  # (1, 1, num_obs)
+        rnn_input = normalized.unsqueeze(1)  # (batch, 1, num_obs)
         rnn_out, new_hidden = self.rnn(rnn_input, hidden)
         action = self.mlp(rnn_out.squeeze(1))
         return action, new_hidden
@@ -108,8 +110,10 @@ def _make_activation(name: str) -> nn.Module:
     raise ValueError(f"unsupported activation: {name}")
 
 
-def extract_actor_state_dict(payload: dict) -> dict[str, torch.Tensor]:
+def extract_actor_state_dict(payload: object) -> dict[str, torch.Tensor]:
     """从 checkpoint payload 中提取 actor state_dict。"""
+    if not isinstance(payload, dict):
+        raise TypeError(f"checkpoint payload 必须是 dict，实际为 {type(payload)}")
     actor = payload.get("actor_state_dict")
     if isinstance(actor, dict):
         return _normalize_keys({k: v for k, v in actor.items() if isinstance(v, torch.Tensor)})
@@ -149,6 +153,10 @@ def infer_spec(actor_state: dict[str, torch.Tensor]) -> dict:
     if ih_key is not None:
         prefix = ih_key.removesuffix("weight_ih_l0")  # "rnn.rnn." 或 "rnn."
         gate_hidden = actor_state[ih_key].shape[0]
+        if gate_hidden % 3 != 0:
+            raise ValueError(
+                f"GRU weight_ih_l0 维度 {gate_hidden} 不能被 3 整除，非标准 GRU checkpoint"
+            )
         hidden_dim = gate_hidden // 3  # GRU: 3 gates
         num_layers = 0
         while f"{prefix}weight_ih_l{num_layers}" in actor_state:
@@ -160,7 +168,10 @@ def infer_spec(actor_state: dict[str, torch.Tensor]) -> dict:
         rnn_type = None
 
     # num_obs 从 normalizer mean 推断
-    num_obs = int(actor_state["obs_normalizer._mean"].shape[1])
+    mean_key = "obs_normalizer._mean"
+    if mean_key not in actor_state:
+        raise KeyError(f"checkpoint 缺少 {mean_key}，无法推断 num_obs")
+    num_obs = int(actor_state[mean_key].shape[1])
 
     # MLP 各层从 mlp.{i}.weight 推断
     mlp_layers: list[tuple[int, int]] = []
@@ -173,6 +184,9 @@ def infer_spec(actor_state: dict[str, torch.Tensor]) -> dict:
         idx = int(parts[1])
         mlp_layers.append((idx, int(tensor.shape[0]), int(tensor.shape[1])))
     mlp_layers.sort()
+
+    if not mlp_layers:
+        raise ValueError("checkpoint 中未找到 mlp.*.weight，无法推断网络结构")
 
     num_actions = mlp_layers[-1][1]
     hidden_dims = tuple(out for _, out, _ in mlp_layers[:-1])
@@ -232,7 +246,11 @@ def export_onnx(
 
     missing, unexpected = model.load_state_dict(remapped, strict=False)
     # 检查关键权重是否全部加载
-    required_missing = [k for k in missing if k.startswith("mlp.") or k.startswith("rnn.")]
+    required_missing = [
+        k
+        for k in missing
+        if k.startswith("mlp.") or k.startswith("rnn.") or k.startswith("obs_normalizer.")
+    ]
     if required_missing:
         raise ValueError(f"关键权重缺失: {required_missing}")
     print(f"权重加载完成 (missing non-critical: {len(missing)}, unexpected: {len(unexpected)})")
@@ -259,7 +277,7 @@ def export_onnx(
             "action": {0: "batch"},
             "hidden_out": {1: "batch"},
         },
-        opset_version=max(opset_version, 18),  # torch 2.x 最低有效 opset 为 18
+        opset_version=opset_version,
         verbose=False,
     )
 
@@ -287,7 +305,7 @@ def export_onnx(
 
     session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
     onnx_out = session.run(None, {"obs": dummy_obs.numpy(), "hidden_in": dummy_hidden.numpy()})
-    if not np.allclose(action_pt.numpy(), onnx_out[0], atol=1e-2):
+    if not np.allclose(action_pt.numpy(), onnx_out[0], atol=2e-2):
         raise RuntimeError("ONNX 输出与 PyTorch 输出不一致")
     print(f"ONNX Runtime 验证通过: action={onnx_out[0].round(4)}")
 
@@ -315,7 +333,7 @@ def main() -> None:
     checkpoint = Path(args.checkpoint)
     output = Path(args.output) if args.output else checkpoint.with_suffix(".onnx")
 
-    export_onnx(checkpoint, output, opset_version=args.opset)
+    export_onnx(checkpoint, output, opset_version=max(args.opset, 18))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 ---
 name: export-onnx
-description: 将 SE3 GRU actor checkpoint 导出为 ONNX 格式用于 NX 真机部署。当需要导出 ONNX 模型、转换 checkpoint、或准备部署模型时使用。支持 34D 观测输入、6D 动作输出的 GRU 策略。
+description: 将 SE3 GRU actor checkpoint 导出为 ONNX 用于模型部署。当需要导出 ONNX 模型、转换 checkpoint、或准备部署模型时使用。支持 34D 观测输入、6D 动作输出的 GRU 策略。（NX 真机部署链路由 se3_deploy 提供，该链路计划 deprecated，使用前请确认。）
 ---
 
 # SE3 ONNX 模型导出
