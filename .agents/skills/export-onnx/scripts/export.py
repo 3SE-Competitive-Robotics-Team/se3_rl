@@ -1,6 +1,6 @@
 """将 GRU actor checkpoint 导出为 ONNX 格式。
 
-用法: uv run python scripts/export_actor_onnx.py [--checkpoint <path>] [--output <path>]
+用法: uv run python .agents/skills/export-onnx/scripts/export.py [--checkpoint <path>] [--output <path>]
 """
 
 from __future__ import annotations
@@ -57,15 +57,15 @@ class DeterministicGRUActor(nn.Module):
         obs: torch.Tensor,
         hidden: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """单步推理。
+        """单步推理，支持任意 batch 维度。
 
         Args:
-            obs: (1, num_obs) 单帧观测
-            hidden: (num_layers, 1, hidden_dim) GRU 隐状态
+            obs: (batch, num_obs) 观测
+            hidden: (num_layers, batch, hidden_dim) GRU 隐状态
 
         Returns:
-            action: (1, num_actions) 动作输出
-            new_hidden: (num_layers, 1, hidden_dim) 新隐状态
+            action: (batch, num_actions) 动作输出
+            new_hidden: (num_layers, batch, hidden_dim) 新隐状态
         """
         normalized = self.obs_normalizer(obs)
         rnn_input = normalized.unsqueeze(1)  # (1, 1, num_obs)
@@ -190,10 +190,11 @@ def infer_spec(actor_state: dict[str, torch.Tensor]) -> dict:
 def export_onnx(
     checkpoint_path: str | Path,
     output_path: str | Path,
-    opset_version: int = 17,
+    opset_version: int = 18,
 ) -> None:
     checkpoint_path = Path(checkpoint_path)
     output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"加载 checkpoint: {checkpoint_path}")
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -257,7 +258,7 @@ def export_onnx(
             "action": {0: "batch"},
             "hidden_out": {1: "batch"},
         },
-        opset_version=opset_version,
+        opset_version=max(opset_version, 18),  # torch 2.x 最低有效 opset 为 18
         verbose=False,
     )
 
@@ -296,7 +297,7 @@ def main() -> None:
     parser.add_argument(
         "--opset",
         type=int,
-        default=17,
+        default=18,
         help="ONNX opset 版本",
     )
     args = parser.parse_args()
