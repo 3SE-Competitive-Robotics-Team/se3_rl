@@ -35,6 +35,12 @@ replays/
 opencode.json
 # PyTorch model checkpoints (only assets/base_model/ uses curated .pt files)
 *.pt
+
+# ONNX exported models
+*.onnx
+
+# ONNX Runtime engine cache
+ort_engine_cache/
 .DS_Store
 .vscode/
 xyh-learning/
