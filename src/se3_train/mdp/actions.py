@@ -60,7 +60,7 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
 
 
 class SerialLegDelayedAction(ActionTerm):
-    """在 raw action 层做 FIFO 延迟，然后写入腿位置目标和轮速目标。"""
+    """直接将 raw action 写入腿位置目标和轮速目标；动作延迟由执行器层 DelayBuffer 实现。"""
 
     cfg: SerialLegDelayedActionCfg
 
