@@ -43,7 +43,7 @@ from .forward_stairs import BoxForwardStairsTerrainCfg
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 _STAIR_RECOVERY_STATE_CACHE_PATH = (
-    _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_closedchain_stair_v3_40k.npz"
+    _PROJECT_ROOT / "assets" / "recovery_states_local" / "serialleg_closedchain_stair_v3_40k.npz"
 )
 _STAIR_WHEEL_KD = 0.08
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060

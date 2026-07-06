@@ -35,6 +35,7 @@ replays/
 opencode.json
 # PyTorch model checkpoints (only assets/base_model/ uses curated .pt files)
 *.pt
+assets/recovery_states_local/
 
 # ONNX exported models
 *.onnx
