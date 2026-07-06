@@ -7,7 +7,7 @@ import os
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 _DEFAULT_LOAD_RUN = "base_model"
-_DEFAULT_LOAD_CHECKPOINT = "rough_base\\.pt"
+_DEFAULT_LOAD_CHECKPOINT = "model_5999_gru\\.pt"
 _NUM_STEPS_PER_ENV = 64
 
 

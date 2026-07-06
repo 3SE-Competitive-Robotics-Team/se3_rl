@@ -26,7 +26,9 @@ def _parse_path_list(value: str) -> list[Path]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=Path("assets/base_model/model_4999.pt"))
+    parser.add_argument(
+        "--checkpoint", type=Path, default=Path("assets/base_model/model_5999_gru.pt")
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("logs/sweeps/stair_ctbc"))
     parser.add_argument("--levels", type=_parse_int_list, default=_parse_int_list("0,1,2,3,4,5"))
     parser.add_argument("--stair-step-height", type=float, default=None)

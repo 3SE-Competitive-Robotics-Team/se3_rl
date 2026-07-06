@@ -76,9 +76,8 @@ def _default_checkpoint_path() -> Path:
         )
     candidates.extend(
         [
-            REPO_ROOT / "assets" / "base_model" / "stair_base.pt",
-            REPO_ROOT / "assets" / "base_model" / "rough_base.pt",
-            REPO_ROOT / "assets" / "base_model" / "recovery-flat.pt",
+            REPO_ROOT / "assets" / "base_model" / "model_5999_gru.pt",
+            REPO_ROOT / "assets" / "base_model" / "model_4999_gru.pt",
         ]
     )
     for path in candidates:
@@ -86,7 +85,7 @@ def _default_checkpoint_path() -> Path:
             return path
     raise FileNotFoundError(
         "no usable checkpoint found; expected logs/remote_watch/**/model_*.pt "
-        "or assets/base_model/{stair_base,rough_base,recovery-flat}.pt"
+        "or assets/base_model/{model_5999_gru,model_4999_gru}.pt"
     )
 
 

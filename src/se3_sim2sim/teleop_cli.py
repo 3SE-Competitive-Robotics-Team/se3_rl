@@ -27,7 +27,7 @@ DEFAULT_TELEOP_CHECKPOINTS = (
     DEFAULT_DEPLOY_NPZ.with_suffix(".onnx"),
     DEFAULT_DEPLOY_SOURCE_CHECKPOINT,
 )
-DEFAULT_TELEOP_ROUGH_CHECKPOINT = Path("assets/base_model/rough_base.pt")
+DEFAULT_TELEOP_ROUGH_CHECKPOINT = Path("assets/base_model/model_5999_gru.pt")
 DEFAULT_MIN_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[0]
 DEFAULT_MAX_COMMAND_HEIGHT = RECOVERY_COMMAND_HEIGHT_RANGE_M[1]
 DEFAULT_COMMAND_LIN_ACCEL = 2.4
@@ -155,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "一键启用 rough terrain teleop，并在未显式传 --checkpoint 时加载 "
-            "assets/base_model/rough_base.pt。"
+            "assets/base_model/model_5999_gru.pt。"
         ),
     )
     parser.add_argument(
