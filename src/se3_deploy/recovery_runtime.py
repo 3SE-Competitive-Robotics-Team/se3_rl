@@ -18,6 +18,7 @@ from se3_shared import (
     PolicyActionDecoder,
     RobotConfig,
     policy_leg_position_error_np,
+    recovery_robot_config,
 )
 
 from .cdc import CdcSerial
@@ -107,7 +108,7 @@ class RecoveryActionTargetDecoder:
     """把 recovery raw action 解码成 STM32 侧直接执行的目标值。"""
 
     def __init__(self, *, command_height: float, robot_cfg: RobotConfig | None = None) -> None:
-        self.robot_cfg = RobotConfig() if robot_cfg is None else robot_cfg
+        self.robot_cfg = recovery_robot_config(robot_cfg)
         self.command_height = float(command_height)
         self.decoder = PolicyActionDecoder(
             robot_cfg=self.robot_cfg,
