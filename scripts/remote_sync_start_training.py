@@ -257,7 +257,7 @@ def build_changed_archive(archive: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Sync local code and start remote stair training.")
+    parser = argparse.ArgumentParser(description="同步本地代码并启动远端训练。")
     parser.add_argument("--entry-host", default="192.168.2.46")
     parser.add_argument("--entry-user", default="root", help="入口 SSH 用户。")
     parser.add_argument("--entry-port", type=int, default=2222, help="入口 SSH 端口。")
@@ -370,32 +370,24 @@ def parse_args() -> argparse.Namespace:
 
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
-    """生成与本次远端训练参数对应的本地 watcher 指令。"""
+    """生成通过 GitHub Release 值守的本机 watcher 指令。"""
+    actual_run_dir = run_dir or f"<run-dir-for-{args.run_name}>"
+    release_tag = "run-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", actual_run_dir)
     run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
-    route_args = (
-        "  --entry-host laptop-wg `\n"
-        "  --inner-host 192.168.2.46 `\n"
-        "  --inner-user root `\n"
-        "  --inner-port 2222 `\n"
-    )
     command_height_arg = (
         f"  --command-height {args.watch_command_height:g} `\n"
         if args.watch_command_height is not None
         else ""
     )
     return (
-        "uv run --no-sync python scripts/watch_remote_train_local.py `\n"
-        f"{route_args}"
-        f"  --namespace {args.namespace} `\n"
-        f"  --pod {args.pod} `\n"
-        f"  --remote-project {args.remote_project} `\n"
+        "uv run --no-sync python scripts/local_checkpoint_viser_watcher.py `\n"
+        "  --source github-release `\n"
+        f"  --github-release-tag {release_tag} `\n"
         f"{run_dir_arg}"
-        f"  --task {args.task} `\n"
         f"  --terrain-level {args.watch_terrain_level} `\n"
         f"{command_height_arg}"
         f"  --interval-iters {args.watch_interval_iters} `\n"
-        "  --poll-seconds 60 `\n"
-        "  --viewer viser"
+        "  --poll-seconds 60"
     )
 
 
@@ -637,7 +629,7 @@ echo "TRAIN_RUN_DIR=$run_dir"
         f"bash -lc {shlex.quote(f'tail -f {log_path}')}"
     )
     print(subprocess.list2cmdline(ssh_args(args, log_command)))
-    print("\nWatch Remote 指令:")
+    print("\n本机 GitHub Release watcher 指令:")
     print(watch_remote_command(args, run_dir=run_dir))
 
 

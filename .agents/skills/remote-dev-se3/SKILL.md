@@ -9,7 +9,7 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 
 - **Pod 隔离**：A800 集群为多用户共享环境。每个 machine 文件只对应一个用户的 pod，严禁操作同集群中其他用户的 pod 内进程（不得 exec、kill、cp、log 到非本文件指定的 pod）。`a800-xyh-am345` 只能操作 `abbtask-*` pod，不得触碰同 namespace 下其他 pod。
 - 当前 `codex/xyh` 默认使用 `abbtask` A800 Pod 与 `gpufree`；`wuyingyun` 是无影云单卡机器，仅在用户明确指定时作为 SSH、代理、训练或 checkpoint 目标。
-- 台阶训练优先使用 `scripts/remote_sync_start_stair.py`，不要重复手写同步和启动流程。
+- 远端训练优先使用 `scripts/remote_sync_start_training.py`，不要重复手写同步和启动流程。
 - 脚本负责远端预检查、checkpoint 检查、代码打包同步、`compileall`、训练启动，并输出日志和 `watch_remote` 指令。
 - 开发机不能直连 A800。默认控制链路是：开发机 `ssh laptop-wg`，再由 laptop 连接 `root@192.168.2.46:2222`，最后在 A800 宿主机执行 `kubectl exec -n gczx-project06 <当前 abbtask-* Pod> -- bash`。不要依赖 laptop 上的 A800 SSH alias。
 - 日常源码同步必须走 git：开发机提交并 push 后，控制 laptop 拉取代码，再从 laptop 同步/启动 A800。不要把本机工作区打包当作常规源码同步方式。
@@ -123,7 +123,7 @@ ssh laptop-wg "echo $hostB64 | base64 -d | bash"
 在 laptop 的 repo 根目录运行，而不是在开发机直接打包当前工作区：
 
 ```powershell
-ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_stair.py --namespace gczx-project06 --pod abbtask-79cdb78487-mgx44 --task SE3-WheelLegged-Stair-GRU --load-run base_model --load-checkpoint model_500\.pt --iterations 3000 --run-name <run_name> --job-name <job_name> --watch-terrain-level 9`""
+ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_training.py --namespace gczx-project06 --pod abbtask-79cdb78487-mgx44 --task SE3-WheelLegged-Stair-GRU --load-run base_model --load-checkpoint model_500\.pt --iterations 3000 --run-name <run_name> --job-name <job_name> --watch-terrain-level 9`""
 ```
 
 脚本默认排除 `assets/base_model` 以减少 laptop -> A800 传输时间。远端已有对应 checkpoint 时保持默认；只有需要把 laptop repo 里的基模同步进 A800 时加：
@@ -142,12 +142,12 @@ ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-
 - `TRAIN_PID`
 - `TRAIN_LOG`
 - `TRAIN_RUN_DIR`
-- 对应的 `watch_remote_train_local.py` 指令
+- 对应的 `local_checkpoint_viser_watcher.py` 指令
 
 保留 `--gpu-ids all`，通过 `--cuda-visible-devices` 指定物理 GPU：
 
 ```powershell
-ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_stair.py --pod abbtask-79cdb78487-mgx44 --gpu-ids all --cuda-visible-devices 1,2,3,4,5,6,7`""
+ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_training.py --pod abbtask-79cdb78487-mgx44 --gpu-ids all --cuda-visible-devices 1,2,3,4,5,6,7`""
 ```
 
 未指定 `--cuda-visible-devices` 时，脚本要求没有其他活跃训练进程；指定后脚本会检查选定 GPU 的显存占用。
@@ -164,7 +164,7 @@ grep -E 'Learning iteration|Mean reward|Stair/diag_ctbc_kff|Traceback|RuntimeErr
   /tmp/train_<job_name>.log | tail -160 || true
 ```
 
-优先使用启动脚本输出的 `watch_remote_train_local.py` 指令查看 checkpoint 和日志。台阶 Viser 值守不要用 A800/MJLab play，按下方“Viser 值守”使用本机 native watcher。
+优先使用启动脚本输出的 `local_checkpoint_viser_watcher.py` 指令值守 checkpoint。训练日志按上面的远端命令模板查看；台阶 Viser 值守不要用 A800/MJLab play，按下方“Viser 值守”使用本机 native watcher。
 
 ## 停止训练
 
@@ -313,6 +313,12 @@ uv run python scripts\github_release_checkpoint_publisher.py `
 
 `--stability-seconds 10` 必须显式传入，避免发布半写入 checkpoint。publisher 优先读取 `GITHUB_TOKEN` / `GH_TOKEN`，否则使用 git credential helper；它不依赖本机安装 `gh`。
 
+本机 `local_checkpoint_viser_watcher.py --source github-release` 优先调用
+`gh api` + `gh release download --output`，失败时才回退到 GitHub API。publisher 已在上传前检查
+checkpoint 稳定性，因此 GitHub 下载端不再重复等待 `--stability-seconds`；该参数只影响
+`--source remote`。30.6 MB checkpoint 实测首次同步约 18.0 秒，旧的
+`watch_remote_train_local.py` 两跳 SCP 约 124.1 秒，后者只作 GitHub 不可用时的 fallback。
+
 ### 6. 临时 scp fallback
 
 只在不需要 GitHub 留档或 GitHub 不可用时使用：
@@ -349,7 +355,7 @@ source /root/gpufree-data/se3_env.sh
 当前台阶远程训练不在 A800 pod 上开 MJLab Viser。A800/abbtask 只负责训练；值守默认是 GitHub Release checkpoint exchange + 本机 native MuJoCo closedchain Viser：
 
 ```powershell
-uv run python scripts\local_stair_viser_watcher.py `
+uv run python scripts\local_checkpoint_viser_watcher.py `
   --source github-release `
   --run-dir <run> `
   --github-release-tag run-<YYYYMMDD-HHMMSS>-<job> `
@@ -385,6 +391,10 @@ uv run se3-sim2sim `
 - 多次 HTTP 拉取平均延迟应在几十到一百毫秒量级；首次静态资源加载可更慢。
 
 远端连接或 GitHub 临时失败时，watcher 会回退到本机已有最新 checkpoint，保持当前 Viser 可用；这时画面不会自动更新到远端最新模型。恢复后下一轮 poll 会继续同步。
+
+运行 GitHub watcher 前，确认对应 tag 的 Release 已创建，并让
+`github_release_checkpoint_publisher.py` 在能拿到 laptop checkpoint 缓存的环境持续运行；
+watcher 只负责查询、下载和启动本机 viewer，不负责从 A800 生成 Release asset。
 
 只有在 GitHub exchange 不可用或需要排查 laptop native viewer 时，才使用旧方案：Windows laptop 运行 `se3-sim2sim --viewer viser --stair-terrain`，开发机 `ssh -N -L 8080:localhost:8080 laptop-wg` 转发 8080。该方案不再是默认值守路径。
 
