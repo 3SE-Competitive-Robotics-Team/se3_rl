@@ -14,6 +14,43 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def entry_destination(args: argparse.Namespace) -> str:
+    """生成入口 SSH 目标。"""
+    return f"{args.entry_user}@{args.entry_host}" if args.entry_user else args.entry_host
+
+
+def entry_ssh_args(args: argparse.Namespace) -> list[str]:
+    """生成入口 SSH 参数。"""
+    return [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-p",
+        str(args.entry_port),
+        entry_destination(args),
+    ]
+
+
+def entry_scp_args(args: argparse.Namespace) -> list[str]:
+    """生成入口 SCP 参数。"""
+    return ["scp", "-P", str(args.entry_port)]
+
+
+def inner_destination(args: argparse.Namespace) -> str:
+    """生成内层 SSH 目标。"""
+    return f"{args.inner_user}@{args.inner_host}" if args.inner_user else args.inner_host
+
+
+def inner_ssh_command(args: argparse.Namespace) -> str:
+    """生成在入口机执行的内层 SSH 前缀。"""
+    return f"ssh -o BatchMode=yes -p {args.inner_port} {shlex.quote(inner_destination(args))}"
+
+
+def inner_scp_command(args: argparse.Namespace) -> str:
+    """生成在入口机执行的内层 SCP 前缀。"""
+    return f"scp -P {args.inner_port}"
+
+
 def run(
     command: list[str],
     *,
@@ -44,9 +81,9 @@ def ssh_args(args: argparse.Namespace, command: str) -> list[str]:
     if args.inner_host:
         encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
         inner_command = f"echo {shlex.quote(encoded)} | base64 -d | bash"
-        nested = f"ssh {shlex.quote(args.inner_host)} {shlex.quote(inner_command)}"
-        return ["ssh", args.entry_host, nested]
-    return ["ssh", args.entry_host, command]
+        nested = f"{inner_ssh_command(args)} {shlex.quote(inner_command)}"
+        return [*entry_ssh_args(args), nested]
+    return [*entry_ssh_args(args), command]
 
 
 def pod_bash(
@@ -64,7 +101,11 @@ def pod_bash(
         f"echo {payload} | base64 -d | "
         f"kubectl exec -i -n {shlex.quote(namespace)} {shlex.quote(pod)} -- bash -s"
     )
-    route = f"{args.entry_host}->{args.inner_host}" if args.inner_host else args.entry_host
+    route = (
+        f"{entry_destination(args)}:{args.entry_port}->{inner_destination(args)}:{args.inner_port}"
+        if args.inner_host
+        else f"{entry_destination(args)}:{args.entry_port}"
+    )
     display = f"ssh {route} kubectl exec -n {namespace} {pod} -- bash -s  # {label}"
     return run(ssh_args(args, remote_command), capture=capture, display=display)
 
@@ -72,16 +113,17 @@ def pod_bash(
 def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path: str) -> None:
     """把本地文件复制到执行 kubectl 的远端主机。"""
     if not args.inner_host:
-        run(["scp", str(local_path), f"{args.entry_host}:{remote_path}"])
+        run([*entry_scp_args(args), str(local_path), f"{entry_destination(args)}:{remote_path}"])
         return
     entry_tmp = f"E:/se3_tmp/{Path(remote_path).name}.entry"
     try:
-        run(["scp", str(local_path), f"{args.entry_host}:{entry_tmp}"])
-        nested = f"scp {shlex.quote(entry_tmp)} {shlex.quote(args.inner_host + ':' + remote_path)}"
-        run(["ssh", args.entry_host, nested])
+        run([*entry_scp_args(args), str(local_path), f"{entry_destination(args)}:{entry_tmp}"])
+        destination = f"{inner_destination(args)}:{remote_path}"
+        nested = f"{inner_scp_command(args)} {shlex.quote(entry_tmp)} {shlex.quote(destination)}"
+        run([*entry_ssh_args(args), nested])
     finally:
         cleanup = f"Remove-Item -Force -ErrorAction SilentlyContinue '{entry_tmp}'"
-        run(["ssh", args.entry_host, cleanup])
+        run([*entry_ssh_args(args), cleanup])
 
 
 def rsync_to_remote_host(args: argparse.Namespace, remote_dir: str) -> None:
@@ -98,31 +140,46 @@ def rsync_to_remote_host(args: argparse.Namespace, remote_dir: str) -> None:
     if not args.sync_base_model:
         excludes.append("assets/base_model")
     exclude_args = [arg for pattern in excludes for arg in ("--exclude", pattern)]
-    base_command = [
+    base_options = [
         "rsync",
         "-az",
         "--delete",
         *exclude_args,
-        f"{REPO_ROOT}/",
     ]
     if not args.inner_host:
-        run([*base_command, f"{args.entry_host}:{remote_dir}/"])
+        run(
+            [
+                *base_options,
+                "-e",
+                f"ssh -p {args.entry_port}",
+                f"{REPO_ROOT}/",
+                f"{entry_destination(args)}:{remote_dir}/",
+            ]
+        )
         return
 
     mirror_dir = f"E:/se3_tmp/se3_wheel_leg_mirror_{args.pod}"
     run(
         [
-            "ssh",
-            args.entry_host,
+            *entry_ssh_args(args),
             f"New-Item -ItemType Directory -Force -Path '{mirror_dir}' | Out-Null",
         ]
     )
-    run([*base_command, f"{args.entry_host}:{mirror_dir}/"])
-    nested = (
-        "rsync -az --delete "
-        f"{shlex.quote(mirror_dir + '/')} {shlex.quote(args.inner_host + ':' + remote_dir + '/')}"
+    run(
+        [
+            *base_options,
+            "-e",
+            f"ssh -p {args.entry_port}",
+            f"{REPO_ROOT}/",
+            f"{entry_destination(args)}:{mirror_dir}/",
+        ]
     )
-    run(["ssh", args.entry_host, nested])
+    destination = f"{inner_destination(args)}:{remote_dir}/"
+    nested = (
+        f"rsync -az --delete -e {shlex.quote(f'ssh -p {args.inner_port}')} "
+        f"{shlex.quote(mirror_dir + '/')} {shlex.quote(destination)}"
+    )
+    run([*entry_ssh_args(args), nested])
 
 
 def archive_remote_host_dir(args: argparse.Namespace, remote_dir: str, remote_archive: str) -> None:
@@ -201,12 +258,16 @@ def build_changed_archive(archive: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync local code and start remote stair training.")
-    parser.add_argument("--entry-host", default="a800")
+    parser.add_argument("--entry-host", default="192.168.2.46")
+    parser.add_argument("--entry-user", default="root", help="入口 SSH 用户。")
+    parser.add_argument("--entry-port", type=int, default=2222, help="入口 SSH 端口。")
     parser.add_argument(
         "--inner-host",
         default=None,
-        help="两跳 SSH 的内层主机，例如从 laptop 再 ssh 到 a800。",
+        help="两跳 SSH 的内层主机地址。",
     )
+    parser.add_argument("--inner-user", default="root", help="内层 SSH 用户。")
+    parser.add_argument("--inner-port", type=int, default=2222, help="内层 SSH 端口。")
     parser.add_argument("--namespace", default="gczx-project06")
     parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
     parser.add_argument(
@@ -244,6 +305,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--envs", type=int, default=8192)
     parser.add_argument("--iterations", type=int, default=3000)
+    parser.add_argument(
+        "--save-interval",
+        type=int,
+        default=None,
+        help="覆盖 checkpoint 保存间隔；短链路测试可设为 1。",
+    )
     parser.add_argument(
         "--gpu-ids",
         default="all",
@@ -284,11 +351,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watch-interval-iters", type=int, default=100)
     parser.add_argument(
         "--sync-mode",
-        choices=("changed-tar", "rsync-host", "tar"),
+        choices=("none", "changed-tar", "rsync-host", "tar"),
         default="changed-tar",
         help=(
+            "none: 不同步源码，只使用远端现有工作区; "
             "changed-tar: 只同步 git 工作区改动; "
-            "rsync-host: 增量同步到 a800 host 后再 kubectl cp; tar: 旧的整包同步。"
+            "rsync-host: 增量同步到 A800 host 后再 kubectl cp; tar: 旧的整包同步。"
         ),
     )
     parser.add_argument(
@@ -305,11 +373,10 @@ def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -
     """生成与本次远端训练参数对应的本地 watcher 指令。"""
     run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
     route_args = (
-        f"  --host {args.inner_host} `\n"
-        f"  --entry-host {args.entry_host} `\n"
-        f"  --inner-host {args.inner_host} `\n"
-        if args.inner_host
-        else f"  --host {args.entry_host} `\n"
+        "  --entry-host laptop-wg `\n"
+        "  --inner-host 192.168.2.46 `\n"
+        "  --inner-user root `\n"
+        "  --inner-port 2222 `\n"
     )
     command_height_arg = (
         f"  --command-height {args.watch_command_height:g} `\n"
@@ -415,7 +482,22 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
         label="预检查远端环境和训练进程",
     )
 
-    if args.sync_mode == "changed-tar":
+    if args.sync_mode == "none":
+        sync_script = f"""
+set -euo pipefail
+cd {shlex.quote(args.remote_project)}
+export PYTHONPATH="$PWD/src${{PYTHONPATH:+:$PYTHONPATH}}"
+./.venv/bin/python -m compileall -q src scripts
+{checkpoint_check}
+"""
+        pod_bash(
+            args,
+            namespace=args.namespace,
+            pod=args.pod,
+            script=sync_script,
+            label="跳过源码同步并编译检查远端工作区",
+        )
+    elif args.sync_mode == "changed-tar":
         build_changed_archive(archive)
         copy_to_remote_host(args, archive, remote_archive)
     elif args.sync_mode == "rsync-host":
@@ -424,18 +506,19 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
     else:
         build_code_archive(archive, include_base_model=args.sync_base_model)
         copy_to_remote_host(args, archive, remote_archive)
-    run(
-        ssh_args(
-            args,
-            (
-                f"kubectl cp {shlex.quote(remote_archive)} "
-                f"{shlex.quote(args.namespace)}/{shlex.quote(args.pod)}:"
-                f"{shlex.quote(remote_archive)} -n {shlex.quote(args.namespace)}"
-            ),
+    if args.sync_mode != "none":
+        run(
+            ssh_args(
+                args,
+                (
+                    f"kubectl cp {shlex.quote(remote_archive)} "
+                    f"{shlex.quote(args.namespace)}/{shlex.quote(args.pod)}:"
+                    f"{shlex.quote(remote_archive)} -n {shlex.quote(args.namespace)}"
+                ),
+            )
         )
-    )
 
-    sync_script = f"""
+        sync_script = f"""
 set -euo pipefail
 cd {shlex.quote(args.remote_project)}
 tar -xzf {shlex.quote(remote_archive)}
@@ -455,13 +538,13 @@ compile_targets=(src scripts)
 ./.venv/bin/python -m compileall -q "${{compile_targets[@]}}"
 {checkpoint_check}
 """
-    pod_bash(
-        args,
-        namespace=args.namespace,
-        pod=args.pod,
-        script=sync_script,
-        label="解包同步代码并编译检查",
-    )
+        pod_bash(
+            args,
+            namespace=args.namespace,
+            pod=args.pod,
+            script=sync_script,
+            label="解包同步代码并编译检查",
+        )
 
     launch_args = [
         "./.venv/bin/se3-train",
@@ -486,6 +569,8 @@ compile_targets=(src scripts)
                 args.load_checkpoint,
             ]
         )
+    if args.save_interval is not None:
+        launch_args.extend(["--agent.save-interval", str(args.save_interval)])
     launch_command = " ".join(shlex.quote(value) for value in launch_args)
     cuda_visible_line = (
         f"export CUDA_VISIBLE_DEVICES={shlex.quote(cuda_visible_devices)}"
@@ -547,10 +632,11 @@ echo "TRAIN_RUN_DIR=$run_dir"
     run_dir = run_dir_match.group(1).strip() if run_dir_match else None
 
     print("\n训练已启动。日志监控命令:")
-    print(
-        f'ssh {args.entry_host} "kubectl exec -n {args.namespace} {args.pod} -- '
-        f"bash -lc 'tail -f {log_path}'\""
+    log_command = (
+        f"kubectl exec -n {args.namespace} {args.pod} -- "
+        f"bash -lc {shlex.quote(f'tail -f {log_path}')}"
     )
+    print(subprocess.list2cmdline(ssh_args(args, log_command)))
     print("\nWatch Remote 指令:")
     print(watch_remote_command(args, run_dir=run_dir))
 

@@ -108,14 +108,22 @@ def _ssh_options_for_shell() -> str:
     return " ".join(shlex.quote(part) for part in _SSH_STABILITY_OPTS)
 
 
+def _inner_destination(args: argparse.Namespace) -> str:
+    return f"{args.inner_user}@{args.inner_host}" if args.inner_user else args.inner_host
+
+
+def _inner_ssh_for_shell(args: argparse.Namespace) -> str:
+    return (
+        f"ssh {_ssh_options_for_shell()} -p {args.inner_port} "
+        f"{shlex.quote(_inner_destination(args))}"
+    )
+
+
 def _host_ssh_args(args: argparse.Namespace, command: str) -> list[str]:
     encoded = base64.b64encode(command.encode()).decode()
     remote_command = f"echo {shlex.quote(encoded)} | base64 -d | bash"
     if args.entry_host and args.inner_host:
-        inner = (
-            f"ssh {_ssh_options_for_shell()} "
-            f"{shlex.quote(args.inner_host)} {shlex.quote(remote_command)}"
-        )
+        inner = f"{_inner_ssh_for_shell(args)} {shlex.quote(remote_command)}"
         return ["ssh", *_SSH_STABILITY_OPTS, args.entry_host, inner]
     return ["ssh", *_SSH_STABILITY_OPTS, args.host, remote_command]
 
@@ -150,8 +158,8 @@ def _copy_host_file_to_local(
                 *_SSH_STABILITY_OPTS,
                 args.entry_host,
                 (
-                    f"scp {_ssh_options_for_shell()} "
-                    f"{shlex.quote(args.inner_host + ':' + host_path)} "
+                    f"scp {_ssh_options_for_shell()} -P {args.inner_port} "
+                    f"{shlex.quote(_inner_destination(args) + ':' + host_path)} "
                     f"{shlex.quote(entry_tmp)}"
                 ),
             ],
@@ -377,17 +385,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copy remote checkpoints and view the real training scene locally."
     )
-    parser.add_argument("--host", default="a800")
+    parser.add_argument("--host", default="192.168.2.46")
     parser.add_argument(
         "--entry-host",
-        default=None,
+        default="laptop-wg",
         help="两跳 SSH 的入口机；设置后需同时设置 --inner-host。",
     )
     parser.add_argument(
         "--inner-host",
-        default=None,
-        help="两跳 SSH 的训练机别名，例如从入口机再 ssh 到 a800。",
+        default="192.168.2.46",
+        help="两跳 SSH 的训练机地址。",
     )
+    parser.add_argument("--inner-user", default="root", help="内层 SSH 用户。")
+    parser.add_argument("--inner-port", type=int, default=2222, help="内层 SSH 端口。")
     parser.add_argument("--namespace", default="gczx-project06")
     parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
     parser.add_argument(
@@ -460,7 +470,10 @@ def main() -> None:
     run_dir = _resolve_run_dir(args)
     print(f"[local-watch] remote run: {run_dir}")
     if args.entry_host and args.inner_host:
-        print(f"[local-watch] ssh route: {args.entry_host} -> {args.inner_host}")
+        print(
+            "[local-watch] ssh route: "
+            f"{args.entry_host} -> {_inner_destination(args)}:{args.inner_port}"
+        )
     print(f"[local-watch] viewer task: {_viewer_task(args)}")
 
     last_iter = -1
