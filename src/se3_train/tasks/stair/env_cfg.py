@@ -800,7 +800,16 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "collision_sensor_name": "collision_sensor",
         },
     )
+    # 第一轮最小验证只恢复真实登阶进度与持续支撑高度，避免一次引入整套 shaping。
+    first_round_stair_rewards = {
+        name: cfg.rewards[name]
+        for name in (
+            "stair_climb_progress",
+            "stair_support_height",
+        )
+    }
     _configure_recovery_discovery_reward_contract(cfg)
+    cfg.rewards.update(first_round_stair_rewards)
     # Stair 上阶过程需要允许机身自由升降，暂不让精确高度跟踪参与优化。
     cfg.rewards["tracking_height"] = replace(cfg.rewards["tracking_height"], weight=0.0)
     if "bad_orientation" in cfg.terminations:
