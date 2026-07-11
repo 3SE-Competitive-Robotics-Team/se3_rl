@@ -18,12 +18,15 @@ from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared import (
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
-    periodic_policy_action_delta_torch,
     periodic_policy_action_second_difference_torch,
     policy_leg_position_error_torch,
 )
 from se3_train.mdp import recovery_state
+from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.diagnostic_logging import (
+    should_log_diagnostics,
+)
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     active_rod_angle_terms,
@@ -82,9 +85,11 @@ def _should_log_step(
     env: ManagerBasedRlEnv, interval: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS
 ) -> bool:
     """按 policy step 降频写 host 标量日志。"""
-    step = int(getattr(env, "common_step_counter", 0))
-    interval = max(1, int(getattr(env, "_se3_reward_log_interval_steps", interval)))
-    return interval <= 1 or (step - 1) % interval == 0
+    return should_log_diagnostics(
+        env,
+        interval,
+        attr_name="_se3_reward_log_interval_steps",
+    )
 
 
 def _command_curriculum_metrics_enabled(env: ManagerBasedRlEnv) -> bool:
@@ -467,6 +472,12 @@ def _upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
     return torch.square(1.0 - projected_gravity_z)
 
 
+def _recovery_upward_score(projected_gravity_z: torch.Tensor) -> torch.Tensor:
+    """Recovery 专用直立分数：倒置也保留梯度，近直立额外加权。"""
+    upright = torch.clamp((1.0 - projected_gravity_z) * 0.5, 0.0, 1.0)
+    return 2.0 * upright + 2.0 * torch.pow(upright, 4.0)
+
+
 def _recovery_penalty_gate(
     env: ManagerBasedRlEnv, projected_gravity_z: torch.Tensor
 ) -> torch.Tensor:
@@ -494,6 +505,32 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
                 "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
                 "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
                 "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
+            }
+        )
+        _log_cached_reset_diagnostics(env)
+
+    return reward
+
+
+def recovery_upward(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """倒地自起用向上奖励，对倒置/侧躺阶段提供连续引导。"""
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    reward = _recovery_upward_score(pg_z)
+
+    if hasattr(env, "extras") and _should_log_step(env):
+        tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+        upright_15 = tilt < torch.deg2rad(torch.as_tensor(15.0, device=env.device))
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Locomotion/upward": reward.mean().item(),
+                "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
+                "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
+                "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
+                "Recovery/diag_recovery_upward_linear": torch.clamp((1.0 - pg_z) * 0.5, 0.0, 1.0)
+                .mean()
+                .item(),
             }
         )
         _log_cached_reset_diagnostics(env)
@@ -1140,7 +1177,7 @@ def leg_power(
 def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
     """当前动作与上一动作差值的平方和。"""
     action = env.action_manager.action
-    action_delta = periodic_policy_action_delta_torch(action, env.action_manager.prev_action)
+    action_delta = action - env.action_manager.prev_action
     penalty = torch.sum(action_delta**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -1176,6 +1213,37 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
     return penalty
 
 
+def _action_term_for_robot(env: ManagerBasedRlEnv, robot) -> object | None:
+    action_manager = getattr(env, "action_manager", None)
+    if action_manager is None:
+        return None
+    for term_name in action_manager.active_terms:
+        term = action_manager.get_term(term_name)
+        if getattr(term, "_entity", None) is robot:
+            return term
+    return None
+
+
+def _action_tensor_attr(term: object | None, name: str, shape: torch.Size) -> torch.Tensor | None:
+    value = getattr(term, name, None)
+    if isinstance(value, torch.Tensor) and value.shape == shape:
+        return value
+    return None
+
+
+def _select_action_tensor(
+    term: object | None,
+    shape: torch.Size,
+    fallback: torch.Tensor,
+    *names: str,
+) -> torch.Tensor:
+    for name in names:
+        value = _action_tensor_attr(term, name, shape)
+        if value is not None:
+            return value
+    return fallback
+
+
 def _action_rate_slice(
     env: ManagerBasedRlEnv,
     start: int,
@@ -1183,27 +1251,40 @@ def _action_rate_slice(
     recovery_scale: float | None = None,
 ) -> torch.Tensor:
     """指定动作维度的一阶变化平方和。"""
-    action_delta = periodic_policy_action_delta_torch(
-        env.action_manager.action,
-        env.action_manager.prev_action,
-    )
+    action_delta = env.action_manager.action - env.action_manager.prev_action
     penalty = torch.sum(action_delta[:, start:stop] ** 2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
     return penalty
 
 
-def leg_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+def leg_action_rate(
+    env: ManagerBasedRlEnv,
+    recovery_scale: float | None = None,
+) -> torch.Tensor:
     """腿部动作一阶变化平方和。"""
-    penalty = _action_rate_slice(env, 0, 4, recovery_scale=recovery_scale)
+    penalty = _action_rate_slice(
+        env,
+        0,
+        4,
+        recovery_scale=recovery_scale,
+    )
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Recovery/diag_leg_action_rate"] = penalty.mean().item()
     return penalty
 
 
-def wheel_action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
+def wheel_action_rate(
+    env: ManagerBasedRlEnv,
+    recovery_scale: float | None = None,
+) -> torch.Tensor:
     """轮子动作一阶变化平方和。"""
-    penalty = _action_rate_slice(env, 4, 6, recovery_scale=recovery_scale)
+    penalty = _action_rate_slice(
+        env,
+        4,
+        6,
+        recovery_scale=recovery_scale,
+    )
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Recovery/diag_wheel_action_rate"] = penalty.mean().item()
     return penalty
@@ -1232,7 +1313,12 @@ def action_smoothness(
         setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
         return torch.zeros(env.num_envs, device=env.device)
 
-    action_acc = periodic_policy_action_second_difference_torch(action, prev, prev_prev)
+    action_acc = periodic_policy_action_second_difference_torch(
+        action,
+        prev,
+        prev_prev,
+        front_action_period=front_action_periods_from_env(env),
+    )
     setattr(env, _ACTION_SMOOTH_PREV_PREV_ATTR, prev.detach().clone())
     setattr(env, _ACTION_SMOOTH_PREV_ATTR, action.detach().clone())
 
@@ -1420,19 +1506,16 @@ def recovery_diagnostics(
     contact_force_threshold: float = 35.0,
     action_saturation_threshold: float = 0.95,
     active_rod_margin_warning: float = 0.05,
-    log_interval_steps: int = 1,
-    core_log_interval_steps: int = 1,
+    log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
+    core_log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
 ) -> torch.Tensor:
     """记录 recovery one-policy 诊断量，返回 0 以避免改变奖励语义。"""
     zero = torch.zeros(env.num_envs, device=env.device)
     if not hasattr(env, "extras"):
         return zero
 
-    step = int(getattr(env, "common_step_counter", 0))
-    heavy_interval = max(1, int(log_interval_steps))
-    core_interval = max(1, int(core_log_interval_steps))
-    heavy_due = heavy_interval <= 1 or (step - 1) % heavy_interval == 0
-    core_due = core_interval <= 1 or (step - 1) % core_interval == 0
+    heavy_due = _should_log_step(env, log_interval_steps)
+    core_due = _should_log_step(env, core_log_interval_steps)
     if not heavy_due and not core_due:
         return zero
 
@@ -1487,35 +1570,48 @@ def recovery_diagnostics(
     turning = torch.abs(cmd_yaw) >= 0.2
     standing = cmd_speed < 0.1
 
-    action = env.action_manager.action
-    prev_action = env.action_manager.prev_action
-    action_manager = getattr(env, "action_manager", None)
-    action_term = None
-    if action_manager is not None:
-        for term_name in action_manager.active_terms:
-            term = action_manager.get_term(term_name)
-            if getattr(term, "_entity", None) is robot:
-                action_term = term
-                break
-    unclipped_action = getattr(action_term, "unclipped_action", None)
-    if not isinstance(unclipped_action, torch.Tensor) or unclipped_action.shape != action.shape:
-        unclipped_action = action
+    actor_action = env.action_manager.action
+    prev_actor_action = env.action_manager.prev_action
+    action_term = _action_term_for_robot(env, robot)
+    action = _select_action_tensor(
+        action_term, actor_action.shape, actor_action, "policy_action", "raw_action"
+    )
+    term_cfg = getattr(action_term, "cfg", None)
+    term_clip = getattr(term_cfg, "action_clip", None)
+    prev_action = (
+        torch.clamp(prev_actor_action, -float(term_clip), float(term_clip))
+        if term_clip is not None
+        else prev_actor_action
+    )
+    unclipped_action = _select_action_tensor(
+        action_term, actor_action.shape, actor_action, "unclipped_action"
+    )
+    actor_action_abs = torch.abs(actor_action)
     action_abs = torch.abs(action)
     unclipped_action_abs = torch.abs(unclipped_action)
-    action_delta = periodic_policy_action_delta_torch(action, prev_action)
+    action_delta = action - prev_action
+    actor_action_delta = actor_action - prev_actor_action
     max_abs_action = torch.max(action_abs, dim=1).values
     leg_action_abs = action_abs[:, :4]
     wheel_action_abs = action_abs[:, 4:6]
+    actor_leg_action_abs = actor_action_abs[:, :4]
+    actor_wheel_action_abs = actor_action_abs[:, 4:6]
     unclipped_leg_action_abs = unclipped_action_abs[:, :4]
     unclipped_wheel_action_abs = unclipped_action_abs[:, 4:6]
     max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
     max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
+    max_abs_actor_action = torch.max(actor_action_abs, dim=1).values
+    max_abs_actor_leg_action = torch.max(actor_leg_action_abs, dim=1).values
+    max_abs_actor_wheel_action = torch.max(actor_wheel_action_abs, dim=1).values
     max_abs_unclipped_action = torch.max(unclipped_action_abs, dim=1).values
     max_abs_unclipped_leg_action = torch.max(unclipped_leg_action_abs, dim=1).values
     max_abs_unclipped_wheel_action = torch.max(unclipped_wheel_action_abs, dim=1).values
     action_saturated = max_abs_action > float(action_saturation_threshold)
     leg_action_saturated = max_abs_leg_action > float(action_saturation_threshold)
     wheel_action_saturated = max_abs_wheel_action > float(action_saturation_threshold)
+    actor_action_saturated = max_abs_actor_action > float(action_saturation_threshold)
+    actor_leg_action_saturated = max_abs_actor_leg_action > float(action_saturation_threshold)
+    actor_wheel_action_saturated = max_abs_actor_wheel_action > float(action_saturation_threshold)
     unclipped_action_saturated = max_abs_unclipped_action > float(action_saturation_threshold)
     unclipped_leg_action_saturated = max_abs_unclipped_leg_action > float(
         action_saturation_threshold
@@ -1572,7 +1668,21 @@ def recovery_diagnostics(
                 "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
                 "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
                 "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
-                "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
+                "Recovery/diag_applied_max_abs_action": max_abs_action.mean().item(),
+                "Recovery/diag_applied_max_abs_leg_action": max_abs_leg_action.mean().item(),
+                "Recovery/diag_applied_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+                "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean().item(),
+                "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean().item(),
+                "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean().item(),
+                "Recovery/diag_applied_action_saturation_rate": action_saturated.float()
+                .mean()
+                .item(),
+                "Recovery/diag_raw_action_saturation_rate": actor_action_saturated.float()
+                .mean()
+                .item(),
+                "Recovery/diag_actor_action_saturation_rate": actor_action_saturated.float()
+                .mean()
+                .item(),
                 "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float()
                 .mean()
                 .item(),
@@ -1589,6 +1699,14 @@ def recovery_diagnostics(
                 .mean()
                 .item(),
                 "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
+                .mean()
+                .item(),
+                "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
+                .mean()
+                .item(),
+                "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
+                    actor_action_delta, dim=1
+                )
                 .mean()
                 .item(),
                 "Recovery/diag_active_target_mean_rad": active_target_mean,
@@ -1693,16 +1811,36 @@ def recovery_diagnostics(
             "Recovery/diag_max_abs_action": max_abs_action.mean().item(),
             "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean().item(),
             "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_applied_max_abs_action": max_abs_action.mean().item(),
+            "Recovery/diag_applied_max_abs_leg_action": max_abs_leg_action.mean().item(),
+            "Recovery/diag_applied_max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+            "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean().item(),
+            "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean().item(),
+            "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean().item(),
             "Recovery/diag_unclipped_max_abs_action": max_abs_unclipped_action.mean().item(),
             "Recovery/diag_unclipped_max_abs_leg_action": max_abs_unclipped_leg_action.mean().item(),
             "Recovery/diag_unclipped_max_abs_wheel_action": max_abs_unclipped_wheel_action.mean().item(),
             "Recovery/diag_leg_action_abs_mean": leg_action_abs.mean().item(),
             "Recovery/diag_wheel_action_abs_mean": wheel_action_abs.mean().item(),
+            "Recovery/diag_actor_leg_action_abs_mean": actor_leg_action_abs.mean().item(),
+            "Recovery/diag_actor_wheel_action_abs_mean": actor_wheel_action_abs.mean().item(),
             "Recovery/diag_unclipped_leg_action_abs_mean": unclipped_leg_action_abs.mean().item(),
             "Recovery/diag_unclipped_wheel_action_abs_mean": unclipped_wheel_action_abs.mean().item(),
-            "Recovery/diag_raw_action_saturation_rate": action_saturated.float().mean().item(),
+            "Recovery/diag_applied_action_saturation_rate": action_saturated.float().mean().item(),
+            "Recovery/diag_raw_action_saturation_rate": actor_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_actor_action_saturation_rate": actor_action_saturated.float()
+            .mean()
+            .item(),
             "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float().mean().item(),
             "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_actor_leg_action_saturation_rate": actor_leg_action_saturated.float()
+            .mean()
+            .item(),
+            "Recovery/diag_actor_wheel_action_saturation_rate": actor_wheel_action_saturated.float()
             .mean()
             .item(),
             "Recovery/diag_unclipped_raw_action_saturation_rate": unclipped_action_saturated.float()
@@ -1718,6 +1856,12 @@ def recovery_diagnostics(
                 action_saturated.float(), upright_15
             ),
             "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean().item(),
+            "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
+            .mean()
+            .item(),
+            "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(actor_action_delta, dim=1)
+            .mean()
+            .item(),
             "Recovery/diag_joint_error_norm_rad": joint_error_norm.mean().item(),
             "Recovery/diag_fixed_default_joint_error_norm_rad": fixed_joint_error_norm.mean().item(),
             "Recovery/diag_dynamic_default_joint_error_rad": joint_error_norm.mean().item(),
@@ -1811,6 +1955,9 @@ def recovery_diagnostics(
             log[f"Recovery/diag_action_saturation_rate_by_reset_bin/{bin_name}"] = _masked_mean(
                 action_saturated.float(), bin_mask
             )
+            log[f"Recovery/diag_actor_action_saturation_rate_by_reset_bin/{bin_name}"] = (
+                _masked_mean(actor_action_saturated.float(), bin_mask)
+            )
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_bin/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
             )
@@ -1837,11 +1984,20 @@ def recovery_diagnostics(
             log[f"Recovery/diag_action_saturation_rate_by_reset_pose/{bin_name}"] = _masked_mean(
                 action_saturated.float(), bin_mask
             )
+            log[f"Recovery/diag_actor_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(actor_action_saturated.float(), bin_mask)
+            )
             log[f"Recovery/diag_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
                 _masked_mean(leg_action_saturated.float(), bin_mask)
             )
             log[f"Recovery/diag_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
                 _masked_mean(wheel_action_saturated.float(), bin_mask)
+            )
+            log[f"Recovery/diag_actor_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(actor_leg_action_saturated.float(), bin_mask)
+            )
+            log[f"Recovery/diag_actor_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
+                _masked_mean(actor_wheel_action_saturated.float(), bin_mask)
             )
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_pose/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
@@ -1883,7 +2039,16 @@ def recovery_diagnostics(
         log[f"Recovery/diag_height_error_signed_by_cmd_height/{height_name}"] = _masked_mean(
             height_error, height_mask
         )
+        log[f"Recovery/diag_applied_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(action_saturated.float(), height_mask)
+        )
         log[f"Recovery/diag_raw_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
+            actor_action_saturated.float(), height_mask
+        )
+        log[f"Recovery/diag_actor_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(actor_action_saturated.float(), height_mask)
+        )
+        log[f"Recovery/diag_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
             action_saturated.float(), height_mask
         )
         log[f"Recovery/diag_leg_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
@@ -1891,6 +2056,12 @@ def recovery_diagnostics(
         )
         log[f"Recovery/diag_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
             _masked_mean(wheel_action_saturated.float(), height_mask)
+        )
+        log[f"Recovery/diag_actor_leg_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(actor_leg_action_saturated.float(), height_mask)
+        )
+        log[f"Recovery/diag_actor_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
+            _masked_mean(actor_wheel_action_saturated.float(), height_mask)
         )
         log[f"Recovery/diag_active_rod_margin_min_by_cmd_height/{height_name}"] = _masked_min(
             min_margin, height_mask
@@ -1932,7 +2103,7 @@ def flat_leg_contact_penalty(
     has_contact = (force_mag > float(force_threshold)).any(dim=1)
     _accumulate_command_curriculum_metric(env, "leg_contact", has_contact.float(), active)
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Locomotion/flat_leg_contact_rate"] = _masked_mean(
             has_contact.float(), active
         )
@@ -1992,7 +2163,7 @@ def flat_wheel_contact_penalty(
     contact_ratio = in_contact.float().mean(dim=1)
     penalty = 1.0 - contact_ratio
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/flat_wheel_contact_ratio": _masked_mean(contact_ratio, active),
@@ -2150,7 +2321,7 @@ def upright_wheel_contact_penalty(
     contact_ratio = in_contact.float().mean(dim=1)
     penalty = (1.0 - contact_ratio) * gate
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/upright_wheel_contact_ratio": _masked_mean(contact_ratio, active),
@@ -2217,7 +2388,7 @@ def upright_wheel_slip_penalty(
     )
     penalty = torch.clamp(penalty, max=float(max_penalty))
 
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict):
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
                 "Locomotion/upright_idle_wheel_speed": _masked_mean(
@@ -2255,7 +2426,7 @@ def recovery_upright(
     pg_z = robot.data.projected_gravity_b[:, 2]
     upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
         cache_reset = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")
         log = {
@@ -2398,7 +2569,7 @@ def recovery_progress(
     prev_upright[active] = upright[active].detach()
     prev_height[active] = height[active].detach()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/progress_reward": reward[active].mean().item() if active.any() else 0.0,
@@ -2424,7 +2595,7 @@ def recovery_hard_tilt_upright(
     upright_half = torch.clamp(-pg_z, 0.0, 1.0)
     reward = upright_half.pow(float(power)) * hard_tilt.float()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/hard_tilt_upright_reward": _masked_mean(reward, hard_tilt),
@@ -2464,7 +2635,7 @@ def recovery_hard_tilt_supported_upright(
     reward = upright_half * supported.float() + milestone.float() * float(near_upright_bonus)
     reward = reward * hard_tilt.float()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
                 "Recovery/hard_tilt_supported_upright_reward": _masked_mean(reward, hard_tilt),
@@ -2510,7 +2681,7 @@ def recovery_stable_bonus(
         success.float() * float(per_step_bonus) + completed.float() * float(completion_bonus)
     ) * active.float()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         valid_time = episode & (time_to_success >= 0)
         ever_completed = episode & (time_to_success >= 0)
         env.extras.setdefault("log", {}).update(
@@ -2548,7 +2719,7 @@ def recovery_height(
     near_upright_gate = _smoothstep01((float(gate_start_deg) - tilt) / gate_span)
     near_upright_gate = torch.clamp(near_upright_gate, min=float(min_gate))
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         hard_tilt = _recovery_hard_tilt_mask(env)
         env.extras.setdefault("log", {}).update(
             {
@@ -2589,7 +2760,7 @@ def recovery_wheel_contact(
     gate_span = max(float(gate_start_deg) - float(gate_full_deg), 1.0e-6)
     near_upright_gate = torch.clamp((float(gate_start_deg) - tilt) / gate_span, 0.0, 1.0)
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_step(env):
         hard_tilt = _recovery_hard_tilt_mask(env)
         env.extras.setdefault("log", {}).update(
             {
@@ -2605,7 +2776,8 @@ def recovery_wheel_contact(
 
 
 def joint_mirror(
-    env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """左右关节位置差的平均平方,直立门控。"""
     robot = env.scene[asset_cfg.name]
@@ -2615,7 +2787,15 @@ def joint_mirror(
     hip_diff, knee_diff = _policy_leg_mirror_diffs(robot)
     diff = torch.stack((hip_diff, knee_diff), dim=1)
     num_pairs = 2
-    return torch.sum(diff**2, dim=1) / num_pairs * gate
+    penalty = torch.sum(diff**2, dim=1) / num_pairs * gate
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        active = gate > 0.0
+        env.extras["log"].update(
+            {
+                "Recovery/diag_joint_mirror": _masked_mean(penalty, active),
+            }
+        )
+    return penalty
 
 
 def collision(

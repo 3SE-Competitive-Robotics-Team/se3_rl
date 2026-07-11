@@ -229,6 +229,16 @@ class PolicyRuntime:
         if isinstance(self.model, _DeterministicGRUActor):
             self.model.reset_hidden(self.device)
 
+    def hidden_state_norm(self) -> float | None:
+        """返回当前 recurrent hidden state 的 L2 norm；非 GRU 策略返回 None。"""
+        model = getattr(self, "model", None)
+        if isinstance(model, _DeterministicGRUActor):
+            hidden = model._hidden
+            if hidden is None:
+                return None
+            return float(torch.linalg.norm(hidden).detach().cpu().item())
+        return None
+
     def act(self, obs: np.ndarray) -> np.ndarray:
         if self._numpy_policy is not None:
             return self._numpy_policy.act(obs)
@@ -420,11 +430,10 @@ class PolicyRuntime:
         critic = (
             self._linear_shapes(critic_state_dict, "mlp") if critic_state_dict is not None else []
         )
-        resolved = replace(
-            spec,
-            contract=self.runtime.policy.contract,
-            num_critic_obs=int(critic[0][1]) if critic else spec.num_critic_obs,
-        )
+        resolved_kwargs = {"num_critic_obs": int(critic[0][1]) if critic else spec.num_critic_obs}
+        if hasattr(self.runtime.policy, "contract") and hasattr(spec, "contract"):
+            resolved_kwargs["contract"] = self.runtime.policy.contract
+        resolved = replace(spec, **resolved_kwargs)
 
         # MLP shape 验证：GRU 时第一层输入是 rnn_hidden_dim，MLP 时是 num_obs
         mlp_input_dim = resolved.rnn_hidden_dim if resolved.is_recurrent else resolved.num_obs

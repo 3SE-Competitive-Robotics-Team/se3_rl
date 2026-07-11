@@ -22,7 +22,9 @@ _WHEEL_X = -0.15699
 _WHEEL_Z = -0.21049
 _DRIVE_X = 0.04009536
 _DRIVE_Z = 0.04530576
-_COUPLER_LEN = math.hypot(-0.16999653, 0.00108627)
+_COUPLER_X = -0.16999653
+_COUPLER_Z = 0.00108627
+_COUPLER_LEN = math.hypot(_COUPLER_X, _COUPLER_Z)
 _CALF_LEN = math.hypot(_CALF_X, _CALF_Z)
 _CALF_ZERO_ANGLE = math.atan2(_CALF_Z, _CALF_X)
 _ACTIVE_LOWER = 0.0
@@ -88,6 +90,18 @@ def policy_to_output_pos_torch(policy_pos: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def policy_to_closedchain_passive_pos_torch(policy_pos: torch.Tensor) -> torch.Tensor:
+    """把 policy 主动杆语义映射为闭链被动关节 [LF1, L coupler, RF1, R coupler]。"""
+    out = torch.empty_like(policy_pos)
+    left_alpha = (policy_pos[:, 0] - policy_pos[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = (policy_pos[:, 3] - policy_pos[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    out[:, 0] = output_knee_from_active_angle_torch(left_alpha)
+    out[:, 1] = coupler_from_active_angle_torch(left_alpha)
+    out[:, 2] = -output_knee_from_active_angle_torch(right_alpha)
+    out[:, 3] = -coupler_from_active_angle_torch(right_alpha)
+    return out
+
+
 def output_to_policy_pos_torch(output_pos: torch.Tensor) -> torch.Tensor:
     """把开树输出膝角反解回虚拟主动杆语义。"""
     out = output_pos.clone()
@@ -124,6 +138,23 @@ def policy_to_output_vel_torch(policy_pos: torch.Tensor, policy_vel: torch.Tenso
     return out
 
 
+def policy_to_closedchain_passive_vel_torch(
+    policy_pos: torch.Tensor,
+    policy_vel: torch.Tensor,
+) -> torch.Tensor:
+    """把 policy 主动杆速度映射为闭链被动关节速度 [LF1, L coupler, RF1, R coupler]。"""
+    out = torch.empty_like(policy_vel)
+    left_alpha = (policy_pos[:, 0] - policy_pos[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = (policy_pos[:, 3] - policy_pos[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    left_alpha_dot = policy_vel[:, 0] - policy_vel[:, 1]
+    right_alpha_dot = policy_vel[:, 3] - policy_vel[:, 2]
+    out[:, 0] = output_knee_jacobian_torch(left_alpha, right_side=False) * left_alpha_dot
+    out[:, 1] = coupler_jacobian_torch(left_alpha, right_side=False) * left_alpha_dot
+    out[:, 2] = output_knee_jacobian_torch(right_alpha, right_side=True) * right_alpha_dot
+    out[:, 3] = coupler_jacobian_torch(right_alpha, right_side=True) * right_alpha_dot
+    return out
+
+
 def active_angle_from_output_knee_torch(
     output_knee: torch.Tensor,
     *,
@@ -139,6 +170,22 @@ def output_knee_jacobian_torch(active_angle: torch.Tensor, *, right_side: bool) 
     """计算输出膝角对主动杆夹角的数值雅可比。"""
     alpha_grid, _, _, _, jacobian_grid = _fourbar_lut(active_angle.device, active_angle.dtype)
     value = _interp_lut(active_angle, alpha_grid, jacobian_grid)
+    return -value if right_side else value
+
+
+def coupler_from_active_angle_torch(active_angle: torch.Tensor) -> torch.Tensor:
+    """由主动杆夹角计算左腿闭链 coupler 关节角。"""
+    return _coupler_from_active_angle_analytic_torch(active_angle)
+
+
+def coupler_jacobian_torch(active_angle: torch.Tensor, *, right_side: bool) -> torch.Tensor:
+    """计算 coupler 关节角对主动杆夹角的数值雅可比。"""
+    eps = torch.as_tensor(1.0e-3, device=active_angle.device, dtype=active_angle.dtype)
+    lo = (active_angle - eps).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    hi = (active_angle + eps).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    value = (coupler_from_active_angle_torch(hi) - coupler_from_active_angle_torch(lo)) / (
+        hi - lo
+    ).clamp_min(1.0e-6)
     return -value if right_side else value
 
 
@@ -220,6 +267,36 @@ def output_knee_from_active_angle_np(active_angle: float) -> float:
     alpha_grid, knee_grid, _, _, _ = _fourbar_lut_np()
     alpha = float(np.clip(active_angle, _ACTIVE_LOWER, _ACTIVE_UPPER))
     return float(np.interp(alpha, alpha_grid, knee_grid))
+
+
+def _coupler_from_active_angle_analytic_torch(active_angle: torch.Tensor) -> torch.Tensor:
+    """解析计算左腿 coupler 关节角。"""
+    alpha = active_angle.clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    beta = -alpha
+    cos_b = torch.cos(beta)
+    sin_b = torch.sin(beta)
+    px = cos_b * _DRIVE_X + sin_b * _DRIVE_Z
+    pz = -sin_b * _DRIVE_X + cos_b * _DRIVE_Z
+
+    dx = px - _KNEE_X
+    dz = pz - _KNEE_Z
+    dist = torch.sqrt((dx * dx + dz * dz).clamp_min(1.0e-12))
+    ex = dx / dist
+    ez = dz / dist
+
+    along = (_CALF_LEN**2 - _COUPLER_LEN**2 + dist * dist) / (2.0 * dist)
+    height = torch.sqrt((_CALF_LEN**2 - along * along).clamp_min(0.0))
+    cx = _KNEE_X + along * ex - height * ez
+    cz = _KNEE_Z + along * ez + height * ex
+
+    coupler_local_angle = torch.as_tensor(
+        math.atan2(_COUPLER_Z, _COUPLER_X),
+        device=active_angle.device,
+        dtype=active_angle.dtype,
+    )
+    coupler_world_angle = torch.atan2(cz - pz, cx - px)
+    total_rotation = coupler_local_angle - coupler_world_angle
+    return _wrap_angle_torch(total_rotation - beta)
 
 
 def _output_knee_from_active_angle_analytic_np_array(active_angle: np.ndarray) -> np.ndarray:

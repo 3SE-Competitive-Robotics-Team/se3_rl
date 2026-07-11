@@ -26,7 +26,7 @@ _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
 
 def _resolve_mjcf_path() -> Path:
-    """解析训练使用的 MJCF 路径，默认使用四连杆 surrogate 模型。"""
+    """解析训练使用的 MJCF 路径，默认使用真实 closed-chain 模型。"""
     override = os.environ.get(_MJCF_ENV_VAR)
     if override:
         path = Path(override).expanduser()
@@ -37,9 +37,17 @@ def _resolve_mjcf_path() -> Path:
             raise FileNotFoundError(f"{_MJCF_ENV_VAR} 指向的 MJCF 不存在: {path}")
         return path
 
-    variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "fourbar-surrogate").strip().lower()
+    variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "closedchain").strip().lower()
     if variant in {
         "default",
+        "closedchain",
+        "closedchain-obb",
+        "closedchain_obb",
+        "no-spring",
+        "no_spring",
+    }:
+        return _CLOSEDCHAIN_MJCF_PATH
+    if variant in {
         "fourbar",
         "fourbar-surrogate",
         "fourbar_surrogate",
@@ -57,8 +65,6 @@ def _resolve_mjcf_path() -> Path:
         "stair_visualbase",
     }:
         return _FOURBAR_SURROGATE_STAIR_MJCF_PATH
-    if variant in {"closedchain", "closedchain-obb", "closedchain_obb", "no-spring", "no_spring"}:
-        return _CLOSEDCHAIN_MJCF_PATH
     if variant in {"openchain"}:
         return _OPENCHAIN_MJCF_PATH
     raise ValueError(
