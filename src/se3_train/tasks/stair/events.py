@@ -609,6 +609,7 @@ def reset_root_state_stair_shared(
             recovery_grace_steps=shared_recovery_grace_steps,
             recovery_command_height=None,
             recovery_zero_velocity_command=False,
+            yaw_range=(0.0, 0.0),
         )
     if shared_ids.numel() > 0:
         mdp_events.reset_root_state_recovery_discovery_mixed(

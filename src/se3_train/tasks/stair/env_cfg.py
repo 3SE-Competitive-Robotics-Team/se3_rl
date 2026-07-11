@@ -849,6 +849,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
             },
         )
+    else:
+        play_root_params = dict(cfg.events["reset_root_state"].params or {})
+        play_root_params["yaw_range"] = (0.0, 0.0)
+        cfg.events["reset_root_state"] = replace(
+            cfg.events["reset_root_state"],
+            params=play_root_params,
+        )
     reset_joint_params = dict(cfg.events["reset_joints"].params or {})
     reset_joint_params.update(
         {
