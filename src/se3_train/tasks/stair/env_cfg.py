@@ -88,10 +88,9 @@ _TRAIN_VIEW_TERRAIN_LEVEL_ENV = "SE3_TRAIN_VIEW_TERRAIN_LEVEL"
 _TRAIN_VIEW_COMMAND_HEIGHT_ENV = "SE3_TRAIN_VIEW_COMMAND_HEIGHT"
 _STAIR_LEVEL_MAX_STAGES = (
     (0, 2),
-    (900, 4),
-    (1400, 6),
-    (2000, 7),
-    (2600, 9),
+    (600, 4),
+    (1200, 6),
+    (2200, 9),
 )
 _STAIR_LEVEL_BUCKETS = (
     (0, 2),
@@ -100,11 +99,9 @@ _STAIR_LEVEL_BUCKETS = (
 )
 _STAIR_BUCKET_WEIGHT_STAGES = (
     (0, (1.00, 0.00, 0.00)),
-    (900, (0.80, 0.20, 0.00)),
-    (1400, (0.55, 0.40, 0.05)),
-    (2000, (0.35, 0.50, 0.15)),
-    (2600, (0.20, 0.45, 0.35)),
-    (3200, (0.15, 0.35, 0.50)),
+    (600, (0.80, 0.20, 0.00)),
+    (1200, (0.55, 0.45, 0.00)),
+    (2200, (0.20, 0.45, 0.35)),
 )
 _TASK_MIXTURE_STAGES = (
     {"iteration": 0, "stair_prob": 0.85, "shared_prob": 0.15},
@@ -1068,7 +1065,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "riser_contact_sensor_name": "wheel_riser_sensor",
                 "riser_contact_force_threshold_n": 1.0,
                 "riser_normal_z_max": 0.5,
-                "support_duration_s": _STAIR_SUPPORT_DURATION_S,
                 "terrain_type_names": _STAIR_TERRAIN_TYPES,
                 "walking_phase_iterations": _WALKING_PHASE_ITERATIONS,
                 "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
@@ -1076,12 +1072,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 "max_level_stages": _STAIR_LEVEL_MAX_STAGES,
                 "level_buckets": _STAIR_LEVEL_BUCKETS,
                 "bucket_weight_stages": _STAIR_BUCKET_WEIGHT_STAGES,
-                "gate_success_rate_threshold": 0.50,
-                "gate_support_rate_threshold": 0.65,
-                "gate_no_drop_rate_threshold": 0.85,
-                "gate_drop_tolerance_steps": 0.20,
-                "gate_min_eval_envs": 64,
-                "gate_consecutive_passes": 2,
             },
         )
         if fixed_watch_command_height:
