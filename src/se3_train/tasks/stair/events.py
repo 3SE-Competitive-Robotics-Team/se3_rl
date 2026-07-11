@@ -10,6 +10,7 @@ import torch
 from se3_train.mdp import events as mdp_events
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.tasks.flat.events import *  # noqa: F403
+from se3_train.tasks.stair.rewards import stair_area_progress
 from se3_train.tasks.stair.state import StairClimbState
 from se3_train.tasks.stair.terrain_curriculum import (
     DEFAULT_BUCKET_WEIGHT_STAGES,
@@ -791,6 +792,7 @@ def step_stair_climb_state(
     sensor_name: str = "wheel_sensor",
     riser_sensor_name: str | None = None,
     riser_normal_z_max: float = 0.5,
+    terrain_type_name: str = "forward_stairs",
     num_steps_per_env: int = 64,
 ) -> None:
     """interval 事件：每控制步更新 CTBC 状态机。"""
@@ -834,6 +836,12 @@ def step_stair_climb_state(
         wheel_xy[inactive_ids] = 0.0
         state.reset(inactive_ids)
 
+    longitudinal_progress, _, _, _ = stair_area_progress(
+        env,
+        terrain_type_names=(terrain_type_name,),
+    )
+    longitudinal_progress[inactive] = 0.0
+    state.record_stair_longitudinal_progress(longitudinal_progress)
     state.step(wheel_xy)
     iteration = int(env.common_step_counter) // max(1, int(num_steps_per_env))
     state.update_iter(iteration)
