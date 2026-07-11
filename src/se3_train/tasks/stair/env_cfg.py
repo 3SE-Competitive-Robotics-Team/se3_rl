@@ -801,6 +801,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         },
     )
     _configure_recovery_discovery_reward_contract(cfg)
+    # Stair 上阶过程需要允许机身自由升降，暂不让精确高度跟踪参与优化。
+    cfg.rewards["tracking_height"] = replace(cfg.rewards["tracking_height"], weight=0.0)
     if "bad_orientation" in cfg.terminations:
         cfg.terminations["bad_orientation"].params = {
             "limit_angle": 0.698,
