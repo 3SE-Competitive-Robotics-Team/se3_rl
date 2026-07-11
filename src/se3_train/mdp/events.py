@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -757,8 +758,9 @@ def reset_root_state_full(
     recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
     recovery_zero_velocity_command: bool = True,
     recovery_mask_attr: str | None = None,
+    yaw_range: tuple[float, float] = (-math.pi, math.pi),
 ) -> None:
-    """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
+    """重置 base 到默认站立状态，yaw 按给定范围采样，xy 小偏移。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -860,8 +862,8 @@ def reset_root_state_full(
 
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
-        torch.tensor(-torch.pi, device=env.device),
-        torch.tensor(torch.pi, device=env.device),
+        torch.tensor(float(yaw_range[0]), device=env.device),
+        torch.tensor(float(yaw_range[1]), device=env.device),
         (n,),
         env.device,
     )
