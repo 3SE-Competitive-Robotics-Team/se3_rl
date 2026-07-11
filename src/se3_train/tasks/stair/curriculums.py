@@ -43,7 +43,6 @@ def stair_terrain_levels(
     move_up_distance_ratio: float = 0.10,
     move_down_distance_ratio: float = 0.06,
     move_up_min_steps: float = 2.0,
-    hold_height_tolerance_m: float = 0.02,
     step_height_range: tuple[float, float] = (0.05, 0.20),
     height_sensor_name: str = "wheel_height_sensor",
     contact_sensor_name: str = "wheel_sensor",
@@ -51,7 +50,6 @@ def stair_terrain_levels(
     wheel_radius_m: float = 0.060,
     wheel_clearance_tol_m: float = 0.035,
     support_duration_s: float = 0.10,
-    upright_threshold: float = -0.5,
     terrain_type_names: tuple[str, ...] = ("forward_stairs",),
     walking_phase_iterations: int = 0,
     flat_terrain_type_name: str = "flat",
@@ -200,45 +198,11 @@ def stair_terrain_levels(
         posinf=0.0,
         neginf=0.0,
     )
-    strict_success_all = stair_success_components(
+    progress_success_all = stair_success_components(
         env,
-        step_height_range=step_height_range,
         min_success_steps=move_up_min_steps,
-        success_height_tolerance_m=hold_height_tolerance_m,
         forward_progress_m=move_up_distance,
-        hold_duration_s=support_duration_s,
-        upright_threshold=upright_threshold,
-        height_sensor_name=height_sensor_name,
-        contact_sensor_name=contact_sensor_name,
         terrain_type_names=terrain_type_names,
-        contact_force_threshold_n=contact_force_threshold_n,
-        riser_contact_sensor_name=riser_contact_sensor_name,
-        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
-        wheel_radius_m=wheel_radius_m,
-        wheel_clearance_tol_m=wheel_clearance_tol_m,
-        riser_normal_z_max=riser_normal_z_max,
-        record=False,
-        use_recorded_hold=True,
-    )
-    strict_current_all = stair_success_components(
-        env,
-        step_height_range=step_height_range,
-        min_success_steps=move_up_min_steps,
-        success_height_tolerance_m=hold_height_tolerance_m,
-        forward_progress_m=move_up_distance,
-        hold_duration_s=support_duration_s,
-        upright_threshold=upright_threshold,
-        height_sensor_name=height_sensor_name,
-        contact_sensor_name=contact_sensor_name,
-        terrain_type_names=terrain_type_names,
-        contact_force_threshold_n=contact_force_threshold_n,
-        riser_contact_sensor_name=riser_contact_sensor_name,
-        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
-        wheel_radius_m=wheel_radius_m,
-        wheel_clearance_tol_m=wheel_clearance_tol_m,
-        riser_normal_z_max=riser_normal_z_max,
-        record=False,
-        use_recorded_hold=False,
     )
 
     support_drop = torch.clamp(height_gain - current_height_gain, min=0.0)
@@ -254,7 +218,7 @@ def stair_terrain_levels(
     gate_level_floor = max(0, int(effective_max_level) - 1)
     gate_eval_mask = valid_episode & stair_mask & (terrain.terrain_levels[ids] >= gate_level_floor)
     gate_success_rate = _masked_mean(
-        strict_current_all["success"][ids].float(),
+        progress_success_all["success"][ids].float(),
         gate_eval_mask,
     )
     gate_support_rate = _masked_mean(support_ok.float(), gate_eval_mask)
@@ -316,36 +280,32 @@ def stair_terrain_levels(
         "current_height_gain_mean": _masked_mean(current_height_gain, valid_stair),
         "support_drop_mean": _masked_mean(support_drop, valid_stair),
         "support_duration_mean": _masked_mean(support_duration, valid_stair),
+        "progress_success_rate": _masked_mean(
+            progress_success_all["success"][ids].float(),
+            valid_stair,
+        ),
+        "progress_current_success_rate": _masked_mean(
+            progress_success_all["candidate"][ids].float(),
+            valid_stair,
+        ),
+        "progress_current_valid_rate": _masked_mean(
+            progress_success_all["current_valid"][ids].float(),
+            valid_stair,
+        ),
+        "progress_current_mean_m": _masked_mean(
+            progress_success_all["current_progress"][ids],
+            valid_stair,
+        ),
+        "progress_max_mean_m": _masked_mean(
+            progress_success_all["max_progress"][ids],
+            valid_stair,
+        ),
+        "progress_target_m": _masked_mean(
+            progress_success_all["forward_target"][ids],
+            valid_stair,
+        ),
         "strict_success_rate": _masked_mean(
-            strict_success_all["success"][ids].float(),
-            valid_stair,
-        ),
-        "strict_current_success_rate": _masked_mean(
-            strict_current_all["success"][ids].float(),
-            valid_stair,
-        ),
-        "strict_candidate_rate": _masked_mean(
-            strict_current_all["candidate"][ids].float(),
-            valid_stair,
-        ),
-        "strict_height_cond_rate": _masked_mean(
-            strict_current_all["height_ok"][ids].float(),
-            valid_stair,
-        ),
-        "strict_forward_cond_rate": _masked_mean(
-            strict_current_all["forward_ok"][ids].float(),
-            valid_stair,
-        ),
-        "strict_upright_cond_rate": _masked_mean(
-            strict_current_all["upright_ok"][ids].float(),
-            valid_stair,
-        ),
-        "strict_contact_cond_rate": _masked_mean(
-            strict_current_all["legal_contact_ok"][ids].float(),
-            valid_stair,
-        ),
-        "strict_riser_clear_rate": _masked_mean(
-            strict_current_all["riser_clear"][ids].float(),
+            progress_success_all["success"][ids].float(),
             valid_stair,
         ),
         "distance_mean": _masked_mean(distance, valid_stair),
@@ -617,14 +577,13 @@ def _zero_log(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
         "current_height_gain_mean": zero,
         "support_drop_mean": zero,
         "support_duration_mean": zero,
+        "progress_success_rate": zero,
+        "progress_current_success_rate": zero,
+        "progress_current_valid_rate": zero,
+        "progress_current_mean_m": zero,
+        "progress_max_mean_m": zero,
+        "progress_target_m": zero,
         "strict_success_rate": zero,
-        "strict_current_success_rate": zero,
-        "strict_candidate_rate": zero,
-        "strict_height_cond_rate": zero,
-        "strict_forward_cond_rate": zero,
-        "strict_upright_cond_rate": zero,
-        "strict_contact_cond_rate": zero,
-        "strict_riser_clear_rate": zero,
         "distance_mean": zero,
         "move_up_distance": zero,
         "move_down_distance": zero,
