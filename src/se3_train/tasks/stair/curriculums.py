@@ -40,6 +40,7 @@ def stair_terrain_levels(
     asset_name: str = "robot",
     standing_height: float = _DEFAULT_STANDING_HEIGHT,
     move_up_distance_ratio: float = 0.10,
+    move_up_distance_m: float | None = None,
     move_down_distance_ratio: float = 0.06,
     move_up_min_steps: float = 2.0,
     step_height_range: tuple[float, float] = (0.05, 0.20),
@@ -147,7 +148,11 @@ def stair_terrain_levels(
     terrain_size_x = float(
         getattr(getattr(terrain.cfg, "terrain_generator", None), "size", (8.0, 8.0))[0]
     )
-    move_up_distance = terrain_size_x * float(move_up_distance_ratio)
+    move_up_distance = (
+        terrain_size_x * float(move_up_distance_ratio)
+        if move_up_distance_m is None
+        else max(0.0, float(move_up_distance_m))
+    )
     move_down_distance = terrain_size_x * float(move_down_distance_ratio)
     target_level = terrain.terrain_levels[ids].clone()
     sampled_logs = {

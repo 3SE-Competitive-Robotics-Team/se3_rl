@@ -71,6 +71,10 @@ _DISCOVERY_MAX_ANG_VEL_YAW = 9.41
 _DISCOVERY_HEIGHT_RANGE = (0.195, 0.390)
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STAIR_STEP_HEIGHT_RANGE = (0.05, 0.20)
+_STAIR_STEP_DEPTH_M = 0.80
+_STAIR_STEP_COUNT = 6
+_STAIR_SUCCESS_FRACTION = 0.90
+_STAIR_SUCCESS_DISTANCE_M = _STAIR_STEP_DEPTH_M * _STAIR_STEP_COUNT * _STAIR_SUCCESS_FRACTION
 _STAIR_COMMAND_HEIGHT_CLEARANCE_M = 0.11
 _STAIR_COMMAND_HEIGHT_MIN = 0.195
 _STAIR_COMMAND_HEIGHT_MAX = 0.39
@@ -164,8 +168,8 @@ def _stair_terrain_cfg() -> TerrainGeneratorCfg:
                 proportion=0.80,
                 size=(8.0, 8.0),
                 step_height_range=_STAIR_STEP_HEIGHT_RANGE,
-                step_depth=0.80,
-                step_count=6,
+                step_depth=_STAIR_STEP_DEPTH_M,
+                step_count=_STAIR_STEP_COUNT,
                 stair_start_x=1.0,
                 spawn_x=1.0,
                 half_width=6.0,
@@ -380,8 +384,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=3.0,
         params={
             "max_height_gain": 1.0,
-            "max_radial_progress": 4.0,
-            "radial_weight": 0.0,
+            "max_radial_progress": _STAIR_STEP_DEPTH_M * _STAIR_STEP_COUNT,
+            "radial_weight": 1.0,
             "standing_height": _DEFAULT_STANDING_HEIGHT,
             "height_sensor_name": "wheel_height_sensor",
             "contact_sensor_name": "wheel_sensor",
@@ -399,7 +403,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         weight=4.0,
         params={
             "step_height_range": _STAIR_STEP_HEIGHT_RANGE,
-            "max_steps": 3.0,
+            "max_steps": float(_STAIR_STEP_COUNT),
             "target_steps": 1.0,
             "success_height_tolerance_m": 0.015,
             "shaping_power": 2.0,
@@ -1053,7 +1057,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "asset_name": "robot",
                 "standing_height": _DEFAULT_STANDING_HEIGHT,
-                "move_up_distance_ratio": 0.10,
+                "move_up_distance_m": _STAIR_SUCCESS_DISTANCE_M,
                 "move_down_distance_ratio": 0.06,
                 "move_up_min_steps": 2.0,
                 "step_height_range": _STAIR_STEP_HEIGHT_RANGE,
