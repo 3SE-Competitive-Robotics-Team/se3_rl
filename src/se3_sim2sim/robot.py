@@ -482,7 +482,8 @@ class WheelLeggedRobot:
         stair_step_height = 0.0
         if self.cfg.stair_terrain:
             low, high = (float(v) for v in self.cfg.stair_step_height_range)
-            stair_step_height = low + (float(self.cfg.stair_terrain_level) / 9.0) * (high - low)
+            terrain_level = max(0, min(9, int(self.cfg.stair_terrain_level)))
+            stair_step_height = low + (float(terrain_level) / 9.0) * (high - low)
         wheel_delta_b = rotate_inverse(self.base_quat, l_wheel_pos - r_wheel_pos)
         wheel_lateral_distance = abs(float(wheel_delta_b[1]))
         wheel_fore_aft_offset = abs(float(wheel_delta_b[0]))

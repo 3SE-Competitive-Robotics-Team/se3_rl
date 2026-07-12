@@ -28,7 +28,7 @@ _KNEE_FEEDFORWARD_RATIO = 2.0
 
 
 class _CtbcProfile:
-    """Piecewise-linear CTBC feedforward profile loaded from JSON."""
+    """从 JSON 加载的分段线性 CTBC 前馈曲线。"""
 
     def __init__(
         self,

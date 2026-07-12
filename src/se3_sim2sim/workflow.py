@@ -228,6 +228,7 @@ class Sim2SimWorkflow:
                         _jump_active = self.robot.command[5] > 0.5
                         _prev_action = None
                         _prev_applied_action = None
+                        stair_hold_active = False
                         self._notify_viewer_reset(self.viewer, "checkpoint_switch")
                         if self.viewer is not None:
                             reset_telemetry = self.robot.telemetry(reward=0.0)
@@ -269,6 +270,7 @@ class Sim2SimWorkflow:
                     _jump_active = self.robot.command[5] > 0.5
                     _prev_action = None
                     _prev_applied_action = None
+                    stair_hold_active = False
                     self._notify_viewer_reset(self.viewer, applied_reset_mode)
                     if self.viewer is not None:
                         reset_telemetry = self.robot.telemetry(reward=0.0)

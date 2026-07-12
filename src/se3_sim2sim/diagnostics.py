@@ -150,6 +150,7 @@ def rollout_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
 
 def _stair_climb_diagnostics(samples: list[dict[str, float]]) -> dict[str, object]:
     required = (
+        "time",
         "wheel_x_left",
         "wheel_x_right",
         "wheel_bottom_z_left",

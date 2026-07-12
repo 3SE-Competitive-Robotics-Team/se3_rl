@@ -211,8 +211,13 @@ def build_code_archive(archive: Path, *, include_base_model: bool = False) -> No
 
 
 def _git_changed_paths() -> tuple[list[str], list[str]]:
-    """Return changed paths and deleted paths relative to repo root."""
+    """返回相对仓库根目录的改动路径和删除路径。"""
     output = run(["git", "status", "--porcelain=v1", "-z"], cwd=REPO_ROOT, capture=True)
+    return _parse_git_status(output)
+
+
+def _parse_git_status(output: str) -> tuple[list[str], list[str]]:
+    """解析 ``git status --porcelain=v1 -z`` 输出。"""
     changed: list[str] = []
     deleted: list[str] = []
     entries = output.split("\0")
@@ -225,8 +230,12 @@ def _git_changed_paths() -> tuple[list[str], list[str]]:
         status = entry[:2]
         path = entry[3:]
         if ("R" in status or "C" in status) and idx < len(entries):
-            path = entries[idx]
+            source_path = entries[idx]
             idx += 1
+            changed.append(path)
+            if "R" in status:
+                deleted.append(source_path)
+            continue
         if status == "!!" or status.strip():
             if "D" in status and status != "??":
                 deleted.append(path)

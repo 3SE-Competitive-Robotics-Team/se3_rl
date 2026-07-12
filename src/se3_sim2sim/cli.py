@@ -576,9 +576,9 @@ def _stair_ctbc_config_from_args(args: argparse.Namespace) -> StairCtbcConfig:
         "profile_path": args.stair_ctbc_profile,
         "allow_bilateral_trigger": (True if args.stair_ctbc_allow_bilateral_trigger else None),
     }
-    return cfg.model_copy(
-        update={key: value for key, value in overrides.items() if value is not None}
-    )
+    validated_values = cfg.model_dump()
+    validated_values.update({key: value for key, value in overrides.items() if value is not None})
+    return StairCtbcConfig(**validated_values)
 
 
 def config_from_args(args: argparse.Namespace) -> RunConfig:
