@@ -6,7 +6,7 @@
 本脚本把用户提供的 bash 脚本编码成 UTF-8 base64，再通过一个极小的
 远端 bootstrap 解码执行。PowerShell 侧不再直接承载 `&&`、`$()`、管道
 或多层引号，因此适合从 Windows PowerShell 调用远程训练机或 Kubernetes pod。
-当前默认路线是开发机 -> laptop-imgpi2nm-shanghai -> a800，再在 a800 上
+当前默认路线是开发机 -> laptop-wg -> root@192.168.2.46:2222，再在 A800 宿主机上
 执行普通 bash 或 kubectl exec。
 
 .EXAMPLE
@@ -23,9 +23,13 @@ grep -R "reward" logs | tail -20
 
 [CmdletBinding(DefaultParameterSetName = "Text")]
 param(
-    [string]$HostAlias = "laptop-imgpi2nm-shanghai",
+    [string]$HostAlias = "laptop-wg",
 
-    [string]$InnerHost = "a800",
+    [string]$InnerHost = "192.168.2.46",
+
+    [string]$InnerUser = "root",
+
+    [int]$InnerPort = 2222,
 
     [Parameter(Mandatory = $true, ParameterSetName = "Path")]
     [string]$ScriptPath,
@@ -141,7 +145,7 @@ if ($DryRun) {
     if ([string]::IsNullOrWhiteSpace($InnerHost)) {
         Write-Host "route=$HostAlias"
     } else {
-        Write-Host "route=$HostAlias->$InnerHost"
+        Write-Host "route=$HostAlias->$InnerUser@$InnerHost`:$InnerPort"
     }
     if ([string]::IsNullOrWhiteSpace($KubePod)) {
         Write-Host "mode=remote-bash"
@@ -166,9 +170,14 @@ if ([string]::IsNullOrWhiteSpace($InnerHost)) {
         [System.Text.Encoding]::UTF8.GetBytes($bootstrapScript)
     )
     $innerCommand = "echo $encodedBootstrap | base64 -d | bash"
+    $innerTarget = if ([string]::IsNullOrWhiteSpace($InnerUser)) {
+        $InnerHost
+    } else {
+        "$InnerUser@$InnerHost"
+    }
     $remotePowerShell = @(
         "`$innerCommand = $(ConvertTo-PowerShellSingleQuoted $innerCommand)"
-        "& ssh $(ConvertTo-PowerShellSingleQuoted $InnerHost) `$innerCommand"
+        "& ssh -o BatchMode=yes -p $InnerPort $(ConvertTo-PowerShellSingleQuoted $innerTarget) `$innerCommand"
         "exit `$LASTEXITCODE"
     ) -join "`n"
     $encodedRemotePowerShell = [System.Convert]::ToBase64String(
