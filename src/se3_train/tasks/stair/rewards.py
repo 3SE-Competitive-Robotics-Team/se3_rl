@@ -854,35 +854,35 @@ def stair_climb_progress(
     riser_contact_force_threshold_n: float = 1.0,
     riser_normal_z_max: float = 0.5,
 ) -> torch.Tensor:
-    """奖励左右轮真实支撑地形的新增抬升量。"""
-    del max_radial_progress, radial_weight, standing_height
+    """奖励楼梯本体范围内新增的最大纵向进度。"""
+    del standing_height
     state = _get_stair_state(env)
     if state is None:
         return torch.zeros(env.num_envs, device=env.device)
 
-    height_gain = stair_wheel_support_rise(
+    del (
+        max_height_gain,
+        height_sensor_name,
+        contact_sensor_name,
+        contact_force_threshold_n,
+        wheel_radius_m,
+        wheel_clearance_tol_m,
+        riser_sensor_name,
+        riser_contact_force_threshold_n,
+        riser_normal_z_max,
+    )
+    current_progress, _, _, _ = stair_area_progress(
         env,
-        height_sensor_name=height_sensor_name,
-        contact_sensor_name=contact_sensor_name,
         asset_cfg=asset_cfg,
         terrain_type_names=terrain_type_names,
-        support_mode="both",
-        contact_force_threshold_n=contact_force_threshold_n,
-        wheel_radius_m=wheel_radius_m,
-        wheel_clearance_tol_m=wheel_clearance_tol_m,
-        riser_sensor_name=riser_sensor_name,
-        riser_contact_force_threshold_n=riser_contact_force_threshold_n,
-        riser_normal_z_max=riser_normal_z_max,
     )
-    radial_progress = torch.zeros_like(height_gain)
-    height_delta, radial_delta = state.climb_progress_delta(
-        height_gain,
-        radial_progress,
-        max_height_gain=max_height_gain,
-        max_radial_progress=0.0,
+    previous_max = state.max_stair_longitudinal_progress()
+    current_max = state.record_stair_longitudinal_progress(current_progress)
+    progress_delta = torch.clamp(current_max - previous_max, min=0.0)
+    progress_delta = torch.clamp(progress_delta, max=max(0.0, float(max_radial_progress)))
+    reward = (
+        progress_delta / max(float(env.step_dt), 1.0e-6) * float(radial_weight) * _upright_gate(env)
     )
-    progress_delta = height_delta + radial_delta
-    reward = progress_delta / max(float(env.step_dt), 1.0e-6) * _upright_gate(env)
     return _finite(reward)
 
 
