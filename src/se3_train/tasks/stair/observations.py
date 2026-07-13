@@ -5,8 +5,6 @@ from __future__ import annotations
 import torch
 
 from se3_train.mdp.observations import _finite_clamp
-from se3_train.tasks.flat.observations import *  # noqa: F403
-from se3_train.tasks.flat.observations import __all__ as _FLAT_OBS_ALL
 
 _CTBC_OBS_SCALE = 0.01
 
@@ -18,15 +16,6 @@ def last_actions_obs(env):
     if isinstance(policy_action, torch.Tensor):
         return _finite_clamp(policy_action)
     return _finite_clamp(action_term.raw_action)
-
-
-def ctbc_action_delta_obs(env):
-    """单独暴露 CTBC 注入量；默认不接入 actor，以保持 34 维 checkpoint contract。"""
-    action_term = env.action_manager.get_term("delayed_action")
-    delta = getattr(action_term, "ctbc_action_delta", None)
-    if isinstance(delta, torch.Tensor):
-        return _finite_clamp(delta)
-    return torch.zeros(env.num_envs, 6, device=env.device)
 
 
 def ctbc_phase_obs(env):
@@ -49,4 +38,4 @@ def ctbc_phase_obs(env):
     return _finite_clamp(obs, limit=_CTBC_OBS_SCALE)
 
 
-__all__ = [*_FLAT_OBS_ALL, "ctbc_action_delta_obs", "ctbc_phase_obs", "last_actions_obs"]
+__all__ = ["ctbc_phase_obs", "last_actions_obs"]

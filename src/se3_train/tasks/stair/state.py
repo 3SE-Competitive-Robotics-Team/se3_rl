@@ -176,9 +176,6 @@ class StairClimbState:
         self._cooldown_steps = max(1, round(0.3 / control_dt))
         self._cooldown = torch.zeros(num_envs, 2, dtype=torch.long, device=device)
         self._complete_ff_cycle_count = torch.zeros(num_envs, dtype=torch.long, device=device)
-        self._max_height_gain = torch.zeros(num_envs, device=device)
-        self._max_radial_progress = torch.zeros(num_envs, device=device)
-        self._progress_initialized = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self._initial_wheel_terrain_z = torch.full((num_envs, 2), float("nan"), device=device)
         self._max_wheel_supported_rise = torch.zeros(num_envs, 2, device=device)
         self._max_wheel_supported_both_rise = torch.zeros(num_envs, device=device)
@@ -402,45 +399,6 @@ class StairClimbState:
     def ctbc_trigger_weight(self) -> torch.Tensor:
         return self.contact_triggered().float() * float(self._kff)
 
-    def climb_progress_delta(
-        self,
-        height_gain: torch.Tensor,
-        radial_progress: torch.Tensor,
-        *,
-        max_height_gain: float,
-        max_radial_progress: float,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        height_gain = torch.nan_to_num(height_gain, nan=0.0, posinf=0.0, neginf=0.0)
-        radial_progress = torch.nan_to_num(radial_progress, nan=0.0, posinf=0.0, neginf=0.0)
-        clipped_height = torch.clamp(height_gain, min=0.0, max=max_height_gain)
-        clipped_radial = torch.clamp(radial_progress, min=0.0, max=max_radial_progress)
-        height_delta = torch.clamp(clipped_height - self._max_height_gain, min=0.0)
-        radial_delta = torch.clamp(clipped_radial - self._max_radial_progress, min=0.0)
-        height_delta = torch.where(
-            self._progress_initialized,
-            height_delta,
-            torch.zeros_like(height_delta),
-        )
-        radial_delta = torch.where(
-            self._progress_initialized,
-            radial_delta,
-            torch.zeros_like(radial_delta),
-        )
-        self._max_height_gain = torch.nan_to_num(
-            torch.maximum(self._max_height_gain, clipped_height),
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        self._max_radial_progress = torch.nan_to_num(
-            torch.maximum(self._max_radial_progress, clipped_radial),
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        self._progress_initialized[:] = True
-        return height_delta, radial_delta
-
     def wheel_terrain_rise(self, terrain_z: torch.Tensor) -> torch.Tensor:
         """返回左右轮下方地形相对本 episode 初始地形的抬升量。"""
         terrain_z = torch.nan_to_num(terrain_z, nan=0.0, posinf=0.0, neginf=0.0)
@@ -543,9 +501,6 @@ class StairClimbState:
         self._ff_phase[env_ids] = -1
         self._cooldown[env_ids] = 0
         self._complete_ff_cycle_count[env_ids] = 0
-        self._max_height_gain[env_ids] = 0.0
-        self._max_radial_progress[env_ids] = 0.0
-        self._progress_initialized[env_ids] = False
         self._initial_wheel_terrain_z[env_ids] = float("nan")
         self._max_wheel_supported_rise[env_ids] = 0.0
         self._max_wheel_supported_both_rise[env_ids] = 0.0

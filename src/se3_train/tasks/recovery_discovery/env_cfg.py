@@ -9,9 +9,22 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from se3_shared import (
+    RECOVERY_ACTION_CLIP,
+    RECOVERY_LEG_ACTION_SCALE,
+    RECOVERY_WHEEL_ACTION_SCALE,
+    JointGroup,
+)
 from se3_train.mdp import events as mdp_events
-from se3_train.tasks.recovery import rewards
-from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
+from se3_train.mdp import rewards as mdp_rewards
+from se3_train.robot_cfg import get_serialleg_cfg
+from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
+
+_DISCOVERY_WHEEL_KD = 0.08
+_DISCOVERY_LEG_ACTION_SCALES = tuple(RECOVERY_LEG_ACTION_SCALE for _ in JointGroup.LEG_ACTUATORS)
+_DISCOVERY_COMMAND_WHEEL_RADIUS = 0.060
+_DISCOVERY_COMMAND_HALF_TRACK = 0.200725
+_DISCOVERY_COMMAND_WHEEL_SPEED_FRACTION = 0.70
 
 _DISCOVERY_REWARD_WEIGHTS = {
     "tracking_lin_vel": 3.0,
@@ -30,12 +43,66 @@ _DISCOVERY_REWARD_WEIGHTS = {
 }
 
 
+def _configure_discovery_base_contract(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+    """从 Flat 配置收敛 Recovery-Discovery 实际使用的基础契约。"""
+
+    cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_DISCOVERY_WHEEL_KD)
+    cfg.sim.nconmax = 64
+    cfg.sim.njmax = 256
+
+    # 显式保留历史 Recovery action contract，避免 Flat 动作语义变化影响 Discovery。
+    action_cfg = cfg.actions["delayed_action"]
+    action_cfg.leg_scales = _DISCOVERY_LEG_ACTION_SCALES
+    action_cfg.wheel_scale = RECOVERY_WHEEL_ACTION_SCALE
+    action_cfg.action_clip = RECOVERY_ACTION_CLIP
+    action_cfg.height_conditioned_action_default = True
+    action_cfg.action_default_command_name = "velocity_height"
+
+    command_cfg = cfg.commands["velocity_height"]
+    command_cfg.resampling_time_range = (10.0, 10.0)
+    command_cfg.lin_vel_x_range = (0.0, 0.0)
+    command_cfg.ang_vel_yaw_range = (0.0, 0.0)
+    command_cfg.pitch_range = (0.0, 0.0)
+    command_cfg.roll_range = (0.0, 0.0)
+    command_cfg.height_range = (0.26, 0.26)
+    command_cfg.standing_height_range = (0.26, 0.26)
+    command_cfg.standing_ratio = 1.0
+    command_cfg.height_resample_on_reset_only = True
+    command_cfg.constrain_diff_drive_commands = True
+    command_cfg.diff_drive_wheel_radius = _DISCOVERY_COMMAND_WHEEL_RADIUS
+    command_cfg.diff_drive_half_track = _DISCOVERY_COMMAND_HALF_TRACK
+    command_cfg.diff_drive_max_wheel_speed = RECOVERY_WHEEL_ACTION_SCALE
+    command_cfg.diff_drive_wheel_speed_fraction = _DISCOVERY_COMMAND_WHEEL_SPEED_FRACTION
+    command_cfg.jump_prob = 0.0
+    command_cfg.enable_jump_lifecycle = False
+    command_cfg.enable_jump_metrics = False
+
+    cfg.events["snap_root_to_collision_clearance"] = EventTermCfg(
+        func=mdp_events.snap_root_to_collision_clearance,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "clearance_range": (0.001, 0.005),
+            "max_downward_adjustment": 0.5,
+            "max_upward_adjustment": 0.05,
+            "command_name": "velocity_height",
+        },
+    )
+
+    del cfg.terminations["bad_orientation"]
+    del cfg.terminations["leg_contact"]
+    cfg.terminations["catastrophic_state"].params["max_leg_pos_error"] = None
+    cfg.curriculum = {}
+    if not play:
+        del cfg.events["push_robots"]
+
+
 def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     """显式收敛 discovery 奖励表，配置漂移时直接失败。"""
 
     cfg.rewards.clear()
     cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
-        func=rewards.tracking_lin_vel,
+        func=mdp_rewards.tracking_lin_vel,
         weight=3.0,
         params={
             "command_name": "velocity_height",
@@ -47,7 +114,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["tracking_ang_vel"] = RewardTermCfg(
-        func=rewards.tracking_ang_vel,
+        func=mdp_rewards.tracking_ang_vel,
         weight=1.5,
         params={
             "command_name": "velocity_height",
@@ -58,9 +125,9 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "tracking_upright_full_cos": math.cos(math.radians(15.0)),
         },
     )
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
+    cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=3.0)
     cfg.rewards["tracking_height"] = RewardTermCfg(
-        func=rewards.tracking_height,
+        func=mdp_rewards.tracking_height,
         weight=-1500.0,
         params={
             "command_name": "velocity_height",
@@ -75,7 +142,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["upright_zero_velocity"] = RewardTermCfg(
-        func=rewards.recovery_upright_zero_velocity_penalty,
+        func=mdp_rewards.recovery_upright_zero_velocity_penalty,
         weight=-0.05,
         params={
             "command_name": "velocity_height",
@@ -90,7 +157,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["stand_still"] = RewardTermCfg(
-        func=rewards.stand_still,
+        func=mdp_rewards.stand_still,
         weight=-2.0,
         params={
             "command_name": "velocity_height",
@@ -101,7 +168,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["joint_pos_penalty"] = RewardTermCfg(
-        func=rewards.joint_pos_penalty,
+        func=mdp_rewards.joint_pos_penalty,
         weight=-1.0,
         params={
             "command_name": "velocity_height",
@@ -112,20 +179,20 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["leg_action_rate"] = RewardTermCfg(
-        func=rewards.leg_action_rate,
+        func=mdp_rewards.leg_action_rate,
         weight=-0.001,
     )
     cfg.rewards["wheel_action_rate"] = RewardTermCfg(
-        func=rewards.wheel_action_rate,
+        func=mdp_rewards.wheel_action_rate,
         weight=-0.001,
     )
     cfg.rewards["dof_pos_limits"] = RewardTermCfg(
-        func=rewards.dof_pos_limits,
+        func=mdp_rewards.dof_pos_limits,
         weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
     cfg.rewards["collision"] = RewardTermCfg(
-        func=rewards.collision,
+        func=mdp_rewards.collision,
         weight=-1.0,
         params={
             "sensor_name": "collision_sensor",
@@ -134,7 +201,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["contact_forces"] = RewardTermCfg(
-        func=rewards.contact_forces,
+        func=mdp_rewards.contact_forces,
         weight=-1.5e-4,
         params={
             "threshold": 20.0,
@@ -144,7 +211,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     cfg.rewards["diagnostics"] = RewardTermCfg(
-        func=rewards.recovery_diagnostics,
+        func=mdp_rewards.recovery_diagnostics,
         weight=1.0,
         params={
             "command_name": "velocity_height",
@@ -183,17 +250,8 @@ def _assert_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """标准姿态 Discovery 环境配置。"""
-    cfg = recovery_env_cfg(play=play)
-
-    command_cfg = cfg.commands["velocity_height"]
-    command_cfg.lin_vel_x_range = (0.0, 0.0)
-    command_cfg.ang_vel_yaw_range = (0.0, 0.0)
-    command_cfg.height_range = (0.26, 0.26)
-    command_cfg.standing_height_range = (0.26, 0.26)
-    command_cfg.standing_ratio = 1.0
-
-    cfg.curriculum = {}
-    cfg.events.pop("push_robots", None)
+    cfg = flat_env_cfg(play=play)
+    _configure_discovery_base_contract(cfg, play=play)
     cfg.events["reset_root_state"] = EventTermCfg(
         func=mdp_events.reset_root_state_recovery_standard_poses,
         mode="reset",
