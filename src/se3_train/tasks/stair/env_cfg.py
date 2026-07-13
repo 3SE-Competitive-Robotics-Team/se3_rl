@@ -289,14 +289,12 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         command_cfg.standing_height_range = (command_height, command_height)
 
     last_action_term = ObservationTermCfg(func=observations.last_actions_obs)
-    ctbc_phase_term = ObservationTermCfg(func=observations.ctbc_phase_obs)
     for group_name in ("actor", "critic"):
         group_cfg = cfg.observations.get(group_name)
         if group_cfg is None:
             continue
         terms = dict(group_cfg.terms)
         terms["last_actions"] = last_action_term
-        terms["jump_commands"] = ctbc_phase_term
         cfg.observations[group_name] = replace(group_cfg, terms=terms)
 
     _configure_recovery_discovery_reward_contract(cfg)

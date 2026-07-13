@@ -198,10 +198,10 @@ class StairCtbcRuntime:
             self._ff_phase[finished] = -1
             self._complete_ff_cycles += 1
 
-    def obs(self) -> np.ndarray:
-        """返回训练端 ctbc_phase_obs 对齐的 3 维观测槽。"""
+    def _phase_progress(self) -> np.ndarray:
+        """返回诊断使用的左右前馈相位进度。"""
 
-        out = np.zeros(3, dtype=np.float32)
+        out = np.zeros(2, dtype=np.float32)
         active = self._ff_phase >= 0
         phase = np.where(
             active,
@@ -210,9 +210,7 @@ class StairCtbcRuntime:
             ),
             0.0,
         )
-        scale = float(self.cfg.obs_scale)
-        out[:2] = (phase[:2] * scale).astype(np.float32)
-        out[2] = scale if np.any(active) else 0.0
+        out[:] = phase[:2].astype(np.float32)
         return out
 
     def apply(self, robot: WheelLeggedRobot, action: np.ndarray) -> np.ndarray:
@@ -236,13 +234,14 @@ class StairCtbcRuntime:
         """返回 Viser/Rerun 日志用的 CTBC 诊断量。"""
 
         active = self._ff_phase >= 0
+        phase_progress = self._phase_progress()
         return {
             "ctbc_enabled": True,
             "ctbc_trigger": float(np.any(active)),
             "ctbc_left_active": float(active[0]),
             "ctbc_right_active": float(active[1]),
-            "ctbc_phase_left": float(self.obs()[0]),
-            "ctbc_phase_right": float(self.obs()[1]),
+            "ctbc_phase_left": float(phase_progress[0]),
+            "ctbc_phase_right": float(phase_progress[1]),
             "ctbc_kff": float(self._kff),
             "ctbc_local_iter": int(self._local_iter),
             "ctbc_contact_left": float(self._last_contact_score[0]),

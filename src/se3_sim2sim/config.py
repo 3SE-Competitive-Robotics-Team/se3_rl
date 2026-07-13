@@ -209,7 +209,6 @@ class StairCtbcConfig(BaseModel):
     ann_start_iter: Annotated[int, Field(ge=0)] = 200
     ann_end_iter: Annotated[int, Field(ge=0)] = 500
     fixed_iter: Annotated[int, Field(ge=0)] | None = None
-    obs_scale: Annotated[float, Field(gt=0.0)] = 0.01
     allow_bilateral_trigger: bool = False
 
 

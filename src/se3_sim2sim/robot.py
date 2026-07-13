@@ -451,7 +451,7 @@ class WheelLeggedRobot:
 
     def observation(self) -> np.ndarray:
         self._refresh_state()
-        obs = self.obs.build(
+        return self.obs.build(
             base_quat_wxyz=self.base_quat,
             base_ang_vel_world=self.base_ang_vel_world,
             dof_pos=self.dof_pos,
@@ -459,10 +459,6 @@ class WheelLeggedRobot:
             command=self.command,
             action_obs=self.last_action,
         )
-        if self.stair_ctbc is not None:
-            obs = obs.copy()
-            obs[self.runtime.observation_slices["jump_commands"]] = self.stair_ctbc.obs()
-        return obs
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:
         wheel_radius = 0.059  # m，与 MJCF wheelRadius 一致
