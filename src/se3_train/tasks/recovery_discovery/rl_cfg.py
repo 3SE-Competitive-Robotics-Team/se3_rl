@@ -7,8 +7,33 @@ import os
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 
-def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """Discovery 阶段从零训练的 GRU PPO 配置。"""
+def _model_cfg(
+    *,
+    recurrent: bool,
+    distribution_cfg: dict[str, object] | None = None,
+) -> RslRlModelCfg:
+    """生成共享网络配置，仅按任务版本切换 GRU 或 MLP。"""
+    if recurrent:
+        return RslRlModelCfg(
+            class_name="RNNModel",
+            rnn_type="gru",
+            rnn_hidden_dim=512,
+            rnn_num_layers=1,
+            hidden_dims=(512, 256, 128),
+            activation="elu",
+            obs_normalization=True,
+            distribution_cfg=distribution_cfg,
+        )
+    return RslRlModelCfg(
+        hidden_dims=(512, 256, 128),
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=distribution_cfg,
+    )
+
+
+def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
+    """生成网络类型以外完全一致的 Discovery PPO 配置。"""
     smoke_enabled = smoke or os.environ.get("SE3_SMOKE", "0") == "1"
     logger = "tensorboard" if smoke_enabled else os.environ.get("SE3_LOGGER", "tensorboard")
 
@@ -20,29 +45,15 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     )
 
     return RslRlOnPolicyRunnerCfg(
-        actor=RslRlModelCfg(
-            class_name="RNNModel",
-            rnn_type="gru",
-            rnn_hidden_dim=512,
-            rnn_num_layers=1,
-            hidden_dims=(512, 256, 128),
-            activation="elu",
-            obs_normalization=True,
+        actor=_model_cfg(
+            recurrent=recurrent,
             distribution_cfg={
                 "class_name": "GaussianDistribution",
                 "init_std": init_std,
                 "std_type": "scalar",
             },
         ),
-        critic=RslRlModelCfg(
-            class_name="RNNModel",
-            rnn_type="gru",
-            rnn_hidden_dim=512,
-            rnn_num_layers=1,
-            hidden_dims=(512, 256, 128),
-            activation="elu",
-            obs_normalization=True,
-        ),
+        critic=_model_cfg(recurrent=recurrent),
         algorithm=RslRlPpoAlgorithmCfg(
             value_loss_coef=1.0,
             use_clipped_value_loss=True,
@@ -64,3 +75,13 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger=logger,
         resume=False,
     )
+
+
+def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """生成 Discovery 阶段从零训练的 GRU PPO 配置。"""
+    return _rl_cfg(smoke=smoke, recurrent=True)
+
+
+def mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """生成除网络类型外与 GRU 版本一致的 MLP PPO 配置。"""
+    return _rl_cfg(smoke=smoke, recurrent=False)
