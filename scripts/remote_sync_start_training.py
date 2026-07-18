@@ -564,6 +564,8 @@ compile_targets=(src scripts)
     else:
         launch_args.extend(
             [
+                "--agent.resume",
+                "True",
                 "--agent.load-run",
                 args.load_run,
                 "--agent.load-checkpoint",
