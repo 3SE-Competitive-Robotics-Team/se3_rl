@@ -220,6 +220,7 @@ class WheelLeggedRobot:
         self.reset()
 
     def reset(self, *, fixed: bool = True, randomize_root: bool = False) -> np.ndarray:
+        self.obs.reset()
         mujoco.mj_resetData(self.model, self.data)
         base_height = (
             self.cfg.base_height
@@ -276,6 +277,7 @@ class WheelLeggedRobot:
         self.last_ctbc_action_delta.fill(0.0)
         self.action_fifo.fill(0.0)
         self.last_ctrl.fill(0.0)
+        self.obs.reset()
 
     def update_stair_ctbc(self, *, iteration: int | None) -> None:
         """用当前轮-台阶立面接触更新 stair CTBC 状态机。"""
@@ -458,6 +460,7 @@ class WheelLeggedRobot:
             dof_vel=self.dof_vel,
             command=self.command,
             action_obs=self.last_action,
+            frame_id=self.step_count,
         )
 
     def telemetry(self, *, reward: float | None = None) -> dict[str, object]:

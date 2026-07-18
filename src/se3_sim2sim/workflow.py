@@ -26,10 +26,17 @@ from .viser_viewer import ViserViewer
 class Sim2SimWorkflow:
     def __init__(self, cfg: RunConfig, *, command_source: CommandInputSource | None = None) -> None:
         self.cfg = cfg.resolved()
-        self.runtime = RuntimeSpec(task=self.cfg.robot.task)
-        self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
         if self.cfg.policy.checkpoint is None:
             raise RuntimeError("启动 workflow 前必须先解析 policy checkpoint")
+        policy_num_obs = PolicyRuntime.probe_num_obs(
+            self.cfg.policy.checkpoint,
+            device=self.cfg.policy.device,
+        )
+        self.runtime = RuntimeSpec.for_policy_num_obs(
+            policy_num_obs,
+            task=self.cfg.robot.task,
+        )
+        self.robot = WheelLeggedRobot(cfg=self.cfg.robot, runtime=self.runtime)
         self.policy = PolicyRuntime(
             checkpoint=self.cfg.policy.checkpoint,
             device=self.cfg.policy.device,
