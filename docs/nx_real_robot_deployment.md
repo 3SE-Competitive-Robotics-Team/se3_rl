@@ -6,7 +6,7 @@
 
 ## 当前目标
 
-- 阶段一只在 NX 上部署 `SE3-WheelLegged-Recovery-GRU` 倒地自启 policy。
+- 阶段一只在 NX 上部署 `SE3-WheelLegged-Recovery-Discovery-GRU` 倒地自启 policy。
 - NX 只负责 policy 推理和上层状态机，通过 USB CDC 以 50 Hz 给 STM32 发送 6 维 raw policy action。
 - STM32 继续负责 CAN、电机闭环、急停、限幅、限速、通信超时和底层安全。
 - 阶段一不做 policy 切换；runtime 只运行 recovery 网络。
@@ -18,7 +18,7 @@
 
 | 项目 | 值 |
 |---|---|
-| 任务 | `SE3-WheelLegged-Recovery-GRU` |
+| 任务 | `SE3-WheelLegged-Recovery-Discovery-GRU` |
 | 本地权重文件 | `logs/rsl_rl/se3_wheel_leg/<run>/model_<step>.pt` |
 | checkpoint iter | `<step>` |
 | checkpoint 内容 | `actor_state_dict`、`critic_state_dict`、`optimizer_state_dict`、`infos` |

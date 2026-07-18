@@ -110,10 +110,10 @@ MJLab 多卡训练使用 `--gpu-ids all`。多卡时 `--env.scene.num-envs` 是�
 
 ```bash
 # A800 四卡：每卡 4096 envs，全局约 16384 envs
-uv run se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids all --env.scene.num-envs 4096
+uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --gpu-ids all --env.scene.num-envs 4096
 
 # gpufree L40S 单卡：8192 envs
-uv run se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids 0 --env.scene.num-envs 8192
+uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --gpu-ids 0 --env.scene.num-envs 8192
 ```
 
 A800 四卡倒地自起训练当前推荐从每卡 `4096` 个环境开始；如果需要 smoke 或短 benchmark，再显式降低 `--env.scene.num-envs`。
@@ -205,7 +205,7 @@ remote_artifacts/jump_height_ab_20260603/rrd/pretrain/SE3-WheelLegged-Jump-PreTr
 
 ### `xyh` 分支训练值守规范
 
-`xyh` 个人分支当前只值守两个任务：`SE3-WheelLegged-Recovery-GRU` 和 `SE3-WheelLegged-Flat-GRU` 平地基模。其他任务出现的 bug 先记录但不展开修复，除非它直接阻塞这两个任务的训练、checkpoint 保存或 Rerun 录制。
+`xyh` 个人分支当前只值守两个任务：`SE3-WheelLegged-Recovery-Discovery-GRU` 和 `SE3-WheelLegged-Flat-GRU` 平地基模。其他任务出现的 bug 先记录但不展开修复，除非它直接阻塞这两个任务的训练、checkpoint 保存或 Rerun 录制。
 
 Recovery 任务每个 checkpoint 必须录制两类倒地自启 Rerun：`roll90` 和 `pitch-flip`。`roll90` 使用 `--initial-roll-deg 90`；`pitch-flip` 使用 `--initial-pitch-deg 180` 表示 pitch 轴反转。文件名中的 `case` 分别写成 `roll90`、`pitch-flip`。
 
@@ -214,13 +214,13 @@ uv run se3-sim2sim \
   --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/<checkpoint>.pt \
   --initial-roll-deg 90 \
   --no-rerun-spawn \
-  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-GRU__<checkpoint>__manual-recovery__roll90__rec-<YYYYMMDD-HHMMSS>.rrd
+  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-Discovery-GRU__<checkpoint>__manual-recovery__roll90__rec-<YYYYMMDD-HHMMSS>.rrd
 
 uv run se3-sim2sim \
   --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/<checkpoint>.pt \
   --initial-pitch-deg 180 \
   --no-rerun-spawn \
-  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-GRU__<checkpoint>__manual-recovery__pitch-flip__rec-<YYYYMMDD-HHMMSS>.rrd
+  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-Discovery-GRU__<checkpoint>__manual-recovery__pitch-flip__rec-<YYYYMMDD-HHMMSS>.rrd
 ```
 
 Recovery 和平地基模长训期间，每 10 分钟检查一次训练状态。每发现一个新 checkpoint，都要按数字排序确认 checkpoint 编号，录制对应 Rerun，拉回本地，并向负责人汇报。汇报至少包含：任务名、远程机器、分支/commit、run timestamp、checkpoint、当前奖励值、相对上一个 checkpoint 的奖励提升量、Rerun 本地路径，以及是否看到明显异常。奖励指标优先使用 W&B 或训练日志里的同一条 mean reward；如果指标名变化，汇报时写明实际使用的指标名，不能混用不同口径计算提升量。

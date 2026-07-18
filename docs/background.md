@@ -54,7 +54,7 @@
 τ_cont    = 3.0 N·m × 14 / 19 ≈ 2.21 N·m
 ```
 
-为了复用 MJLab 的线性 T-N 包络，代码中的 `stall_torque` 使用经过官方 3 N·m @ 469 rpm 点的外推截距；真实连续输出力矩仍由 `rated_torque=2.21 N·m` 限幅。RL 训练和 sim2sim 的轮子 action scale 当前共享为 `45.0 rad/s`，保守低于 `M3508_C620_14.no_load_speed`，避免把满幅动作直接顶到空载速度边界。`SE3-WheelLegged-Recovery-GRU` 当前轮子速度阻尼 `wheel_kd=0.08`，sim2sim 也使用同一共享默认。
+为了复用 MJLab 的线性 T-N 包络，代码中的 `stall_torque` 使用经过官方 3 N·m @ 469 rpm 点的外推截距；真实连续输出力矩仍由 `rated_torque=2.21 N·m` 限幅。RL 训练和 sim2sim 的轮子 action scale 当前共享为 `45.0 rad/s`，保守低于 `M3508_C620_14.no_load_speed`，避免把满幅动作直接顶到空载速度边界。Recovery-Discovery GRU/MLP 当前轮子速度阻尼 `wheel_kd=0.08`，sim2sim 也使用同一共享默认。
 
 ## 动作空间和关节契约
 

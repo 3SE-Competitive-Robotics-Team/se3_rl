@@ -10,14 +10,15 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
-| `recovery/` | `SE3-WheelLegged-Recovery-GRU` | 倒地自启任务，从平地 GRU checkpoint warm start |
-| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` | 倒地自启 discovery 阶段，从 recovery 配置派生 |
-| `recovery_finetune/` | `SE3-WheelLegged-Recovery-FineTune-GRU` | 倒地自启 fine-tune 阶段，使用台阶/恢复状态缓存继续训练 |
+| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` | 唯一倒地自启任务；三个入口共享奖励、课程和 PPO 配置，History-MLP 仅将 actor 扩展为五帧历史观测 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
+
+`tasks/recovery/` 仅保留 Recovery-Discovery 使用的环境基配置、奖励、事件和课程实现，
+不注册独立 task；所有倒地自启训练必须从 `recovery_discovery/` 的三个正式入口启动。
 
 ## 台阶任务
 
@@ -129,9 +130,7 @@ from se3_train.tasks import (
     flat,
     jump_finetune,
     jump_pretrain,
-    recovery,
     recovery_discovery,
-    recovery_finetune,
     rough,
     stair,
 )
@@ -139,9 +138,7 @@ from se3_train.tasks import (
 for module in (
     rough,
     flat,
-    recovery,
     recovery_discovery,
-    recovery_finetune,
     stair,
     jump_pretrain,
     jump_finetune,

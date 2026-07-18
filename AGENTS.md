@@ -178,7 +178,7 @@ se3_train/
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-GRU
 │   ├── stair/       # SE3-WheelLegged-Stair-GRU（爬楼梯）
-│   ├── recovery/    # SE3-WheelLegged-Recovery-GRU（倒地自启）
+│   ├── recovery_discovery/  # Recovery-Discovery GRU/MLP/History-MLP（倒地自启）
 │   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
 │   ├── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
 │   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）

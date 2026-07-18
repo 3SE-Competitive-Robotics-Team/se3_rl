@@ -1,6 +1,6 @@
 # Recovery V2 两阶段训练方案
 
-> 状态：Discovery 任务已实现并完成首轮短训，Deploy 阶段尚未实现。本文定义下一版 recovery 训练的目标、任务拆分、reset 分布、状态缓存格式、训练流程和验收标准。
+> 状态：历史方案，已被单一 Recovery-Discovery 任务取代。本文仅保留两阶段设计的历史背景和实验记录；新训练使用 `SE3-WheelLegged-Recovery-Discovery-GRU` 或 `SE3-WheelLegged-Recovery-Discovery-MLP`。
 
 ## 背景
 
