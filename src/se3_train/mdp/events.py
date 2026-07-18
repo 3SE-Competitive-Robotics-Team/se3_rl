@@ -329,7 +329,6 @@ def reset_root_state_robotlab_full_random(
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
     mark_recovery_episode: bool = False,
-    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
 ) -> None:
     """按 RobotLab Go2W 语义随机化 root：默认状态叠加 xyz/rpy 和速度扰动。"""
     if env_ids is None:
@@ -452,7 +451,6 @@ def reset_root_state_robotlab_full_random(
     if mark_recovery_episode:
         recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
         recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
-        env._recovery_command_height = float(recovery_command_height)
         init_tilt_buf = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
         init_yaw_buf = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
         init_roll_buf = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
@@ -576,8 +574,6 @@ def reset_root_state_recovery_standard_poses(
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
-    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
-    recovery_zero_velocity_command: bool = True,
 ) -> None:
     """按标准站立、侧躺、俯卧和仰卧姿态重置 root。"""
     if env_ids is None:
@@ -657,63 +653,10 @@ def reset_root_state_recovery_standard_poses(
         env_ids,
         torch.ones(n, device=env.device, dtype=torch.bool),
     )
-    env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
-    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-    if recovery_command_height is None:
-        env._recovery_command_height = float("nan")
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                selected_height = cmd[env_ids, 4].to(
-                    device=env.device,
-                    dtype=command_height_buf.dtype,
-                )
-            except Exception:
-                selected_height = torch.full(
-                    (n,),
-                    _SHARED_ROBOT.default_base_height,
-                    device=env.device,
-                    dtype=command_height_buf.dtype,
-                )
-        else:
-            selected_height = torch.full(
-                (n,),
-                _SHARED_ROBOT.default_base_height,
-                device=env.device,
-                dtype=command_height_buf.dtype,
-            )
-    else:
-        env._recovery_command_height = float(recovery_command_height)
-        selected_height = torch.full(
-            (n,),
-            float(recovery_command_height),
-            device=env.device,
-            dtype=command_height_buf.dtype,
-        )
-    command_height_buf[env_ids] = selected_height
     env._recovery_stage_step = int(stage.get("iteration", stage.get("step", 0)))
     env._recovery_stage_prob = 1.0
     env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[0].item() / weights.sum().item())
     env._recovery_stage_cache_prob = 0.0
-    if hasattr(env, "command_manager"):
-        try:
-            cmd = env.command_manager.get_command("velocity_height")
-            if recovery_zero_velocity_command:
-                cmd[env_ids, 0:2] = 0.0
-            cmd[env_ids, 2:4] = 0.0
-            cmd[env_ids, 4] = selected_height.to(device=cmd.device, dtype=cmd.dtype)
-            if cmd.shape[1] >= 8:
-                cmd[env_ids, 5] = 0.0
-                cmd[env_ids, 7] = 0.0
-            update_policy_default_from_height_cache(
-                env,
-                "velocity_height",
-                env_ids=env_ids,
-                command=cmd,
-            )
-        except Exception:
-            pass
-
     init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
     init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
     _ensure_recovery_float_buffer(env, "_recovery_init_tilt")[env_ids] = init_tilt
@@ -789,8 +732,6 @@ def reset_root_state_full(
     recovery_state_cache_prob: float = 0.0,
     recovery_state_cache_split: str = "train",
     recovery_grace_steps: int = 400,
-    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
-    recovery_zero_velocity_command: bool = True,
     recovery_mask_attr: str | None = None,
     yaw_range: tuple[float, float] = (-math.pi, math.pi),
 ) -> None:
@@ -876,23 +817,6 @@ def reset_root_state_full(
     init_yaw[env_ids] = 0.0
     init_tilt[env_ids] = 0.0
     env._recovery_grace_steps = int(recovery_grace_steps)
-    env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
-    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-    if recovery_command_height is None:
-        env._recovery_command_height = float("nan")
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                command_height_buf[env_ids] = cmd[env_ids, 4].to(
-                    device=env.device, dtype=command_height_buf.dtype
-                )
-            except Exception:
-                command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
-        else:
-            command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
-    else:
-        env._recovery_command_height = float(recovery_command_height)
-        command_height_buf[env_ids] = float(recovery_command_height)
 
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
@@ -1104,28 +1028,6 @@ def reset_root_state_full(
             (n_recovery, 3),
             env.device,
         )
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                recovery_env_ids = env_ids[recovery_mask]
-                if recovery_zero_velocity_command:
-                    cmd[recovery_env_ids, 0:2] = 0.0
-                cmd[recovery_env_ids, 2:4] = 0.0
-                if recovery_command_height is None:
-                    cmd[recovery_env_ids, 4] = command_height_buf[recovery_env_ids]
-                else:
-                    cmd[recovery_env_ids, 4] = float(recovery_command_height)
-                if cmd.shape[1] >= 8:
-                    cmd[recovery_env_ids, 5] = 0.0
-                    cmd[recovery_env_ids, 7] = 0.0
-                update_policy_default_from_height_cache(
-                    env,
-                    "velocity_height",
-                    env_ids=recovery_env_ids,
-                    command=cmd,
-                )
-            except Exception:
-                pass
         cache_reset_mask = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")
         local_cache_mask = cache_reset_mask[env_ids]
         if local_cache_mask.any():
@@ -1238,8 +1140,6 @@ def reset_root_state_recovery_discovery_mixed(
     recovery_state_cache_path: str | None = None,
     recovery_state_cache_split: str = "train",
     recovery_grace_steps: int = 400,
-    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
-    standard_recovery_zero_velocity_command: bool = True,
 ) -> None:
     """按课程混合标准姿态、历史 cache 状态和近直立姿态。"""
     if env_ids is None:
@@ -1293,8 +1193,6 @@ def reset_root_state_recovery_discovery_mixed(
             use_iterations=use_iterations,
             steps_per_policy_iter=steps_per_policy_iter,
             offset_iter=offset_iter,
-            recovery_command_height=recovery_command_height,
-            recovery_zero_velocity_command=standard_recovery_zero_velocity_command,
         )
 
     _reset_standard_subset(standard_mask, pose_weights)
@@ -1310,8 +1208,6 @@ def reset_root_state_recovery_discovery_mixed(
             recovery_state_cache_prob=1.0,
             recovery_state_cache_split=recovery_state_cache_split,
             recovery_grace_steps=recovery_grace_steps,
-            recovery_command_height=recovery_command_height,
-            recovery_zero_velocity_command=False,
         )
 
     if hasattr(env, "extras"):

@@ -78,8 +78,8 @@ def _build_env_cfg(
             "ang_vel_range": (0.0, 0.0),
             "clearance_range": (0.003, 0.003),
             "pose_weights": POSE_WEIGHTS[pose],
-            "recovery_command_height": command_height,
-            "curriculum_stages": [],
+            "source_curriculum_stages": [],
+            "standard_curriculum_stages": [],
             "use_iterations": False,
             "offset_iter": 0,
         }

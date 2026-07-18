@@ -56,7 +56,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     action_cfg.height_conditioned_action_default = True
     action_cfg.action_default_command_name = "velocity_height"
     command_cfg = cfg.commands["velocity_height"]
-    command_cfg.resampling_time_range = (10.0, 10.0)
+    command_cfg.resampling_time_range = (5.0, 5.0)
     command_cfg.lin_vel_x_range = (0.0, 0.0)
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.pitch_range = (0.0, 0.0)
@@ -66,7 +66,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     command_cfg.height_range = initial_height_range
     command_cfg.standing_height_range = initial_height_range
-    command_cfg.height_resample_on_reset_only = True
+    command_cfg.height_resample_on_reset_only = False
     command_cfg.standing_ratio = _RECOVERY_STANDING_RATIO
     command_cfg.constrain_diff_drive_commands = True
     command_cfg.diff_drive_wheel_radius = _RECOVERY_COMMAND_WHEEL_RADIUS

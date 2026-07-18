@@ -457,8 +457,6 @@ def reset_root_state_stair_shared(
             asset_cfg=asset_cfg,
             recovery_prob=0.0,
             recovery_grace_steps=shared_recovery_grace_steps,
-            recovery_command_height=None,
-            recovery_zero_velocity_command=False,
             yaw_range=(0.0, 0.0),
         )
     if shared_ids.numel() > 0:
@@ -475,11 +473,9 @@ def reset_root_state_stair_shared(
             ang_vel_range=(0.0, 0.0),
             clearance_range=(0.001, 0.005),
             pose_weights=(0.08, 0.17, 0.17, 0.29, 0.29),
-            recovery_command_height=None,
             recovery_state_cache_path=shared_state_cache_path,
             recovery_state_cache_split=shared_state_cache_split,
             recovery_grace_steps=shared_recovery_grace_steps,
-            standard_recovery_zero_velocity_command=False,
             source_curriculum_stages=[
                 {
                     "iteration": 0,

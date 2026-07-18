@@ -33,7 +33,7 @@ from se3_train.mdp import terminations
 from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.recovery_discovery.env_cfg import (
-    _configure_discovery_reward_contract as _configure_recovery_discovery_reward_contract,
+    _configure_stair_recovery_reward_contract,
 )
 
 from . import curriculums, events, observations, rewards
@@ -297,7 +297,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         terms["last_actions"] = last_action_term
         cfg.observations[group_name] = replace(group_cfg, terms=terms)
 
-    _configure_recovery_discovery_reward_contract(cfg)
+    _configure_stair_recovery_reward_contract(cfg)
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
         func=rewards.stair_climb_progress,
         weight=3.0,
