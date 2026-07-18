@@ -82,6 +82,7 @@ _INITIAL_STAIR_HEIGHT_RANGE = (
 )
 _WALKING_PHASE_ITERATIONS = 0
 _STEPS_PER_POLICY_ITER = 64
+STAIR_MLP_HISTORY_LENGTH = 5
 _WATCH_ITER_ENV = "SE3_WATCH_ITER"
 _WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
 _WATCH_COMMAND_HEIGHT_ENV = "SE3_WATCH_COMMAND_HEIGHT"
@@ -692,4 +693,17 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
     )
     cfg.clip_observations = 100.0
+    return cfg
+
+
+def history_mlp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """生成五帧 actor 历史观测的 Stair-MLP 环境，critic 保持单帧观测。"""
+
+    cfg = env_cfg(play=play)
+    actor_cfg = cfg.observations["actor"]
+    cfg.observations["actor"] = replace(
+        actor_cfg,
+        history_length=STAIR_MLP_HISTORY_LENGTH,
+        flatten_history_dim=True,
+    )
     return cfg
