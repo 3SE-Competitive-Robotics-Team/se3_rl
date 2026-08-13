@@ -13,7 +13,6 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_train.mdp import events as mdp_events
-from se3_train.mdp import rewards as mdp_rewards
 from se3_train.tasks.recovery import curriculums, rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 
@@ -50,22 +49,6 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "wheel_air_velocity": -1.0e-3,
     "leg_contact": -1.0,
     "wheel_contact_without_cmd": 0.1,
-    "diagnostics": 1.0,
-}
-
-_STAIR_RECOVERY_REWARD_WEIGHTS = {
-    "tracking_lin_vel": 3.0,
-    "tracking_ang_vel": 1.5,
-    "upward": 3.0,
-    "tracking_height": -1500.0,
-    "upright_zero_velocity": -0.05,
-    "stand_still": -2.0,
-    "joint_pos_penalty": -1.0,
-    "leg_action_rate": -0.001,
-    "wheel_action_rate": -0.001,
-    "dof_pos_limits": -5.0,
-    "collision": -1.0,
-    "contact_forces": -1.5e-4,
     "diagnostics": 1.0,
 }
 
@@ -288,153 +271,6 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     _assert_discovery_reward_contract(cfg)
-
-
-def _configure_stair_recovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
-    """装配 Stair recovery rehearsal 的稳定奖励子集。"""
-
-    cfg.rewards.clear()
-    cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
-        func=mdp_rewards.tracking_lin_vel,
-        weight=3.0,
-        params={
-            "command_name": "velocity_height",
-            "sigma_move": 0.25,
-            "sigma_stand": 0.05,
-            "vz_weight": 0.0,
-            "use_upright_gate": True,
-            "tracking_upright_full_cos": math.cos(math.radians(15.0)),
-        },
-    )
-    cfg.rewards["tracking_ang_vel"] = RewardTermCfg(
-        func=mdp_rewards.tracking_ang_vel,
-        weight=1.5,
-        params={
-            "command_name": "velocity_height",
-            "sigma": 0.25,
-            "sigma_cmd_scale": 0.0,
-            "ratio_blend": 0.0,
-            "use_upright_gate": True,
-            "tracking_upright_full_cos": math.cos(math.radians(15.0)),
-        },
-    )
-    cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=3.0)
-    cfg.rewards["tracking_height"] = RewardTermCfg(
-        func=mdp_rewards.tracking_height,
-        weight=-1500.0,
-        params={
-            "command_name": "velocity_height",
-            "sigma": 0.0025,
-            "height_sensor_name": "base_height_sensor",
-            "kernel": "l2",
-            "use_upright_gate": True,
-            "min_upright_gate": 0.0,
-            "use_pose_end_gate": False,
-            "upright_gate_angle_deg": 30.0,
-            "inverted_gate_angle_deg": 150.0,
-        },
-    )
-    cfg.rewards["upright_zero_velocity"] = RewardTermCfg(
-        func=mdp_rewards.recovery_upright_zero_velocity_penalty,
-        weight=-0.05,
-        params={
-            "command_name": "velocity_height",
-            "command_threshold": 0.1,
-            "gate_start_deg": 45.0,
-            "gate_full_deg": 15.0,
-            "base_speed_scale": 0.15,
-            "wheel_speed_scale": 0.12,
-            "base_ang_vel_scale": 0.6,
-            "max_penalty": 8.0,
-            "asset_cfg": SceneEntityCfg("robot"),
-        },
-    )
-    cfg.rewards["stand_still"] = RewardTermCfg(
-        func=mdp_rewards.stand_still,
-        weight=-2.0,
-        params={
-            "command_name": "velocity_height",
-            "command_threshold": 0.1,
-            "default_height": 0.26,
-            "height_tolerance": 40.0,
-            "asset_cfg": SceneEntityCfg("robot"),
-        },
-    )
-    cfg.rewards["joint_pos_penalty"] = RewardTermCfg(
-        func=mdp_rewards.joint_pos_penalty,
-        weight=-1.0,
-        params={
-            "command_name": "velocity_height",
-            "stand_still_scale": 5.0,
-            "velocity_threshold": 0.5,
-            "command_threshold": 0.1,
-            "asset_cfg": SceneEntityCfg("robot"),
-        },
-    )
-    cfg.rewards["leg_action_rate"] = RewardTermCfg(
-        func=mdp_rewards.leg_action_rate,
-        weight=-0.001,
-    )
-    cfg.rewards["wheel_action_rate"] = RewardTermCfg(
-        func=mdp_rewards.wheel_action_rate,
-        weight=-0.001,
-    )
-    cfg.rewards["dof_pos_limits"] = RewardTermCfg(
-        func=mdp_rewards.dof_pos_limits,
-        weight=-5.0,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-    cfg.rewards["collision"] = RewardTermCfg(
-        func=mdp_rewards.collision,
-        weight=-1.0,
-        params={
-            "sensor_name": "collision_sensor",
-            "asset_cfg": SceneEntityCfg("robot"),
-            "use_recovery_gate": False,
-        },
-    )
-    cfg.rewards["contact_forces"] = RewardTermCfg(
-        func=mdp_rewards.contact_forces,
-        weight=-1.5e-4,
-        params={
-            "threshold": 20.0,
-            "sensor_name": "wheel_sensor",
-            "asset_cfg": SceneEntityCfg("robot"),
-            "use_recovery_gate": False,
-        },
-    )
-    cfg.rewards["diagnostics"] = RewardTermCfg(
-        func=mdp_rewards.recovery_diagnostics,
-        weight=1.0,
-        params={
-            "command_name": "velocity_height",
-            "base_height_sensor_name": "base_height_sensor",
-            "wheel_sensor_name": "wheel_sensor",
-            "leg_contact_sensor_name": "leg_contact_sensor",
-            "collision_sensor_name": "collision_sensor",
-            "asset_cfg": SceneEntityCfg("robot"),
-            "force_threshold": 1.0,
-            "contact_force_threshold": 20.0,
-            "action_saturation_threshold": 0.95,
-            "active_rod_margin_warning": 0.05,
-            "log_interval_steps": 256,
-            "core_log_interval_steps": 64,
-        },
-    )
-    actual = set(cfg.rewards)
-    expected = set(_STAIR_RECOVERY_REWARD_WEIGHTS)
-    if actual != expected:
-        raise RuntimeError(
-            "Stair recovery reward 契约发生漂移："
-            f"缺失={sorted(expected - actual)} 多余={sorted(actual - expected)}"
-        )
-    bad_weights = {
-        name: float(cfg.rewards[name].weight)
-        for name, expected_weight in _STAIR_RECOVERY_REWARD_WEIGHTS.items()
-        if abs(float(cfg.rewards[name].weight) - float(expected_weight)) > 1.0e-12
-    }
-    if bad_weights:
-        raise RuntimeError(f"Stair recovery reward 权重发生漂移：{bad_weights}")
 
 
 def _assert_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:

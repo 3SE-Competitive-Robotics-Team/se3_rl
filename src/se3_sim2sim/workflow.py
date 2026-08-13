@@ -184,6 +184,16 @@ class Sim2SimWorkflow:
                 checkpoint_request = self._consume_viewer_checkpoint_request(self.viewer)
                 if checkpoint_request is not None:
                     try:
+                        requested_num_obs = PolicyRuntime.probe_num_obs(
+                            checkpoint_request,
+                            device=self.cfg.policy.device,
+                        )
+                        if requested_num_obs != self.runtime.policy.num_obs:
+                            raise ValueError(
+                                "不能在当前 sim2sim 会话中切换观测维度不同的 checkpoint："
+                                f"当前={self.runtime.policy.num_obs}D，"
+                                f"请求={requested_num_obs}D；请用新 checkpoint 重新启动会话"
+                            )
                         next_policy = PolicyRuntime(
                             checkpoint=checkpoint_request,
                             device=self.cfg.policy.device,
