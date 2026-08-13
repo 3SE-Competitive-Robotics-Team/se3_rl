@@ -1,5 +1,10 @@
 # Laptop Viser Play 值守
 
+> **个人 profile：仅限 `xuyihao/xyh`（GitHub 账号 `am345`）。** Agent 只有通过
+> `.agents/skills/remote-dev-se3/SKILL.md` 的身份门禁后才能继续读取和使用本文中的
+> SSH alias、Windows 路径、Scheduled Task 和历史 run 信息。本文不是通用项目文档，
+> 也不得存放密码、Token 或私钥。
+
 本文记录当前 `codex/xyh` 台阶训练的远程可视化方案：A800 只负责训练，checkpoint 通过 GitHub Release exchange 低频同步，开发机本机运行原生 MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain` 并打开 `127.0.0.1:8080`。这样避免在 A800/abbtask 上跑 Viser，也避免让 laptop 8080 隧道承载 Viser HTTP/WebSocket 交互。
 
 ## 机器与目录

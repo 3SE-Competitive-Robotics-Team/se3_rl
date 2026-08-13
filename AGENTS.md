@@ -241,6 +241,11 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
+`a800-xyh-am345` 与 `docs/laptop_viser_play.md` 是 `xuyihao/xyh`（GitHub
+账号 `am345`）的个人 machine profile。Agent 只有在用户当前明确声明该身份，或
+`gh api user --jq .login` 确认为 `am345` 时才能读取和使用；其他账号不得从这些文件
+提取主机、IP、namespace、pod 或本地路径。通用远程脚本不得内置该 profile 的默认值。
+
 **触发条件**（满足其一即加载）：
 - 提到远程训练机、GPU 机器、云机器、wuyingyun、无影云、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
@@ -250,7 +255,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 - 需要在远程机器执行 uv sync / git pull
 - 询问 tmux 会话管理
 
-各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
+各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。每次只读取身份匹配且与当前任务相关的一个 profile。
 当前已注册：`wuyingyun`（无影云 RTX 5880）。
 
 ## 环境限制

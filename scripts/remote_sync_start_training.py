@@ -269,18 +269,22 @@ def build_changed_archive(archive: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="同步本地代码并启动远端训练。")
-    parser.add_argument("--entry-host", default="192.168.2.46")
+    parser.add_argument(
+        "--entry-host",
+        required=True,
+        help="执行 kubectl 的入口 SSH 主机；必须来自当前用户的 machine profile。",
+    )
     parser.add_argument("--entry-user", default="root", help="入口 SSH 用户。")
-    parser.add_argument("--entry-port", type=int, default=2222, help="入口 SSH 端口。")
+    parser.add_argument("--entry-port", type=int, default=22, help="入口 SSH 端口。")
     parser.add_argument(
         "--inner-host",
         default=None,
         help="两跳 SSH 的内层主机地址。",
     )
     parser.add_argument("--inner-user", default="root", help="内层 SSH 用户。")
-    parser.add_argument("--inner-port", type=int, default=2222, help="内层 SSH 端口。")
-    parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
+    parser.add_argument("--inner-port", type=int, default=22, help="内层 SSH 端口。")
+    parser.add_argument("--namespace", required=True, help="目标 Kubernetes namespace。")
+    parser.add_argument("--pod", required=True, help="目标 Kubernetes pod 完整名称。")
     parser.add_argument(
         "--remote-project",
         default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",

@@ -6,8 +6,7 @@
 本脚本把用户提供的 bash 脚本编码成 UTF-8 base64，再通过一个极小的
 远端 bootstrap 解码执行。PowerShell 侧不再直接承载 `&&`、`$()`、管道
 或多层引号，因此适合从 Windows PowerShell 调用远程训练机或 Kubernetes pod。
-当前默认路线是开发机 -> laptop-wg -> root@192.168.2.46:2222，再在 A800 宿主机上
-执行普通 bash 或 kubectl exec。
+入口主机和可选的内层主机必须显式传入，通用脚本不绑定任何个人 machine profile。
 
 .EXAMPLE
 $bash = @'
@@ -15,21 +14,22 @@ set -x
 date
 grep -R "reward" logs | tail -20
 '@
-.\scripts\remote_bash.ps1 -ScriptText $bash
+.\scripts\remote_bash.ps1 -HostAlias <entry-host> -ScriptText $bash
 
 .EXAMPLE
-.\scripts\remote_bash.ps1 -KubeNamespace gczx-project06 -KubePod abbtask-79cdb78487-mgx44 -NoWorkdir -ScriptPath .\tmp\check_training.sh
+.\scripts\remote_bash.ps1 -HostAlias <entry-host> -KubeNamespace <namespace> -KubePod <pod> -NoWorkdir -ScriptPath .\tmp\check_training.sh
 #>
 
 [CmdletBinding(DefaultParameterSetName = "Text")]
 param(
-    [string]$HostAlias = "laptop-wg",
+    [Parameter(Mandatory = $true)]
+    [string]$HostAlias,
 
-    [string]$InnerHost = "192.168.2.46",
+    [string]$InnerHost = "",
 
     [string]$InnerUser = "root",
 
-    [int]$InnerPort = 2222,
+    [int]$InnerPort = 22,
 
     [Parameter(Mandatory = $true, ParameterSetName = "Path")]
     [string]$ScriptPath,
