@@ -1,22 +1,18 @@
 param(
-    [ValidateSet("abbtask", "llm")]
-    [string]$TargetKind = "abbtask",
     [int]$LocalPort = 18198,
-    [string]$LaptopHost = "laptop-imgpi2nm-shanghai",
-    [string]$RemoteSshHost = "",
-    [string]$Target = "",
-    [string]$LaptopScriptPath = "E:/se3_stair_viewer_setup/laptop_viser_bridge.ps1"
+    [Parameter(Mandatory = $true)]
+    [string]$LaptopHost,
+    [Parameter(Mandatory = $true)]
+    [string]$RemoteSshHost,
+    [Parameter(Mandatory = $true)]
+    [string]$Target,
+    [Parameter(Mandatory = $true)]
+    [string]$LaptopScriptPath,
+    [Parameter(Mandatory = $true)]
+    [string]$LaptopWorkRoot
 )
 
 $ErrorActionPreference = "Stop"
-
-if (-not $RemoteSshHost) {
-    $RemoteSshHost = if ($TargetKind -eq "llm") { "llm" } else { "a800" }
-}
-
-if (-not $Target) {
-    $Target = if ($TargetKind -eq "llm") { "127.0.0.1:8080" } else { "172.16.6.130:8080" }
-}
 
 $tunnelPort = $LocalPort + 1
 $localScript = Join-Path $PSScriptRoot "laptop_viser_bridge.ps1"
@@ -48,4 +44,5 @@ ssh `
     -BridgePort $LocalPort `
     -TunnelPort $tunnelPort `
     -RemoteSshHost $RemoteSshHost `
-    -Target $Target
+    -Target $Target `
+    -WorkRoot $LaptopWorkRoot

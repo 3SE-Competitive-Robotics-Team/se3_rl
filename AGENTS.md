@@ -241,6 +241,11 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 
 涉及远程训练机的任何操作，加载 `.agents/skills/remote-dev-se3/SKILL.md`。
 
+公用 Skill 只保存流程和路由；IP、端口、用户名、namespace、pod、个人路径和机器
+所有者信息必须放在 `.agents/skills/remote-dev-se3/machines/` 下对应的 machine
+profile 中。Agent 必须先确定精确 profile，再只读取该文件；通用远程脚本不得内置
+任何个人 profile 的默认值。
+
 **触发条件**（满足其一即加载）：
 - 提到远程训练机、GPU 机器、云机器、wuyingyun、无影云、阿里云、腾讯云
 - 需要建立 SSH 连接、代理隧道、反向隧道（用 `boring` 管理，配置在 `~/.boring.toml`）
@@ -250,7 +255,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 - 需要在远程机器执行 uv sync / git pull
 - 询问 tmux 会话管理
 
-各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。
+各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。每次只读取身份匹配且与当前任务相关的一个 profile。
 当前已注册：`wuyingyun`（无影云 RTX 5880）。
 
 ## 环境限制

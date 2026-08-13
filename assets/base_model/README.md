@@ -2,7 +2,7 @@
 
 ## `model_5999_gru.pt` (current)
 
-- Source run: local TensorBoard run on `abbtask`
+- Source run: remote TensorBoard run（机器与 pod 见对应 machine profile）
 - Source file: `logs/rsl_rl/se3_wheel_leg/2026-06-09_05-06-14_recovery_overdrive_resume_4100_e802948_tb/model_5999.pt`
 - Training task: `SE3-WheelLegged-Recovery-GRU`
 - Run name: `recovery_overdrive_resume_4100_e802948_tb`
@@ -29,7 +29,8 @@ The largest improvement is command-height tracking across the full
 This checkpoint is retained as the previous recovery GRU base model for
 comparison and rollback.
 
-It was selected over the desktop checkpoint `C:/Users/13567/Desktop/model_4999.pt`
+It was selected over the desktop checkpoint `model_4999.pt` (its workstation path is
+kept in the corresponding machine profile)
 because the desktop checkpoint was trained without the near-upright
 `orientation_l2` penalty. A/B sim2sim validation on 2026-06-08 showed that the
 `acttgnoq` checkpoint has better post-recovery attitude stability, especially in

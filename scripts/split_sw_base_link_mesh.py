@@ -85,7 +85,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source",
         type=Path,
-        default=Path(r"D:\robomaster\sw_urdf_work\serialleg\meshes\base_link.STL"),
+        required=True,
+        help="待切分的 base_link.STL；具体路径由当前开发机 profile 提供。",
     )
     parser.add_argument(
         "--output-dir",

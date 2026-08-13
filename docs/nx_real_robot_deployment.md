@@ -76,16 +76,16 @@ just nx-recovery-dry-run
 - `src/se3_deploy/numpy_policy.py`：不依赖 torch 的 GRU actor NumPy 推理后端。
 - `src/se3_deploy/recovery_runtime.py`：50 Hz recovery policy 主循环。
 
-当前 NX 环境检查结果：JetPack R36.4.3，系统 Python 3.10.12，已在用户目录安装 `uv` 和 Python 3.11.15。由于 PyTorch cu128 wheel 对 NX 阶段一过重，当前实测路线为本地导出 `logs/deploy/model_recovery_gru.npz`，NX 上只安装 `numpy` / `pydantic` 并用 NumPy 后端推理。NX 测试目录：
+当前 NX 环境检查结果：JetPack R36.4.3，系统 Python 3.10.12，已在用户目录安装 `uv` 和 Python 3.11.15。由于 PyTorch cu128 wheel 对 NX 阶段一过重，当前实测路线为本地导出 `logs/deploy/model_recovery_gru.npz`，NX 上只安装 `numpy` / `pydantic` 并用 NumPy 后端推理。NX 测试目录由所选 machine profile 提供，以下记为：
 
 ```bash
-~/project/se3_wheel_leg_nx_runtime
+<nx-runtime-dir>
 ```
 
 NX 上已生成便捷启动脚本：
 
 ```bash
-cd ~/project/se3_wheel_leg_nx_runtime
+cd <nx-runtime-dir>
 ./run_recovery.sh --dry-run --max-steps 5 --print-every 1
 ./run_recovery.sh --max-steps 5 --print-every 1
 ```
@@ -133,58 +133,9 @@ STM32 必须检查 magic、version、长度、CRC、`source_state_seq` 新鲜度
 
 ## 已验证连接信息
 
-| 项目 | 值 |
-|---|---|
-| 设备 | Jetson Orin NX |
-| 主机名 | `tegra-ubuntu` |
-| 系统 | Linux `5.15.148-tegra` |
-| 架构 | `aarch64` |
-| 直连 IP | `192.168.137.100` |
-| 用户名 | `amov` |
-| 本机网卡 | Windows `以太网` |
-| 本机直连地址 | `192.168.137.1/24` |
-| 认证方式 | 本机 `~/.ssh/id_ed25519.pub` 已写入 NX `~/.ssh/authorized_keys` |
-| 验证日期 | 2026-06-01 |
-
-首次连接时如果本机还没有 `192.168.137.0/24` 地址，需要在管理员 PowerShell 中给有线网卡临时追加地址：
-
-```powershell
-New-NetIPAddress -InterfaceAlias '以太网' -IPAddress 192.168.137.1 -PrefixLength 24 -PolicyStore ActiveStore
-```
-
-`ActiveStore` 只对当前系统会话生效，重启后会消失；这适合现场调试，不会永久改写网卡配置。
-
-验证 SSH：
-
-```powershell
-ssh -i "$env:USERPROFILE\.ssh\id_ed25519" -o IdentitiesOnly=yes amov@192.168.137.100 "hostname && uname -m && whoami && hostname -I"
-```
-
-期望至少包含：
-
-```text
-tegra-ubuntu
-aarch64
-amov
-192.168.137.100
-```
-
-建议在本机 `~/.ssh/config` 增加别名：
-
-```sshconfig
-Host serialleg-nx
-    HostName 192.168.137.100
-    User amov
-    IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
-    StrictHostKeyChecking accept-new
-```
-
-之后可直接：
-
-```bash
-ssh serialleg-nx "hostname && uname -a"
-```
+NX 的 IP、用户名、网卡配置、SSH alias、认证方式和远端路径统一维护在
+`.agents/skills/remote-dev-se3/machines/nx.md`。本文只描述部署契约和安全流程，
+不复制机器连接参数。执行旧 NX 链路前仍须先确认主人是否继续使用。
 
 ## 部署前置门槛
 
@@ -206,24 +157,25 @@ uv run se3-sim2sim --checkpoint <ckpt> --max-steps 3000
 
 ## 源码和产物同步
 
-源码变更走 git，不用 `scp` 手工覆盖源码文件。NX 上建议放在：
+源码变更走 git，不用 `scp` 手工覆盖源码文件。仓库目录和 SSH 目标均由所选 machine
+profile 提供，以下分别记为 `<nx-repo>` 和 `<nx-ssh-target>`：
 
 ```bash
-~/project/se3_wheel_leg
+<nx-repo>
 ```
 
 首次准备：
 
 ```bash
-ssh serialleg-nx "mkdir -p ~/project"
-ssh serialleg-nx "cd ~/project && git clone https://github.com/3SE-Competitive-Robotics-Team/se3_wheel_leg.git"
+ssh <nx-ssh-target> "mkdir -p <nx-repo-parent>"
+ssh <nx-ssh-target> "cd <nx-repo-parent> && git clone https://github.com/3SE-Competitive-Robotics-Team/se3_wheel_leg.git"
 ```
 
 checkpoint、导出的 policy、Rerun 回放等产物可以单独传输。传 checkpoint 时仍要保留 run timestamp 和 model step，避免后续无法追溯：
 
 ```bash
 scp logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt \
-  serialleg-nx:~/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/<timestamp>/
+  <nx-ssh-target>:<nx-repo>/logs/rsl_rl/se3_wheel_leg/<timestamp>/
 ```
 
 ## 真机 runtime 后续补齐
@@ -241,7 +193,6 @@ scp logs/rsl_rl/se3_wheel_leg/<timestamp>/model_<step>.pt \
 
 ## 风险记录
 
-- NX 直连依赖本机有线网卡处于 `192.168.137.0/24`；如果 SSH 超时，先查本机网卡 IP，不要先怀疑密码。
-- `192.168.137.100:22` 可达才进入认证排查；端口不通时优先检查网段、网线、NX SSH 服务。
+- NX 直连失败时按 machine profile 先检查本机网段、网线和 NX SSH 服务；确认端口可达后再进入认证排查。
 - 明文密码不写入仓库；首次引导后使用 SSH key。
 - 真机动作输出必须先限幅再下发，任何未经限幅的 raw policy action 都不能直接进电机控制链路。

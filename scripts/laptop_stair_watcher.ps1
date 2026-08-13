@@ -1,19 +1,32 @@
 param(
+  [Parameter(Mandatory = $true)]
+  [string]$A800Host,
+  [Parameter(Mandatory = $true)]
+  [string]$Namespace,
+  [Parameter(Mandatory = $true)]
+  [string]$Pod,
+  [Parameter(Mandatory = $true)]
+  [string]$Project,
+  [Parameter(Mandatory = $true)]
+  [string]$RunDir,
+  [Parameter(Mandatory = $true)]
+  [string]$TrainLog,
+  [Parameter(Mandatory = $true)]
+  [string]$Repo,
+  [Parameter(Mandatory = $true)]
+  [string]$CacheRoot,
+  [Parameter(Mandatory = $true)]
+  [string]$TempRoot,
+  [Parameter(Mandatory = $true)]
+  [string]$UvCacheDir,
+  [Parameter(Mandatory = $true)]
+  [string]$UvPythonInstallDir,
   [switch]$Once
 )
 
 $ErrorActionPreference = 'Continue'
-$Namespace = 'gczx-project06'
-$Pod = 'abbtask-79cdb78487-mgx44'
-$Project = '/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg'
-$RunDir = '2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k'
-$Task = 'SE3-WheelLegged-Stair-GRU'
-$TrainLog = '/tmp/train_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k.log'
-$Repo = 'E:\se3_stair_viewer'
 $LocalRunDir = Join-Path $Repo "logs\remote_watch\$RunDir"
 $Python = Join-Path $Repo '.venv\Scripts\python.exe'
-$CacheRoot = 'E:\se3_stair_viewer_setup\cache'
-$TempRoot = 'E:\se3_stair_viewer_setup\tmp'
 $IntervalIters = 100
 $PollSeconds = 60
 $StepHeightMin = 0.05
@@ -27,8 +40,8 @@ $Viewer = $null
 New-Item -ItemType Directory -Force -Path $LocalRunDir | Out-Null
 New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
-$env:UV_CACHE_DIR = 'E:\uv-cache'
-$env:UV_PYTHON_INSTALL_DIR = 'E:\uv-python'
+$env:UV_CACHE_DIR = $UvCacheDir
+$env:UV_PYTHON_INSTALL_DIR = $UvPythonInstallDir
 $env:XDG_CACHE_HOME = $CacheRoot
 $env:PYTHONPYCACHEPREFIX = Join-Path $CacheRoot 'pycache'
 $env:MPLCONFIGDIR = Join-Path $CacheRoot 'matplotlib'
@@ -40,8 +53,8 @@ function Invoke-A800HostBash([string]$ScriptText) {
   $normalized = $ScriptText -replace "`r`n", "`n"
   $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalized))
   $remote = "printf '%s' '$payload' | base64 -d | timeout 180s bash -s"
-  & ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o IPQoS=none a800 $remote
-  if ($LASTEXITCODE -ne 0) { throw "a800 host command failed: $LASTEXITCODE" }
+  & ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o IPQoS=none $A800Host $remote
+  if ($LASTEXITCODE -ne 0) { throw "远端主机命令失败：$LASTEXITCODE" }
 }
 
 function Invoke-PodBash([string]$ScriptText, [int]$TimeoutSeconds = 60) {
@@ -91,7 +104,7 @@ stat -c%s '$hostTmp'
   if ([int64]$sizeLine -ne $ckpt.Size) { throw "host tmp size mismatch: $sizeLine != $($ckpt.Size)" }
   $tmpLocal = "$localPath.tmp"
   Remove-Item -LiteralPath $tmpLocal -Force -ErrorAction SilentlyContinue
-  & scp -o BatchMode=yes -o ConnectTimeout=10 "a800:$hostTmp" $tmpLocal
+  & scp -o BatchMode=yes -o ConnectTimeout=10 "${A800Host}:$hostTmp" $tmpLocal
   if ($LASTEXITCODE -ne 0) { throw "scp failed: $LASTEXITCODE" }
   if ((Get-Item $tmpLocal).Length -ne $ckpt.Size) { throw "local size mismatch for $($ckpt.Name)" }
   Move-Item -LiteralPath $tmpLocal -Destination $localPath -Force

@@ -1,14 +1,25 @@
-# Laptop Viser Play 值守
+# laptop-xyh-am345 Viser 值守 profile
+
+> **个人 profile：仅限 `xuyihao/xyh`（GitHub 账号 `am345`）。** Agent 只有通过
+> 父目录 `SKILL.md` 的 profile 路由确认后才能继续读取和使用本文中的
+> SSH alias、Windows 路径、Scheduled Task 和历史 run 信息。本文不是通用项目文档，
+> 也不得存放密码、Token 或私钥。
 
 本文记录当前 `codex/xyh` 台阶训练的远程可视化方案：A800 只负责训练，checkpoint 通过 GitHub Release exchange 低频同步，开发机本机运行原生 MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain` 并打开 `127.0.0.1:8080`。这样避免在 A800/abbtask 上跑 Viser，也避免让 laptop 8080 隧道承载 Viser HTTP/WebSocket 交互。
 
 ## 机器与目录
 
-当前 laptop SSH 别名：
-
-```text
-laptop-imgpi2nm-shanghai
-```
+| 项目 | 值 |
+|---|---|
+| laptop SSH 别名 | `laptop-imgpi2nm-shanghai` |
+| laptop 上的 A800 SSH 别名 | `a800` |
+| A800 Viser 内网目标 | `172.16.6.130:8080` |
+| Kubernetes namespace | `gczx-project06` |
+| 当前 pod | `abbtask-79cdb78487-mgx44` |
+| 远端 viewer 项目 | `/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_run_f4ebc01_20260617_3k` |
+| 当前 run | `2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k` |
+| 当前训练日志 | `/tmp/train_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k.log` |
+| GitHub Release tag | `run-20260617-101355-stair3k-ctbcslow-f4ebc01` |
 
 laptop 上所有本项目 viewer 相关文件必须放在 `E:`，不要放到 `C:`：
 
@@ -41,10 +52,22 @@ laptop 侧 native Viser 仍可作为 fallback。需要绕过本机 watcher 或�
 SE3LaptopStairViser
 ```
 
-让该 task 执行 watcher：
+让该 task 执行仓库内的通用 watcher，并由本 profile 显式传入机器参数：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File E:\se3_stair_viewer_setup\laptop_checkpoint_viser_watcher.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File E:\se3_stair_viewer\scripts\laptop_stair_watcher.ps1 `
+  -A800Host a800 `
+  -Namespace gczx-project06 `
+  -Pod abbtask-79cdb78487-mgx44 `
+  -Project /workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_run_f4ebc01_20260617_3k `
+  -RunDir 2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
+  -TrainLog /tmp/train_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k.log `
+  -Repo E:\se3_stair_viewer `
+  -CacheRoot E:\se3_stair_viewer_setup\cache `
+  -TempRoot E:\se3_stair_viewer_setup\tmp `
+  -UvCacheDir E:\uv-cache `
+  -UvPythonInstallDir E:\uv-python
 ```
 
 watcher 会在 laptop 侧通过 A800 内网拉取最新 checkpoint，按固定间隔重启 viewer，并在 `E:\se3_stair_viewer` 中运行：
@@ -65,13 +88,25 @@ watcher 会在 laptop 侧通过 A800 内网拉取最新 checkpoint，按固定�
 
 viewer 启动后，常规对比 checkpoint 直接在 Viser 的 Controls / Policy 里选择 `Checkpoint` 下拉框即可；切换成功后 sim2sim 会重新加载 policy、清空 GRU hidden 和动作历史，并 reset 当前环境。
 
-只有需要切到另一个 run 目录时，才更新 `laptop_checkpoint_viser_watcher.ps1` 里的 `$RunDir`。同步到 laptop 的 `E:\se3_stair_viewer_setup\` 后重启 task：
+需要切换 run、pod 或路径时，修改 Scheduled Task 传入的 profile 参数，不要修改通用脚本。更新后重启 task：
 
 ```powershell
 ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"Stop-ScheduledTask -TaskName SE3LaptopStairViser; Start-Sleep -Seconds 2; Start-ScheduledTask -TaskName SE3LaptopStairViser`""
 ```
 
-如果只想固定某个 checkpoint 反复观察，可把 task 临时改成 `laptop_stair_play_keepalive.ps1` 或 `laptop_stair_play_keepalive.cmd`。这两个脚本不会自动拉取最新 checkpoint，只按脚本里的 `RUN_DIR` / `CHECKPOINT` 启动；它们同样必须带 `--stair-terrain`，否则 Viser 中不会有真实台阶碰撞地形。
+如果只想固定某个 checkpoint 反复观察，可把 task 临时改成下面的参数化脚本。它不会自动拉取最新 checkpoint，且同样必须带 `--stair-terrain`，否则 Viser 中不会有真实台阶碰撞地形：
+
+```powershell
+& E:\se3_stair_viewer\scripts\laptop_stair_play_keepalive.ps1 `
+  -RunDir 2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
+  -Checkpoint model_<iter>.pt `
+  -Repo E:\se3_stair_viewer `
+  -CacheRoot E:\se3_stair_viewer_setup\cache `
+  -TempRoot E:\se3_stair_viewer_setup\tmp `
+  -UvCacheDir E:\uv-cache `
+  -UvPythonInstallDir E:\uv-python `
+  -TerrainLevel 3
+```
 
 ## 台阶地形约束
 
@@ -96,6 +131,7 @@ checkpoint 文件同步，不再承载 Viser HTTP/WebSocket 交互。
 uv run python scripts\local_checkpoint_viser_watcher.py `
   --source github-release `
   --run-dir 2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
+  --github-release-tag run-20260617-101355-stair3k-ctbcslow-f4ebc01 `
   --terrain-level 3 `
   --interval-iters 100 `
   --poll-seconds 60 `
@@ -134,6 +170,7 @@ GitHub Release 数据通道的发布端使用：
 ```powershell
 uv run python scripts\github_release_checkpoint_publisher.py `
   --checkpoint-dir logs\remote_watch\2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
+  --github-release-tag run-20260617-101355-stair3k-ctbcslow-f4ebc01 `
   --poll-seconds 60 `
   --stability-seconds 10 `
   --interval-iters 100
@@ -145,6 +182,22 @@ publisher 可以跑在任何能拿到 checkpoint 文件的机器上，例如 lap
 
 如果确实要绕过 GitHub exchange，watcher 仍可显式传 `--source remote`，按
 `laptop -> a800 -> pod` 的 SSH 路线复制 checkpoint；这条路线只作为备用，不作为当前推荐值守通道。
+
+```powershell
+uv run python scripts\local_checkpoint_viser_watcher.py `
+  --source remote `
+  --laptop-host laptop-imgpi2nm-shanghai `
+  --a800-host 192.168.2.46 `
+  --a800-user root `
+  --a800-port 2222 `
+  --namespace gczx-project06 `
+  --pod abbtask-79cdb78487-mgx44 `
+  --remote-project /workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_run_f4ebc01_20260617_3k `
+  --run-dir 2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
+  --train-log /tmp/train_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k.log `
+  --laptop-run-root E:/se3_stair_viewer/logs/remote_watch `
+  --terrain-level 3
+```
 
 旧方案是开发机只做 laptop 的 8080 转发：
 
@@ -159,6 +212,17 @@ http://127.0.0.1:8080/
 ```
 
 如果 8080 被旧 viewer 占用，先定位并清掉本机旧 tunnel 或旧本地 play，再重新启动上面的 SSH tunnel。
+
+需要使用旧的跨机器 bridge 时，所有入口和路径也从本 profile 显式传给通用脚本：
+
+```powershell
+.\scripts\start_viser_bridge_via_laptop.ps1 `
+  -LaptopHost laptop-imgpi2nm-shanghai `
+  -RemoteSshHost a800 `
+  -Target 172.16.6.130:8080 `
+  -LaptopScriptPath E:/se3_stair_viewer_setup/laptop_viser_bridge.ps1 `
+  -LaptopWorkRoot E:/se3_stair_viewer_setup
+```
 
 ## 必查项
 

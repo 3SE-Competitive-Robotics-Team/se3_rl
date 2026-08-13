@@ -117,7 +117,7 @@ uv run se3-sim2sim --no-action-delay
 - [训练指南](docs/train.md)
 - [训练性能记录](docs/perf.md)
 - [训练任务架构](docs/task_architecture.md)
-- [wuyingyun 训练机器运维笔记](docs/wuyingyun.md)
+- 远程机器运维：先读 [remote-dev-se3 公用流程](.agents/skills/remote-dev-se3/SKILL.md)，再选择对应 machine profile
 - [GRU 反倒起身训练方案](docs/plan/gru_recovery_training.md)
 - [MoE 多速度域方案](docs/plan/moe_multi_speed.md)
 - [膝关节弹簧建模方案](docs/plan/knee_spring_modeling.md)

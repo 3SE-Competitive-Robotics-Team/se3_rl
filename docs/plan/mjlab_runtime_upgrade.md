@@ -64,7 +64,9 @@ UniLab 这次的问题不是“仿真平台天然更快”，而是它让 CPU/GP
 
 记录时间：2026-06-02。
 
-远端机器：`root@120.209.70.195 -p 30369`，A100-SXM4-80GB * 2。测试时两张 GPU 空闲，单卡测试固定 `CUDA_VISIBLE_DEVICES=0`。
+远端入口、用户名和端口见
+`.agents/skills/remote-dev-se3/machines/a100-runtime-upgrade-legacy.md`。测试时两张 A100 GPU
+空闲，单卡测试固定 `CUDA_VISIBLE_DEVICES=0`。
 
 测试 commit：
 

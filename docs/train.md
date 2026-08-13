@@ -68,7 +68,9 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 
 ### Viser 训练值守（必开）
 
-当前 `codex/xyh` 台阶远程训练以 [Laptop Viser Play 值守](laptop_viser_play.md) 为准：A800/abbtask 只负责训练，值守侧跑 native MuJoCo closedchain `se3-sim2sim --viewer viser --stair-terrain`。当 laptop 8080/2224 隧道不稳定时，优先使用本机 native Viser + GitHub Release checkpoint exchange 数据通道，不再把 Viser HTTP/WebSocket 交互放在 SSH tunnel 上。值守验收必须确认 Viser 中台阶是真实 MuJoCo 碰撞地形，机器人不会穿模。
+远程训练的连接方式、checkpoint 交换通道和本地目录由选定的 machine profile 决定，
+公用训练文档不提供某台机器的默认入口。值守侧应运行与训练任务匹配的
+`se3-play` 或 native MuJoCo `se3-sim2sim`，并确认策略、模型和碰撞地形都与训练契约一致。
 
 非台阶任务或本地临时调试仍可用 `se3-play --viewer viser` 打开对应 task/checkpoint。不要只看 W&B 或终端日志，也不要依赖 `--viewer auto`；没有可见 Viser 窗口，或本机/laptop 值守未通过验收，本次训练视为没有完成启动值守检查。
 
@@ -86,11 +88,13 @@ uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 
 uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --agent zero --viewer viser --num-envs 1
 ```
 
-台阶远程训练不要在 A800/abbtask 上开 MJLab Viser；具体路径、GitHub Release checkpoint exchange、Scheduled Task、E 盘缓存要求、台阶碰撞地形约束和验收命令见 [Laptop Viser Play 值守](laptop_viser_play.md)。
+台阶任务使用 native MuJoCo sim2sim 值守时，必须确认台阶是真实 worldbody 碰撞地形，
+不是只参与显示的 overlay。远端来源、缓存目录和 watcher 参数从当前 machine profile 获取。
 
 ### 本地/单卡 GPU 训练
 
-需要 NVIDIA GPU + CUDA 12.4+。本节是本地/单卡示例，环境数用 1024；`codex/xyh` 远程正式训练档位见下一节。
+需要 NVIDIA GPU + CUDA 12.4+。本节是本地/单卡示例，环境数使用 1024；远程机器的
+推荐环境数和 CUDA 特殊配置以对应 machine profile 为准。
 
 ```bash
 # 平地训练
@@ -102,25 +106,23 @@ uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 
 ### 远程多卡训练
 
-`codex/xyh` 个人工作分支当前常用远程训练服务器：`a800`（4 * NVIDIA A800，每卡 4096 envs，全局约 16384 envs）、`gpufree`（1 * NVIDIA L40S，单卡 8192 envs）和 `wuyingyun`（1 * NVIDIA RTX 5880，按需单卡训练）。
+远程训练先按 `.agents/skills/remote-dev-se3/SKILL.md` 选择精确 machine profile。
+profile 负责记录连接参数、GPU 数量、推荐环境数、计费策略和 CUDA 特殊配置。
 
-gpufree 等按量计费机器遵循“本地改代码、无卡模式准备、GPU 模式短验证、GPU 模式长训、产物同步后立即关机”的流程，具体见 `.agents/skills/remote-dev-se3/machines/gpufree.md`。
-
-MJLab 多卡训练使用 `--gpu-ids all`。多卡时 `--env.scene.num-envs` 是每张卡的环境数，不是全局环境数。当前多卡主力是 A800 四卡，默认每卡 `4096`，全局约为 `4 * 4096 = 16384` 个环境。gpufree 当前是 L40S 单卡，默认 `8192` 个环境，不要使用多卡配置。
+MJLab 多卡训练使用 `--gpu-ids all`。多卡时 `--env.scene.num-envs` 是每张卡的环境数，
+不是全局环境数：
 
 ```bash
-# A800 四卡：每卡 4096 envs，全局约 16384 envs
-uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --gpu-ids all --env.scene.num-envs 4096
-
-# gpufree L40S 单卡：8192 envs
-uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --gpu-ids 0 --env.scene.num-envs 8192
+# 多卡：每张卡的环境数由 machine profile 给出
+uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU \
+  --gpu-ids all \
+  --env.scene.num-envs <envs-per-gpu>
 ```
-
-A800 四卡倒地自起训练当前推荐从每卡 `4096` 个环境开始；如果需要 smoke 或短 benchmark，再显式降低 `--env.scene.num-envs`。
 
 Recovery-Discovery 的默认训练长度为 `5000` 轮，确保能够覆盖延伸到第 `4200` 轮的状态缓存、速度指令和 push disturbance（推搡扰动）课程。需要短训时显式传 `--agent.max-iterations`，不要把短训轮数写回正式默认配置。
 
-如果训练容器使用 CUDA Forward Compatibility，启动训练前确认 Warp 报 `Driver 12.6`，且没有 `CUDA Graphs disabled`。容器默认 `LD_LIBRARY_PATH=/usr/local/nvidia/lib64` 可能覆盖 ldconfig 中的 compat `libcuda`，必要时在训练 shell 中 `unset LD_LIBRARY_PATH`。
+若 profile 要求 CUDA Forward Compatibility，按该 profile 的路径和验证条件执行，
+不要把某台机器的 driver、compat 目录或 `LD_LIBRARY_PATH` 写入本公用文档。
 
 ### CPU 训练
 
@@ -160,7 +162,8 @@ logs/rsl_rl/se3_wheel_leg/2026-05-05_23-13-57/
 
 ## 评估/回放
 
-当前 `codex/xyh` 台阶远程训练的实时值守用本机或 laptop 侧 `se3-sim2sim --viewer viser --model-variant closedchain --stair-terrain`，让浏览器里的 `Actual RT` 对应 closedchain policy-step RT，并让台阶在 native MuJoCo 里真实参与碰撞。当前推荐本机 native Viser 直接监听 `127.0.0.1:8080`，checkpoint 通过 GitHub Release exchange 更新。非台阶任务的临时值守可继续用 `se3-play --viewer viser`。正式 sim2sim 回放和验证仍走 `se3-sim2sim`，Rerun 负责记录轨迹、控制量曲线和可复查的 `.rrd` 文件：
+正式 sim2sim 回放和验证使用 `se3-sim2sim`，Rerun 负责记录轨迹、控制量曲线和
+可复查的 `.rrd` 文件。远程 checkpoint 如何同步到本地由选定的 machine profile 决定：
 
 ```bash
 uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000
@@ -204,28 +207,6 @@ remote_artifacts/jump_height_ab_20260603/rrd/pretrain/SE3-WheelLegged-Jump-PreTr
 远程录制时可以先写 `.rrd.tmp`，确认文件非空后再原子重命名为最终 `.rrd`；拉回本地时只拉最终 `.rrd`、同名 `.json` summary 和同名 `.log`。禁止把远程绝对路径或机器随机目录名直接塞进 `.rrd` 文件名；除 `rec-<YYYYMMDD-HHMMSS>` 外的来源信息写到 `state/recorded.tsv` 或 summary JSON 里。
 
 `replays/`、`remote_artifacts/` 和 `.rrd` 文件是本地验证产物，不提交。
-
-### `xyh` 分支训练值守规范
-
-`xyh` 个人分支当前只值守两个任务：`SE3-WheelLegged-Recovery-Discovery-GRU` 和 `SE3-WheelLegged-Flat-GRU` 平地基模。其他任务出现的 bug 先记录但不展开修复，除非它直接阻塞这两个任务的训练、checkpoint 保存或 Rerun 录制。
-
-Recovery 任务每个 checkpoint 必须录制两类倒地自启 Rerun：`roll90` 和 `pitch-flip`。`roll90` 使用 `--initial-roll-deg 90`；`pitch-flip` 使用 `--initial-pitch-deg 180` 表示 pitch 轴反转。文件名中的 `case` 分别写成 `roll90`、`pitch-flip`。
-
-```bash
-uv run se3-sim2sim \
-  --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/<checkpoint>.pt \
-  --initial-roll-deg 90 \
-  --no-rerun-spawn \
-  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-Discovery-GRU__<checkpoint>__manual-recovery__roll90__rec-<YYYYMMDD-HHMMSS>.rrd
-
-uv run se3-sim2sim \
-  --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/<checkpoint>.pt \
-  --initial-pitch-deg 180 \
-  --no-rerun-spawn \
-  --rerun-record remote_artifacts/<experiment_id>/rrd/<run_label>/SE3-WheelLegged-Recovery-Discovery-GRU__<checkpoint>__manual-recovery__pitch-flip__rec-<YYYYMMDD-HHMMSS>.rrd
-```
-
-Recovery 和平地基模长训期间，每 10 分钟检查一次训练状态。每发现一个新 checkpoint，都要按数字排序确认 checkpoint 编号，录制对应 Rerun，拉回本地，并向负责人汇报。汇报至少包含：任务名、远程机器、分支/commit、run timestamp、checkpoint、当前奖励值、相对上一个 checkpoint 的奖励提升量、Rerun 本地路径，以及是否看到明显异常。奖励指标优先使用 W&B 或训练日志里的同一条 mean reward；如果指标名变化，汇报时写明实际使用的指标名，不能混用不同口径计算提升量。
 
 ## Sim2Sim 验证
 

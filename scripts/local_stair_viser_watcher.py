@@ -670,24 +670,15 @@ def wait_for_viser(timeout_s: float = 90.0) -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--laptop-host", default="laptop-imgpi2nm-shanghai")
-    parser.add_argument("--a800-host", default="a800")
-    parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
-    parser.add_argument(
-        "--remote-project",
-        default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg_run_f4ebc01_20260617_3k",
-    )
+    parser.add_argument("--laptop-host", default=None)
+    parser.add_argument("--a800-host", default=None)
+    parser.add_argument("--namespace", default=None)
+    parser.add_argument("--pod", default=None)
+    parser.add_argument("--remote-project", default=None)
     parser.add_argument("--remote-log-dir", default="logs/rsl_rl/se3_wheel_leg")
-    parser.add_argument(
-        "--run-dir",
-        default="2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k",
-    )
-    parser.add_argument(
-        "--train-log",
-        default="/tmp/train_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k.log",
-    )
-    parser.add_argument("--laptop-run-root", default="E:/se3_stair_viewer/logs/remote_watch")
+    parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--train-log", default=None)
+    parser.add_argument("--laptop-run-root", default=None)
     parser.add_argument("--local-run-root", type=Path, default=Path("logs/remote_watch"))
     parser.add_argument("--viewer-log-root", type=Path, default=Path("logs/local_viser"))
     parser.add_argument("--interval-iters", type=int, default=100)
@@ -703,10 +694,7 @@ def parse_args() -> argparse.Namespace:
         "--github-release-repo",
         default="3SE-Competitive-Robotics-Team/se3_checkpoint_exchange",
     )
-    parser.add_argument(
-        "--github-release-tag",
-        default="run-20260617-101355-stair3k-ctbcslow-f4ebc01",
-    )
+    parser.add_argument("--github-release-tag", default=None)
     parser.add_argument("--github-timeout-s", type=float, default=120.0)
     parser.add_argument("--sim-dt", type=float, default=0.005)
     parser.add_argument("--control-decimation", type=int, default=4)
@@ -728,7 +716,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ssh-attempts", type=int, default=3)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--no-viewer", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.source == "github-release" and not args.github_release_tag:
+        parser.error("--source github-release 必须显式传 --github-release-tag")
+    if args.source == "remote":
+        required = {
+            "--laptop-host": args.laptop_host,
+            "--a800-host": args.a800_host,
+            "--namespace": args.namespace,
+            "--pod": args.pod,
+            "--remote-project": args.remote_project,
+            "--laptop-run-root": args.laptop_run_root,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if args.terrain_level < 0 and not args.train_log:
+            missing.append("--train-log（或显式传 --terrain-level）")
+        if missing:
+            parser.error("--source remote 缺少 machine profile 参数: " + ", ".join(missing))
+    return args
 
 
 def main() -> None:
