@@ -1,12 +1,5 @@
 # Base Model Registry
 
-## `mlp.pt`（未训练占位基模）
-
-- 网络结构：34D actor / 40D critic，隐藏层为 `(512, 256, 128)`
-- 训练状态：随机初始化，仅用于让 Stair MLP 的 warm-start 链路保持可运行
-- 替换条件：首个可用 MLP 行走基模训练完成后，直接用其 checkpoint 替换此文件
-- 截止日期：2026-07-31 前完成基模替换，并在替换后更新本节来源信息
-
 ## `model_5999_gru.pt` (current)
 
 - Source run: local TensorBoard run on `abbtask`

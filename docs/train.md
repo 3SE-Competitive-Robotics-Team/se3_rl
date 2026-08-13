@@ -118,6 +118,8 @@ uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --gpu-ids 0 --env.scene.
 
 A800 四卡倒地自起训练当前推荐从每卡 `4096` 个环境开始；如果需要 smoke 或短 benchmark，再显式降低 `--env.scene.num-envs`。
 
+Recovery-Discovery 的默认训练长度为 `5000` 轮，确保能够覆盖延伸到第 `4200` 轮的状态缓存、速度指令和 push disturbance（推搡扰动）课程。需要短训时显式传 `--agent.max-iterations`，不要把短训轮数写回正式默认配置。
+
 如果训练容器使用 CUDA Forward Compatibility，启动训练前确认 Warp 报 `Driver 12.6`，且没有 `CUDA Graphs disabled`。容器默认 `LD_LIBRARY_PATH=/usr/local/nvidia/lib64` 可能覆盖 ldconfig 中的 compat `libcuda`，必要时在训练 shell 中 `unset LD_LIBRARY_PATH`。
 
 ### CPU 训练

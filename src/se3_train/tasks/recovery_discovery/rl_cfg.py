@@ -41,7 +41,7 @@ def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
     init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "0.5"))
     entropy_coef = float(os.environ.get("SE3_RECOVERY_ENTROPY_COEF", "0.00516"))
     max_iterations = (
-        5 if smoke_enabled else int(os.environ.get("SE3_RECOVERY_DISCOVERY_MAX_ITERATIONS", "1500"))
+        5 if smoke_enabled else int(os.environ.get("SE3_RECOVERY_DISCOVERY_MAX_ITERATIONS", "5000"))
     )
 
     return RslRlOnPolicyRunnerCfg(

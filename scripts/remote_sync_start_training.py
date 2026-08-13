@@ -249,6 +249,8 @@ def build_changed_archive(archive: Path) -> None:
     if archive.exists():
         archive.unlink()
     changed, deleted = _git_changed_paths()
+    if not changed and not deleted:
+        raise RuntimeError("changed-tar 没有发现工作区改动；已提交源码请使用默认 tar 完整同步")
     with tempfile.TemporaryDirectory(prefix="se3_changed_sync_") as tmp:
         tmp_dir = Path(tmp)
         payload_dir = tmp_dir / "payload"
@@ -290,13 +292,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-toolkit-lib-dir", default="/usr/local/cuda-12.2/lib64")
     parser.add_argument(
         "--task",
-        default="SE3-WheelLegged-Stair-NoCTBC-GRU-WarmStart",
+        default="SE3-WheelLegged-Stair-GRU",
     )
     parser.add_argument(
         "--load-run",
-        default="2026-06-01_12-35-40_stair_user_state_ff",
+        default="base_model",
     )
-    parser.add_argument("--load-checkpoint", default=r"model_4100\.pt")
+    parser.add_argument("--load-checkpoint", default=r"rough_base\.pt")
     parser.add_argument(
         "--from-scratch",
         action="store_true",
@@ -344,11 +346,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-name",
-        default="stair_progress_fix_noctbc_m4100_20260610",
+        default="stair_gru",
     )
     parser.add_argument(
         "--job-name",
-        default="stair_progress_fix_noctbc_m4100_20260610",
+        default="stair_gru",
     )
     parser.add_argument("--watch-terrain-level", type=int, choices=range(10), default=6)
     parser.add_argument(
@@ -361,11 +363,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sync-mode",
         choices=("none", "changed-tar", "rsync-host", "tar"),
-        default="changed-tar",
+        default="tar",
         help=(
             "none: 不同步源码，只使用远端现有工作区; "
-            "changed-tar: 只同步 git 工作区改动; "
-            "rsync-host: 增量同步到 A800 host 后再 kubectl cp; tar: 旧的整包同步。"
+            "tar: 默认同步当前 git checkout 的完整源码快照，并排除训练产物和基模; "
+            "changed-tar: 仅用于显式同步未提交的临时改动; "
+            "rsync-host: 增量同步到 A800 host 后再 kubectl cp。"
         ),
     )
     parser.add_argument(

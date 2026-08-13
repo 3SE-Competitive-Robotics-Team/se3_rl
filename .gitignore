@@ -42,7 +42,6 @@ AGENT_SESSION_PROMPTS.md
 
 # PyTorch model checkpoints (only assets/base_model/ uses curated .pt files)
 *.pt
-!assets/base_model/mlp.pt
 
 # ONNX exported models
 *.onnx

@@ -13,7 +13,7 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 - 脚本负责远端预检查、checkpoint 检查、代码打包同步、`compileall`、训练启动，并输出日志和 `watch_remote` 指令。
 - 开发机不能直连 A800。默认控制链路是：开发机 `ssh laptop-wg`，再由 laptop 连接 `root@192.168.2.46:2222`，最后在 A800 宿主机执行 `kubectl exec -n gczx-project06 <当前 abbtask-* Pod> -- bash`。不要依赖 laptop 上的 A800 SSH alias。
 - 日常源码同步必须走 git：开发机提交并 push 后，控制 laptop 拉取代码，再从 laptop 同步/启动 A800。不要把本机工作区打包当作常规源码同步方式。
-- A800 启动脚本默认不同步 `assets/base_model`，日常代码同步约 50 秒量级；只有需要更新或补齐远端基模时才显式传 `--sync-base-model`。
+- A800 启动脚本默认用 `tar` 同步 laptop 当前 git checkout 的完整源码快照，同时排除 `assets/base_model`；只有需要更新或补齐远端基模时才显式传 `--sync-base-model`。`changed-tar` 只用于同步明确的未提交临时改动，不能作为干净工作区的日常同步模式。
 - 台阶值守默认用 GitHub Release checkpoint exchange + 本机 native MuJoCo closedchain Viser，不依赖 laptop 8080 隧道；旧的 laptop 8080 转发只作 fallback。
 - 复杂远端命令必须通过 `scripts/remote_bash.ps1` 或 base64 模板发送；不要直接拼接多层 PowerShell、SSH、kubectl 和 Bash 字符串。
 - 停止单个任务时只停止明确的 PID 或进程组。只有确认要清空容器内全部训练时，才考虑 `pkill -f se3-train`。
