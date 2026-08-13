@@ -73,7 +73,8 @@ def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path:
     if not args.inner_host:
         run(["scp", str(local_path), f"{args.entry_host}:{remote_path}"])
         return
-    entry_tmp = f"/tmp/{Path(remote_path).name}.entry"
+    entry_temp_dir = args.entry_temp_dir.rstrip("/\\")
+    entry_tmp = f"{entry_temp_dir}/{Path(remote_path).name}.entry"
     try:
         run(["scp", str(local_path), f"{args.entry_host}:{entry_tmp}"])
         nested = f"scp {shlex.quote(entry_tmp)} {shlex.quote(args.inner_host + ':' + remote_path)}"
@@ -107,23 +108,28 @@ def build_code_archive(archive: Path, *, include_base_model: bool = False) -> No
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sync local code and start remote stair training.")
-    parser.add_argument("--entry-host", default="a800")
+    parser.add_argument("--entry-host", required=True)
     parser.add_argument(
         "--inner-host",
         default=None,
         help="两跳 SSH 的内层主机，例如从 laptop 再 ssh 到 a800。",
     )
-    parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
+    parser.add_argument(
+        "--entry-temp-dir",
+        default=None,
+        help="两跳同步时入口机的临时目录；必须来自当前 machine profile。",
+    )
+    parser.add_argument("--namespace", required=True)
+    parser.add_argument("--pod", required=True)
     parser.add_argument(
         "--remote-project",
-        default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
+        required=True,
     )
     parser.add_argument(
         "--cuda-compat-dir",
-        default="/workspace/cudacompat/usr/local/cuda-12.6/compat",
+        required=True,
     )
-    parser.add_argument("--cuda-toolkit-lib-dir", default="/usr/local/cuda-12.2/lib64")
+    parser.add_argument("--cuda-toolkit-lib-dir", required=True)
     parser.add_argument(
         "--task",
         default="SE3-WheelLegged-Stair-GRU",
@@ -188,16 +194,17 @@ def parse_args() -> argparse.Namespace:
         help="生成 watch 命令时固定 height command；省略则按训练课程随机采样。",
     )
     parser.add_argument("--watch-interval-iters", type=int, default=100)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.inner_host and not args.entry_temp_dir:
+        parser.error("两跳同步必须显式传 --entry-temp-dir")
+    return args
 
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
     """生成与本次远端训练参数对应的本地 watcher 指令。"""
     run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
     route_args = (
-        f"  --host {args.inner_host} `\n"
-        f"  --entry-host {args.entry_host} `\n"
-        f"  --inner-host {args.inner_host} `\n"
+        f"  --entry-host {args.entry_host} `\n  --inner-host {args.inner_host} `\n"
         if args.inner_host
         else f"  --host {args.entry_host} `\n"
     )

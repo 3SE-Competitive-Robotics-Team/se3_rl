@@ -175,7 +175,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--github-release-tag",
-        default="run-20260617-101355-stair3k-ctbcslow-f4ebc01",
+        required=True,
+        help="目标 Release tag；必须由当前 machine profile 或任务参数显式提供。",
     )
     parser.add_argument("--poll-seconds", type=float, default=60.0)
     parser.add_argument("--stability-seconds", type=float, default=10.0)

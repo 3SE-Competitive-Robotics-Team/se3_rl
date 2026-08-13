@@ -385,24 +385,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copy remote checkpoints and view the real training scene locally."
     )
-    parser.add_argument("--host", default="192.168.2.46")
+    parser.add_argument("--host", default=None, help="直接 SSH 目标；与两跳参数二选一。")
     parser.add_argument(
         "--entry-host",
-        default="laptop-wg",
+        default=None,
         help="两跳 SSH 的入口机；设置后需同时设置 --inner-host。",
     )
     parser.add_argument(
         "--inner-host",
-        default="192.168.2.46",
+        default=None,
         help="两跳 SSH 的训练机地址。",
     )
-    parser.add_argument("--inner-user", default="root", help="内层 SSH 用户。")
-    parser.add_argument("--inner-port", type=int, default=2222, help="内层 SSH 端口。")
-    parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
+    parser.add_argument("--inner-user", default="", help="内层 SSH 用户。")
+    parser.add_argument("--inner-port", type=int, default=22, help="内层 SSH 端口。")
+    parser.add_argument("--namespace", required=True)
+    parser.add_argument("--pod", required=True)
     parser.add_argument(
         "--remote-project",
-        default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
+        required=True,
     )
     parser.add_argument("--remote-log-dir", default="logs/rsl_rl/se3_wheel_leg")
     parser.add_argument("--run-dir", default=None)
@@ -466,6 +466,10 @@ def main() -> None:
     args = parser.parse_args()
     if (args.entry_host is None) != (args.inner_host is None):
         parser.error("--entry-host 和 --inner-host 必须同时设置")
+    direct_route = bool(args.host)
+    two_hop_route = bool(args.entry_host and args.inner_host)
+    if direct_route == two_hop_route:
+        parser.error("必须二选一：--host，或 --entry-host + --inner-host")
 
     run_dir = _resolve_run_dir(args)
     print(f"[local-watch] remote run: {run_dir}")

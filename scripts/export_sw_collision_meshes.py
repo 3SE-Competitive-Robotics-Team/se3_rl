@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
         "--source-root",
         type=Path,
         required=True,
-        help="SolidWorks 总装目录，例如 D:/robomaster/图/底盘总装/底盘总装",
+        help="SolidWorks 总装目录；具体路径由当前开发机 profile 提供。",
     )
     parser.add_argument(
         "--output-root",

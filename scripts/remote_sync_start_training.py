@@ -115,7 +115,8 @@ def copy_to_remote_host(args: argparse.Namespace, local_path: Path, remote_path:
     if not args.inner_host:
         run([*entry_scp_args(args), str(local_path), f"{entry_destination(args)}:{remote_path}"])
         return
-    entry_tmp = f"E:/se3_tmp/{Path(remote_path).name}.entry"
+    entry_temp_dir = args.entry_temp_dir.rstrip("/\\")
+    entry_tmp = f"{entry_temp_dir}/{Path(remote_path).name}.entry"
     try:
         run([*entry_scp_args(args), str(local_path), f"{entry_destination(args)}:{entry_tmp}"])
         destination = f"{inner_destination(args)}:{remote_path}"
@@ -158,7 +159,8 @@ def rsync_to_remote_host(args: argparse.Namespace, remote_dir: str) -> None:
         )
         return
 
-    mirror_dir = f"E:/se3_tmp/se3_wheel_leg_mirror_{args.pod}"
+    entry_temp_dir = args.entry_temp_dir.rstrip("/\\")
+    mirror_dir = f"{entry_temp_dir}/se3_wheel_leg_mirror_{args.pod}"
     run(
         [
             *entry_ssh_args(args),
@@ -269,27 +271,42 @@ def build_changed_archive(archive: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="同步本地代码并启动远端训练。")
-    parser.add_argument("--entry-host", default="192.168.2.46")
-    parser.add_argument("--entry-user", default="root", help="入口 SSH 用户。")
-    parser.add_argument("--entry-port", type=int, default=2222, help="入口 SSH 端口。")
+    parser.add_argument(
+        "--entry-host",
+        required=True,
+        help="执行 kubectl 的入口 SSH 主机；必须来自当前用户的 machine profile。",
+    )
+    parser.add_argument("--entry-user", default="", help="入口 SSH 用户。")
+    parser.add_argument("--entry-port", type=int, default=22, help="入口 SSH 端口。")
     parser.add_argument(
         "--inner-host",
         default=None,
         help="两跳 SSH 的内层主机地址。",
     )
-    parser.add_argument("--inner-user", default="root", help="内层 SSH 用户。")
-    parser.add_argument("--inner-port", type=int, default=2222, help="内层 SSH 端口。")
-    parser.add_argument("--namespace", default="gczx-project06")
-    parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
+    parser.add_argument("--inner-user", default="", help="内层 SSH 用户。")
+    parser.add_argument("--inner-port", type=int, default=22, help="内层 SSH 端口。")
+    parser.add_argument(
+        "--entry-temp-dir",
+        default=None,
+        help="两跳同步时入口机的临时目录；必须来自当前 machine profile。",
+    )
+    parser.add_argument("--namespace", required=True, help="目标 Kubernetes namespace。")
+    parser.add_argument("--pod", required=True, help="目标 Kubernetes pod 完整名称。")
     parser.add_argument(
         "--remote-project",
-        default="/workspace/3SE-Competitive-Robotics-Team/se3_wheel_leg",
+        required=True,
+        help="目标 pod 内的仓库绝对路径。",
     )
     parser.add_argument(
         "--cuda-compat-dir",
-        default="/workspace/cudacompat/usr/local/cuda-12.6/compat",
+        required=True,
+        help="目标机器 CUDA Forward Compatibility 目录。",
     )
-    parser.add_argument("--cuda-toolkit-lib-dir", default="/usr/local/cuda-12.2/lib64")
+    parser.add_argument(
+        "--cuda-toolkit-lib-dir",
+        required=True,
+        help="目标机器 CUDA toolkit lib 目录。",
+    )
     parser.add_argument(
         "--task",
         default="SE3-WheelLegged-Stair-GRU",
@@ -378,7 +395,10 @@ def parse_args() -> argparse.Namespace:
         metavar="KEY=VALUE",
         help="额外注入训练进程的环境变量，可重复传入。",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.inner_host and not args.entry_temp_dir:
+        parser.error("两跳同步必须显式传 --entry-temp-dir")
+    return args
 
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:

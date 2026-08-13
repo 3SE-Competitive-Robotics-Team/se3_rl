@@ -1,12 +1,15 @@
 param(
     [int]$BridgePort = 18196,
     [int]$TunnelPort = 18197,
-    [string]$RemoteSshHost = "a800",
-    [string]$Target = "172.16.6.130:8080"
+    [Parameter(Mandatory = $true)]
+    [string]$RemoteSshHost,
+    [Parameter(Mandatory = $true)]
+    [string]$Target,
+    [Parameter(Mandatory = $true)]
+    [string]$WorkRoot
 )
 
 $ErrorActionPreference = "Stop"
-$WorkRoot = "E:\se3_stair_viewer_setup"
 $TempRoot = Join-Path $WorkRoot "tmp"
 New-Item -ItemType Directory -Force -Path $TempRoot | Out-Null
 
@@ -66,7 +69,7 @@ $sshProc = Start-Process -FilePath $ssh -ArgumentList $sshArgs -RedirectStandard
 Start-Sleep -Seconds 4
 if ($sshProc.HasExited) {
     Get-Content -LiteralPath $sshErr -ErrorAction SilentlyContinue
-    throw "A800/llm tunnel exited early."
+    throw "远端 SSH tunnel 提前退出。"
 }
 
 $nodeProc = Start-Process -FilePath "node.exe" -ArgumentList $nodePath -RedirectStandardOutput $nodeOut -RedirectStandardError $nodeErr -PassThru -WindowStyle Hidden

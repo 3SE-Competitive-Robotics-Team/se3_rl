@@ -15,6 +15,8 @@
 | 架构 | `aarch64` |
 | 用途 | 真机 policy 部署与实时推理 |
 | 仓库路径 | `~/project/se3_wheel_leg` |
+| NumPy runtime 测试目录 | `~/project/se3_wheel_leg_nx_runtime` |
+| CDC relay URL | `http://192.168.137.100:8081` |
 | 认证 | 本机 `~/.ssh/id_ed25519.pub` 已写入 `~/.ssh/authorized_keys` |
 | 连接验证 | 2026-06-01 |
 

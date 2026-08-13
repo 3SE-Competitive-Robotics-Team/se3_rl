@@ -63,7 +63,6 @@ _DEBUG_JOINTS = (
 )
 _DEBUG_BODY_FRAMES = (("base", "base_link", "base_link"),)
 _DEBUG_FRAME_KEYS = tuple(key for key, _, _ in (*_DEBUG_BODY_FRAMES, *_DEBUG_JOINTS))
-_DEFAULT_NX_RELAY_URL = "http://192.168.137.100:8081"
 _DEFAULT_CAMERA_AZIMUTH = 135.0
 _DEFAULT_CAMERA_ELEVATION = -20.0
 _DEFAULT_CAMERA_DISTANCE = 1.25
@@ -1715,8 +1714,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--remote-url",
-        default=_DEFAULT_NX_RELAY_URL,
-        help="Remote CDC visualizer base URL.",
+        default=None,
+        help="远端 CDC visualizer URL；必须由所选 machine profile 显式提供。",
     )
     parser.add_argument(
         "--remote-timeout-s", type=float, default=10.0, help="Remote stream timeout."
@@ -1753,7 +1752,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if not args.synthetic and not args.local_cdc and not args.remote_url:
+        parser.error("远端模式必须显式传 --remote-url；地址从 machine profile 读取")
     shared = SharedSnapshot()
     stop_event = threading.Event()
 

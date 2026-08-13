@@ -1,5 +1,5 @@
 {
-  "source": "D:\\robomaster\\sw_urdf_work\\serialleg\\meshes\\base_link.STL",
+  "source": "base_link.STL",
   "source_faces": 2172719,
   "max_faces_per_chunk": 180000,
   "chunks": [

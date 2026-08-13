@@ -11,7 +11,7 @@
 
 ## 已收集资料
 
-本轮新增下载到 `/Users/flamingo/Projects/robomaster/thirdparty-rl-repos/papers`：
+本轮新增下载到个人开发机的论文缓存目录（完整路径见对应 machine profile）：
 
 - `rma_rapid_motor_adaptation_legged_robots_2107.04034.pdf`
 - `learning_to_walk_in_minutes_massively_parallel_deep_rl_2109.11978.pdf`

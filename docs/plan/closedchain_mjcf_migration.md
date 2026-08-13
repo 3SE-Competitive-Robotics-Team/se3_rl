@@ -46,11 +46,11 @@ default_base_height = 0.22 m
 
 ## 参考依据
 
-- 实机五杆解算：`D:/robomaster/good_code/2026/serial_Leg_whole/serialleg2026/Custom/Controller/planar5rod.c`
+- 实机五杆解算：`planar5rod.c`（个人工作区位置见对应 machine profile）
   - `pfr_forward_kinematic()` 使用两根主动杆 `th[1] / th[2]`，先由差值解四杆输出角，再计算轮心 `L0/phi0` 和 Jacobian。
-- 实机 profile 参数：`D:/robomaster/good_code/2026/serial_Leg_whole/serialleg2026/Custom/Config/robot_profile.c`
+- 实机 profile 参数：`robot_profile.c`（个人工作区位置见对应 machine profile）
   - Infantry 3/4 共同几何：`four_rod = [60.5, 170.0, 65.0, 180.0] mm`，`five_rod_l = [180.0, 200.0] mm`，`spring_length = [194.1768, 64.895] mm`。
-- 实机左右符号：`D:/robomaster/good_code/2026/serial_Leg_whole/serialleg2026/Custom/Tasks/Src/task_estimate.c`
+- 实机左右符号：`task_estimate.c`（个人工作区位置见对应 machine profile）
   - 右腿电机角反馈取负，仿真轴向和导出映射需要单独验证。
 - MuJoCo 闭链建模参考：`Albusgive/mujoco_learning` 的 `MJCF/Chapter11-equality/connecting_rod.xml`。
 - MuJoCo 官方 XML Reference：`equality/connect/weld/tendon/actuator` 语义。

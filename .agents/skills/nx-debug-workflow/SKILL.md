@@ -1,6 +1,6 @@
 ---
 name: nx-debug-workflow
-description: SerialLeg NX 真机调试流程（旧 se3_deploy 链路，计划 deprecated）：启动 CDC relay、MJCF viewer、检查通信状态。当提到 NX 调试、真机回传、CDC viewer、serialleg-nx 时触发；执行前先询问主人是否继续使用旧链路。
+description: SerialLeg NX 真机调试流程（旧 se3_deploy 链路，计划 deprecated）：启动 CDC relay、MJCF viewer、检查通信状态。当提到 NX 调试、真机回传或 CDC viewer 时触发；执行前先询问主人是否继续使用旧链路。
 ---
 
 # SerialLeg NX 调试 Workflow
@@ -9,26 +9,30 @@ description: SerialLeg NX 真机调试流程（旧 se3_deploy 链路，计划 de
 
 目标：先启动 NX 侧 CDC relay，再在本机打开 MJCF viewer 看真机回传状态。
 
-默认环境：
+执行前必须加载 `remote-dev-se3/machines/nx.md`，并把其中参数绑定为：
 
-- NX SSH：`serialleg-nx`
-- NX runtime：`/home/amov/project/se3_wheel_leg_nx_runtime`
-- NX relay：`http://192.168.137.100:8081`
-- 本机 viewer：`http://127.0.0.1:8097`
+- `<nx-ssh-target>`：NX SSH 目标。
+- `<nx-runtime-dir>`：NX runtime 目录。
+- `<nx-relay-url>`：由 NX 地址和 relay 端口组成的 URL。
+- `<nx-relay-host>`：NX relay 主机地址。
+- `<local-repo>`：当前开发机仓库路径；若是个人路径，从对应 workstation profile 读取。
+
+通用 workflow 不保存这些机器参数。本机 viewer 使用 loopback 地址
+`http://127.0.0.1:8097`。
 
 ## 1. 对齐 NX 时间
 
 运行位置：本机 PowerShell。
 
 ```powershell
-ssh serialleg-nx "cd /home/amov/project/se3_wheel_leg_nx_runtime; ./scripts/fix_time_and_pull.sh --time-only; date -Is"
+ssh <nx-ssh-target> "cd <nx-runtime-dir>; ./scripts/fix_time_and_pull.sh --time-only; date -Is"
 Get-Date -Format o
 ```
 
 如果已经登录 NX，也可以在 NX shell 里运行：
 
 ```bash
-cd /home/amov/project/se3_wheel_leg_nx_runtime
+cd <nx-runtime-dir>
 ./scripts/fix_time_and_pull.sh --time-only
 date -Is
 ```
@@ -38,13 +42,13 @@ date -Is
 运行位置：本机 PowerShell。双引号里的命令实际在 NX shell 执行。
 
 ```powershell
-ssh serialleg-nx "cd /home/amov/project/se3_wheel_leg_nx_runtime; pkill -f 'se3_deploy.visualize_cdc_state' 2>/dev/null || true; nohup ./scripts/visualize_cdc_state.sh --local-cdc --no-mjcf-render >/tmp/se3_cdc_visualizer.log 2>&1 &"
+ssh <nx-ssh-target> "cd <nx-runtime-dir>; pkill -f 'se3_deploy.visualize_cdc_state' 2>/dev/null || true; nohup ./scripts/visualize_cdc_state.sh --local-cdc --no-mjcf-render >/tmp/se3_cdc_visualizer.log 2>&1 &"
 ```
 
 如果已经登录 NX，也可以在 NX shell 里运行：
 
 ```bash
-cd /home/amov/project/se3_wheel_leg_nx_runtime
+cd <nx-runtime-dir>
 pkill -f 'se3_deploy.visualize_cdc_state' 2>/dev/null || true
 nohup ./scripts/visualize_cdc_state.sh --local-cdc --no-mjcf-render >/tmp/se3_cdc_visualizer.log 2>&1 &
 ```
@@ -52,22 +56,22 @@ nohup ./scripts/visualize_cdc_state.sh --local-cdc --no-mjcf-render >/tmp/se3_cd
 检查 NX relay：
 
 ```powershell
-Invoke-RestMethod http://192.168.137.100:8081/snapshot |
+Invoke-RestMethod <nx-relay-url>/snapshot |
   Select-Object source,connected,port,seq,frame_hz,target_valid,target_age_ms,rc_switch_r,output_enabled |
   Format-List
 ```
 
 ## 3. 启动本机 MJCF Viewer
 
-运行位置：本机 PowerShell，工作目录为 `D:\robomaster\good_code\2027\se3_wheel_leg`。
+运行位置：本机 PowerShell，工作目录为 `<local-repo>`。
 
 现在 viewer 默认订阅 NX 真机回传，所以直接运行：
 
 ```powershell
-cd D:\robomaster\good_code\2027\se3_wheel_leg
-$env:NO_PROXY="localhost,127.0.0.1,::1,192.168.137.100"
-$env:no_proxy="localhost,127.0.0.1,::1,192.168.137.100"
-uv run se3-visualize-cdc-state
+cd <local-repo>
+$env:NO_PROXY="localhost,127.0.0.1,::1,<nx-relay-host>"
+$env:no_proxy="localhost,127.0.0.1,::1,<nx-relay-host>"
+uv run se3-visualize-cdc-state --remote-url <nx-relay-url>
 ```
 
 打开页面：
@@ -104,9 +108,9 @@ Invoke-RestMethod http://127.0.0.1:8097/render_info |
 `source=remote` 且 `connected=False`
 
 - 本机 viewer 连到了 NX relay，但 NX relay 没读到 STM32 CDC。
-- 看 NX 日志：`ssh serialleg-nx "tail -80 /tmp/se3_cdc_visualizer.log"`。
+- 看 NX 日志：`ssh <nx-ssh-target> "tail -80 /tmp/se3_cdc_visualizer.log"`。
 
-无法访问 `http://192.168.137.100:8081`
+无法访问 `<nx-relay-url>`
 
 - NX relay 没启动，或本机到 NX 网络不通。
 - 重新执行第 2 步。

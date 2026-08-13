@@ -171,7 +171,7 @@ upward_score = square(1 - projected_gravity_z)
 
 ### 2026-06-08 实验结论：`orientation_l2` 惩罚有效
 
-在 `SE3-WheelLegged-Recovery-GRU` 的 5k 训练对比中，加入 near-upright 阶段的 `orientation_l2` 姿态惩罚是有效的。对照组为用户桌面 checkpoint `C:/Users/13567/Desktop/model_4999.pt`，该 checkpoint 未使用该 `orientation_l2` 惩罚训练；实验组为 W&B run `acttgnoq` 的 `model_4999.pt`，对应训练包含该姿态 L2 约束。
+在 `SE3-WheelLegged-Recovery-GRU` 的 5k 训练对比中，加入 near-upright 阶段的 `orientation_l2` 姿态惩罚是有效的。对照组为个人开发机上的 `model_4999.pt`（完整路径见对应 machine profile），该 checkpoint 未使用该 `orientation_l2` 惩罚训练；实验组为 W&B run `acttgnoq` 的 `model_4999.pt`，对应训练包含该姿态 L2 约束。
 
 同一远程 recovery 代码和同一组 sim2sim case 下，带 `orientation_l2` 的 checkpoint 在恢复后的姿态稳定性更好：
 
