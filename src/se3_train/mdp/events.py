@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -328,7 +329,6 @@ def reset_root_state_robotlab_full_random(
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
     mark_recovery_episode: bool = False,
-    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
 ) -> None:
     """按 RobotLab Go2W 语义随机化 root：默认状态叠加 xyz/rpy 和速度扰动。"""
     if env_ids is None:
@@ -451,7 +451,6 @@ def reset_root_state_robotlab_full_random(
     if mark_recovery_episode:
         recovery_mask = torch.ones(n, device=env.device, dtype=torch.bool)
         recovery_state.set_recovery_episode(env, env_ids, recovery_mask)
-        env._recovery_command_height = float(recovery_command_height)
         init_tilt_buf = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
         init_yaw_buf = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
         init_roll_buf = _ensure_recovery_float_buffer(env, "_recovery_init_roll")
@@ -575,7 +574,6 @@ def reset_root_state_recovery_standard_poses(
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
-    recovery_command_height: float = _SHARED_ROBOT.default_base_height,
 ) -> None:
     """按标准站立、侧躺、俯卧和仰卧姿态重置 root。"""
     if env_ids is None:
@@ -655,30 +653,10 @@ def reset_root_state_recovery_standard_poses(
         env_ids,
         torch.ones(n, device=env.device, dtype=torch.bool),
     )
-    env._recovery_command_height = float(recovery_command_height)
-    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-    command_height_buf[env_ids] = float(recovery_command_height)
     env._recovery_stage_step = int(stage.get("iteration", stage.get("step", 0)))
     env._recovery_stage_prob = 1.0
     env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[0].item() / weights.sum().item())
     env._recovery_stage_cache_prob = 0.0
-    if hasattr(env, "command_manager"):
-        try:
-            cmd = env.command_manager.get_command("velocity_height")
-            cmd[env_ids, 0:4] = 0.0
-            cmd[env_ids, 4] = float(recovery_command_height)
-            if cmd.shape[1] >= 8:
-                cmd[env_ids, 5] = 0.0
-                cmd[env_ids, 7] = 0.0
-            update_policy_default_from_height_cache(
-                env,
-                "velocity_height",
-                env_ids=env_ids,
-                command=cmd,
-            )
-        except Exception:
-            pass
-
     init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
     init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
     _ensure_recovery_float_buffer(env, "_recovery_init_tilt")[env_ids] = init_tilt
@@ -754,11 +732,10 @@ def reset_root_state_full(
     recovery_state_cache_prob: float = 0.0,
     recovery_state_cache_split: str = "train",
     recovery_grace_steps: int = 400,
-    recovery_command_height: float | None = _SHARED_ROBOT.default_base_height,
-    recovery_zero_velocity_command: bool = True,
     recovery_mask_attr: str | None = None,
+    yaw_range: tuple[float, float] = (-math.pi, math.pi),
 ) -> None:
-    """重置 base 到默认站立状态,yaw 随机,xy 小偏移。"""
+    """重置 base 到默认站立状态，yaw 按给定范围采样，xy 小偏移。"""
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -840,28 +817,11 @@ def reset_root_state_full(
     init_yaw[env_ids] = 0.0
     init_tilt[env_ids] = 0.0
     env._recovery_grace_steps = int(recovery_grace_steps)
-    env._recovery_zero_velocity_command = bool(recovery_zero_velocity_command)
-    command_height_buf = _ensure_recovery_float_buffer(env, "_recovery_command_height_buf")
-    if recovery_command_height is None:
-        env._recovery_command_height = float("nan")
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                command_height_buf[env_ids] = cmd[env_ids, 4].to(
-                    device=env.device, dtype=command_height_buf.dtype
-                )
-            except Exception:
-                command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
-        else:
-            command_height_buf[env_ids] = _SHARED_ROBOT.default_base_height
-    else:
-        env._recovery_command_height = float(recovery_command_height)
-        command_height_buf[env_ids] = float(recovery_command_height)
 
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
-        torch.tensor(-torch.pi, device=env.device),
-        torch.tensor(torch.pi, device=env.device),
+        torch.tensor(float(yaw_range[0]), device=env.device),
+        torch.tensor(float(yaw_range[1]), device=env.device),
         (n,),
         env.device,
     )
@@ -1068,28 +1028,6 @@ def reset_root_state_full(
             (n_recovery, 3),
             env.device,
         )
-        if hasattr(env, "command_manager"):
-            try:
-                cmd = env.command_manager.get_command("velocity_height")
-                recovery_env_ids = env_ids[recovery_mask]
-                if recovery_zero_velocity_command:
-                    cmd[recovery_env_ids, 0:2] = 0.0
-                cmd[recovery_env_ids, 2:4] = 0.0
-                if recovery_command_height is None:
-                    cmd[recovery_env_ids, 4] = command_height_buf[recovery_env_ids]
-                else:
-                    cmd[recovery_env_ids, 4] = float(recovery_command_height)
-                if cmd.shape[1] >= 8:
-                    cmd[recovery_env_ids, 5] = 0.0
-                    cmd[recovery_env_ids, 7] = 0.0
-                update_policy_default_from_height_cache(
-                    env,
-                    "velocity_height",
-                    env_ids=recovery_env_ids,
-                    command=cmd,
-                )
-            except Exception:
-                pass
         cache_reset_mask = recovery_state.ensure_bool_buffer(env, "_recovery_cache_reset_mask")
         local_cache_mask = cache_reset_mask[env_ids]
         if local_cache_mask.any():
@@ -1179,6 +1117,111 @@ def reset_root_state_full(
     _, _, yaw_ref = euler_xyz_from_quat(new_quat)
     env._jump_pose_ref_pos_w[env_ids] = pos
     env._jump_pose_ref_yaw[env_ids] = yaw_ref
+
+
+def reset_root_state_recovery_discovery_mixed(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    pos_xy_range: tuple[float, float] = (-0.15, 0.15),
+    height_offset_range: tuple[float, float] = (0.0, 0.02),
+    yaw_range: tuple[float, float] = (-3.141592653589793, 3.141592653589793),
+    roll_jitter_range: tuple[float, float] = (-0.08726646259971647, 0.08726646259971647),
+    pitch_jitter_range: tuple[float, float] = (-0.08726646259971647, 0.08726646259971647),
+    lin_vel_range: tuple[float, float] = (0.0, 0.0),
+    ang_vel_range: tuple[float, float] = (0.0, 0.0),
+    clearance_range: tuple[float, float] = (0.001, 0.005),
+    pose_weights: tuple[float, float, float, float, float] = (0.08, 0.17, 0.17, 0.29, 0.29),
+    source_curriculum_stages: list[dict] | None = None,
+    standard_curriculum_stages: list[dict] | None = None,
+    use_iterations: bool = False,
+    steps_per_policy_iter: int = 64,
+    offset_iter: int = 0,
+    recovery_state_cache_path: str | None = None,
+    recovery_state_cache_split: str = "train",
+    recovery_grace_steps: int = 400,
+) -> None:
+    """按课程混合标准姿态、历史 cache 状态和近直立姿态。"""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    source_stage, source_progress = _active_curriculum_stage(
+        env,
+        source_curriculum_stages,
+        use_iterations=use_iterations,
+        steps_per_policy_iter=steps_per_policy_iter,
+        offset_iter=offset_iter,
+    )
+    cache_ratio = max(0.0, float(_stage_value(source_stage, "cache_ratio", 0.0)))
+    near_upright_ratio = max(
+        0.0,
+        float(_stage_value(source_stage, "near_upright_ratio", 0.0)),
+    )
+    total_ratio = cache_ratio + near_upright_ratio
+    if total_ratio > 1.0:
+        cache_ratio /= total_ratio
+        near_upright_ratio /= total_ratio
+
+    n = int(env_ids.numel())
+    source_sample = torch.rand(n, device=env.device)
+    cache_mask = source_sample < cache_ratio
+    near_upright_mask = (source_sample >= cache_ratio) & (
+        source_sample < cache_ratio + near_upright_ratio
+    )
+    standard_mask = ~(cache_mask | near_upright_mask)
+
+    def _reset_standard_subset(
+        local_mask: torch.Tensor,
+        local_pose_weights: tuple[float, ...],
+    ) -> None:
+        if not local_mask.any():
+            return
+        reset_root_state_recovery_standard_poses(
+            env,
+            env_ids[local_mask],
+            asset_cfg=asset_cfg,
+            pos_xy_range=pos_xy_range,
+            height_offset_range=height_offset_range,
+            yaw_range=yaw_range,
+            roll_jitter_range=roll_jitter_range,
+            pitch_jitter_range=pitch_jitter_range,
+            lin_vel_range=lin_vel_range,
+            ang_vel_range=ang_vel_range,
+            clearance_range=clearance_range,
+            pose_weights=local_pose_weights,  # type: ignore[arg-type]
+            curriculum_stages=standard_curriculum_stages,
+            use_iterations=use_iterations,
+            steps_per_policy_iter=steps_per_policy_iter,
+            offset_iter=offset_iter,
+        )
+
+    _reset_standard_subset(standard_mask, pose_weights)
+    _reset_standard_subset(near_upright_mask, (1.0, 0.0, 0.0, 0.0, 0.0))
+
+    if cache_mask.any():
+        reset_root_state_full(
+            env,
+            env_ids[cache_mask],
+            asset_cfg=asset_cfg,
+            recovery_prob=1.0,
+            recovery_state_cache_path=recovery_state_cache_path,
+            recovery_state_cache_prob=1.0,
+            recovery_state_cache_split=recovery_state_cache_split,
+            recovery_grace_steps=recovery_grace_steps,
+        )
+
+    if hasattr(env, "extras"):
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "Reset/source_curriculum_progress": float(source_progress),
+                "Reset/source_standard_ratio": standard_mask.float().mean().item(),
+                "Reset/source_cache_ratio": cache_mask.float().mean().item(),
+                "Reset/source_near_upright_ratio": near_upright_mask.float().mean().item(),
+                "Reset/source_cache_target_ratio": float(cache_ratio),
+                "Reset/source_near_upright_target_ratio": float(near_upright_ratio),
+            }
+        )
 
 
 def _symmetric_or_explicit_range(value: float | tuple[float, float]) -> tuple[float, float]:

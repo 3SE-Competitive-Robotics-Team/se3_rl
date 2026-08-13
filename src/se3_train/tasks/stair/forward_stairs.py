@@ -15,11 +15,11 @@ class BoxForwardStairsTerrainCfg(SubTerrainCfg):
     """生成与 sim2sim stair terrain 对齐的直线台阶。"""
 
     step_height_range: tuple[float, float] = (0.05, 0.20)
-    step_depth: float = 0.50
+    step_depth: float = 0.80
     step_count: int = 6
     stair_start_x: float = 1.0
     spawn_x: float = 1.0
-    half_width: float = 2.0
+    half_width: float = 3.0
 
     def function(
         self,

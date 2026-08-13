@@ -89,7 +89,7 @@ def run_retry(
     for attempt in range(1, attempts + 1):
         try:
             return run(cmd, capture=capture, timeout=timeout)
-        except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             last_error = exc
             if attempt == attempts:
                 break
@@ -184,7 +184,30 @@ def github_json(args: argparse.Namespace, url: str) -> object:
     )
 
 
+def github_release_json(args: argparse.Namespace) -> object:
+    endpoint = f"repos/{args.github_release_repo}/releases/tags/{args.github_release_tag}"
+    try:
+        result = run_retry(
+            ["gh", "api", endpoint],
+            timeout=float(args.github_timeout_s),
+            attempts=2,
+        )
+        return json.loads(result.stdout)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        print(
+            f"[local-viser-watch] gh release query failed; falling back to API: {exc}",
+            file=sys.stderr,
+        )
+        url = (
+            "https://api.github.com/repos/"
+            f"{args.github_release_repo}/releases/tags/{args.github_release_tag}"
+        )
+        return github_json(args, url)
+
+
 def laptop_cmd(args: argparse.Namespace, *command: str) -> list[str]:
+    if args.laptop_host == "self":
+        return list(command)
     return ["ssh", *SSH_OPTS, args.laptop_host, *command]
 
 
@@ -199,7 +222,15 @@ def laptop_powershell_cmd(args: argparse.Namespace, script: str) -> list[str]:
 
 
 def a800_cmd(args: argparse.Namespace, remote_command: str) -> list[str]:
-    ps_args = ["-T", *SSH_OPTS, args.a800_host, remote_command]
+    destination = f"{args.a800_user}@{args.a800_host}" if args.a800_user else args.a800_host
+    ps_args = [
+        "-T",
+        *SSH_OPTS,
+        "-p",
+        str(args.a800_port),
+        destination,
+        remote_command,
+    ]
     ps_array = ", ".join(ps_quote(part) for part in ps_args)
     script = f"""
 $ErrorActionPreference = 'Stop'
@@ -262,11 +293,7 @@ def stable_remote_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
 
 
 def latest_github_checkpoint(args: argparse.Namespace) -> CheckpointInfo | None:
-    url = (
-        "https://api.github.com/repos/"
-        f"{args.github_release_repo}/releases/tags/{args.github_release_tag}"
-    )
-    release = github_json(args, url)
+    release = github_release_json(args)
     if not isinstance(release, dict):
         raise RuntimeError("unexpected GitHub release response")
     assets = release.get("assets", [])
@@ -343,7 +370,8 @@ def select_checkpoint(args: argparse.Namespace) -> tuple[CheckpointInfo | None, 
         return latest_local_checkpoint(args), "local"
     if args.source == "github-release":
         try:
-            github = stable_github_checkpoint(args)
+            # Release asset 只在 publisher 确认文件稳定后上传，下载端无需再次等待。
+            github = latest_github_checkpoint(args)
         except Exception as exc:
             print(
                 "[local-viser-watch] GitHub release query failed; "
@@ -448,13 +476,15 @@ def ensure_laptop_checkpoint(args: argparse.Namespace, ckpt: CheckpointInfo) -> 
         raise RuntimeError(f"A800 temp size mismatch: {host_size} != {ckpt.size}")
 
     laptop_tmp = f"{laptop_path}.tmp"
+    a800_destination = f"{args.a800_user}@{args.a800_host}" if args.a800_user else args.a800_host
     run_retry(
         laptop_cmd(
             args,
             "scp",
-            "-C",
             *SSH_OPTS,
-            f"{args.a800_host}:{host_tmp}",
+            "-P",
+            str(args.a800_port),
+            f"{a800_destination}:{host_tmp}",
             laptop_tmp,
         ),
         timeout=420.0,
@@ -488,7 +518,6 @@ def copy_laptop_to_local(args: argparse.Namespace, ckpt: CheckpointInfo, laptop_
         run_retry(
             [
                 "scp",
-                "-C",
                 *SSH_OPTS,
                 f"{args.laptop_host}:{laptop_path}",
                 str(tmp_path),
@@ -517,8 +546,32 @@ def download_github_checkpoint(args: argparse.Namespace, ckpt: CheckpointInfo) -
     if tmp_path.exists():
         tmp_path.unlink()
     try:
-        data = github_request(args, ckpt.download_url, accept="application/octet-stream")
-        tmp_path.write_bytes(data)
+        try:
+            run_retry(
+                [
+                    "gh",
+                    "release",
+                    "download",
+                    args.github_release_tag,
+                    "--repo",
+                    args.github_release_repo,
+                    "--pattern",
+                    ckpt.name,
+                    "--output",
+                    str(tmp_path),
+                ],
+                timeout=float(args.github_timeout_s),
+                attempts=2,
+            )
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(
+                f"[local-viser-watch] gh download failed; falling back to API: {exc}",
+                file=sys.stderr,
+            )
+            if tmp_path.exists():
+                tmp_path.unlink()
+            data = github_request(args, ckpt.download_url, accept="application/octet-stream")
+            tmp_path.write_bytes(data)
         if tmp_path.stat().st_size != ckpt.size:
             raise RuntimeError(
                 f"GitHub asset size mismatch for {ckpt.name}: "
@@ -605,39 +658,65 @@ def start_viewer(
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout = (log_dir / "viser.out.log").open("w", encoding="utf-8", errors="replace")
     stderr = (log_dir / "viser.err.log").open("w", encoding="utf-8", errors="replace")
-    command = [
-        "uv",
-        "run",
-        "se3-sim2sim",
-        "--checkpoint",
-        str(checkpoint),
-        "--model-variant",
-        "closedchain",
-        "--sim-dt",
-        str(args.sim_dt),
-        "--control-decimation",
-        str(args.control_decimation),
-        "--viewer",
-        "viser",
-        "--device",
-        args.device,
-        "--print-every",
-        "0",
-        "--stair-terrain",
-        "--stair-terrain-level",
-        str(level),
-        "--stair-ctbc",
-        "--command",
-        str(args.command_vx),
-        "0",
-        "0",
-        "0",
-        str(args.command_height),
-        "0",
-        "0",
-        "0",
-    ]
-    if args.fixed_ctbc_iter:
+    command = ["uv", "run"]
+    if args.viewer_uv_no_sync:
+        command.append("--no-sync")
+    command.extend(
+        [
+            "se3-sim2sim",
+            "--checkpoint",
+            str(checkpoint),
+            "--model-variant",
+            "closedchain",
+            "--sim-dt",
+            str(args.sim_dt),
+            "--control-decimation",
+            str(args.control_decimation),
+            "--viewer",
+            "viser",
+            "--device",
+            args.device,
+            "--print-every",
+            "0",
+        ]
+    )
+    if args.mode == "recovery":
+        command.extend(
+            [
+                "--recovery-pose",
+                args.recovery_pose,
+                "--recovery-command-height",
+                str(args.recovery_command_height),
+                "--command",
+                "0",
+                "0",
+                "0",
+                "0",
+                str(args.recovery_command_height),
+                "0",
+                "0",
+                "0",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "--stair-terrain",
+                "--stair-terrain-level",
+                str(level),
+                "--stair-ctbc",
+                "--command",
+                str(args.command_vx),
+                "0",
+                "0",
+                "0",
+                str(args.command_height),
+                "0",
+                "0",
+                "0",
+            ]
+        )
+    if args.mode == "stair" and args.fixed_ctbc_iter:
         command.extend(["--stair-ctbc-iter", str(iteration)])
     print("[local-viser-watch] launching viewer:")
     print("[local-viser-watch] " + subprocess.list2cmdline(command))
@@ -670,8 +749,10 @@ def wait_for_viser(timeout_s: float = 90.0) -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--laptop-host", default="laptop-imgpi2nm-shanghai")
-    parser.add_argument("--a800-host", default="a800")
+    parser.add_argument("--laptop-host", default="laptop-wg")
+    parser.add_argument("--a800-host", default="192.168.2.46")
+    parser.add_argument("--a800-user", default="root")
+    parser.add_argument("--a800-port", type=int, default=2222)
     parser.add_argument("--namespace", default="gczx-project06")
     parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
     parser.add_argument(
@@ -690,9 +771,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--laptop-run-root", default="E:/se3_stair_viewer/logs/remote_watch")
     parser.add_argument("--local-run-root", type=Path, default=Path("logs/remote_watch"))
     parser.add_argument("--viewer-log-root", type=Path, default=Path("logs/local_viser"))
+    parser.add_argument("--mode", choices=("stair", "recovery"), default="stair")
     parser.add_argument("--interval-iters", type=int, default=100)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
-    parser.add_argument("--stability-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--stability-seconds",
+        type=float,
+        default=10.0,
+        help="仅用于 remote 源的 checkpoint 稳定性检查；GitHub asset 无需重复等待。",
+    )
     parser.add_argument("--terrain-level", type=int, default=-1)
     parser.add_argument(
         "--source",
@@ -724,7 +811,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--command-vx", type=float, default=1.2)
     parser.add_argument("--command-height", type=float, default=0.32)
+    parser.add_argument(
+        "--recovery-pose",
+        choices=("standing", "left_side", "right_side", "prone", "supine"),
+        default="left_side",
+    )
+    parser.add_argument("--recovery-command-height", type=float, default=0.26)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--viewer-uv-no-sync", action="store_true")
     parser.add_argument("--ssh-attempts", type=int, default=3)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--no-viewer", action="store_true")

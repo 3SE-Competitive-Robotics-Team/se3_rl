@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
+from itertools import pairwise
+from pathlib import Path
 
 import torch
 
@@ -12,8 +15,107 @@ _KNEE_LEFT = 1
 _HIP_RIGHT = 2
 _KNEE_RIGHT = 3
 
-_HIP_FEEDFORWARD_RATIO: float = 1.5
-_KNEE_FEEDFORWARD_RATIO: float = 1.0
+_HIP_FEEDFORWARD_RATIO: float = 1.2
+_KNEE_FEEDFORWARD_RATIO: float = 2.0
+
+
+class _CtbcProfile:
+    """Piecewise-linear CTBC feedforward profile loaded from JSON."""
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        times_s: torch.Tensor,
+        values: torch.Tensor,
+        period_s: float,
+    ) -> None:
+        self.path = path
+        self.times_s = times_s
+        self.values = values
+        self.period_s = float(period_s)
+
+    @classmethod
+    def load(cls, path: Path | str, *, device: torch.device | str) -> _CtbcProfile:
+        profile_path = Path(path)
+        payload = json.loads(profile_path.read_text(encoding="utf-8"))
+        points = payload.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            raise ValueError(f"CTBC profile {profile_path} must contain at least two points")
+
+        rows: list[tuple[float, float, float, float, float]] = []
+        for idx, point in enumerate(points):
+            if not isinstance(point, dict):
+                raise ValueError(f"CTBC profile point {idx} must be an object")
+            t = cls._number(point, "t", "time_s", required=True)
+            x = cls._number(point, "x_m", "x", default=0.0)
+            z = cls._number(point, "z_m", "z", default=0.0)
+            amp = cls._number(point, "amp", "amp_scale", default=0.0)
+            wheel_action = cls._number(
+                point,
+                "wheel_action",
+                "wheel_action_delta",
+                default=0.0,
+            )
+            if t < 0.0:
+                raise ValueError(f"CTBC profile point {idx} has negative time {t}")
+            rows.append((t, x, z, amp, wheel_action))
+
+        rows.sort(key=lambda row: row[0])
+        times = [row[0] for row in rows]
+        if any(curr <= prev for prev, curr in pairwise(times)):
+            raise ValueError(f"CTBC profile {profile_path} times must be strictly increasing")
+        period_s = float(payload.get("period_s", times[-1]))
+        if not math.isfinite(period_s) or period_s <= 0.0:
+            raise ValueError(f"CTBC profile {profile_path} has invalid period_s={period_s!r}")
+        if period_s < float(times[-1]):
+            period_s = float(times[-1])
+
+        values = [row[1:] for row in rows]
+        times_t = torch.tensor(times, device=device, dtype=torch.float32)
+        values_t = torch.tensor(values, device=device, dtype=torch.float32)
+        if not torch.isfinite(times_t).all() or not torch.isfinite(values_t).all():
+            raise ValueError(f"CTBC profile {profile_path} contains non-finite values")
+        return cls(path=profile_path, times_s=times_t, values=values_t, period_s=period_s)
+
+    @staticmethod
+    def _number(
+        point: dict[str, object],
+        primary: str,
+        alias: str,
+        *,
+        default: float | None = None,
+        required: bool = False,
+    ) -> float:
+        raw = point.get(primary, point.get(alias, default))
+        if raw is None and required:
+            raise ValueError(f"missing required CTBC profile field {primary!r}")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"CTBC profile field {primary!r} must be numeric") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"CTBC profile field {primary!r} must be finite")
+        return value
+
+    def sample(self, phase_steps: torch.Tensor, *, control_dt: float) -> torch.Tensor:
+        phase_shape = phase_steps.shape
+        t = torch.clamp(
+            phase_steps.to(device=self.times_s.device, dtype=self.times_s.dtype).reshape(-1)
+            * float(control_dt),
+            min=0.0,
+            max=float(self.period_s),
+        )
+        right = torch.searchsorted(self.times_s, t, right=False)
+        right = torch.clamp(right, min=1, max=self.times_s.numel() - 1)
+        left = right - 1
+        t0 = self.times_s[left]
+        t1 = self.times_s[right]
+        v0 = self.values[left]
+        v1 = self.values[right]
+        alpha = ((t - t0) / torch.clamp(t1 - t0, min=1.0e-6)).unsqueeze(-1)
+        sampled = v0 + (v1 - v0) * alpha
+        return sampled.reshape(*phase_shape, self.values.shape[-1])
 
 
 class StairClimbState:
@@ -28,23 +130,27 @@ class StairClimbState:
         num_envs: int,
         device: torch.device | str,
         contact_window: int = 3,
-        force_threshold_n: float = 30.0,
-        ff_amplitude_rad: float = 0.3,
-        ff_x_m: float = 0.025,
-        ff_lift_m: float = 0.085,
+        force_threshold_n: float = 10.0,
+        ff_amplitude_rad: float = 1.70,
+        ff_x_m: float = 0.02,
+        ff_lift_m: float = 0.02,
         ff_period_s: float = 0.6,
-        ff_rise_ratio: float = 0.25,
-        ff_hold_ratio: float = 0.45,
+        ff_rise_ratio: float = 0.35,
+        ff_hold_ratio: float = 0.0,
         ff_wheel_action: float = 0.0,
         control_dt: float = 0.02,
         ff_start_iter: int = 0,
-        ann_start_iter: int = 900,
-        ann_end_iter: int = 1800,
+        ann_start_iter: int = 200,
+        ann_end_iter: int = 500,
         phantom_trigger_iter: int = 0,
-        allow_bilateral_trigger: bool = True,
+        allow_bilateral_trigger: bool = False,
+        profile_path: Path | str | None = None,
     ) -> None:
         self.num_envs = num_envs
         self.device = device
+        self._profile = (
+            _CtbcProfile.load(profile_path, device=device) if profile_path is not None else None
+        )
         self.contact_window = contact_window
         self.force_threshold = force_threshold_n
         self.ff_amplitude = ff_amplitude_rad
@@ -52,7 +158,8 @@ class StairClimbState:
         self.ff_lift_m = ff_lift_m
         self.ff_wheel_action = float(ff_wheel_action)
         self.control_dt = control_dt
-        self.ff_period_steps = max(1, round(ff_period_s / control_dt))
+        period_s = self._profile.period_s if self._profile is not None else ff_period_s
+        self.ff_period_steps = max(1, round(period_s / control_dt))
         self.ff_rise_steps, self.ff_hold_steps, self.ff_return_steps = self._resolve_profile_steps(
             ff_rise_ratio, ff_hold_ratio
         )
@@ -69,9 +176,6 @@ class StairClimbState:
         self._cooldown_steps = max(1, round(0.3 / control_dt))
         self._cooldown = torch.zeros(num_envs, 2, dtype=torch.long, device=device)
         self._complete_ff_cycle_count = torch.zeros(num_envs, dtype=torch.long, device=device)
-        self._max_height_gain = torch.zeros(num_envs, device=device)
-        self._max_radial_progress = torch.zeros(num_envs, device=device)
-        self._progress_initialized = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self._initial_wheel_terrain_z = torch.full((num_envs, 2), float("nan"), device=device)
         self._max_wheel_supported_rise = torch.zeros(num_envs, 2, device=device)
         self._max_wheel_supported_both_rise = torch.zeros(num_envs, device=device)
@@ -85,14 +189,7 @@ class StairClimbState:
         self._max_wheel_supported_both_steps = torch.zeros(
             num_envs, dtype=torch.long, device=device
         )
-        self._stair_success_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
-        self._max_stair_success_steps = torch.zeros(num_envs, dtype=torch.long, device=device)
-        self._stair_success_record_step = torch.full(
-            (num_envs,),
-            -1,
-            dtype=torch.long,
-            device=device,
-        )
+        self._max_stair_longitudinal_progress = torch.zeros(num_envs, device=device)
         self._kff: float = 1.0
         self._iter: int = 0
         self._iter_origin: int | None = None
@@ -161,8 +258,7 @@ class StairClimbState:
 
         self._cooldown[self._cooldown > 0] -= 1
         can_trigger = (self._ff_phase == -1) & (self._cooldown == 0)
-        env_has_active_side = (self._ff_phase >= 0).any(dim=-1, keepdim=True)
-        trigger_candidates = self._stable & can_trigger & (~env_has_active_side)
+        trigger_candidates = self._stable & can_trigger
         if self.allow_bilateral_trigger:
             newly_triggered = can_trigger & trigger_candidates.any(dim=-1, keepdim=True)
         else:
@@ -173,9 +269,8 @@ class StairClimbState:
         self._ff_phase[newly_triggered] = 0
 
         if self._iter < self.phantom_trigger_iter:
-            env_has_active_side = (self._ff_phase >= 0).any(dim=-1, keepdim=True)
             phantom_mask = torch.rand(self.num_envs, 2, device=self.device) < 0.01
-            phantom_candidates = phantom_mask & can_trigger & (~env_has_active_side)
+            phantom_candidates = phantom_mask & can_trigger
             if self.allow_bilateral_trigger:
                 phantom_trigger = can_trigger & phantom_candidates.any(dim=-1, keepdim=True)
             else:
@@ -224,7 +319,11 @@ class StairClimbState:
             if not active_mask.any():
                 continue
             phase = self._ff_phase[:, side].float()
-            cosine_val = 2.0 * self.ff_amplitude * self._ff_profile_envelope(phase)
+            if self._profile is None:
+                envelope = self._ff_profile_envelope(phase)
+            else:
+                envelope = self._profile.sample(phase, control_dt=self.control_dt)[:, 2]
+            cosine_val = 2.0 * self.ff_amplitude * envelope
             cosine_val = cosine_val * active_mask.float()
             bias[:, hip_idx] = -cosine_val * _HIP_FEEDFORWARD_RATIO * self._kff
             bias[:, knee_idx] = cosine_val * _KNEE_FEEDFORWARD_RATIO * self._kff
@@ -258,25 +357,40 @@ class StairClimbState:
             if not active_mask.any():
                 continue
             phase = torch.clamp(self._ff_phase[:, side].float(), min=0.0)
-            envelope = self._ff_profile_envelope(phase)
-            envelope = envelope * active_mask.float() * float(self._kff)
-            delta[:, side, 0] = -float(self.ff_x_m) * envelope
-            delta[:, side, 1] = float(self.ff_lift_m) * envelope
+            if self._profile is None:
+                envelope = self._ff_profile_envelope(phase)
+                envelope = envelope * active_mask.float() * float(self._kff)
+                delta[:, side, 0] = -float(self.ff_x_m) * envelope
+                delta[:, side, 1] = float(self.ff_lift_m) * envelope
+            else:
+                samples = self._profile.sample(phase, control_dt=self.control_dt)
+                active = active_mask.float() * float(self._kff)
+                delta[:, side, 0] = samples[:, 0] * active
+                delta[:, side, 1] = samples[:, 1] * active
         return delta
 
     def ff_wheel_action_delta(self) -> torch.Tensor:
         """返回 CTBC 期间叠加到左右轮 action 的前向轮速前馈。"""
         delta = torch.zeros(self.num_envs, 2, device=self.device)
-        if self._kff == 0.0 or self.ff_wheel_action == 0.0:
+        if self._kff == 0.0:
+            return delta
+        if self._profile is None and self.ff_wheel_action == 0.0:
             return delta
 
         active = self._ff_phase >= 0
         if not active.any():
             return delta
         phase = torch.clamp(self._ff_phase.float(), min=0.0)
-        envelope = self._ff_profile_envelope(phase) * active.float()
-        env_envelope = envelope.max(dim=1).values * float(self._kff)
-        delta[:, :] = float(self.ff_wheel_action) * env_envelope.unsqueeze(-1)
+        if self._profile is None:
+            envelope = self._ff_profile_envelope(phase) * active.float()
+            env_envelope = envelope.max(dim=1).values * float(self._kff)
+            delta[:, :] = float(self.ff_wheel_action) * env_envelope.unsqueeze(-1)
+            return delta
+
+        samples = self._profile.sample(phase, control_dt=self.control_dt)
+        wheel_action = samples[:, :, 3] * active.float()
+        env_wheel_action = wheel_action.max(dim=1).values * float(self._kff)
+        delta[:, :] = env_wheel_action.unsqueeze(-1)
         return delta
 
     def contact_triggered(self) -> torch.Tensor:
@@ -284,45 +398,6 @@ class StairClimbState:
 
     def ctbc_trigger_weight(self) -> torch.Tensor:
         return self.contact_triggered().float() * float(self._kff)
-
-    def climb_progress_delta(
-        self,
-        height_gain: torch.Tensor,
-        radial_progress: torch.Tensor,
-        *,
-        max_height_gain: float,
-        max_radial_progress: float,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        height_gain = torch.nan_to_num(height_gain, nan=0.0, posinf=0.0, neginf=0.0)
-        radial_progress = torch.nan_to_num(radial_progress, nan=0.0, posinf=0.0, neginf=0.0)
-        clipped_height = torch.clamp(height_gain, min=0.0, max=max_height_gain)
-        clipped_radial = torch.clamp(radial_progress, min=0.0, max=max_radial_progress)
-        height_delta = torch.clamp(clipped_height - self._max_height_gain, min=0.0)
-        radial_delta = torch.clamp(clipped_radial - self._max_radial_progress, min=0.0)
-        height_delta = torch.where(
-            self._progress_initialized,
-            height_delta,
-            torch.zeros_like(height_delta),
-        )
-        radial_delta = torch.where(
-            self._progress_initialized,
-            radial_delta,
-            torch.zeros_like(radial_delta),
-        )
-        self._max_height_gain = torch.nan_to_num(
-            torch.maximum(self._max_height_gain, clipped_height),
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        self._max_radial_progress = torch.nan_to_num(
-            torch.maximum(self._max_radial_progress, clipped_radial),
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        self._progress_initialized[:] = True
-        return height_delta, radial_delta
 
     def wheel_terrain_rise(self, terrain_z: torch.Tensor) -> torch.Tensor:
         """返回左右轮下方地形相对本 episode 初始地形的抬升量。"""
@@ -397,47 +472,23 @@ class StairClimbState:
         """返回 episode 内双轮真实支撑地形抬升的最长持续时间。"""
         return self._max_wheel_supported_both_steps.float() * float(self.control_dt)
 
-    def record_stair_success_candidate(
-        self,
-        success_candidate: torch.Tensor,
-        *,
-        step_index: int | None = None,
-    ) -> torch.Tensor:
-        """记录 strict stair success 候选条件的连续满足时长。"""
-        success_candidate = success_candidate.to(device=self.device).bool()
-        if success_candidate.ndim != 1 or success_candidate.shape[0] != self.num_envs:
-            success_candidate = success_candidate.reshape(self.num_envs)
-        if step_index is None:
-            new_step = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
-        else:
-            step_value = int(step_index)
-            new_step = self._stair_success_record_step != step_value
-
-        updated_steps = torch.where(
-            success_candidate,
-            self._stair_success_steps + 1,
-            torch.zeros_like(self._stair_success_steps),
+    def record_stair_longitudinal_progress(self, progress: torch.Tensor) -> torch.Tensor:
+        """记录 episode 内位于楼梯本体宽度范围时的最大纵向进度。"""
+        progress = torch.nan_to_num(
+            progress.to(device=self.device),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        ).reshape(self.num_envs)
+        self._max_stair_longitudinal_progress = torch.maximum(
+            self._max_stair_longitudinal_progress,
+            torch.clamp(progress, min=0.0),
         )
-        self._stair_success_steps = torch.where(
-            new_step,
-            updated_steps,
-            self._stair_success_steps,
-        )
-        self._max_stair_success_steps = torch.maximum(
-            self._max_stair_success_steps,
-            self._stair_success_steps,
-        )
-        if step_index is not None:
-            self._stair_success_record_step[new_step] = int(step_index)
-        return self.stair_success_duration()
+        return self.max_stair_longitudinal_progress()
 
-    def stair_success_duration(self) -> torch.Tensor:
-        """返回当前 strict stair success 连续满足时长。"""
-        return self._stair_success_steps.float() * float(self.control_dt)
-
-    def max_stair_success_duration(self) -> torch.Tensor:
-        """返回 episode 内 strict stair success 最长连续满足时长。"""
-        return self._max_stair_success_steps.float() * float(self.control_dt)
+    def max_stair_longitudinal_progress(self) -> torch.Tensor:
+        """返回 episode 内楼梯方向上的最大有效前进距离。"""
+        return self._max_stair_longitudinal_progress.clone()
 
     def riser_stall_active(self, min_duration_s: float) -> torch.Tensor:
         min_steps = max(1, round(float(min_duration_s) / self.control_dt))
@@ -450,18 +501,13 @@ class StairClimbState:
         self._ff_phase[env_ids] = -1
         self._cooldown[env_ids] = 0
         self._complete_ff_cycle_count[env_ids] = 0
-        self._max_height_gain[env_ids] = 0.0
-        self._max_radial_progress[env_ids] = 0.0
-        self._progress_initialized[env_ids] = False
         self._initial_wheel_terrain_z[env_ids] = float("nan")
         self._max_wheel_supported_rise[env_ids] = 0.0
         self._max_wheel_supported_both_rise[env_ids] = 0.0
         self._wheel_support_record_step[env_ids] = -1
         self._wheel_supported_both_steps[env_ids] = 0
         self._max_wheel_supported_both_steps[env_ids] = 0
-        self._stair_success_steps[env_ids] = 0
-        self._max_stair_success_steps[env_ids] = 0
-        self._stair_success_record_step[env_ids] = -1
+        self._max_stair_longitudinal_progress[env_ids] = 0.0
 
     @property
     def kff(self) -> float:
@@ -505,9 +551,8 @@ class StairClimbState:
                 self._complete_ff_cycle_count.float().mean().item()
             ),
             "Stair/diag_riser_stall_rate": self.riser_stall_active(0.25).float().mean().item(),
-            "Stair/diag_strict_success_duration_s": self.stair_success_duration().mean().item(),
-            "Stair/diag_strict_success_max_duration_s": (
-                self.max_stair_success_duration().mean().item()
+            "Stair/diag_max_longitudinal_progress_m": (
+                self.max_stair_longitudinal_progress().mean().item()
             ),
             "Stair/diag_ctbc_kff": self._kff,
             "Stair/diag_ctbc_local_iter": float(self._iter),
@@ -516,6 +561,7 @@ class StairClimbState:
             "Stair/diag_ctbc_ff_return_steps": float(self.ff_return_steps),
             "Stair/diag_ctbc_allow_bilateral_trigger": float(self.allow_bilateral_trigger),
             "Stair/diag_ctbc_ff_wheel_action": float(self.ff_wheel_action),
+            "Stair/diag_ctbc_profile_enabled": float(self._profile is not None),
         }
 
 

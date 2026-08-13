@@ -77,7 +77,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--strict-min-success-steps", type=float, default=1.0)
     parser.add_argument("--strict-height-tolerance-m", type=float, default=0.015)
     parser.add_argument("--strict-forward-progress-m", type=float, default=None)
-    parser.add_argument("--strict-step-depth-m", type=float, default=0.50)
+    parser.add_argument("--strict-step-depth-m", type=float, default=0.80)
     parser.add_argument("--strict-forward-progress-step-fraction", type=float, default=0.75)
     parser.add_argument("--strict-hold-duration-s", type=float, default=0.20)
     parser.add_argument("--strict-upright-threshold", type=float, default=-0.90)
@@ -324,25 +324,21 @@ def _fix_scene_for_feedforward(cfg, args: argparse.Namespace) -> None:
     ):
         cfg.events.pop(name, None)
 
-    if "reset_root_state" in cfg.events:
-        params = dict(cfg.events["reset_root_state"].params or {})
-        params["recovery_prob"] = 0.0
-        params["recovery_state_cache_prob"] = 0.0
-        cfg.events["reset_root_state"] = replace(cfg.events["reset_root_state"], params=params)
-    if "sample_stair_task_mode" in cfg.events:
-        params = dict(cfg.events["sample_stair_task_mode"].params or {})
+    if "sample_stair_shared_task_mode" in cfg.events:
+        params = dict(cfg.events["sample_stair_shared_task_mode"].params or {})
         params["stair_prob"] = 1.0
-        params["recovery_prob"] = 0.0
+        params["shared_prob"] = 0.0
+        params["mixture_stages"] = ({"iteration": 0, "stair_prob": 1.0, "shared_prob": 0.0},)
         if args.terrain_level is not None:
             level = max(0, int(args.terrain_level))
             params["max_level_stages"] = ((0, level),)
             params["level_buckets"] = ((level, level),)
             params["bucket_weight_stages"] = ((0, (1.0,)),)
-        cfg.events["sample_stair_task_mode"] = replace(
-            cfg.events["sample_stair_task_mode"],
+        cfg.events["sample_stair_shared_task_mode"] = replace(
+            cfg.events["sample_stair_shared_task_mode"],
             params=params,
         )
-    cfg.events.pop("enforce_recovery_active_commands", None)
+    cfg.events.pop("enforce_shared_rehearsal_commands", None)
 
 
 def _maybe_manual_trigger(

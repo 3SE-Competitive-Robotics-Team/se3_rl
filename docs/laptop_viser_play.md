@@ -44,7 +44,7 @@ SE3LaptopStairViser
 让该 task 执行 watcher：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File E:\se3_stair_viewer_setup\laptop_stair_watcher.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File E:\se3_stair_viewer_setup\laptop_checkpoint_viser_watcher.ps1
 ```
 
 watcher 会在 laptop 侧通过 A800 内网拉取最新 checkpoint，按固定间隔重启 viewer，并在 `E:\se3_stair_viewer` 中运行：
@@ -65,7 +65,7 @@ watcher 会在 laptop 侧通过 A800 内网拉取最新 checkpoint，按固定�
 
 viewer 启动后，常规对比 checkpoint 直接在 Viser 的 Controls / Policy 里选择 `Checkpoint` 下拉框即可；切换成功后 sim2sim 会重新加载 policy、清空 GRU hidden 和动作历史，并 reset 当前环境。
 
-只有需要切到另一个 run 目录时，才更新 `laptop_stair_watcher.ps1` 里的 `$RunDir`。同步到 laptop 的 `E:\se3_stair_viewer_setup\` 后重启 task：
+只有需要切到另一个 run 目录时，才更新 `laptop_checkpoint_viser_watcher.ps1` 里的 `$RunDir`。同步到 laptop 的 `E:\se3_stair_viewer_setup\` 后重启 task：
 
 ```powershell
 ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"Stop-ScheduledTask -TaskName SE3LaptopStairViser; Start-Sleep -Seconds 2; Start-ScheduledTask -TaskName SE3LaptopStairViser`""
@@ -93,7 +93,7 @@ checkpoint 文件同步，不再承载 Viser HTTP/WebSocket 交互。
 当前台阶值守推荐用本机 watcher：
 
 ```powershell
-uv run python scripts\local_stair_viser_watcher.py `
+uv run python scripts\local_checkpoint_viser_watcher.py `
   --source github-release `
   --run-dir 2026-06-17_10-13-55_stair3k_ctbcslow_m4999_8gpu4096_f4ebc01_20260617_3k `
   --terrain-level 3 `
