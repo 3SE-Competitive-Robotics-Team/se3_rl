@@ -1,6 +1,6 @@
 # GRU 反倒起身训练规范
 
-> 状态：已被统一的 Recovery-Discovery 任务取代。本文仅保留历史训练契约和实验结果，其中的 `SE3-WheelLegged-Recovery-GRU` 命令不再是当前正式入口。新训练使用 `SE3-WheelLegged-Recovery-Discovery-GRU` 或 `SE3-WheelLegged-Recovery-Discovery-MLP`。
+> 状态：当前 recovery 方案。纯站立自起分离任务已删除；本文保留并维护“自起 + locomotion 同策略”的 `SE3-WheelLegged-Recovery-GRU` 方案。
 
 ## 目标
 

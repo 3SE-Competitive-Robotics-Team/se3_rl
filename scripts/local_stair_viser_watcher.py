@@ -378,7 +378,7 @@ def terrain_level(args: argparse.Namespace) -> int:
         return max(0, min(9, args.terrain_level))
     script = (
         f"if [ -f {shlex.quote(args.train_log)} ]; then\n"
-        f"  grep -E 'Curriculum/terrain_levels/(target_level_max_allowed|level_mean)' "
+        f"  grep -E 'Curriculum/terrain_levels/(move_up_height_mean|level_mean)' "
         f"{shlex.quote(args.train_log)} | tail -20\n"
         "fi\n"
     )
@@ -387,12 +387,6 @@ def terrain_level(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"[local-viser-watch] terrain query failed, fallback level=3: {exc}", file=sys.stderr)
         return 3
-    # sim2sim 应复现当前课程允许采样的最难台阶，而不是平均采样难度。
-    for line in reversed(output.splitlines()):
-        match = re.search(r"target_level_max_allowed:\s*([-+0-9.eE]+)", line)
-        if match:
-            return max(0, min(9, round(float(match.group(1)))))
-    # 兼容尚未记录课程上限的旧训练日志。
     for line in reversed(output.splitlines()):
         match = re.search(r"level_mean:\s*([-+0-9.eE]+)", line)
         if match:

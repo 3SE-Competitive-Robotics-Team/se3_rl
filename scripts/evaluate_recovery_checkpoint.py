@@ -8,7 +8,6 @@ import math
 from pathlib import Path
 from typing import Any
 
-from se3_shared.recovery import RECOVERY_DEFAULT_COMMAND_8D
 from se3_sim2sim.config import (
     RECOVERY_COMMAND_HEIGHT_M,
     RECOVERY_POSE_CHOICES,
@@ -243,18 +242,7 @@ def _recovery_command(
     command_height: float,
 ) -> tuple[float, float, float, float, float, float, float, float]:
     """构造 recovery 策略使用的 8D command。"""
-    command = list(RECOVERY_DEFAULT_COMMAND_8D)
-    command[4] = float(command_height)
-    return (
-        command[0],
-        command[1],
-        command[2],
-        command[3],
-        command[4],
-        command[5],
-        command[6],
-        command[7],
-    )
+    return (0.0, 0.0, 0.0, 0.0, float(command_height), 0.0, 0.2, 0.0)
 
 
 def _check_selfright(args: argparse.Namespace, payload: dict[str, Any]) -> dict[str, Any]:

@@ -33,13 +33,6 @@ replays/
 .omx/
 .tmp/
 opencode.json
-
-# Local agent handoff documents
-AGENT_HANDOFF.md
-AGENT_SESSION_PROMPTS.md
-.agent-handoff/
-.claude/
-
 # PyTorch model checkpoints (only assets/base_model/ uses curated .pt files)
 *.pt
 

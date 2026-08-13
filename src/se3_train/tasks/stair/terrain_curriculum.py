@@ -80,6 +80,10 @@ def sample_levels(
         empty = torch.zeros(0, device=device, dtype=torch.long)
         return empty, _logs(device, 0, 0, 0.0, 0.0, 0.0)
 
+    effective_iteration = getattr(env, "_stair_curriculum_effective_iteration", None)
+    if isinstance(effective_iteration, int):
+        iteration = min(max(0, int(iteration)), max(0, effective_iteration))
+
     max_level = max_level_for_iteration(terrain, iteration, max_level_stages)
     bucket_weights = torch.tensor(
         bucket_weights_for_iteration(iteration, bucket_weight_stages),

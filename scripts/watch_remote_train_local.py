@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-_EXCLUDED_RUN_DIRS = {"base_model", "wandb_checkpoints"}
+_EXCLUDED_RUN_DIRS = {"base_model"}
 # Kept for compatibility only. The default path now launches the original task
 # name and asks that task to use its training env as play_env_cfg.
 _LEGACY_TRAIN_VIEW_TASKS = {
@@ -28,6 +28,8 @@ _LEGACY_TRAIN_VIEW_TASKS = {
     "SE3-WheelLegged-Stair-GRU-WarmStart": "SE3-WheelLegged-Stair-GRU-TrainView",
     "SE3-WheelLegged-Stair-NoCTBC-GRU": "SE3-WheelLegged-Stair-NoCTBC-GRU-TrainView",
     "SE3-WheelLegged-Stair-NoCTBC-GRU-WarmStart": ("SE3-WheelLegged-Stair-NoCTBC-GRU-TrainView"),
+    "SE3-WheelLegged-Recovery-Stand-GRU": "SE3-WheelLegged-Recovery-Stand-GRU-TrainView",
+    "SE3-WheelLegged-Recovery-GRU": "SE3-WheelLegged-Recovery-GRU-TrainView",
     "SE3-WheelLegged-Mixed-GRU": "SE3-WheelLegged-Mixed-GRU-TrainView",
     "SE3-WheelLegged-Mixed-GRU-WarmStart": "SE3-WheelLegged-Mixed-GRU-TrainView",
     "SE3-WheelLegged-Stair-Teacher-GRU-WarmStart": ("SE3-WheelLegged-Stair-Teacher-GRU-TrainView"),
@@ -35,7 +37,7 @@ _LEGACY_TRAIN_VIEW_TASKS = {
         "SE3-WheelLegged-Universal-Final-GRU-TrainView"
     ),
 }
-_RECOVERY_DISCOVERY_TASK = "SE3-WheelLegged-Recovery-Discovery-GRU"
+_RECOVERY_STAND_TASK = "SE3-WheelLegged-Recovery-Stand-GRU"
 _WATCH_USE_TRAIN_ENV_ENV = "SE3_WATCH_USE_TRAIN_ENV"
 _WATCH_ITER_ENV = "SE3_WATCH_ITER"
 _WATCH_TERRAIN_LEVEL_ENV = "SE3_WATCH_TERRAIN_LEVEL"
@@ -108,22 +110,14 @@ def _ssh_options_for_shell() -> str:
     return " ".join(shlex.quote(part) for part in _SSH_STABILITY_OPTS)
 
 
-def _inner_destination(args: argparse.Namespace) -> str:
-    return f"{args.inner_user}@{args.inner_host}" if args.inner_user else args.inner_host
-
-
-def _inner_ssh_for_shell(args: argparse.Namespace) -> str:
-    return (
-        f"ssh {_ssh_options_for_shell()} -p {args.inner_port} "
-        f"{shlex.quote(_inner_destination(args))}"
-    )
-
-
 def _host_ssh_args(args: argparse.Namespace, command: str) -> list[str]:
     encoded = base64.b64encode(command.encode()).decode()
     remote_command = f"echo {shlex.quote(encoded)} | base64 -d | bash"
     if args.entry_host and args.inner_host:
-        inner = f"{_inner_ssh_for_shell(args)} {shlex.quote(remote_command)}"
+        inner = (
+            f"ssh {_ssh_options_for_shell()} "
+            f"{shlex.quote(args.inner_host)} {shlex.quote(remote_command)}"
+        )
         return ["ssh", *_SSH_STABILITY_OPTS, args.entry_host, inner]
     return ["ssh", *_SSH_STABILITY_OPTS, args.host, remote_command]
 
@@ -158,8 +152,8 @@ def _copy_host_file_to_local(
                 *_SSH_STABILITY_OPTS,
                 args.entry_host,
                 (
-                    f"scp {_ssh_options_for_shell()} -P {args.inner_port} "
-                    f"{shlex.quote(_inner_destination(args) + ':' + host_path)} "
+                    f"scp {_ssh_options_for_shell()} "
+                    f"{shlex.quote(args.inner_host + ':' + host_path)} "
                     f"{shlex.quote(entry_tmp)}"
                 ),
             ],
@@ -385,19 +379,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copy remote checkpoints and view the real training scene locally."
     )
-    parser.add_argument("--host", default="192.168.2.46")
+    parser.add_argument("--host", default="a800")
     parser.add_argument(
         "--entry-host",
-        default="laptop-wg",
+        default=None,
         help="两跳 SSH 的入口机；设置后需同时设置 --inner-host。",
     )
     parser.add_argument(
         "--inner-host",
-        default="192.168.2.46",
-        help="两跳 SSH 的训练机地址。",
+        default=None,
+        help="两跳 SSH 的训练机别名，例如从入口机再 ssh 到 a800。",
     )
-    parser.add_argument("--inner-user", default="root", help="内层 SSH 用户。")
-    parser.add_argument("--inner-port", type=int, default=2222, help="内层 SSH 端口。")
     parser.add_argument("--namespace", default="gczx-project06")
     parser.add_argument("--pod", default="abbtask-79cdb78487-mgx44")
     parser.add_argument(
@@ -407,7 +399,7 @@ def main() -> None:
     parser.add_argument("--remote-log-dir", default="logs/rsl_rl/se3_wheel_leg")
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--local-log-dir", type=Path, default=Path("logs/remote_watch"))
-    parser.add_argument("--task", default=_RECOVERY_DISCOVERY_TASK)
+    parser.add_argument("--task", default=_RECOVERY_STAND_TASK)
     parser.add_argument(
         "--viewer-task",
         default=None,
@@ -470,10 +462,7 @@ def main() -> None:
     run_dir = _resolve_run_dir(args)
     print(f"[local-watch] remote run: {run_dir}")
     if args.entry_host and args.inner_host:
-        print(
-            "[local-watch] ssh route: "
-            f"{args.entry_host} -> {_inner_destination(args)}:{args.inner_port}"
-        )
+        print(f"[local-watch] ssh route: {args.entry_host} -> {args.inner_host}")
     print(f"[local-watch] viewer task: {_viewer_task(args)}")
 
     last_iter = -1

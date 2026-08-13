@@ -126,13 +126,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-toolkit-lib-dir", default="/usr/local/cuda-12.2/lib64")
     parser.add_argument(
         "--task",
-        default="SE3-WheelLegged-Stair-GRU",
+        default="SE3-WheelLegged-Stair-NoCTBC-GRU-WarmStart",
     )
     parser.add_argument(
         "--load-run",
-        default="base_model",
+        default="2026-06-01_12-35-40_stair_user_state_ff",
     )
-    parser.add_argument("--load-checkpoint", default=r"rough_base\.pt")
+    parser.add_argument("--load-checkpoint", default=r"model_4100\.pt")
     parser.add_argument(
         "--from-scratch",
         action="store_true",
@@ -174,11 +174,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--run-name",
-        default="stair_gru",
+        default="stair_progress_fix_noctbc_m4100_20260610",
     )
     parser.add_argument(
         "--job-name",
-        default="stair_gru",
+        default="stair_progress_fix_noctbc_m4100_20260610",
     )
     parser.add_argument("--watch-terrain-level", type=int, choices=range(10), default=6)
     parser.add_argument(

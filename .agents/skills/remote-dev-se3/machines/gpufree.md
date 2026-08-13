@@ -93,7 +93,7 @@ gpufree 按量计费时，默认把 GPU 时间看成最贵资源。代码修改�
 ```bash
 ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && git status --short --branch"
 ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv sync"
-ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU --env.scene.num-envs 1 --gpu-ids None"
+ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Recovery-GRU --env.scene.num-envs 1 --gpu-ids None"
 ```
 
 GPU 模式开训前检查：
@@ -106,7 +106,7 @@ ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_w
 单卡训练命令示例：
 
 ```bash
-ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s recovery_l40s 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Recovery-Discovery-GRU --gpu-ids 0 --env.scene.num-envs 8192'"
+ssh gpufree "source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && tmux new-session -d -s recovery_l40s 'source /root/gpufree-data/se3_env.sh && cd /root/gpufree-data/se3_wheel_leg && uv run --env-file .env se3-train SE3-WheelLegged-Recovery-GRU --gpu-ids 0 --env.scene.num-envs 8192'"
 ```
 
 注意：gpufree 当前按单卡 L40S 使用，默认不要套用 A800 多卡的 `--gpu-ids all` 配置。`--env.scene.num-envs 8192` 就是单卡环境数；需要多卡时应另开明确记录的新实例文档，并重新缩放课程阶段、`max_iterations`、`save_interval` 和评估频率。

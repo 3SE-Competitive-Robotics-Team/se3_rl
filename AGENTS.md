@@ -178,8 +178,7 @@ se3_train/
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-GRU
 │   ├── stair/       # SE3-WheelLegged-Stair-GRU（爬楼梯）
-│   ├── recovery/    # Recovery 任务共享环境、奖励和课程实现
-│   ├── recovery_discovery/  # Recovery-Discovery GRU/MLP/History-MLP（倒地自启）
+│   ├── recovery/    # SE3-WheelLegged-Recovery-GRU（倒地自启）
 │   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
 │   ├── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
 │   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）
@@ -232,7 +231,7 @@ critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和
 ```
 [LF0, LB, RF0, RB, L_WHEEL, R_WHEEL]
 腿部：action × 0.25 + default_dof_pos
-轮子：action × 45.0 rad/s
+轮子：action × 20.0 rad/s
 ```
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。

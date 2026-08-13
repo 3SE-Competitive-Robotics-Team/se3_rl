@@ -8,12 +8,12 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 ## 基本原则
 
 - **Pod 隔离**：A800 集群为多用户共享环境。每个 machine 文件只对应一个用户的 pod，严禁操作同集群中其他用户的 pod 内进程（不得 exec、kill、cp、log 到非本文件指定的 pod）。`a800-xyh-am345` 只能操作 `abbtask-*` pod，不得触碰同 namespace 下其他 pod。
-- 当前 `codex/xyh` 默认使用 `abbtask` A800 Pod 与 `gpufree`；`wuyingyun` 是无影云单卡机器，仅在用户明确指定时作为 SSH、代理、训练或 checkpoint 目标。
-- 远端训练优先使用 `scripts/remote_sync_start_training.py`，不要重复手写同步和启动流程。
+- 当前 `codex/xyh` 默认使用 `a800` 与 `gpufree`；`wuyingyun` 是无影云单卡机器，仅在用户明确指定时作为 SSH、代理、训练或 checkpoint 目标。
+- 台阶训练优先使用 `scripts/remote_sync_start_stair.py`，不要重复手写同步和启动流程。
 - 脚本负责远端预检查、checkpoint 检查、代码打包同步、`compileall`、训练启动，并输出日志和 `watch_remote` 指令。
-- 开发机不能直连 A800。默认控制链路是：开发机 `ssh laptop-wg`，再由 laptop 连接 `root@192.168.2.46:2222`，最后在 A800 宿主机执行 `kubectl exec -n gczx-project06 <当前 abbtask-* Pod> -- bash`。不要依赖 laptop 上的 A800 SSH alias。
+- 开发机不能直连 A800。默认控制链路是：开发机 `ssh laptop-imgpi2nm-shanghai`，再由 laptop `ssh a800`，最后在 A800 宿主机执行 `kubectl exec -n gczx-project06 abbtask-79cdb78487-mgx44 -- bash`。
 - 日常源码同步必须走 git：开发机提交并 push 后，控制 laptop 拉取代码，再从 laptop 同步/启动 A800。不要把本机工作区打包当作常规源码同步方式。
-- A800 启动脚本默认用 `tar` 同步 laptop 当前 git checkout 的完整源码快照，同时排除 `assets/base_model`；只有需要更新或补齐远端基模时才显式传 `--sync-base-model`。`changed-tar` 只用于同步明确的未提交临时改动，不能作为干净工作区的日常同步模式。
+- A800 启动脚本默认不同步 `assets/base_model`，日常代码同步约 50 秒量级；只有需要更新或补齐远端基模时才显式传 `--sync-base-model`。
 - 台阶值守默认用 GitHub Release checkpoint exchange + 本机 native MuJoCo closedchain Viser，不依赖 laptop 8080 隧道；旧的 laptop 8080 转发只作 fallback。
 - 复杂远端命令必须通过 `scripts/remote_bash.ps1` 或 base64 模板发送；不要直接拼接多层 PowerShell、SSH、kubectl 和 Bash 字符串。
 - 停止单个任务时只停止明确的 PID 或进程组。只有确认要清空容器内全部训练时，才考虑 `pkill -f se3-train`。
@@ -29,8 +29,8 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 
 | 项目 | 默认值 |
 |---|---|
-| laptop host | `laptop-wg`（WireGuard 主入口） |
-| A800 host（从 laptop 访问） | `root@192.168.2.46:2222` |
+| laptop host | `laptop-imgpi2nm-shanghai` |
+| A800 host（从 laptop 访问） | `a800` |
 | namespace | `gczx-project06` |
 | pod 逻辑目标 | `abbtask` |
 | 当前 kubectl pod 名 | `abbtask-79cdb78487-mgx44` |
@@ -43,12 +43,12 @@ description: Use when managing se3_wheel_leg remote training on A800 Kubernetes 
 | CUDA compat | `/workspace/cudacompat/usr/local/cuda-12.6/compat` |
 | CUDA toolkit lib | `/usr/local/cuda-12.2/lib64` |
 
-`laptop-wg` 是开发机到 laptop 的主入口；`laptop-imgpi2nm-shanghai` 反向 SSH 仅作 WireGuard 故障时的救急入口。laptop 到 A800 使用显式地址、用户和端口，不创建或依赖 `a800` alias。
+`a800` 是 laptop 上可用的 SSH host alias，不是开发机直连目标；开发机只能先连 `laptop-imgpi2nm-shanghai`。
 
 本 worktree 的实际 A800 目标是 `abbtask`，但 `kubectl exec` / `kubectl cp` 需要当前完整 pod 名。当前查到的是 `abbtask-79cdb78487-mgx44`。不要进入 recovery 历史入口 `gpu-8-b6994457c-kv2rj` 或其他用户容器；查询 pod 只用于确认 `abbtask-*` 的当前完整名称：
 
 ```powershell
-ssh laptop-wg "ssh -o BatchMode=yes -p 2222 root@192.168.2.46 `"kubectl get pods -n gczx-project06 -o wide`""
+ssh laptop-imgpi2nm-shanghai "ssh a800 `"kubectl get pods -n gczx-project06 -o wide`""
 ```
 
 ## 源码同步
@@ -67,7 +67,7 @@ $branch = "codex/stair-visualbase-obs34"
 $commit = git rev-parse HEAD
 $laptopRepo = "E:\se3_rl_train"
 
-ssh laptop-wg "powershell -NoProfile -Command `"cd '$laptopRepo'; git fetch origin $branch; git checkout $branch; git pull --ff-only origin $branch; git rev-parse HEAD`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd '$laptopRepo'; git fetch origin $branch; git checkout $branch; git pull --ff-only origin $branch; git rev-parse HEAD`""
 ```
 
 确认 laptop 输出的 commit 与开发机 `$commit` 一致后，再启动远端同步。只有临时排障且明确接受不可复现风险时，才使用本机 tar/scp 方式绕过 git。
@@ -75,12 +75,12 @@ ssh laptop-wg "powershell -NoProfile -Command `"cd '$laptopRepo'; git fetch orig
 laptop 用户级环境变量已设置 `UV_PYTHON_INSTALL_DIR=E:\uv-python`。如果 `uv run` 又开始扫描 `C:\Users\Lenovo\AppData\Roaming\uv\python` 并报 `os error 448`，先恢复该环境变量：
 
 ```powershell
-ssh laptop-wg "powershell -NoProfile -Command `"[Environment]::SetEnvironmentVariable('UV_PYTHON_INSTALL_DIR','E:\uv-python','User')`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"[Environment]::SetEnvironmentVariable('UV_PYTHON_INSTALL_DIR','E:\uv-python','User')`""
 ```
 
 ## 远端命令编码
 
-开发机执行 A800 bash 时，优先使用仓库脚本；脚本默认路线已经是 `laptop-wg -> root@192.168.2.46:2222`：
+开发机执行 A800 bash 时，优先使用仓库脚本；默认路线已经是 laptop -> a800：
 
 ```powershell
 $bash = @'
@@ -110,10 +110,10 @@ pgrep -af '[s]e3-train|[t]orchrunx|[t]orch.distributed.run' || true
 $podB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($podScript))
 $hostScript = @"
 set -euo pipefail
-ssh -o BatchMode=yes -p 2222 root@192.168.2.46 "kubectl exec -n gczx-project06 abbtask-79cdb78487-mgx44 -- bash -lc 'echo $podB64 | base64 -d | bash'"
+ssh a800 "kubectl exec -n gczx-project06 abbtask-79cdb78487-mgx44 -- bash -lc 'echo $podB64 | base64 -d | bash'"
 "@
 $hostB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hostScript))
-ssh laptop-wg "echo $hostB64 | base64 -d | bash"
+ssh laptop-imgpi2nm-shanghai "echo $hostB64 | base64 -d | bash"
 ```
 
 这样可避免 PowerShell 反引号、变量展开、SSH 引号嵌套、Bash `$`、正则、管道和重定向被上层终端提前解释。
@@ -123,7 +123,7 @@ ssh laptop-wg "echo $hostB64 | base64 -d | bash"
 在 laptop 的 repo 根目录运行，而不是在开发机直接打包当前工作区：
 
 ```powershell
-ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_training.py --namespace gczx-project06 --pod abbtask-79cdb78487-mgx44 --task SE3-WheelLegged-Stair-GRU --load-run base_model --load-checkpoint rough_base\.pt --iterations 4000 --run-name <run_name> --job-name <job_name> --watch-terrain-level 9`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run python scripts\remote_sync_start_stair.py --entry-host a800 --namespace gczx-project06 --pod abbtask-79cdb78487-mgx44 --task SE3-WheelLegged-Stair-GRU --load-run base_model --load-checkpoint model_500\.pt --iterations 3000 --run-name <run_name> --job-name <job_name> --watch-terrain-level 9`""
 ```
 
 脚本默认排除 `assets/base_model` 以减少 laptop -> A800 传输时间。远端已有对应 checkpoint 时保持默认；只有需要把 laptop repo 里的基模同步进 A800 时加：
@@ -137,12 +137,12 @@ ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-
 - `TRAIN_PID`
 - `TRAIN_LOG`
 - `TRAIN_RUN_DIR`
-- 对应的 `local_checkpoint_viser_watcher.py` 指令
+- 对应的 `watch_remote_train_local.py` 指令
 
 保留 `--gpu-ids all`，通过 `--cuda-visible-devices` 指定物理 GPU：
 
 ```powershell
-ssh laptop-wg "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run --no-sync python scripts\remote_sync_start_training.py --pod abbtask-79cdb78487-mgx44 --gpu-ids all --cuda-visible-devices 1,2,3,4,5,6,7`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"cd E:\se3_rl_train; uv run python scripts\remote_sync_start_stair.py --entry-host a800 --pod abbtask-79cdb78487-mgx44 --gpu-ids all --cuda-visible-devices 1,2,3,4,5,6,7`""
 ```
 
 未指定 `--cuda-visible-devices` 时，脚本要求没有其他活跃训练进程；指定后脚本会检查选定 GPU 的显存占用。
@@ -159,7 +159,7 @@ grep -E 'Learning iteration|Mean reward|Stair/diag_ctbc_kff|Traceback|RuntimeErr
   /tmp/train_<job_name>.log | tail -160 || true
 ```
 
-优先使用启动脚本输出的 `local_checkpoint_viser_watcher.py` 指令值守 checkpoint。训练日志按上面的远端命令模板查看；台阶 Viser 值守不要用 A800/MJLab play，按下方“Viser 值守”使用本机 native watcher。
+优先使用启动脚本输出的 `watch_remote_train_local.py` 指令查看 checkpoint 和日志。台阶 Viser 值守不要用 A800/MJLab play，按下方“Viser 值守”使用本机 native watcher。
 
 ## 停止训练
 
@@ -219,20 +219,20 @@ $laptopScript = @"
 
 New-Item -ItemType Directory -Force -Path `$workDir | Out-Null
 try {
-  ssh -o BatchMode=yes -p 2222 root@192.168.2.46 "kubectl cp gczx-project06/`${pod}:`$remoteProject/logs/rsl_rl/se3_wheel_leg/`$run/`$checkpoint `$hostTmp -n gczx-project06"
-  scp -P 2222 "root@192.168.2.46:`$hostTmp" `$assetPath
+  ssh a800 "kubectl cp gczx-project06/`${pod}:`$remoteProject/logs/rsl_rl/se3_wheel_leg/`$run/`$checkpoint `$hostTmp -n gczx-project06"
+  scp "a800:`$hostTmp" `$assetPath
   gh release create `$tag `$assetPath `
     --repo `$exchangeRepo `
     --title `$tag `
     --notes "SE3 checkpoint exchange: `$run/`$checkpoint" `
     --prerelease
 } finally {
-  ssh -o BatchMode=yes -p 2222 root@192.168.2.46 "rm -f `$hostTmp"
+  ssh a800 "rm -f `$hostTmp"
 }
 "@
 
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($laptopScript))
-ssh laptop-wg powershell -NoProfile -EncodedCommand $encoded
+ssh laptop-imgpi2nm-shanghai powershell -NoProfile -EncodedCommand $encoded
 ```
 
 ### 3. 本机从 GitHub 下载
@@ -288,7 +288,7 @@ Release asset 保留作为可复用 checkpoint；只清 laptop / A800 临时文�
 
 ```powershell
 $tag = "run-<YYYYMMDD-HHMMSS>-<job>"
-ssh laptop-wg "powershell -NoProfile -Command `"Remove-Item -LiteralPath 'C:\tmp\$tag' -Recurse -Force -ErrorAction SilentlyContinue; ssh -o BatchMode=yes -p 2222 root@192.168.2.46 'rm -f /tmp/${tag}-*'`""
+ssh laptop-imgpi2nm-shanghai "powershell -NoProfile -Command `"Remove-Item -LiteralPath 'C:\tmp\$tag' -Recurse -Force -ErrorAction SilentlyContinue; ssh a800 'rm -f /tmp/${tag}-*'`""
 ```
 
 实测参考：20.4 MB checkpoint，A800 pod -> A800 host 约 3.0s，A800 host -> laptop 约 11.6s，laptop -> GitHub Release 约 12.4s，GitHub -> 本机约 4.9s。完整 GitHub 路线适合保留和复用；临时只看一次且不需要留档时，才考虑 laptop -> 本机 `scp` fallback。
@@ -321,10 +321,10 @@ $hostTmp = "/tmp/${run}_${checkpoint}"
 $localDir = "logs\remote_watch\$run"
 
 New-Item -ItemType Directory -Force -Path $localDir | Out-Null
-ssh laptop-wg "ssh -o BatchMode=yes -p 2222 root@192.168.2.46 `"kubectl cp gczx-project06/${pod}:$remoteProject/logs/rsl_rl/se3_wheel_leg/$run/$checkpoint $hostTmp -n gczx-project06`""
-ssh laptop-wg "scp -P 2222 root@192.168.2.46:$hostTmp $hostTmp"
-scp "laptop-wg:$hostTmp" "$localDir\$checkpoint"
-ssh laptop-wg "ssh -o BatchMode=yes -p 2222 root@192.168.2.46 `"rm -f $hostTmp`"; rm -f $hostTmp"
+ssh laptop-imgpi2nm-shanghai "ssh a800 `"kubectl cp gczx-project06/${pod}:$remoteProject/logs/rsl_rl/se3_wheel_leg/$run/$checkpoint $hostTmp -n gczx-project06`""
+ssh laptop-imgpi2nm-shanghai "scp a800:$hostTmp $hostTmp"
+scp "laptop-imgpi2nm-shanghai:$hostTmp" "$localDir\$checkpoint"
+ssh laptop-imgpi2nm-shanghai "ssh a800 `"rm -f $hostTmp`"; rm -f $hostTmp"
 ```
 
 ## gpufree
@@ -344,7 +344,7 @@ source /root/gpufree-data/se3_env.sh
 当前台阶远程训练不在 A800 pod 上开 MJLab Viser。A800/abbtask 只负责训练；值守默认是 GitHub Release checkpoint exchange + 本机 native MuJoCo closedchain Viser：
 
 ```powershell
-uv run python scripts\local_checkpoint_viser_watcher.py `
+uv run python scripts\local_stair_viser_watcher.py `
   --source github-release `
   --run-dir <run> `
   --github-release-tag run-<YYYYMMDD-HHMMSS>-<job> `
@@ -381,7 +381,7 @@ uv run se3-sim2sim `
 
 远端连接或 GitHub 临时失败时，watcher 会回退到本机已有最新 checkpoint，保持当前 Viser 可用；这时画面不会自动更新到远端最新模型。恢复后下一轮 poll 会继续同步。
 
-只有在 GitHub exchange 不可用或需要排查 laptop native viewer 时，才使用旧方案：Windows laptop 运行 `se3-sim2sim --viewer viser --stair-terrain`，开发机 `ssh -N -L 8080:localhost:8080 laptop-wg` 转发 8080。该方案不再是默认值守路径。
+只有在 GitHub exchange 不可用或需要排查 laptop native viewer 时，才使用旧方案：Windows laptop 运行 `se3-sim2sim --viewer viser --stair-terrain`，开发机 `ssh -N -L 8080:localhost:8080 laptop-imgpi2nm-shanghai` 转发 8080。该方案不再是默认值守路径。
 
 非台阶本地调试可继续用 `se3-play --viewer viser`。
 

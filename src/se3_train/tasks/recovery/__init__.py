@@ -1,7 +1,8 @@
-"""Recovery-Discovery 的内部共享实现。
+"""恢复发现任务共享 MDP 实现。
 
-该包仅保留环境基配置、奖励、事件和课程等共享代码，不注册独立任务。
-正式训练入口统一由 ``se3_train.tasks.recovery_discovery`` 提供。
+这个包保留 reward/event/curriculum/base cfg 等共享代码，但不再注册独立
+``SE3-WheelLegged-Recovery-GRU`` 任务。正式 recovery 训练入口只保留
+``SE3-WheelLegged-Recovery-Discovery-GRU``。
 """
 
 from __future__ import annotations

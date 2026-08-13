@@ -7,14 +7,13 @@ from mjlab.tasks.registry import register_mjlab_task
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import env_cfg
-from .rl_cfg import mlp_rl_cfg, rl_cfg
+from .rl_cfg import rl_cfg
 
 TASK_ID = "SE3-WheelLegged-Flat-GRU"
-MLP_TASK_ID = "SE3-WheelLegged-Flat-MLP"
 
 
 def register() -> None:
-    """注册平地 GRU 和 MLP 行走任务。"""
+    """注册平地 GRU 行走任务。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -22,13 +21,6 @@ def register() -> None:
         rl_cfg=rl_cfg(),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
-    register_mjlab_task(
-        task_id=MLP_TASK_ID,
-        env_cfg=env_cfg(),
-        play_env_cfg=env_cfg(play=True),
-        rl_cfg=mlp_rl_cfg(),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
 
 
-__all__ = ["MLP_TASK_ID", "TASK_ID", "env_cfg", "mlp_rl_cfg", "register", "rl_cfg"]
+__all__ = ["TASK_ID", "env_cfg", "register", "rl_cfg"]

@@ -25,14 +25,6 @@ class ObservationBuilder:
         self.fourbar_surrogate = bool(fourbar_surrogate)
         self.commands_scale = np.asarray(robot_cfg.command_scale, dtype=np.float64)
         self.default_dof_pos = np.asarray(default_dof_pos, dtype=np.float64)
-        self._history: dict[str, np.ndarray] | None = None
-        self._last_frame_id: int | None = None
-
-    def reset(self) -> None:
-        """清空历史；下一帧会按训练端语义回填全部槽位。"""
-
-        self._history = None
-        self._last_frame_id = None
 
     def build(
         self,
@@ -43,11 +35,10 @@ class ObservationBuilder:
         dof_vel: np.ndarray,
         command: np.ndarray,
         action_obs: np.ndarray,
-        frame_id: int,
     ) -> np.ndarray:
         base_ang_vel_body = rotate_inverse(base_quat_wxyz, base_ang_vel_world)
         projected_gravity = rotate_inverse(base_quat_wxyz, np.asarray([0.0, 0.0, -1.0]))
-        expected = int(self.runtime.base_num_obs)
+        expected = int(self.runtime.policy.num_obs)
         limit = float(self.runtime.clip_observations)
         result = build_policy_observation_np(
             base_ang_vel_body=base_ang_vel_body,
@@ -62,31 +53,4 @@ class ObservationBuilder:
             clip_value=limit,
             fourbar_surrogate=self.fourbar_surrogate,
         )
-        current = result.obs.astype(np.float32, copy=False)
-        history_length = int(self.runtime.observation_history_length)
-        if history_length == 1:
-            return current
-
-        current_slices: dict[str, slice] = {}
-        cursor = 0
-        for term in self.runtime.observation_terms:
-            current_slices[term.name] = slice(cursor, cursor + term.size)
-            cursor += term.size
-
-        if self._history is None:
-            self._history = {
-                name: np.repeat(current[sl][None, :], history_length, axis=0)
-                for name, sl in current_slices.items()
-            }
-        elif self._last_frame_id == int(frame_id):
-            for name, sl in current_slices.items():
-                self._history[name][-1] = current[sl]
-        else:
-            for name, sl in current_slices.items():
-                values = self._history[name]
-                values[:-1] = values[1:]
-                values[-1] = current[sl]
-        self._last_frame_id = int(frame_id)
-        return np.concatenate(
-            [self._history[term.name].reshape(-1) for term in self.runtime.observation_terms]
-        ).astype(np.float32, copy=False)
+        return result.obs

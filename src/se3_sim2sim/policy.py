@@ -197,14 +197,6 @@ class PolicyRuntime:
         checkpoint = Path(checkpoint)
         if not checkpoint.exists():
             raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
-        if checkpoint.suffix == ".npz":
-            from se3_deploy.numpy_policy import NumpyPolicyRuntime
-
-            return int(NumpyPolicyRuntime(checkpoint).num_obs)
-        if checkpoint.suffix == ".onnx":
-            from se3_deploy.onnx_policy import OnnxPolicyRuntime
-
-            return int(OnnxPolicyRuntime(checkpoint).num_obs)
         payload = torch.load(checkpoint, map_location=device)
         actor_state, _ = PolicyRuntime._extract_state_dicts(payload)
         rnn_type, _, _ = PolicyRuntime._detect_rnn(actor_state)
