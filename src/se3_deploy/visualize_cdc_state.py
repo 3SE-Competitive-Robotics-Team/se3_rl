@@ -1028,7 +1028,7 @@ class MujocoStateRenderer:
             )
         }
         self.closed_chain_enabled = self._has_closed_chain_render_joints()
-        self.model_kind = "closed_chain" if self.closed_chain_enabled else "fourbar_surrogate"
+        self.model_kind = "closed_chain" if self.closed_chain_enabled else "legacy_model"
         self.closed_chain_passive_seed = self._initial_closed_chain_passive_seed()
         self.closed_chain_failed_signatures: dict[str, tuple[float, float]] = {}
         self.last_closure_error_m: dict[str, float] = {}

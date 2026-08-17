@@ -26,8 +26,6 @@ from se3_shared import (
     output_to_policy_vel_torch,
     policy_to_closedchain_passive_pos_torch,
     policy_to_closedchain_passive_vel_torch,
-    policy_to_output_pos_torch,
-    policy_to_output_vel_torch,
 )
 from se3_shared import (
     RobotConfig as SharedRobotConfig,
@@ -36,7 +34,6 @@ from se3_train.mdp import recovery_state
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     is_closedchain_model,
-    is_fourbar_surrogate_model,
     joint_ids,
     policy_leg_joint_ids,
     tensor_ids,
@@ -1305,15 +1302,11 @@ def _add_closedchain_policy_leg_offset(
 
 def _model_leg_pos_to_policy(asset: Entity, leg_pos: torch.Tensor) -> torch.Tensor:
     """把模型可写的腿部位置转成 policy 主动杆语义。"""
-    if is_fourbar_surrogate_model(asset):
-        return output_to_policy_pos_torch(leg_pos)
     return leg_pos.clone()
 
 
 def _policy_leg_pos_to_model(asset: Entity, policy_pos: torch.Tensor) -> torch.Tensor:
     """把 policy 主动杆语义腿部位置转成模型可写关节。"""
-    if is_fourbar_surrogate_model(asset):
-        return policy_to_output_pos_torch(policy_pos)
     return policy_pos
 
 
@@ -1323,14 +1316,12 @@ def _policy_leg_vel_to_model(
     policy_vel: torch.Tensor,
 ) -> torch.Tensor:
     """把 policy 主动杆语义腿部速度转成模型可写关节速度。"""
-    if is_fourbar_surrogate_model(asset):
-        return policy_to_output_vel_torch(policy_pos, policy_vel)
     return policy_vel
 
 
 def _clamp_active_rod_policy_pose(asset: Entity, policy_pos: torch.Tensor) -> None:
     """在 policy 主动杆语义下裁剪同侧两杆夹角。"""
-    if not (is_closedchain_model(asset) or is_fourbar_surrogate_model(asset)):
+    if not is_closedchain_model(asset):
         return
     lower, upper = _SHARED_ROBOT.active_rod_angle_limits
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
@@ -1799,7 +1790,7 @@ def _clamp_policy_leg_pose(
     rows: torch.Tensor | None = None,
 ) -> None:
     """按模型语义裁剪腿部关节：闭链裁剪主动杆夹角，开链裁剪单关节限位。"""
-    if is_closedchain_model(asset) or is_fourbar_surrogate_model(asset):
+    if is_closedchain_model(asset):
         policy_pos = _model_leg_pos_to_policy(asset, _leg_values(joint_pos, leg_ids, rows))
         _clamp_active_rod_policy_pose(asset, policy_pos)
         _write_leg_values(joint_pos, leg_ids, _policy_leg_pos_to_model(asset, policy_pos), rows)
@@ -2462,24 +2453,6 @@ def randomize_pd_gains(
             env.sim.model.actuator_biasprm[env_ids, aid, 2] = default_biasprm[
                 aid, 2
             ] * kd_scale.squeeze(-1)
-    _sync_action_leg_pd_gains(env, env_ids, kp_scale, kd_scale)
-
-
-def _sync_action_leg_pd_gains(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor,
-    kp_scale: torch.Tensor,
-    kd_scale: torch.Tensor,
-) -> None:
-    """把 actuator 域随机化的同一组增益同步给自定义 action term。"""
-    action_manager = getattr(env, "action_manager", None)
-    if action_manager is None:
-        return
-    for term_name in action_manager.active_terms:
-        term = action_manager.get_term(term_name)
-        setter = getattr(term, "set_leg_pd_gain_scale", None)
-        if setter is not None:
-            setter(env_ids, kp_scale, kd_scale)
 
 
 def randomize_default_dof_pos(
@@ -2510,7 +2483,7 @@ def randomize_default_dof_pos(
     _clamp_active_rod_policy_pose(asset, policy_leg_pos)
     selected_joint_pos[:, leg_ids] = _policy_leg_pos_to_model(asset, policy_leg_pos)
 
-    if not (is_closedchain_model(asset) or is_fourbar_surrogate_model(asset)):
+    if not is_closedchain_model(asset):
         soft_limits = asset.data.soft_joint_pos_limits
         if soft_limits is not None:
             selected_joint_pos[:, leg_ids] = torch.clamp(

@@ -296,7 +296,7 @@ source_mjcf       str
 
 如果 closedchain 训练吞吐太低，可以拆成 Deploy-2A 和 Deploy-2B：
 
-1. Deploy-2A：fourbar surrogate + cache + 强正则。
+1. Deploy-2A：早期等效模型实验 + cache + 强正则（已废弃）。
 2. Deploy-2B：closedchain OBB + cache + sim2real 域随机化。
 
 ### Reset 分布

@@ -418,7 +418,7 @@ def plot_ctbc_linkage(
 
     fig, axes = plt.subplots(1, 2, figsize=(13.2, 6.8), sharex=True, sharey=True)
     fig.suptitle(
-        "新版 CTBC 抬腿示意：旧输出关节 bias -> active-rod action（surrogate 等效开树）",
+        "新版 CTBC 抬腿示意：旧输出关节 bias -> 真实闭链 active-rod action",
         fontsize=14,
     )
 

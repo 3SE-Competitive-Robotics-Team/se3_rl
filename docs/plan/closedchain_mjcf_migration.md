@@ -25,7 +25,7 @@ default_base_height = 0.22 m
 
 ## 已确认决策
 
-1. 训练默认模型切换为解析四连杆等效开树 MJCF；sim2sim 默认模型切换为真实闭链 OBB 模型，当前实验阶段默认不启用气弹簧常力。
+1. 训练和 sim2sim 默认模型均切换为真实闭链 OBB 模型，当前实验阶段默认不启用气弹簧常力。
 2. 旧开链 XML 文件保留，训练端和 sim2sim 端保留显式 `openchain` variant。
 3. policy 仍为 6 维动作，actor 观测维度为当前统一的 34 维。
 4. 腿部 action 和 actor 腿部观测改为主动杆坐标。
@@ -180,7 +180,7 @@ default_base_height = 0.22 m
 
 修改 `src/se3_sim2sim/robot.py` 和配置：
 
-- 默认 `model_path` 改为解析四连杆等效开树 XML。
+- 默认 `model_path` 改为真实闭链 OBB XML。
 - `_build_model()` 仍程序化添加 6 个电机 actuator。
 - MJCF 中已有 2 个气弹簧 actuator，所以 `data.ctrl` 不能再整体赋值为 6 维数组。
 - 新增 actuator name resolver：
@@ -266,7 +266,7 @@ MJCF 自带气弹簧 actuator 后，`model.nu` 不再等于 6。
 
 ## 完成标准
 
-- 默认训练使用解析四连杆等效开树模型，sim2sim 使用真实闭链 OBB 模型；两者保留显式 variant 方便 A/B 对照。
+- 默认训练和 sim2sim 均使用真实闭链 OBB 模型，不再保留等效开树 variant。
 - openchain variant 仍可显式启用。
 - policy action/actor 腿部观测语义为主动杆坐标。
 - 闭链默认站姿稳定，无 NaN、无约束爆炸、无意外穿地。

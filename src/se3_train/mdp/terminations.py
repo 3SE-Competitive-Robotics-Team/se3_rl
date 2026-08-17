@@ -6,18 +6,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import (
-    output_to_policy_pos_torch,
-    output_to_policy_vel_torch,
-    policy_leg_position_error_torch,
-)
+from se3_shared import policy_leg_position_error_torch
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
-from se3_train.mdp.joint_indices import (
-    is_closedchain_model,
-    is_fourbar_surrogate_model,
-    policy_leg_joint_ids,
-)
+from se3_train.mdp.joint_indices import is_closedchain_model, policy_leg_joint_ids
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -50,10 +42,6 @@ def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, to
     leg_pos = robot.data.joint_pos[:, leg_ids]
     leg_default = robot.data.default_joint_pos[:, leg_ids]
     leg_vel = robot.data.joint_vel[:, leg_ids]
-    if is_fourbar_surrogate_model(robot):
-        leg_pos = output_to_policy_pos_torch(leg_pos)
-        leg_default = output_to_policy_pos_torch(leg_default)
-        leg_vel = output_to_policy_vel_torch(robot.data.joint_pos[:, leg_ids], leg_vel)
     return leg_pos, leg_default, leg_vel
 
 
@@ -234,7 +222,7 @@ def catastrophic_state(
     else:
         leg_error = (
             policy_leg_position_error_torch(leg_pos, leg_default)
-            if is_closedchain_model(robot) or is_fourbar_surrogate_model(robot)
+            if is_closedchain_model(robot)
             else leg_pos - leg_default
         )
         leg_pos_bad = torch.any(torch.abs(leg_error) > float(max_leg_pos_error), dim=1)

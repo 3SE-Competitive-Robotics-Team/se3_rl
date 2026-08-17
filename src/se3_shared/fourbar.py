@@ -1,4 +1,4 @@
-"""SerialLeg 四连杆等效开树运动学。"""
+"""SerialLeg 真实闭链模型使用的四连杆运动学。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ try:
     import torch
 except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
-
-FOURBAR_SURROGATE_MARKER = "fourbar_surrogate_marker"
 
 # 这些常量来自闭链 MJCF 的左腿零位几何，单位为 m，投影在运动 x-z 平面。
 _KNEE_X = -0.17993464
@@ -40,11 +38,6 @@ _TORCH_LENGTH_LUT_CACHE: dict[
     tuple[torch.Tensor, torch.Tensor],
 ] = {}
 _NP_LENGTH_LUT_CACHE: tuple[np.ndarray, np.ndarray] | None = None
-
-
-def is_fourbar_surrogate_name_set(site_names: tuple[str, ...]) -> bool:
-    """判断模型是否带有四连杆等效开树标记。"""
-    return FOURBAR_SURROGATE_MARKER in set(site_names)
 
 
 def output_knee_from_active_angle_torch(active_angle: torch.Tensor) -> torch.Tensor:
@@ -126,18 +119,6 @@ def output_to_policy_vel_torch(output_pos: torch.Tensor, output_vel: torch.Tenso
     return out
 
 
-def policy_to_output_vel_torch(policy_pos: torch.Tensor, policy_vel: torch.Tensor) -> torch.Tensor:
-    """把虚拟主动杆速度映射为开树输出关节速度。"""
-    out = policy_vel.clone()
-    left_alpha = (policy_pos[:, 0] - policy_pos[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
-    right_alpha = (policy_pos[:, 3] - policy_pos[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
-    left_j = output_knee_jacobian_torch(left_alpha, right_side=False)
-    right_j = output_knee_jacobian_torch(right_alpha, right_side=True)
-    out[:, 1] = left_j * (policy_vel[:, 0] - policy_vel[:, 1])
-    out[:, 3] = right_j * (policy_vel[:, 3] - policy_vel[:, 2])
-    return out
-
-
 def policy_to_closedchain_passive_vel_torch(
     policy_pos: torch.Tensor,
     policy_vel: torch.Tensor,
@@ -187,22 +168,6 @@ def coupler_jacobian_torch(active_angle: torch.Tensor, *, right_side: bool) -> t
         hi - lo
     ).clamp_min(1.0e-6)
     return -value if right_side else value
-
-
-def policy_to_output_torque_torch(
-    policy_pos: torch.Tensor, policy_torque: torch.Tensor
-) -> torch.Tensor:
-    """把虚拟主动杆力矩映射为开树输出关节力矩。"""
-    out = policy_torque.clone()
-    left_alpha = (policy_pos[:, 0] - policy_pos[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
-    right_alpha = (policy_pos[:, 3] - policy_pos[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
-    left_j = output_knee_jacobian_torch(left_alpha, right_side=False)
-    right_j = output_knee_jacobian_torch(right_alpha, right_side=True)
-    out[:, 0] = policy_torque[:, 0] + policy_torque[:, 1]
-    out[:, 1] = -policy_torque[:, 1] / _safe_denominator_torch(left_j)
-    out[:, 2] = policy_torque[:, 2] + policy_torque[:, 3]
-    out[:, 3] = policy_torque[:, 3] / _safe_denominator_torch(right_j)
-    return out
 
 
 def output_leg_wheel_xz_torch(output_pos: torch.Tensor) -> torch.Tensor:
@@ -350,48 +315,6 @@ def output_to_policy_pos_np(output_pos: np.ndarray) -> np.ndarray:
     right_alpha = active_angle_from_output_knee_np(out[:, 3], right_side=True)
     out[:, 1] = out[:, 0] - left_alpha
     out[:, 3] = out[:, 2] + right_alpha
-    return out.reshape(original_shape)
-
-
-def output_knee_jacobian_np(active_angle: np.ndarray, *, right_side: bool) -> np.ndarray:
-    """NumPy 版本：计算输出膝角对主动杆夹角的数值雅可比。"""
-    alpha_grid, _, _, _, jacobian_grid = _fourbar_lut_np()
-    value = _interp_lut_np(np.asarray(active_angle, dtype=np.float64), alpha_grid, jacobian_grid)
-    return -value if right_side else value
-
-
-def output_to_policy_vel_np(output_pos: np.ndarray, output_vel: np.ndarray) -> np.ndarray:
-    """NumPy 版本：把开树输出速度反解回 policy 主动杆速度语义。"""
-    pos = np.asarray(output_pos, dtype=np.float64).reshape(-1, 4)
-    vel_arr = np.asarray(output_vel, dtype=np.float64)
-    original_shape = vel_arr.shape
-    out = vel_arr.reshape(-1, 4).copy()
-    left_alpha = active_angle_from_output_knee_np(pos[:, 1], right_side=False)
-    right_alpha = active_angle_from_output_knee_np(pos[:, 3], right_side=True)
-    left_j = output_knee_jacobian_np(left_alpha, right_side=False)
-    right_j = output_knee_jacobian_np(right_alpha, right_side=True)
-    left_alpha_dot = out[:, 1] / _safe_denominator_np(left_j)
-    right_alpha_dot = out[:, 3] / _safe_denominator_np(right_j)
-    out[:, 1] = out[:, 0] - left_alpha_dot
-    out[:, 3] = out[:, 2] + right_alpha_dot
-    return out.reshape(original_shape)
-
-
-def policy_to_output_torque_np(policy_pos: np.ndarray, policy_torque: np.ndarray) -> np.ndarray:
-    """NumPy 版本：把 policy 主动杆力矩映射为开树输出关节力矩。"""
-    pos = np.asarray(policy_pos, dtype=np.float64).reshape(-1, 4)
-    torque_arr = np.asarray(policy_torque, dtype=np.float64)
-    original_shape = torque_arr.shape
-    out = torque_arr.reshape(-1, 4).copy()
-    torque_rows = torque_arr.reshape(-1, 4)
-    left_alpha = np.clip(pos[:, 0] - pos[:, 1], _ACTIVE_LOWER, _ACTIVE_UPPER)
-    right_alpha = np.clip(pos[:, 3] - pos[:, 2], _ACTIVE_LOWER, _ACTIVE_UPPER)
-    left_j = output_knee_jacobian_np(left_alpha, right_side=False)
-    right_j = output_knee_jacobian_np(right_alpha, right_side=True)
-    out[:, 0] = torque_rows[:, 0] + torque_rows[:, 1]
-    out[:, 1] = -torque_rows[:, 1] / _safe_denominator_np(left_j)
-    out[:, 2] = torque_rows[:, 2] + torque_rows[:, 3]
-    out[:, 3] = torque_rows[:, 3] / _safe_denominator_np(right_j)
     return out.reshape(original_shape)
 
 
@@ -585,11 +508,6 @@ def _wrap_angle_torch(angle: torch.Tensor) -> torch.Tensor:
 def _safe_denominator_torch(value: torch.Tensor) -> torch.Tensor:
     sign = torch.where(value < 0.0, -torch.ones_like(value), torch.ones_like(value))
     return torch.where(torch.abs(value) < 1.0e-6, sign * 1.0e-6, value)
-
-
-def _safe_denominator_np(value: np.ndarray) -> np.ndarray:
-    sign = np.where(value < 0.0, -np.ones_like(value), np.ones_like(value))
-    return np.where(np.abs(value) < 1.0e-6, sign * 1.0e-6, value)
 
 
 def _wrap_angle_np(angle: float) -> float:
