@@ -47,6 +47,14 @@ _MJCF_PATH = (
 )
 
 
+def legacy_jump_output_leg_values_np(reference: np.ndarray) -> np.ndarray:
+    """把旧 Jump 6D 轨迹转换为正式模型的输出腿坐标。"""
+    values = np.asarray(reference, dtype=np.float64)
+    output = values[..., [0, 1, 3, 4]].copy()
+    output[..., 0:2] = -output[..., 0:2]
+    return output
+
+
 class SerialLegFK:
     """SerialLeg 正向运动学。
 
@@ -91,7 +99,7 @@ class SerialLegFK:
         from se3_shared import RobotConfig as _SharedRobotCfg
 
         _shared = _SharedRobotCfg()
-        self.default_qpos = np.asarray(
+        current_output_qpos = np.asarray(
             [
                 _shared.default_dof_pos[0],
                 _shared.default_output_knee_pos[0],
@@ -102,6 +110,8 @@ class SerialLegFK:
             ],
             dtype=np.float64,
         )
+        self.default_qpos = current_output_qpos.copy()
+        self.default_qpos[0:2] = -self.default_qpos[0:2]
         self.default_base_height: float = _shared.default_base_height
 
         # 轮子半径必须来自 collision geom。默认姿态的轮心高度可能穿地，不能当半径。
@@ -120,7 +130,7 @@ class SerialLegFK:
         """把旧输出关节语义的 6D 轨迹写入正式闭链模型。"""
         mujoco.mj_resetData(self._model, self._data)
         output_q6 = np.asarray(q6, dtype=np.float64).reshape(6)
-        output_leg = output_q6[[0, 1, 3, 4]]
+        output_leg = legacy_jump_output_leg_values_np(output_q6)
         policy_leg = output_to_policy_pos_np(output_leg)
         policy_q6 = np.concatenate((policy_leg, output_q6[[2, 5]]))
         self._data.qpos[self._policy_qpos_idx] = policy_q6

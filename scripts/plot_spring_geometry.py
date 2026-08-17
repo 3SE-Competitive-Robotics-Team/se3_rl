@@ -1,8 +1,7 @@
 """膝关节弹簧与四连杆传动机构可视化。
 
 用 MuJoCo FK 计算真实关节位置，保证姿态精确。
-四连杆 ABCD 通过 Freudenstein 闭环方程精确求解，
-P₁/P₂ 分别固连在驱动杆 AB 和小腿上段 CD 上。
+四连杆 ABCD 和弹簧挂点 P₁/P₂ 均直接读取正式 OBB 闭链 MJCF。
 
 用法:
     uv run python scripts/plot_spring_geometry.py
@@ -19,6 +18,12 @@ import matplotlib.pyplot as plt
 import mujoco
 import numpy as np
 
+from se3_shared import (
+    JointGroup,
+    output_to_policy_pos_np,
+    policy_to_closedchain_passive_pos_np,
+)
+
 mpl.rcParams["font.sans-serif"] = [
     "Microsoft YaHei",
     "SimHei",
@@ -31,62 +36,10 @@ mpl.rcParams["font.sans-serif"] = [
 mpl.rcParams["axes.unicode_minus"] = False
 
 MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
-WHEEL_RADIUS = 0.059
+WHEEL_RADIUS = 0.060
 DEFAULT_HIP = 0.6171
 DEFAULT_KNEE = 0.2070
 KNEE_RANGE = (-0.6, 0.8)
-
-# 四连杆参数（占位，需从 CAD 提供）
-L_AB = 0.06
-L_BC = 0.08
-L_CD = 0.04
-L_AD = 0.18
-
-# CD 杆件相对小腿方向的固定偏角（占位，需从 CAD 提供）
-# CD 从膝轴 D 指向连杆铰接点 C，位于小腿"后侧"（朝机身方向）
-# 此角定义为 CD 方向相对于 DW（小腿方向）的偏移，正值 = 逆时针
-PSI_OFFSET = np.deg2rad(-90)
-
-# 四连杆装配构型：+1 或 -1，对应两种闭合模式
-FOURBAR_MODE = +1
-
-# 弹簧挂点（占位）
-L_P1 = 0.014
-L_P2 = 0.015
-ALPHA_EXT = np.deg2rad(5)
-BETA_EXT = np.deg2rad(35)
-
-# 弹簧力学（占位）
-K_SPRING = 900.0
-S0 = 0.06
-DELTA_0 = 0.004
-DELTA_1 = 0.0095
-
-
-def _fourbar_solve_phi(
-    psi: float,
-    l_ab: float,
-    l_bc: float,
-    l_cd: float,
-    l_ad: float,
-    mode: int = +1,
-) -> float:
-    """Freudenstein 半角代换法求解驱动杆角 φ。
-
-    在大腿局部坐标系中（A 在原点，D 在 [L_AD, 0]），
-    已知小腿上段角 ψ，求驱动杆角 φ。
-    所有角度相对大腿方向（A→D = +x）逆时针为正。
-    """
-    p = 2 * l_ab * (l_cd * np.cos(psi) - l_ad)
-    q = 2 * l_ab * l_cd * np.sin(psi)
-    r = l_bc**2 - l_ab**2 - l_ad**2 - l_cd**2 + 2 * l_ad * l_cd * np.cos(psi)
-
-    disc = p**2 + q**2 - r**2
-    if disc < -1e-3:
-        raise ValueError(f"四连杆超出运动范围: disc={disc:.6f}, psi={np.rad2deg(psi):.1f}°")
-    disc = max(disc, 0.0)
-
-    return float(2 * np.arctan2(q + mode * np.sqrt(disc), p + r))
 
 
 def _set_joint_qpos(
@@ -100,58 +53,42 @@ def _set_joint_qpos(
 
 
 def _mujoco_fk(theta_hip: float, theta_knee: float) -> dict[str, np.ndarray]:
-    """用 MuJoCo 计算精确 body 世界坐标，取 XZ 侧视图。"""
+    """把旧输出轴输入映射到闭链模型，再读取真实 XZ 几何。"""
     model = mujoco.MjModel.from_xml_path(MJCF_PATH)
     data = mujoco.MjData(model)
     data.qpos[:] = model.qpos0
-    for joint_name, value in (
-        ("lf0_Joint", theta_hip),
-        ("lf1_Joint", theta_knee),
-        ("l_wheel_Joint", 0.0),
-        ("rf0_Joint", theta_hip),
-        ("rf1_Joint", theta_knee),
-        ("r_wheel_Joint", 0.0),
+    output_pos = np.asarray(
+        [[-theta_hip, -theta_knee, theta_hip, theta_knee]],
+        dtype=np.float64,
+    )
+    policy_pos = output_to_policy_pos_np(output_pos)[0]
+    passive_pos = policy_to_closedchain_passive_pos_np(policy_pos)
+    for joint_name, value in zip(JointGroup.POLICY_LEG_NAMES, policy_pos, strict=True):
+        _set_joint_qpos(model, data, joint_name, float(value))
+    for joint_name, value in zip(
+        JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES,
+        passive_pos,
+        strict=True,
     ):
-        _set_joint_qpos(model, data, joint_name, value)
+        _set_joint_qpos(model, data, joint_name, float(value))
+    for joint_name in JointGroup.WHEEL_NAMES:
+        _set_joint_qpos(model, data, joint_name, 0.0)
     mujoco.mj_forward(model, data)
 
-    def xz(body_name: str) -> np.ndarray:
-        bid = model.body(body_name).id
-        pos = data.xpos[bid]
-        return np.array([pos[0], pos[2]])
+    def xz(value: np.ndarray) -> np.ndarray:
+        return np.asarray([value[0], value[2]], dtype=np.float64)
 
-    a = xz("lf0_Link")
-    d = xz("lf1_Link")
-    w = xz("l_wheel_Link")
-
-    thigh_vec = d - a
-    thigh_angle = np.arctan2(thigh_vec[1], thigh_vec[0])
-    shank_vec = w - d
-    shank_angle = np.arctan2(shank_vec[1], shank_vec[0])
-
-    # ψ：CD 杆件在大腿局部坐标系中的方位角
-    # CD 固连在小腿上，与小腿方向有固定偏角 PSI_OFFSET
-    psi_world = shank_angle + PSI_OFFSET
-    psi_local = psi_world - thigh_angle
-
-    # φ：通过 Freudenstein 闭环方程精确求解驱动杆角
-    phi_local = _fourbar_solve_phi(psi_local, L_AB, L_BC, L_CD, L_AD, FOURBAR_MODE)
-    phi_world = phi_local + thigh_angle
-
-    # B（驱动杆末端）固连在 AB 杆件上
-    b = a + L_AB * np.array([np.cos(phi_world), np.sin(phi_world)])
-    # C（从动铰）固连在 CD 杆件上
-    c = d + L_CD * np.array([np.cos(psi_world), np.sin(psi_world)])
-
-    # P₁ 固连在驱动杆 AB 上，A 侧反向延伸（B 的对侧）
-    p1 = a + L_P1 * np.array([-np.cos(phi_world + ALPHA_EXT), -np.sin(phi_world + ALPHA_EXT)])
-    # P₂ 固连在小腿上段 CD 上，D 侧反向延伸（C 的对侧）
-    p2 = d + L_P2 * np.array([-np.cos(psi_world + BETA_EXT), -np.sin(psi_world + BETA_EXT)])
-
-    # 验证：BC 连杆长度应等于 L_BC
-    bc_err = abs(np.linalg.norm(c - b) - L_BC)
-    if bc_err > 1e-4:
-        print(f"四连杆闭合误差: |BC|={np.linalg.norm(c - b):.4f}, 期望={L_BC}, 误差={bc_err:.6f}")
+    a = xz(data.xanchor[model.joint("lf0_Joint").id])
+    b = xz(data.xpos[model.body("l_coupler_Link").id])
+    c = xz(data.site_xpos[model.site("l_coupler_end").id])
+    d = xz(data.xanchor[model.joint("lf1_Joint").id])
+    w = xz(data.xpos[model.body("l_wheel_Link").id])
+    p1 = xz(data.site_xpos[model.site("l_spring_p1").id])
+    p2 = xz(data.site_xpos[model.site("l_spring_p2").id])
+    closure = xz(data.site_xpos[model.site("lf_coupler_closure").id])
+    closure_error = float(np.linalg.norm(c - closure))
+    if closure_error > 1.0e-5:
+        raise RuntimeError(f"闭链投影失败: closure_error={closure_error:.6e} m")
 
     return {
         "A": a,
@@ -161,8 +98,7 @@ def _mujoco_fk(theta_hip: float, theta_knee: float) -> dict[str, np.ndarray]:
         "P1": p1,
         "P2": p2,
         "wheel": w,
-        "thigh_angle": thigh_angle,
-        "shank_angle": shank_angle,
+        "closure_error": np.asarray(closure_error),
     }
 
 
@@ -174,15 +110,14 @@ def draw(theta_hip: float, theta_knee: float) -> None:
 
     dp = p2 - p1
     slen = np.linalg.norm(dp)
-    s_eff = slen - DELTA_0 - DELTA_1
-    force = K_SPRING * (S0 - s_eff) if slen > 1e-6 else 0.0
+    closure_error = float(pts["closure_error"])
 
     _fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     ax.set_aspect("equal")
     ax.set_title(
         f"SerialLeg 膝关节传动与弹簧 | "
         f"hip={np.rad2deg(theta_hip):.1f}\u00b0 knee={np.rad2deg(theta_knee):.1f}\u00b0 | "
-        f"F={force:.1f} N",
+        f"挂点距离={slen * 1000:.1f} mm",
         fontsize=12,
     )
 
@@ -243,8 +178,8 @@ def draw(theta_hip: float, theta_knee: float) -> None:
         s_dir = dp / slen
         s_perp = np.array([-s_dir[1], s_dir[0]])
         amp = 0.005
-        sp_s = p1 + s_dir * DELTA_0
-        sp_e = p2 - s_dir * DELTA_1
+        sp_s = p1
+        sp_e = p2
         seg = np.linalg.norm(sp_e - sp_s)
         coil_pts = [p1, sp_s]
         for i in range(1, n_coils * 2 + 1):
@@ -366,18 +301,15 @@ def draw(theta_hip: float, theta_knee: float) -> None:
         f"knee0 = {np.rad2deg(DEFAULT_KNEE):.1f}\u00b0\n"
         f"膝范围 [{np.rad2deg(KNEE_RANGE[0]):.0f}\u00b0, {np.rad2deg(KNEE_RANGE[1]):.0f}\u00b0]\n"
         "\n"
-        "四连杆 (需 CAD):\n"
-        f"  AB = {L_AB * 1000:.0f} mm\n"
-        f"  BC = {L_BC * 1000:.0f} mm\n"
-        f"  CD = {L_CD * 1000:.0f} mm\n"
-        f"  AD = {L_AD * 1000:.0f} mm\n"
-        f"  ψ_off = {np.rad2deg(PSI_OFFSET):.0f}\u00b0\n"
+        "正式 OBB 闭链几何:\n"
+        f"  AB = {np.linalg.norm(b - a) * 1000:.1f} mm\n"
+        f"  BC = {np.linalg.norm(c - b) * 1000:.1f} mm\n"
+        f"  CD = {np.linalg.norm(c - d) * 1000:.1f} mm\n"
+        f"  AD = {np.linalg.norm(d - a) * 1000:.1f} mm\n"
+        f"  closure error = {closure_error * 1e6:.2f} μm\n"
         "\n"
-        "弹簧 (需 CAD):\n"
-        f"  a(P1) = {L_P1 * 1000:.1f} mm\n"
-        f"  b(P2) = {L_P2 * 1000:.1f} mm\n"
-        f"  k = {K_SPRING:.0f} N/m\n"
-        f"  s0 = {S0 * 1000:.1f} mm"
+        "MJCF 弹簧挂点:\n"
+        f"  |P1P2| = {slen * 1000:.1f} mm"
     )
     ax.text(
         0.98,

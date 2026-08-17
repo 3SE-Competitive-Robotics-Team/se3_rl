@@ -24,7 +24,11 @@ import mujoco
 import numpy as np
 
 from se3_shared import RobotConfig
-from se3_shared.fourbar import output_to_policy_pos_np, policy_to_output_pos_np
+from se3_shared.fourbar import (
+    output_to_policy_pos_np,
+    policy_to_closedchain_passive_pos_np,
+    policy_to_output_pos_np,
+)
 from se3_shared.height_default import policy_default_from_height_np
 from se3_train.mdp.actions import (
     _CTBC_SOURCE_OUTPUT_LEG_SCALE,
@@ -92,22 +96,14 @@ class LegPoints:
     wheel: np.ndarray
 
 
-class SurrogateFk:
-    """使用旧高保真模型计算左右腿输出链的侧视图 FK。"""
+class ClosedChainFk:
+    """使用正式 OBB 闭链模型计算左右腿侧视图 FK。"""
 
     def __init__(self, mjcf_path: Path = MJCF_PATH) -> None:
         self.model = mujoco.MjModel.from_xml_path(str(mjcf_path))
         self.data = mujoco.MjData(self.model)
         self._joint_qpos = {
-            name: self._joint_qpos_address(name)
-            for name in (
-                "lf0_Joint",
-                "lf1_Joint",
-                "rf0_Joint",
-                "rf1_Joint",
-                "l_wheel_Joint",
-                "r_wheel_Joint",
-            )
+            name: self._joint_qpos_address(name) for name in RobotConfig().default_model_joint_pos
         }
 
     def _joint_qpos_address(self, name: str) -> int:
@@ -136,12 +132,20 @@ class SurrogateFk:
         *,
         base_height: float,
     ) -> tuple[LegPoints, LegPoints]:
-        output = np.asarray(output_pos, dtype=np.float64).reshape(4)
+        output = np.asarray(output_pos, dtype=np.float64).reshape(1, 4)
+        policy = output_to_policy_pos_np(output)[0]
+        passive = policy_to_closedchain_passive_pos_np(policy)
         self.data.qpos[:] = self.model.qpos0
         self.data.qpos[:7] = np.array([0.0, 0.0, float(base_height), 1.0, 0.0, 0.0, 0.0])
         for name, value in zip(
-            ("lf0_Joint", "lf1_Joint", "rf0_Joint", "rf1_Joint"),
-            output,
+            ("lf0_Joint", "l_drive_bar_Joint", "rf0_Joint", "r_drive_bar_Joint"),
+            policy,
+            strict=True,
+        ):
+            self.data.qpos[self._joint_qpos[name]] = value
+        for name, value in zip(
+            ("lf1_Joint", "l_coupler_Joint", "rf1_Joint", "r_coupler_Joint"),
+            passive,
             strict=True,
         ):
             self.data.qpos[self._joint_qpos[name]] = value
@@ -388,7 +392,7 @@ def plot_ctbc_linkage(
 ) -> None:
     """生成目标四连杆 action 语义下的 CTBC 抬腿示意图。"""
     robot_cfg = RobotConfig()
-    fk = SurrogateFk()
+    fk = ClosedChainFk()
     pose = _ctbc_pose(
         phase=phase,
         command_height=command_height,

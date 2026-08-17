@@ -17,6 +17,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from se3_jump_to.kinematics import legacy_jump_output_leg_values_np
 from se3_shared import JointGroup, output_to_policy_pos_np, policy_to_closedchain_passive_pos_np
 
 
@@ -119,7 +120,7 @@ def main() -> None:
             data.qpos[4] = 0.0
             data.qpos[5] = 0.0
             data.qpos[6] = 0.0
-            output_leg = q[[0, 1, 3, 4]]
+            output_leg = legacy_jump_output_leg_values_np(q)
             policy_leg = output_to_policy_pos_np(output_leg)
             policy_q6 = np.concatenate((policy_leg, q[[2, 5]]))
             data.qpos[policy_qpos_idx] = policy_q6

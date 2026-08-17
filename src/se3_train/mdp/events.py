@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import mujoco
+import numpy as np
 import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -24,6 +26,7 @@ from se3_shared import (
     JointGroup,
     output_to_policy_pos_torch,
     output_to_policy_vel_torch,
+    policy_to_closedchain_passive_pos_np,
     policy_to_closedchain_passive_pos_torch,
     policy_to_closedchain_passive_vel_torch,
 )
@@ -55,6 +58,15 @@ _FULL_ANGLE_RESET_BBOX_MIN = (-0.278, -0.242, -0.323)
 _FULL_ANGLE_RESET_BBOX_MAX = (0.278, 0.242, 0.111)
 _FOURBAR_WHEEL_RADIUS_M = 0.060
 _DEFAULT_RESET_WHEEL_CLEARANCE_M = 0.001
+_OFFICIAL_SERIALLEG_MJCF_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "assets"
+    / "robots"
+    / "serialleg"
+    / "mjcf"
+    / "serialleg_closed_chain_v3_train_obb_trim.xml"
+)
+_RECOVERY_CACHE_CLOSEDCHAIN_TOLERANCE_RAD = math.radians(3.0)
 _GEOM_PLANE = int(mujoco.mjtGeom.mjGEOM_PLANE)
 _GEOM_HFIELD = int(mujoco.mjtGeom.mjGEOM_HFIELD)
 _GEOM_SPHERE = int(mujoco.mjtGeom.mjGEOM_SPHERE)
@@ -155,6 +167,69 @@ def _np_str_tuple(values) -> tuple[str, ...]:
     )
 
 
+def _validate_recovery_cache_contract(
+    data: np.lib.npyio.NpzFile,
+    asset: Entity,
+) -> tuple[str, ...]:
+    """校验 recovery cache 的完整闭链模型契约。"""
+    if "joint_names" not in data:
+        raise ValueError("recovery cache 缺少 joint_names，必须重新生成闭链缓存")
+    cache_joint_names = _np_str_tuple(data["joint_names"])
+    if len(cache_joint_names) != len(set(cache_joint_names)):
+        raise ValueError(f"recovery cache 包含重复关节名: {cache_joint_names}")
+
+    joint_pos = np.asarray(data["joint_pos"])
+    joint_vel = np.asarray(data["joint_vel"])
+    expected_width = len(cache_joint_names)
+    if joint_pos.ndim != 2 or joint_vel.ndim != 2:
+        raise ValueError(
+            "recovery cache 的 joint_pos/joint_vel 必须是二维数组，"
+            f"实际为 {joint_pos.shape}/{joint_vel.shape}"
+        )
+    if joint_pos.shape != joint_vel.shape or joint_pos.shape[1] != expected_width:
+        raise ValueError(
+            "recovery cache 的关节数组宽度与 joint_names 不一致，"
+            f"joint_pos={joint_pos.shape}, joint_vel={joint_vel.shape}, names={expected_width}"
+        )
+    if not np.isfinite(joint_pos).all() or not np.isfinite(joint_vel).all():
+        raise ValueError("recovery cache 的关节状态包含非有限值")
+
+    if "source_mjcf_sha256" not in data:
+        raise ValueError("recovery cache 缺少 source_mjcf_sha256，必须重新生成闭链缓存")
+    expected_hash = hashlib.sha256(_OFFICIAL_SERIALLEG_MJCF_PATH.read_bytes()).hexdigest()
+    cache_hash = str(np.asarray(data["source_mjcf_sha256"]).item())
+    if cache_hash != expected_hash:
+        raise ValueError(
+            "recovery cache 来源 MJCF 与当前正式模型不一致，"
+            f"cache={cache_hash}, current={expected_hash}"
+        )
+
+    current_joint_names = tuple(str(name) for name in asset.joint_names)
+    missing_current = [name for name in current_joint_names if name not in cache_joint_names]
+    if missing_current:
+        raise ValueError(
+            "recovery cache 和当前 MJCF 关节不匹配，"
+            f"缺少当前模型关节: {missing_current}; cache_joint_names={cache_joint_names}"
+        )
+
+    cache_joint_to_idx = {name: idx for idx, name in enumerate(cache_joint_names)}
+    policy_indices = [cache_joint_to_idx[name] for name in JointGroup.POLICY_LEG_NAMES]
+    passive_indices = [
+        cache_joint_to_idx[name] for name in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES
+    ]
+    policy_pos = joint_pos[:, policy_indices]
+    passive_pos = joint_pos[:, passive_indices]
+    expected_passive = policy_to_closedchain_passive_pos_np(policy_pos)
+    max_error = float(np.max(np.abs(passive_pos - expected_passive), initial=0.0))
+    if max_error > _RECOVERY_CACHE_CLOSEDCHAIN_TOLERANCE_RAD:
+        raise ValueError(
+            "recovery cache 的被动关节不满足正式闭链关系，"
+            f"最大误差={max_error:.6f} rad，"
+            f"容差={_RECOVERY_CACHE_CLOSEDCHAIN_TOLERANCE_RAD:.6f} rad"
+        )
+    return cache_joint_names
+
+
 def _load_recovery_state_cache(
     env: ManagerBasedRlEnv,
     path: str | None,
@@ -184,8 +259,6 @@ def _load_recovery_state_cache(
             env.extras.setdefault("log", {})["Recovery/cache_missing"] = 1.0
         return None
 
-    import numpy as np
-
     data = np.load(cache_path)
     format_version = int(data["format_version"]) if "format_version" in data else 1
     required = ("root_pos", "root_quat", "root_lin_vel", "root_ang_vel", "joint_pos", "joint_vel")
@@ -205,22 +278,16 @@ def _load_recovery_state_cache(
     joint_pos = data["joint_pos"][row_indices]
     joint_vel = data["joint_vel"][row_indices]
     if format_version >= 2:
-        if "joint_names" not in data:
-            raise ValueError("recovery v2 cache 缺少 joint_names 字段")
-        cache_joint_names = _np_str_tuple(data["joint_names"])
+        cache_joint_names = _validate_recovery_cache_contract(data, asset)
         cache_joint_to_idx = {name: idx for idx, name in enumerate(cache_joint_names)}
         current_joint_names = tuple(str(name) for name in asset.joint_names)
-        missing_current = [name for name in current_joint_names if name not in cache_joint_to_idx]
-        if missing_current:
-            raise ValueError(
-                "recovery v2 cache 和当前 MJCF 关节不匹配，"
-                f"缺少当前模型关节: {missing_current}; cache_joint_names={cache_joint_names}"
-            )
         remap = np.asarray(
             [cache_joint_to_idx[name] for name in current_joint_names], dtype=np.int64
         )
         joint_pos = joint_pos[:, remap]
         joint_vel = joint_vel[:, remap]
+    else:
+        raise ValueError("旧版 recovery cache 不包含闭链模型契约，必须重新生成")
 
     cache = {
         "root_pos": torch.as_tensor(
@@ -2026,6 +2093,7 @@ def reset_joints(
     cache_reset_mask = getattr(env, "_recovery_cache_reset_mask", None)
     cache_joint_pos = getattr(env, "_recovery_cached_joint_pos", None)
     cache_joint_vel = getattr(env, "_recovery_cached_joint_vel", None)
+    local_cache = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
     if (
         isinstance(cache_reset_mask, torch.Tensor)
         and isinstance(cache_joint_pos, torch.Tensor)
@@ -2096,23 +2164,45 @@ def reset_joints(
                 )
                 fallback_mask = jump_mask & ~rsi_done_mask & use_fallback_squat
                 if fallback_mask.any():
-                    joint_pos[fallback_mask, leg_ids[0]] = _jump_hip_fallback
-                    joint_pos[fallback_mask, leg_ids[1]] = _jump_knee_fallback
-                    joint_pos[fallback_mask, leg_ids[2]] = _jump_hip_fallback
-                    joint_pos[fallback_mask, leg_ids[3]] = _jump_knee_fallback
+                    fallback_rows = fallback_mask.nonzero().flatten()
+                    legacy_q6 = torch.tensor(
+                        [
+                            _jump_hip_fallback,
+                            _jump_knee_fallback,
+                            0.0,
+                            _jump_hip_fallback,
+                            _jump_knee_fallback,
+                            0.0,
+                        ],
+                        device=env.device,
+                        dtype=joint_pos.dtype,
+                    ).repeat(len(fallback_rows), 1)
+                    fallback_output = legacy_jump_output_leg_values(legacy_q6)
+                    fallback_policy = output_to_policy_pos_torch(fallback_output)
+                    _write_leg_values(
+                        joint_pos,
+                        leg_ids,
+                        fallback_policy,
+                        fallback_rows,
+                    )
         except Exception:
             pass
 
     policy_leg_pos = _leg_values(joint_pos, leg_ids).clone()
     policy_leg_vel = _leg_values(joint_vel, leg_ids)
-    _apply_policy_leg_reset(
-        asset,
-        joint_pos,
-        joint_vel,
-        leg_ids,
-        policy_leg_pos,
-        policy_leg_vel,
-    )
+    # cache 行表示经物理沉降后的完整模型状态，必须保留其被动关节位置和速度。
+    # 其余 reset 来源只给 policy 状态，因此按解析闭链关系补齐被动关节。
+    recompute_passive_rows = (~local_cache).nonzero().flatten()
+    if recompute_passive_rows.numel() > 0:
+        _apply_policy_leg_reset(
+            asset,
+            joint_pos,
+            joint_vel,
+            leg_ids,
+            policy_leg_pos[recompute_passive_rows],
+            policy_leg_vel[recompute_passive_rows],
+            rows=recompute_passive_rows,
+        )
     if hasattr(env, "extras"):
         lower, upper = _SHARED_ROBOT.active_rod_angle_limits
         active_angles = torch.stack(

@@ -275,7 +275,6 @@ class SerialLegDelayedAction(ActionTerm):
             self._current_leg_action_defaults(),
         )
         self._policy_leg_target[:] = leg_target
-        servo_leg_target = leg_target
         current_leg_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
         servo_leg_target = current_leg_pos + policy_leg_position_error_torch(
             leg_target,
@@ -493,20 +492,6 @@ class SerialLegDelayedAction(ActionTerm):
             upper = torch.where(middle_reachable, upper, middle)
         scale = torch.where(full_reachable, torch.ones_like(lower), lower)
         return current_wheel_xz + wheel_delta_xz * scale.unsqueeze(-1)
-
-    def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
-        """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
-        target = leg_target.clone()
-        lower, upper = self._active_rod_angle_limits
-        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-            front_coef, back_coef = self._active_rod_angle_coeffs[side_idx]
-            angle = torch.clamp(
-                front_coef * target[:, front_idx] + back_coef * target[:, back_idx],
-                lower,
-                upper,
-            )
-            target[:, back_idx] = (angle - front_coef * target[:, front_idx]) / back_coef
-        return target
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)

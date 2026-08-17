@@ -18,11 +18,10 @@ _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
 
 def _serialleg_spec_for_training() -> mujoco.MjSpec:
-    """Load SerialLeg MJCF without its standalone world floor.
+    """加载不含独立世界地面的 SerialLeg MJCF。
 
-    MJLab scenes provide terrain separately. Keeping the MJCF's global plane
-    covers generated stair pits at z=0 and makes robots collide with a flat
-    barrier instead of the stair terrain.
+    MJLab 场景单独提供地形。保留 MJCF 的全局平面会覆盖 z=0 的生成台阶坑，
+    使机器人与平面障碍碰撞，而不是与台阶地形碰撞。
     """
     spec = mujoco.MjSpec.from_file(str(_MJCF_PATH))
     for geom in list(spec.worldbody.geoms):
