@@ -11,7 +11,7 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 
 from se3_shared import TaskMode
 from se3_shared.grounded_pose import solve_grounded_pose
-from se3_train.robot_cfg import get_serialleg_cfg
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.flow_match.common import apply_task_mode_command, apply_task_mode_observations
 
@@ -74,7 +74,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 def base_gait_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """构造三阶段共用的纯 GAIT 机器人基础配置。"""
     cfg = flat_env_cfg(play=play)
-    cfg.scene.entities["robot"] = get_serialleg_cfg(lock_wheels=True)
+    cfg.scene.entities["robot"] = get_serialleg_closedchain_cfg()
 
     cfg.events.pop("push_robots", None)
     cfg.curriculum = {}

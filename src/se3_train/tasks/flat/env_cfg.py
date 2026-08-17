@@ -26,7 +26,7 @@ from mjlab.viewer import ViewerConfig
 from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
-from se3_train.robot_cfg import get_serialleg_cfg
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 
 from . import commands, curriculums, events, observations, rewards, terminations
 
@@ -47,7 +47,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     scene = SceneCfg(
         terrain=TerrainEntityCfg(terrain_type="plane"),
-        entities={"robot": get_serialleg_cfg()},
+        entities={"robot": get_serialleg_closedchain_cfg()},
         num_envs=1024,
         env_spacing=3.0,
     )

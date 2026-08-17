@@ -27,7 +27,6 @@ from mjlab.viewer import ViewerConfig
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.mdp.jump_trajectories import DEFAULT_JUMP_TRAJ_HEIGHTS, DEFAULT_JUMP_TRAJ_PATHS
-from se3_train.robot_cfg import get_serialleg_cfg
 from se3_train.tasks.flat import events, observations
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.jump_pretrain import commands, curriculums, rewards, terminations

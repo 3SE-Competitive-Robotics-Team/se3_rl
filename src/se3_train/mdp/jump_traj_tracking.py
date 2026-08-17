@@ -17,9 +17,14 @@ from typing import TYPE_CHECKING
 import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
-from se3_train.mdp.joint_indices import is_closedchain_model, output_leg_joint_ids
+from se3_shared import output_to_policy_pos_torch
+from se3_train.mdp.joint_indices import (
+    is_closedchain_model,
+    output_leg_joint_ids,
+    policy_leg_joint_ids,
+)
 from se3_train.mdp.jump_commands import JumpCommandTerm
-from se3_train.mdp.jump_trajectories import JumpTrajLibrary
+from se3_train.mdp.jump_trajectories import JumpTrajLibrary, legacy_jump_output_leg_values
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -294,14 +299,14 @@ def traj_joint_pos_tracking(
     height_match = torch.abs(h_target - ref_height) <= height_match_tol
 
     robot = env.scene[asset_cfg.name]
+    # 旧轨迹保存的是输出膝语义；闭链模型要先反解成四个主动杆目标。
     if is_closedchain_model(robot):
-        raise RuntimeError("闭链主模型暂不支持旧跳跃 q_ref 轨迹跟踪，请显式切回 openchain。")
-    # 旧跳跃轨迹仍是开链输出角语义：[lf0, lf1, rf0, rf1]。
-    leg_idx = output_leg_joint_ids(robot)
+        leg_idx = policy_leg_joint_ids(robot)
+        ref_q_leg = output_to_policy_pos_torch(legacy_jump_output_leg_values(ref_q))
+    else:
+        leg_idx = output_leg_joint_ids(robot)
+        ref_q_leg = ref_q[:, [0, 1, 3, 4]]
     q_leg = robot.data.joint_pos[:, leg_idx]
-
-    # ref_q 是 6 维受控关节 [lf0, lf1, lw, rf0, rf1, rw]，腿部取 0,1,3,4
-    ref_q_leg = ref_q[:, [0, 1, 3, 4]]
 
     err = q_leg - ref_q_leg
 

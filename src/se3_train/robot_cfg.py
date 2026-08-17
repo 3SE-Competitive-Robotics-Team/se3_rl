@@ -151,3 +151,11 @@ def get_serialleg_cfg(
             joint_vel={".*": 0.0},
         ),
     )
+
+
+def get_serialleg_closedchain_cfg(*, wheel_kd_override: float | None = None) -> EntityCfg:
+    """构造固定使用真实 closed-chain MJCF 的 SerialLeg 训练实体。"""
+    return get_serialleg_cfg(
+        mjcf_path=_CLOSEDCHAIN_MJCF_PATH,
+        wheel_kd_override=wheel_kd_override,
+    )

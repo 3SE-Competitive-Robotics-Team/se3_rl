@@ -23,6 +23,7 @@ from mjlab.utils.lab_api.math import (
 from se3_shared import (
     JointGroup,
     output_to_policy_pos_torch,
+    output_to_policy_vel_torch,
     policy_to_closedchain_passive_pos_torch,
     policy_to_closedchain_passive_vel_torch,
     policy_to_output_pos_torch,
@@ -46,6 +47,7 @@ from se3_train.mdp.jump_trajectories import (
     DEFAULT_JUMP_TRAJ_HEIGHTS,
     DEFAULT_JUMP_TRAJ_PATHS,
     JumpTrajLibrary,
+    legacy_jump_output_leg_values,
 )
 
 if TYPE_CHECKING:
@@ -2144,11 +2146,7 @@ def reset_joints(
                 # rsi_done_local：local index 中已从轨迹注入关节角的位置（用于计算回退 mask）
                 rsi_done_mask = torch.zeros(len(env_ids), dtype=torch.bool, device=env.device)
 
-                if is_closedchain_model(asset):
-                    if hasattr(env, "extras"):
-                        env.extras.setdefault("log", {})["Jump/closedchain_rsi_disabled"] = 1.0
-                    rsi_done_mask = jump_mask
-                elif rsi_frames is not None:
+                if rsi_frames is not None:
                     frames = rsi_frames[env_ids]
                     rsi_done_mask = jump_mask & (frames >= 0)
                     if rsi_done_mask.any():
@@ -2166,15 +2164,27 @@ def reset_joints(
                         library = JumpTrajLibrary.get(traj_paths, traj_heights, str(env.device))
                         h_targets = cmd[env_ids[rsi_done_mask], 6]
                         _, _, q_ref, q_vel, _, _ = library.gather(h_targets, frames[rsi_done_mask])
-                        # q_ref/q_vel: [lf0, lf1, lw, rf0, rf1, rw]
-                        joint_pos[rsi_done_mask, leg_ids[0]] = q_ref[:, 0]
-                        joint_pos[rsi_done_mask, leg_ids[1]] = q_ref[:, 1]
-                        joint_pos[rsi_done_mask, leg_ids[2]] = q_ref[:, 3]
-                        joint_pos[rsi_done_mask, leg_ids[3]] = q_ref[:, 4]
-                        joint_vel[rsi_done_mask, leg_ids[0]] = q_vel[:, 0]
-                        joint_vel[rsi_done_mask, leg_ids[1]] = q_vel[:, 1]
-                        joint_vel[rsi_done_mask, leg_ids[2]] = q_vel[:, 3]
-                        joint_vel[rsi_done_mask, leg_ids[3]] = q_vel[:, 4]
+                        # 轨迹是输出膝语义；闭链 reset 前转换成主动杆位置和速度。
+                        if is_closedchain_model(asset):
+                            output_pos = legacy_jump_output_leg_values(q_ref)
+                            output_vel = legacy_jump_output_leg_values(q_vel)
+                            leg_pos = output_to_policy_pos_torch(output_pos)
+                            leg_vel = output_to_policy_vel_torch(output_pos, output_vel)
+                        else:
+                            leg_pos = q_ref[:, [0, 1, 3, 4]]
+                            leg_vel = q_vel[:, [0, 1, 3, 4]]
+                        _write_leg_values(
+                            joint_pos,
+                            leg_ids,
+                            leg_pos,
+                            rsi_done_mask.nonzero().flatten(),
+                        )
+                        _write_leg_values(
+                            joint_vel,
+                            leg_ids,
+                            leg_vel,
+                            rsi_done_mask.nonzero().flatten(),
+                        )
 
                 # 未做 RSI 的 jump env 默认保持站立姿态。
                 # 只有显式启用部分 RSI 时，未注入的样本才回退到预蹲姿态做消融。
