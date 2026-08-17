@@ -7,6 +7,7 @@
 from . import actions as actions
 from . import commands as commands
 from . import curriculums as curriculums
+from . import env_groups as env_groups
 from . import events as events
 from . import jump_commands as jump_commands
 from . import jump_curriculums as jump_curriculums
@@ -22,6 +23,7 @@ __all__ = [
     "actions",
     "commands",
     "curriculums",
+    "env_groups",
     "events",
     "jump_commands",
     "jump_curriculums",
