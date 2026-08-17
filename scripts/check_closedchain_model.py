@@ -2,7 +2,7 @@
 
 用法：
     uv run python scripts/check_closedchain_model.py
-    uv run python scripts/check_closedchain_model.py --model assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml
+    uv run python scripts/check_closedchain_model.py --model assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml
 """
 
 from __future__ import annotations

@@ -32,7 +32,7 @@ from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.mdp import terminations
-from se3_train.robot_cfg import get_serialleg_cfg
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import curriculums, events, observations, rewards
@@ -40,16 +40,8 @@ from .forward_stairs import BoxForwardStairsTerrainCfg
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
-_STAIR_MJCF_PATH = (
-    _PROJECT_ROOT
-    / "assets"
-    / "robots"
-    / "serialleg"
-    / "mjcf"
-    / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
-)
 _STAIR_RECOVERY_STATE_CACHE_PATH = (
-    _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_stair_v3_40k.npz"
+    _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_closedchain_stair_v3_40k.npz"
 )
 _STAIR_WHEEL_KD = 0.08
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060
@@ -373,8 +365,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """构造 CTBC teacher-forcing 的倒金字塔台阶爬升环境。"""
     cfg = flat_env_cfg(play=play)
 
-    cfg.scene.entities["robot"] = get_serialleg_cfg(
-        mjcf_path=_STAIR_MJCF_PATH,
+    cfg.scene.entities["robot"] = get_serialleg_closedchain_cfg(
         wheel_kd_override=_STAIR_WHEEL_KD,
     )
     cfg.scene.terrain = TerrainEntityCfg(

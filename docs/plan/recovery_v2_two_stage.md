@@ -72,7 +72,7 @@ jump_commands       3
 
 | 项 | 设置 |
 |---|---|
-| MJCF | 默认 `fourbar-surrogate` |
+| MJCF | 默认真实闭链 OBB 模型 |
 | 碰撞 | 简化碰撞，优先训练速度和动作发现 |
 | 地形 | 平地 |
 | command | 早期 `vx=0`，`yaw_rate=0` |
@@ -296,7 +296,7 @@ source_mjcf       str
 
 如果 closedchain 训练吞吐太低，可以拆成 Deploy-2A 和 Deploy-2B：
 
-1. Deploy-2A：fourbar surrogate + cache + 强正则。
+1. Deploy-2A：早期等效模型实验 + cache + 强正则（已废弃）。
 2. Deploy-2B：closedchain OBB + cache + sim2real 域随机化。
 
 ### Reset 分布

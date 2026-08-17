@@ -17,6 +17,9 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from se3_jump_to.kinematics import legacy_jump_output_leg_values_np
+from se3_shared import JointGroup, output_to_policy_pos_np, policy_to_closedchain_passive_pos_np
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="NPC 轨迹 3D Rerun 重放")
@@ -68,24 +71,19 @@ def main() -> None:
         / "robots"
         / "serialleg"
         / "mjcf"
-        / "serialleg_fidelity_cylinder_wheels.xml"
+        / "serialleg_closed_chain_v3_train_obb_trim.xml"
     )
     model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     data = mujoco.MjData(model)
 
-    # 受控关节 qpos 索引
-    ctrl_joint_names = (
-        "lf0_Joint",
-        "lf1_Joint",
-        "l_wheel_Joint",
-        "rf0_Joint",
-        "rf1_Joint",
-        "r_wheel_Joint",
-    )
-    ctrl_qpos_idx = []
-    for name in ctrl_joint_names:
+    policy_qpos_idx = []
+    for name in JointGroup.POLICY_JOINT_NAMES:
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-        ctrl_qpos_idx.append(int(model.jnt_qposadr[jid]))
+        policy_qpos_idx.append(int(model.jnt_qposadr[jid]))
+    passive_qpos_idx = []
+    for name in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES:
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        passive_qpos_idx.append(int(model.jnt_qposadr[jid]))
 
     lw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "l_wheel_Link")
     rw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "r_wheel_Link")
@@ -122,8 +120,11 @@ def main() -> None:
             data.qpos[4] = 0.0
             data.qpos[5] = 0.0
             data.qpos[6] = 0.0
-            for i, idx in enumerate(ctrl_qpos_idx):
-                data.qpos[idx] = float(q[i])
+            output_leg = legacy_jump_output_leg_values_np(q)
+            policy_leg = output_to_policy_pos_np(output_leg)
+            policy_q6 = np.concatenate((policy_leg, q[[2, 5]]))
+            data.qpos[policy_qpos_idx] = policy_q6
+            data.qpos[passive_qpos_idx] = policy_to_closedchain_passive_pos_np(policy_leg)
             data.time = t
             mujoco.mj_forward(model, data)
 

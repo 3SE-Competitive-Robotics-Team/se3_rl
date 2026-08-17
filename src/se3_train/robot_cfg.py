@@ -1,8 +1,7 @@
-import os
 from pathlib import Path
 
 import mujoco
-from mjlab.actuator import DcMotorActuatorCfg, IdealPdActuatorCfg
+from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from se3_shared import DM8009P, M3508_C620_14, JointGroup
@@ -11,95 +10,20 @@ from se3_train.torque_speed_actuator import TorqueSpeedCurveActuatorCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
-_OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
-_CLOSEDCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
-_FOURBAR_SURROGATE_MJCF_PATH = _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml"
-_FOURBAR_SURROGATE_STAIR_MJCF_PATH = (
-    _MJCF_DIR / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
-)
-_MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
-_MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
+_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 
 _ROBOT_CFG = SharedRobotConfig()
 
 _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
 
-def _resolve_mjcf_path() -> Path:
-    """解析训练使用的 MJCF 路径，默认使用真实 closed-chain 模型。"""
-    override = os.environ.get(_MJCF_ENV_VAR)
-    if override:
-        path = Path(override).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        path = path.resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"{_MJCF_ENV_VAR} 指向的 MJCF 不存在: {path}")
-        return path
+def _serialleg_spec_for_training() -> mujoco.MjSpec:
+    """加载不含独立世界地面的 SerialLeg MJCF。
 
-    variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "closedchain").strip().lower()
-    if variant in {
-        "default",
-        "closedchain",
-        "closedchain-obb",
-        "closedchain_obb",
-        "no-spring",
-        "no_spring",
-    }:
-        return _CLOSEDCHAIN_MJCF_PATH
-    if variant in {
-        "fourbar",
-        "fourbar-surrogate",
-        "fourbar_surrogate",
-        "surrogate",
-        "equivalent-openchain",
-    }:
-        return _FOURBAR_SURROGATE_MJCF_PATH
-    if variant in {
-        "stair",
-        "stair-surrogate",
-        "stair_surrogate",
-        "fourbar-surrogate-stair",
-        "fourbar_surrogate_stair",
-        "stair-visualbase",
-        "stair_visualbase",
-    }:
-        return _FOURBAR_SURROGATE_STAIR_MJCF_PATH
-    if variant in {"openchain"}:
-        return _OPENCHAIN_MJCF_PATH
-    raise ValueError(
-        f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 fourbar-surrogate/closedchain/openchain，"
-        f"stair-surrogate 或用 {_MJCF_ENV_VAR} 指定 MJCF 路径。"
-    )
-
-
-def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
-    """根据模型变体选择腿部电机目标。"""
-    if mjcf_path.name in {
-        _OPENCHAIN_MJCF_PATH.name,
-        _FOURBAR_SURROGATE_MJCF_PATH.name,
-        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
-    }:
-        return JointGroup.OPENCHAIN_LEG_NAMES
-    return JointGroup.POLICY_LEG_NAMES
-
-
-def _is_fourbar_surrogate_path(mjcf_path: Path) -> bool:
-    """判断当前 MJCF 是否属于解析四连杆等效开树模型。"""
-    return mjcf_path.name in {
-        _FOURBAR_SURROGATE_MJCF_PATH.name,
-        _FOURBAR_SURROGATE_STAIR_MJCF_PATH.name,
-    }
-
-
-def _serialleg_spec_for_training(mjcf_path: Path) -> mujoco.MjSpec:
-    """Load SerialLeg MJCF without its standalone world floor.
-
-    MJLab scenes provide terrain separately. Keeping the MJCF's global plane
-    covers generated stair pits at z=0 and makes robots collide with a flat
-    barrier instead of the stair terrain.
+    MJLab 场景单独提供地形。保留 MJCF 的全局平面会覆盖 z=0 的生成台阶坑，
+    使机器人与平面障碍碰撞，而不是与台阶地形碰撞。
     """
-    spec = mujoco.MjSpec.from_file(str(mjcf_path))
+    spec = mujoco.MjSpec.from_file(str(_MJCF_PATH))
     for geom in list(spec.worldbody.geoms):
         if geom.name == "floor":
             spec.delete(geom)
@@ -107,32 +31,19 @@ def _serialleg_spec_for_training(mjcf_path: Path) -> mujoco.MjSpec:
     return spec
 
 
-def get_serialleg_cfg(
-    *, mjcf_path: Path | None = None, wheel_kd_override: float | None = None
-) -> EntityCfg:
-    """构造训练实体；默认沿用全局 MJCF，也允许按任务显式覆盖。"""
-    mjcf_path = _resolve_mjcf_path() if mjcf_path is None else Path(mjcf_path)
-    leg_joint_names = _leg_joint_names_for(mjcf_path)
-    is_fourbar_surrogate = _is_fourbar_surrogate_path(mjcf_path)
-    if is_fourbar_surrogate:
-        leg_actuator_cfg = IdealPdActuatorCfg(
-            target_names_expr=leg_joint_names,
-            stiffness=0.0,
-            damping=0.0,
-            effort_limit=float("inf"),
-        )
-    else:
-        leg_actuator_cfg = DcMotorActuatorCfg(
-            target_names_expr=leg_joint_names,
-            stiffness=_ROBOT_CFG.leg_kp,
-            damping=_ROBOT_CFG.leg_kd,
-            saturation_effort=DM8009P.stall_torque,
-            velocity_limit=DM8009P.no_load_speed,
-            effort_limit=DM8009P.rated_torque,
-        )
+def get_serialleg_closedchain_cfg(*, wheel_kd_override: float | None = None) -> EntityCfg:
+    """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。"""
+    leg_actuator_cfg = DcMotorActuatorCfg(
+        target_names_expr=JointGroup.POLICY_LEG_NAMES,
+        stiffness=_ROBOT_CFG.leg_kp,
+        damping=_ROBOT_CFG.leg_kd,
+        saturation_effort=DM8009P.stall_torque,
+        velocity_limit=DM8009P.no_load_speed,
+        effort_limit=DM8009P.rated_torque,
+    )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
     return EntityCfg(
-        spec_fn=lambda: _serialleg_spec_for_training(mjcf_path),
+        spec_fn=_serialleg_spec_for_training,
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,

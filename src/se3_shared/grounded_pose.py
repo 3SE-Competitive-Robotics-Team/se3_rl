@@ -12,7 +12,8 @@ import mujoco
 import numpy as np
 from scipy.optimize import minimize
 
-from .robot import RobotConfig
+from .fourbar import policy_to_closedchain_passive_pos_np
+from .robot import JointGroup, RobotConfig
 
 _MJCF_PATH = (
     Path(__file__).resolve().parents[2]
@@ -20,16 +21,7 @@ _MJCF_PATH = (
     / "robots"
     / "serialleg"
     / "mjcf"
-    / "serialleg_fidelity_cylinder_wheels.xml"
-)
-
-_CTRL_JOINT_NAMES = (
-    "lf0_Joint",
-    "lf1_Joint",
-    "l_wheel_Joint",
-    "rf0_Joint",
-    "rf1_Joint",
-    "r_wheel_Joint",
+    / "serialleg_closed_chain_v3_train_obb_trim.xml"
 )
 
 
@@ -119,37 +111,44 @@ class GroundedPoseSolver:
         if self.left_wheel_body_id < 0 or self.right_wheel_body_id < 0:
             raise ValueError("MJCF 中找不到左右轮 body")
 
-        self.ctrl_qpos_idx = []
-        self.leg_bounds: list[tuple[float, float]] = []
-        for name in _CTRL_JOINT_NAMES:
+        self.policy_qpos_idx: list[int] = []
+        for name in JointGroup.POLICY_JOINT_NAMES:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if joint_id < 0:
-                raise ValueError(f"MJCF 中找不到受控关节: {name}")
-            self.ctrl_qpos_idx.append(int(self.model.jnt_qposadr[joint_id]))
-            if (
-                name.endswith("_Joint")
-                and name[1] == "f"
-                and bool(self.model.jnt_limited[joint_id])
-            ):
-                lo, hi = self.model.jnt_range[joint_id]
-                self.leg_bounds.append((float(lo), float(hi)))
+                raise ValueError(f"MJCF 中找不到 policy 关节: {name}")
+            self.policy_qpos_idx.append(int(self.model.jnt_qposadr[joint_id]))
+        self.passive_qpos_idx: list[int] = []
+        for name in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id < 0:
+                raise ValueError(f"MJCF 中找不到闭链被动关节: {name}")
+            self.passive_qpos_idx.append(int(self.model.jnt_qposadr[joint_id]))
 
         self.robot_cfg = RobotConfig()
         self.default_q6 = np.asarray(self.robot_cfg.default_dof_pos, dtype=np.float64)
         self.default_base_height = float(self.robot_cfg.default_base_height)
         self.wheel_radius = find_wheel_collision_radius(self.model, "l_wheel_Link")
 
-        if len(self.leg_bounds) < 4:
-            self.leg_bounds = [(-1.5, 1.5), (-0.55, 0.75), (-1.5, 1.5), (-0.55, 0.75)]
-        self.symmetric_bounds = [self.leg_bounds[0], self.leg_bounds[1]]
+        self.symmetric_bounds = [(-np.pi, np.pi), self.robot_cfg.active_rod_angle_limits]
+
+    @staticmethod
+    def _symmetric_policy_q6(front_angle: float, active_angle: float) -> np.ndarray:
+        """由左前杆角和主动杆夹角构造左右镜像的 6D policy 姿态。"""
+        left_front = float(front_angle)
+        left_back = left_front - float(active_angle)
+        return np.asarray(
+            [left_front, left_back, -left_front, -left_back, 0.0, 0.0],
+            dtype=np.float64,
+        )
 
     def fk(self, base_height: float, q6: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """返回左右轮子中心世界坐标。"""
+        policy_q6 = np.asarray(q6, dtype=np.float64).reshape(6)
         mujoco.mj_resetData(self.model, self.data)
         self.data.qpos[0:3] = [0.0, 0.0, float(base_height)]
         self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-        for i, qpos_idx in enumerate(self.ctrl_qpos_idx):
-            self.data.qpos[qpos_idx] = float(q6[i])
+        self.data.qpos[self.policy_qpos_idx] = policy_q6
+        self.data.qpos[self.passive_qpos_idx] = policy_to_closedchain_passive_pos_np(policy_q6[:4])
         mujoco.mj_forward(self.model, self.data)
         return (
             self.data.xpos[self.left_wheel_body_id].copy(),
@@ -176,10 +175,13 @@ class GroundedPoseSolver:
         target_left_x = float(default_left[0])
         target_right_x = float(default_right[0])
         target_wheel_z = float(ground_height + self.wheel_radius)
-        q_init = np.asarray([self.default_q6[0], self.default_q6[1]], dtype=np.float64)
+        q_init = np.asarray(
+            [self.default_q6[0], self.robot_cfg.default_active_rod_angles[0]],
+            dtype=np.float64,
+        )
 
         def objective(q: np.ndarray) -> float:
-            q6 = np.asarray([q[0], q[1], 0.0, q[0], q[1], 0.0], dtype=np.float64)
+            q6 = self._symmetric_policy_q6(q[0], q[1])
             left, right = self.fk(base_height, q6)
             err = (float(left[2]) - target_wheel_z) ** 2
             err += (float(right[2]) - target_wheel_z) ** 2
@@ -195,11 +197,11 @@ class GroundedPoseSolver:
 
         starts = (
             q_init,
-            np.asarray([0.65, 0.25], dtype=np.float64),
-            np.asarray([0.80, 0.00], dtype=np.float64),
-            np.asarray([1.00, -0.30], dtype=np.float64),
-            np.asarray([1.20, -0.50], dtype=np.float64),
-            np.asarray([0.40, 0.70], dtype=np.float64),
+            np.asarray([-0.45, 1.20], dtype=np.float64),
+            np.asarray([-0.20, 1.00], dtype=np.float64),
+            np.asarray([0.00, 0.80], dtype=np.float64),
+            np.asarray([0.20, 0.60], dtype=np.float64),
+            np.asarray([-0.70, 1.45], dtype=np.float64),
         )
         best = None
         for start in starts:
@@ -216,8 +218,8 @@ class GroundedPoseSolver:
         if best is None:
             raise RuntimeError("IK 求解没有返回结果")
 
-        qh, qk = float(best.x[0]), float(best.x[1])
-        q6 = np.asarray([qh, qk, 0.0, qh, qk, 0.0], dtype=np.float64)
+        front_angle, active_angle = float(best.x[0]), float(best.x[1])
+        q6 = self._symmetric_policy_q6(front_angle, active_angle)
         left, right = self.fk(base_height, q6)
         left_bottom_error = float(left[2] - target_wheel_z)
         right_bottom_error = float(right[2] - target_wheel_z)
@@ -235,8 +237,8 @@ class GroundedPoseSolver:
             base_height=float(base_height),
             ground_height=float(ground_height),
             wheel_radius=float(self.wheel_radius),
-            q_legs=(qh, qk, qh, qk),
-            q6=(qh, qk, 0.0, qh, qk, 0.0),
+            q_legs=tuple(float(v) for v in q6[:4]),
+            q6=tuple(float(v) for v in q6),
             left_wheel_center=tuple(float(v) for v in left),
             right_wheel_center=tuple(float(v) for v in right),
             left_wheel_bottom_error=left_bottom_error,
@@ -260,10 +262,12 @@ class GroundedPoseSolver:
         stance = self.solve(base_height, ground_height=ground_height, keep_wheel_x=keep_wheel_x)
         target_wheel_z = float(ground_height + self.wheel_radius + target_clearance)
         target_wheel_x = float(stance.left_wheel_center[0])
-        q_init = np.asarray(stance.q_legs[:2], dtype=np.float64)
+        q_init = np.asarray(
+            [stance.q_legs[0], stance.q_legs[0] - stance.q_legs[1]], dtype=np.float64
+        )
 
         def objective(q: np.ndarray) -> float:
-            q6 = np.asarray([q[0], q[1], 0.0, q[0], q[1], 0.0], dtype=np.float64)
+            q6 = self._symmetric_policy_q6(q[0], q[1])
             left, _ = self.fk(base_height, q6)
             err = (float(left[2]) - target_wheel_z) ** 2
             if keep_wheel_x:
@@ -273,10 +277,10 @@ class GroundedPoseSolver:
 
         starts = (
             q_init,
-            np.asarray([0.65, 0.15], dtype=np.float64),
-            np.asarray([0.55, 0.35], dtype=np.float64),
-            np.asarray([0.40, 0.70], dtype=np.float64),
-            np.asarray([0.80, 0.00], dtype=np.float64),
+            np.asarray([-0.30, 1.00], dtype=np.float64),
+            np.asarray([-0.10, 0.80], dtype=np.float64),
+            np.asarray([0.10, 0.60], dtype=np.float64),
+            np.asarray([-0.60, 1.40], dtype=np.float64),
         )
         best = None
         for start in starts:
@@ -293,8 +297,8 @@ class GroundedPoseSolver:
         if best is None:
             raise RuntimeError("单腿 swing IK 求解没有返回结果")
 
-        qh, qk = float(best.x[0]), float(best.x[1])
-        q6 = np.asarray([qh, qk, 0.0, qh, qk, 0.0], dtype=np.float64)
+        front_angle, active_angle = float(best.x[0]), float(best.x[1])
+        q6 = self._symmetric_policy_q6(front_angle, active_angle)
         left, _ = self.fk(base_height, q6)
         clearance_error = float(left[2] - target_wheel_z)
         wheel_x_error = float(left[0] - target_wheel_x) if keep_wheel_x else 0.0
@@ -306,7 +310,7 @@ class GroundedPoseSolver:
             base_height=float(base_height),
             target_clearance=float(target_clearance),
             wheel_radius=float(self.wheel_radius),
-            q_swing=(qh, qk),
+            q_swing=(float(q6[0]), float(q6[1])),
             wheel_center=tuple(float(v) for v in left),
             clearance_error=clearance_error,
             wheel_x_error=wheel_x_error,

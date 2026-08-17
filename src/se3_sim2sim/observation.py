@@ -18,11 +18,9 @@ class ObservationBuilder:
         robot_cfg: RobotConfig,
         runtime: RuntimeSpec,
         default_dof_pos: np.ndarray,
-        fourbar_surrogate: bool = False,
     ) -> None:
         self.robot_cfg = robot_cfg
         self.runtime = runtime
-        self.fourbar_surrogate = bool(fourbar_surrogate)
         self.commands_scale = np.asarray(robot_cfg.command_scale, dtype=np.float64)
         self.default_dof_pos = np.asarray(default_dof_pos, dtype=np.float64)
         self._history: dict[str, np.ndarray] | None = None
@@ -60,7 +58,6 @@ class ObservationBuilder:
             command_scale=self.commands_scale,
             expected_num_obs=expected,
             clip_value=limit,
-            fourbar_surrogate=self.fourbar_surrogate,
         )
         current = result.obs.astype(np.float32, copy=False)
         history_length = int(self.runtime.observation_history_length)

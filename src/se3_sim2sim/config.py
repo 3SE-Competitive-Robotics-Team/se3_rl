@@ -15,7 +15,7 @@ from .course import CourseConfig
 
 ViewerMode = Literal["rerun", "mujoco", "viser", "none"]
 RerunGeomView = Literal["visual", "collision", "both"]
-SimModelVariant = Literal["fourbar-surrogate", "closedchain", "openchain"]
+SimModelVariant = Literal["closedchain"]
 RecoveryPose = Literal["standing", "left_side", "right_side", "prone", "supine"]
 RcOffMode = Literal["no-torque", "hold-current"]
 MAX_YAW_RATE_RAD_S = 4.0 * math.pi
@@ -40,31 +40,18 @@ _shared_obs = se3_shared.ObservationConfig()
 _MJCF_DIR = Path("assets/robots/serialleg/mjcf")
 
 DEFAULT_SIM_MODEL_VARIANT: SimModelVariant = "closedchain"
-SIM_MODEL_VARIANT_CHOICES: tuple[SimModelVariant, ...] = (
-    "fourbar-surrogate",
-    "closedchain",
-    "openchain",
-)
+SIM_MODEL_VARIANT_CHOICES: tuple[SimModelVariant, ...] = ("closedchain",)
 SIM_MODEL_VARIANT_PATHS: dict[SimModelVariant, Path] = {
-    "fourbar-surrogate": _MJCF_DIR / "serialleg_fourbar_surrogate_train.xml",
     "closedchain": _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml",
-    "openchain": _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml",
 }
 _SIM_MODEL_VARIANT_ALIASES: dict[str, SimModelVariant] = {
     "default": "closedchain",
-    "fourbar": "fourbar-surrogate",
-    "fourbar-surrogate": "fourbar-surrogate",
-    "fourbar_surrogate": "fourbar-surrogate",
-    "surrogate": "fourbar-surrogate",
-    "equivalent-openchain": "fourbar-surrogate",
     "closedchain": "closedchain",
     "closed-chain": "closedchain",
     "closedchain-obb": "closedchain",
     "closedchain_obb": "closedchain",
     "no-spring": "closedchain",
     "no_spring": "closedchain",
-    "openchain": "openchain",
-    "open-chain": "openchain",
 }
 
 

@@ -17,7 +17,7 @@ from se3_shared import (
     JointGroup,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_train.robot_cfg import get_serialleg_cfg
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import curriculums, events, rewards
@@ -44,7 +44,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """统一全姿态随机的反倒自起训练环境。"""
 
     cfg = flat_env_cfg(play=play)
-    cfg.scene.entities["robot"] = get_serialleg_cfg(wheel_kd_override=_RECOVERY_WHEEL_KD)
+    cfg.scene.entities["robot"] = get_serialleg_closedchain_cfg(
+        wheel_kd_override=_RECOVERY_WHEEL_KD
+    )
     cfg.sim.nconmax = 64
     cfg.sim.njmax = 256
     action_cfg = cfg.actions["delayed_action"]

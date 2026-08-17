@@ -83,12 +83,6 @@ class JointGroup:
         "rf0_Joint",
         "r_drive_bar_Joint",
     )
-    OPENCHAIN_LEG_NAMES: ClassVar[tuple[str, ...]] = (
-        "lf0_Joint",
-        "lf1_Joint",
-        "rf0_Joint",
-        "rf1_Joint",
-    )
     WHEEL_NAMES: ClassVar[tuple[str, ...]] = ("l_wheel_Joint", "r_wheel_Joint")
     OUTPUT_LEG_NAMES: ClassVar[tuple[str, ...]] = (
         "lf0_Joint",
@@ -192,7 +186,7 @@ class RobotConfig(BaseModel):
 
     @property
     def default_model_joint_pos(self) -> dict[str, float]:
-        """返回闭链/开链 MJCF 都可使用的默认关节角映射。"""
+        """返回正式 OBB 闭链 MJCF 的默认关节角映射。"""
         policy = dict(zip(JointGroup.POLICY_JOINT_NAMES, self.default_dof_pos, strict=True))
         policy.update(
             {

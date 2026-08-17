@@ -1,8 +1,4 @@
-"""生成倒地自启训练用的稳定初态缓存。
-
-v2 缓存使用台阶任务的高保真 collision MJCF，保存 joint_names 和 split，训练端按名称
-重排关节列，避免不同 MJCF 的 qpos 顺序变化污染 reset 状态。
-"""
+"""使用真实闭链模型生成倒地自启训练用的稳定初态缓存。"""
 
 from __future__ import annotations
 
@@ -20,7 +16,7 @@ from se3_shared import JointGroup, RobotConfig
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _MJCF_DIR = _PROJECT_ROOT / "assets" / "robots" / "serialleg" / "mjcf"
-_DEFAULT_MJCF = _MJCF_DIR / "serialleg_fourbar_surrogate_stair_visualbase_coacd_train.xml"
+_DEFAULT_MJCF = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 _DEFAULT_OUTPUT = _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_stair_v2.npz"
 _FORMAT_VERSION = 2
 _POSE_TYPE_NAMES = ("standing", "left_side", "right_side", "prone", "supine")

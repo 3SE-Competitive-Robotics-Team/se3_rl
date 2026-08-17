@@ -58,7 +58,7 @@
 
 ## 动作空间和关节契约
 
-训练默认使用解析四连杆等效开树模型，sim2sim 默认使用真实闭链 OBB 模型；policy contract 仍保持主动杆语义：
+训练和 sim2sim 均使用真实闭链 OBB 模型；policy contract 保持主动杆语义：
 
 ```text
 [LF, LB, RF, RB, l_wheel, r_wheel]
@@ -210,4 +210,3 @@ SerialLeg 是轮腿机器人，机身质量远大于腿部（base_link ~10.7kg�
 - 蹬地阶段（grounded + vz>0）：增加"腿部保持伸展"约束（惩罚此时的膝关节屈曲量）
 - 收腿时机：给 `jump_knee_phase` 加 vz 阈值门控，vz 超过阈值后才奖励收腿
 - 地面期核心信号应是：`base_link 向上加速度` 或 `地面反力法向分量`，而不是 vz 的瞬时值
-

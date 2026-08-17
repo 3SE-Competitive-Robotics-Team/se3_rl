@@ -9,15 +9,11 @@ import mujoco
 import numpy as np
 
 from se3_shared import (
-    FOURBAR_SURROGATE_MARKER,
     ActionDelayConfig,
     JointGroup,
     PolicyActionDecoder,
     Termination,
-    output_to_policy_pos_np,
-    output_to_policy_vel_np,
     policy_leg_position_error_np,
-    policy_to_output_torque_np,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared.motor import DM8009P, M3508_C620_14
@@ -49,27 +45,13 @@ def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _model_has_joints(model: mujoco.MjModel, names: tuple[str, ...]) -> bool:
-    """判断模型是否包含一组关节。"""
-    available = set(_model_joint_names(model))
-    return all(name in available for name in names)
-
-
-def _model_site_names(model: mujoco.MjModel) -> tuple[str, ...]:
-    """读取模型中的 site 名称。"""
-    names: list[str] = []
-    for sid in range(model.nsite):
-        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SITE, sid)
-        if name:
-            names.append(name)
-    return tuple(names)
-
-
 def _policy_joint_names_for_model(model: mujoco.MjModel) -> tuple[str, ...]:
-    """闭链使用主动杆；开链显式回退到旧 lf1/rf1 语义。"""
-    if _model_has_joints(model, JointGroup.POLICY_LEG_NAMES):
-        return JointGroup.POLICY_JOINT_NAMES
-    return (*JointGroup.OPENCHAIN_LEG_NAMES, *JointGroup.WHEEL_NAMES)
+    """校验并返回正式闭链模型的 policy 关节语义。"""
+    available = set(_model_joint_names(model))
+    missing = [name for name in JointGroup.POLICY_JOINT_NAMES if name not in available]
+    if missing:
+        raise ValueError(f"MJCF 不符合 SerialLeg 闭链 policy 契约，缺少关节: {missing}")
+    return JointGroup.POLICY_JOINT_NAMES
 
 
 def _tn_clip(
@@ -110,7 +92,6 @@ class WheelLeggedRobot:
         self.model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
         self.model.opt.iterations = 100
         self.data = mujoco.MjData(self.model)
-        self.fourbar_surrogate = FOURBAR_SURROGATE_MARKER in set(_model_site_names(self.model))
         (
             self._ground_geom_ids,
             self._base_geom_ids,
@@ -154,12 +135,9 @@ class WheelLeggedRobot:
             robot_cfg=cfg,
             runtime=runtime,
             default_dof_pos=self.default_dof_pos,
-            fourbar_surrogate=self.fourbar_surrogate,
         )
         self.action_scale = as_float64(cfg.action_scale)
-        self.active_rod_action_semantics = (
-            self.policy_joint_names == JointGroup.POLICY_JOINT_NAMES or self.fourbar_surrogate
-        )
+        self.active_rod_action_semantics = self.policy_joint_names == JointGroup.POLICY_JOINT_NAMES
         self.action_decoder = PolicyActionDecoder(
             robot_cfg=_SHARED_ROBOT,
             action_scale=self.action_scale,
@@ -869,12 +847,10 @@ class WheelLeggedRobot:
             WheelLeggedRobot._add_stair_terrain_geoms(spec, cfg)
 
         joint_names = tuple(joint.name for joint in spec.joints if joint.name)
-        site_names = tuple(site.name for site in spec.sites if site.name)
-        fourbar_surrogate = FOURBAR_SURROGATE_MARKER in site_names
-        if all(name in joint_names for name in JointGroup.POLICY_LEG_NAMES):
-            leg_joint_names = JointGroup.POLICY_LEG_NAMES
-        else:
-            leg_joint_names = JointGroup.OPENCHAIN_LEG_NAMES
+        missing = [name for name in JointGroup.POLICY_LEG_NAMES if name not in joint_names]
+        if missing:
+            raise ValueError(f"MJCF 不符合 SerialLeg 闭链 actuator 契约，缺少关节: {missing}")
+        leg_joint_names = JointGroup.POLICY_LEG_NAMES
         wheel_joint_names = JointGroup.WHEEL_NAMES
 
         for jname in leg_joint_names:
@@ -886,9 +862,8 @@ class WheelLeggedRobot:
             act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
             act.biastype = mujoco.mjtBias.mjBIAS_NONE
             act.gainprm[0] = 1.0
-            act.forcelimited = not fourbar_surrogate
-            if act.forcelimited:
-                act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
+            act.forcelimited = True
+            act.forcerange[:] = np.array([-DM8009P.rated_torque, DM8009P.rated_torque])
             act.ctrllimited = False
             act.inheritrange = 0.0
 
@@ -1081,37 +1056,19 @@ class WheelLeggedRobot:
 
         output_leg_pos = dof_pos[JointGroup.CTRL_LEGS]
         output_leg_vel = dof_vel[JointGroup.CTRL_LEGS]
-        if self.fourbar_surrogate:
-            policy_pos = output_to_policy_pos_np(output_leg_pos)
-            policy_vel = output_to_policy_vel_np(output_leg_pos, output_leg_vel)
-            policy_target = leg_target
-            policy_error = policy_leg_position_error_np(policy_target, policy_pos)
-            policy_torque = self.leg_kp * policy_error
-            policy_torque -= self.leg_kd * policy_vel
-            policy_torque = _tn_clip(
-                policy_torque,
-                policy_vel,
-                DM8009P.stall_torque,
-                DM8009P.no_load_speed,
-                DM8009P.rated_torque,
-            )
-            leg_torque = policy_to_output_torque_np(policy_pos, policy_torque)
-            leg_vel = policy_vel
+        if self.active_rod_action_semantics:
+            leg_pos_err = policy_leg_position_error_np(leg_target, output_leg_pos)
         else:
-            if self.active_rod_action_semantics:
-                leg_pos_err = policy_leg_position_error_np(leg_target, output_leg_pos)
-            else:
-                leg_pos_err = leg_target - output_leg_pos
-            leg_vel = output_leg_vel
-            leg_torque = self.leg_kp * leg_pos_err - self.leg_kd * leg_vel
-        if not self.fourbar_surrogate:
-            leg_torque = _tn_clip(
-                leg_torque,
-                leg_vel,
-                DM8009P.stall_torque,
-                DM8009P.no_load_speed,
-                DM8009P.rated_torque,
-            )
+            leg_pos_err = leg_target - output_leg_pos
+        leg_vel = output_leg_vel
+        leg_torque = self.leg_kp * leg_pos_err - self.leg_kd * leg_vel
+        leg_torque = _tn_clip(
+            leg_torque,
+            leg_vel,
+            DM8009P.stall_torque,
+            DM8009P.no_load_speed,
+            DM8009P.rated_torque,
+        )
 
         wheel_vel = dof_vel[JointGroup.CTRL_WHEELS]
         wheel_torque = self.wheel_kd * (wheel_vel_target - wheel_vel)
