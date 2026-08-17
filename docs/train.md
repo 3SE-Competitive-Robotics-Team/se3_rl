@@ -6,13 +6,7 @@
 
 训练和仿真用的 MJCF 与 mesh 文件已放在 `assets/robots/serialleg/`。重新导出模型时，保持 MJCF 中的关节名和 mesh 相对路径不变。
 
-当前所有注册的 `SE3-WheelLegged-*` 训练任务和 sim2sim 默认模型都是真实闭链 OBB 版本，保持 policy 的 `[LF, LB, RF, RB, l_wheel, r_wheel]` 主动杆语义。解析四连杆等效开树版本只保留给模型诊断和显式对照；它移除 `drive_bar/coupler/equality`，但通过解析 FK/IK 复现四连杆关系。其 collision 沿用闭链 OBB 裁剪方案，base 为 3 个保守 box，轮子为窄接地 cylinder，四个主腿 link 各使用一个沿视觉 mesh 长轴拟合并裁掉关节重叠的有向 box。
-
-```text
-assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml
-```
-
-MJCF 目录保留解析四连杆等效开树模型、OBB 裁剪闭链模型和旧开链模型。正式 WheelLegged task 会显式固定为 closed-chain，不受 `SE3_ROBOT_MJCF_VARIANT` 或 `SE3_ROBOT_MJCF` 覆盖；需要做模型 A/B 定位时，应通过独立诊断入口显式调用通用 `get_serialleg_cfg()`，不要改变正式任务的训练模型。
+当前所有注册的 `SE3-WheelLegged-*` 训练任务和 sim2sim 默认模型都是真实闭链 OBB 版本，保持 policy 的 `[LF, LB, RF, RB, l_wheel, r_wheel]` 主动杆语义。MJCF 目录只保留 OBB 裁剪闭链主模型和旧高保真模型；两个四连杆 surrogate 已删除。正式 WheelLegged task 会显式固定为 closed-chain，不受 `SE3_ROBOT_MJCF_VARIANT` 或 `SE3_ROBOT_MJCF` 覆盖。
 
 policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.50954 rad`（`129.95° - 43.46° = 86.49°`），对应腿长下限约 `0.135 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
 

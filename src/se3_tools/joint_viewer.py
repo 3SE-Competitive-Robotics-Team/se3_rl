@@ -15,9 +15,8 @@ import mujoco.viewer
 
 from se3_shared import M3508_C620_14, JointGroup, RobotConfig
 
-MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
+MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 OPENCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
-FOURBAR_SURROGATE_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml"
 CLOSEDCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 
 _ROBOT_CFG = RobotConfig()
@@ -251,7 +250,6 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, default=Path(MJCF_PATH))
     parser.add_argument("--openchain", action="store_true")
-    parser.add_argument("--fourbar-surrogate", action="store_true")
     parser.add_argument("--closedchain", action="store_true")
     parser.add_argument("--closedchain-spring", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--base-height", type=float, default=BASE_HEIGHT)
@@ -273,8 +271,6 @@ def main() -> None:
     base_height = float(args.base_height)
     if args.openchain:
         model_path = Path(OPENCHAIN_MJCF_PATH)
-    elif args.fourbar_surrogate:
-        model_path = Path(FOURBAR_SURROGATE_MJCF_PATH)
     elif args.closedchain or args.closedchain_spring:
         model_path = Path(CLOSEDCHAIN_MJCF_PATH)
     else:

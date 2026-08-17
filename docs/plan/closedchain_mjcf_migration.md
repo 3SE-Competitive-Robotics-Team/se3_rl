@@ -2,19 +2,15 @@
 
 ## 目标
 
-将 SerialLeg 训练和 sim2sim 的默认机器人模型从串联开链 MJCF 迁移到四连杆语义。当前 sim2sim 默认入口是真实闭链 OBB `closedchain`，解析四连杆等效开树 `fourbar-surrogate` 保留为显式快速对照；旧开链 XML 保留为显式 `openchain` variant，用于定位和回退诊断。
+将 SerialLeg 训练和 sim2sim 的默认机器人模型迁移到真实闭链四连杆语义。当前训练和 sim2sim 默认入口均为真实闭链 OBB `closedchain`；旧高保真 XML 仅保留为显式 `openchain` 兼容入口，用于定位和回退诊断。
 
 第一版目标是跑通基础站立、行走、恢复和 sim2sim，不迁移跳跃参考轨迹、RSI 和轨迹跟踪。
 
 ## 当前实验修订（2026-06-01）
 
-长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，下一轮平地基模训练先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧常力版本。2026-06-03 起训练默认入口使用解析四连杆等效开树模型，降低闭链求解成本；当前 sim2sim 默认入口重新切回 OBB 裁剪闭链模型，解析等效开树保留为 A/B 对照：
+长训复盘显示，闭链模型叠加 300 N 气弹簧后，当前 `default_dof_pos` 距离静力平衡点较远，零 action 下会沉入 base 触地的坏平衡姿态。为隔离变量，平地基模先只验证“闭链四连杆”本身的影响，默认训练和 sim2sim 使用无气弹簧版本。曾用于降低求解成本的解析等效开树模型现已删除。
 
-```text
-assets/robots/serialleg/mjcf/serialleg_fourbar_surrogate_train.xml
-```
-
-当前 MJCF 目录保留解析四连杆等效开树模型、OBB 裁剪闭链模型和旧开链模型。后续只有在无气弹簧闭链基模能稳定双轮支撑、base 不触地、pitch/roll 可控后，才重新导入气弹簧模型并重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
+当前 MJCF 目录只保留 OBB 裁剪闭链主模型和旧高保真模型。后续只有在无气弹簧闭链基模能稳定双轮支撑、base 不触地、pitch/roll 可控后，才重新导入气弹簧模型并重新求 `default_dof_pos/default_output_knee_pos/default_base_height` 的静力平衡点。
 
 无气弹簧默认站姿已经重新标定为 base_link 距地约 0.22 m、轮心接近整机质心投影的中等腿长装配分支：
 
@@ -113,7 +109,7 @@ default_base_height = 0.22 m
 
 ### Phase 1：重建闭链 MJCF
 
-旧草稿闭链/弹簧 MJCF 已清理；当前默认交付模型为 `serialleg_fourbar_surrogate_train.xml`，真实闭链对照模型为 `serialleg_closed_chain_v3_train_obb_trim.xml`。
+旧草稿闭链、弹簧和解析等效开树 MJCF 已清理；当前唯一正式交付模型为 `serialleg_closed_chain_v3_train_obb_trim.xml`。
 
 要做：
 
@@ -160,8 +156,8 @@ default_base_height = 0.22 m
 
 修改 `src/se3_train/robot_cfg.py`：
 
-- 默认 variant 改为解析四连杆等效开树。
-- `openchain` 显式返回旧 XML，`closedchain` 返回真实闭链 OBB XML，`fourbar-surrogate/default` 返回当前默认等效开树 XML。
+- 默认 variant 使用真实闭链 OBB。
+- `openchain` 显式返回旧高保真 XML，`closedchain/default` 返回真实闭链 OBB XML。
 - leg actuator target 从旧 `[lf0, lf1, rf0, rf1]` 改为 `[lf0, l_drive_bar, rf0, r_drive_bar]`。
 - 初始状态只给 policy joints 和必要被动输出 joint；被动闭链 joint 的初值必须由默认站姿反解或 `mj_forward` 稳定处理。
 - 训练端 actuator force 日志和 torque penalty 按 actuator 名称取，不按列号猜。

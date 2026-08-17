@@ -72,7 +72,7 @@ jump_commands       3
 
 | 项 | 设置 |
 |---|---|
-| MJCF | 默认 `fourbar-surrogate` |
+| MJCF | 默认真实闭链 OBB 模型 |
 | 碰撞 | 简化碰撞，优先训练速度和动作发现 |
 | 地形 | 平地 |
 | command | 早期 `vx=0`，`yaw_rate=0` |

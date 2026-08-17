@@ -49,7 +49,7 @@ MJCF_PATH = (
     / "robots"
     / "serialleg"
     / "mjcf"
-    / "serialleg_fourbar_surrogate_train.xml"
+    / "serialleg_fidelity_cylinder_wheels.xml"
 )
 
 DEFAULT_FF_AMPLITUDE = 1.2
@@ -93,7 +93,7 @@ class LegPoints:
 
 
 class SurrogateFk:
-    """目标 stair surrogate MJCF 的左右腿侧视图 FK。"""
+    """使用旧高保真模型计算左右腿输出链的侧视图 FK。"""
 
     def __init__(self, mjcf_path: Path = MJCF_PATH) -> None:
         self.model = mujoco.MjModel.from_xml_path(str(mjcf_path))
