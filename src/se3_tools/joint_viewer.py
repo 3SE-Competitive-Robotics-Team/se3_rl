@@ -16,8 +16,6 @@ import mujoco.viewer
 from se3_shared import M3508_C620_14, JointGroup, RobotConfig
 
 MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
-OPENCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
-CLOSEDCHAIN_MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 
 _ROBOT_CFG = RobotConfig()
 DEFAULT_JOINT_ANGLES = _ROBOT_CFG.default_model_joint_pos
@@ -37,13 +35,6 @@ ACTIVE_ROD_ANGLE_CTRL_RANGES = {
     "l_active_rod_angle": _ROBOT_CFG.active_rod_angle_limits,
     "r_active_rod_angle": _ROBOT_CFG.active_rod_angle_limits,
 }
-OPENCHAIN_LEG_CTRL_RANGES = {
-    "lf0_Joint": (-1.0, 1.2),
-    "lf1_Joint": (-0.6, 0.8),
-    "rf0_Joint": (-1.0, 1.2),
-    "rf1_Joint": (-0.6, 0.8),
-}
-
 WHEEL_VIEWER_VEL_LIMIT = _ROBOT_CFG.action_scale[JointGroup.WHEEL_ACTUATORS[0]]
 WHEEL_VEL_CTRL_RANGES = {
     name: (-WHEEL_VIEWER_VEL_LIMIT, WHEEL_VIEWER_VEL_LIMIT) for name in JointGroup.WHEEL_NAMES
@@ -98,20 +89,17 @@ def _joint_ctrl_ranges_from_xml(
 
 def _viewer_actuator_inner_lines(xml: str, *, position_kp: float = VIEWER_POSITION_KP) -> list[str]:
     lines = []
-    closedchain = 'name="l_active_rod_angle"' in xml and 'name="r_active_rod_angle"' in xml
-    fallback_leg_ranges = LEG_CTRL_RANGES if closedchain else OPENCHAIN_LEG_CTRL_RANGES
-    leg_ranges = _joint_ctrl_ranges_from_xml(xml, fallback_leg_ranges)
+    leg_ranges = _joint_ctrl_ranges_from_xml(xml, LEG_CTRL_RANGES)
     for joint_name, (ctrl_min, ctrl_max) in leg_ranges.items():
         lines.append(
             f'    <position name="{joint_name}_viewer_pos" joint="{joint_name}" '
             f'kp="{position_kp:g}" ctrlrange="{ctrl_min} {ctrl_max}" forcerange="-40 40" />'
         )
-    if closedchain:
-        for tendon_name, (ctrl_min, ctrl_max) in ACTIVE_ROD_ANGLE_CTRL_RANGES.items():
-            lines.append(
-                f'    <position name="{tendon_name}_viewer_pos" tendon="{tendon_name}" '
-                f'kp="{position_kp:g}" ctrlrange="{ctrl_min} {ctrl_max}" forcerange="-40 40" />'
-            )
+    for tendon_name, (ctrl_min, ctrl_max) in ACTIVE_ROD_ANGLE_CTRL_RANGES.items():
+        lines.append(
+            f'    <position name="{tendon_name}_viewer_pos" tendon="{tendon_name}" '
+            f'kp="{position_kp:g}" ctrlrange="{ctrl_min} {ctrl_max}" forcerange="-40 40" />'
+        )
     for joint_name, (ctrl_min, ctrl_max) in WHEEL_VEL_CTRL_RANGES.items():
         lines.append(
             f'    <velocity name="{joint_name}_viewer_vel" joint="{joint_name}" '
@@ -249,9 +237,6 @@ def _create_fixed_base_mjcf(
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, default=Path(MJCF_PATH))
-    parser.add_argument("--openchain", action="store_true")
-    parser.add_argument("--closedchain", action="store_true")
-    parser.add_argument("--closedchain-spring", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--base-height", type=float, default=BASE_HEIGHT)
     parser.add_argument("--floor-contact", action="store_true")
     parser.add_argument("--drop-model-actuators", action="store_true")
@@ -269,14 +254,8 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     base_height = float(args.base_height)
-    if args.openchain:
-        model_path = Path(OPENCHAIN_MJCF_PATH)
-    elif args.closedchain or args.closedchain_spring:
-        model_path = Path(CLOSEDCHAIN_MJCF_PATH)
-    else:
-        model_path = args.model
     fixed_mjcf = _create_fixed_base_mjcf(
-        model_path,
+        args.model,
         base_height=base_height,
         floor_contact=bool(args.floor_contact),
         drop_model_actuators=bool(args.drop_model_actuators),
@@ -295,9 +274,7 @@ def main() -> None:
         qpos_adr = model.jnt_qposadr[jnt_id]
         data.qpos[qpos_adr] = angle
 
-    closedchain = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TENDON, "l_active_rod_angle") >= 0
-    active_ctrl_ranges = LEG_CTRL_RANGES if closedchain else OPENCHAIN_LEG_CTRL_RANGES
-    for jnt_name in active_ctrl_ranges:
+    for jnt_name in LEG_CTRL_RANGES:
         act_id = mujoco.mj_name2id(
             model,
             mujoco.mjtObj.mjOBJ_ACTUATOR,
@@ -306,19 +283,18 @@ def main() -> None:
         if act_id < 0:
             continue
         data.ctrl[act_id] = DEFAULT_JOINT_ANGLES[jnt_name]
-    if closedchain:
-        for tendon_name, angle in zip(
-            ACTIVE_ROD_ANGLE_CTRL_RANGES,
-            _ROBOT_CFG.default_active_rod_angles,
-            strict=True,
-        ):
-            act_id = mujoco.mj_name2id(
-                model,
-                mujoco.mjtObj.mjOBJ_ACTUATOR,
-                f"{tendon_name}_viewer_pos",
-            )
-            if act_id >= 0:
-                data.ctrl[act_id] = angle
+    for tendon_name, angle in zip(
+        ACTIVE_ROD_ANGLE_CTRL_RANGES,
+        _ROBOT_CFG.default_active_rod_angles,
+        strict=True,
+    ):
+        act_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_ACTUATOR,
+            f"{tendon_name}_viewer_pos",
+        )
+        if act_id >= 0:
+            data.ctrl[act_id] = angle
 
     mujoco.mj_forward(model, data)
 

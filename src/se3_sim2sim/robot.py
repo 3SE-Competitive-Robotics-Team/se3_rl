@@ -45,17 +45,13 @@ def _model_joint_names(model: mujoco.MjModel) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _model_has_joints(model: mujoco.MjModel, names: tuple[str, ...]) -> bool:
-    """判断模型是否包含一组关节。"""
-    available = set(_model_joint_names(model))
-    return all(name in available for name in names)
-
-
 def _policy_joint_names_for_model(model: mujoco.MjModel) -> tuple[str, ...]:
-    """闭链使用主动杆；开链显式回退到旧 lf1/rf1 语义。"""
-    if _model_has_joints(model, JointGroup.POLICY_LEG_NAMES):
-        return JointGroup.POLICY_JOINT_NAMES
-    return (*JointGroup.OPENCHAIN_LEG_NAMES, *JointGroup.WHEEL_NAMES)
+    """校验并返回正式闭链模型的 policy 关节语义。"""
+    available = set(_model_joint_names(model))
+    missing = [name for name in JointGroup.POLICY_JOINT_NAMES if name not in available]
+    if missing:
+        raise ValueError(f"MJCF 不符合 SerialLeg 闭链 policy 契约，缺少关节: {missing}")
+    return JointGroup.POLICY_JOINT_NAMES
 
 
 def _tn_clip(
@@ -851,10 +847,10 @@ class WheelLeggedRobot:
             WheelLeggedRobot._add_stair_terrain_geoms(spec, cfg)
 
         joint_names = tuple(joint.name for joint in spec.joints if joint.name)
-        if all(name in joint_names for name in JointGroup.POLICY_LEG_NAMES):
-            leg_joint_names = JointGroup.POLICY_LEG_NAMES
-        else:
-            leg_joint_names = JointGroup.OPENCHAIN_LEG_NAMES
+        missing = [name for name in JointGroup.POLICY_LEG_NAMES if name not in joint_names]
+        if missing:
+            raise ValueError(f"MJCF 不符合 SerialLeg 闭链 actuator 契约，缺少关节: {missing}")
+        leg_joint_names = JointGroup.POLICY_LEG_NAMES
         wheel_joint_names = JointGroup.WHEEL_NAMES
 
         for jname in leg_joint_names:

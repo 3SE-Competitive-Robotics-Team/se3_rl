@@ -22,7 +22,6 @@ from se3_shared import (
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
-    is_closedchain_model,
     leg_actuator_ids,
 )
 
@@ -94,7 +93,6 @@ class SerialLegDelayedAction(ActionTerm):
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
-        self._closedchain = is_closedchain_model(self._entity)
         self._leg_actuator_ids = torch.tensor(
             leg_actuator_ids(self._entity),
             device=self.device,
@@ -278,13 +276,12 @@ class SerialLegDelayedAction(ActionTerm):
         )
         self._policy_leg_target[:] = leg_target
         servo_leg_target = leg_target
-        if self._closedchain:
-            current_leg_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
-            servo_leg_target = current_leg_pos + policy_leg_position_error_torch(
-                leg_target,
-                current_leg_pos,
-                self._active_rod_angle_coeffs,
-            )
+        current_leg_pos = self._entity.data.joint_pos[:, self._leg_joint_ids]
+        servo_leg_target = current_leg_pos + policy_leg_position_error_torch(
+            leg_target,
+            current_leg_pos,
+            self._active_rod_angle_coeffs,
+        )
         servo_leg_target = servo_leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
         self._entity.set_joint_position_target(servo_leg_target, joint_ids=self._leg_joint_ids)
         self._policy_leg_torque[:] = self._entity.data.actuator_force[:, self._leg_actuator_ids]
@@ -298,7 +295,7 @@ class SerialLegDelayedAction(ActionTerm):
 
     def _current_leg_action_defaults(self) -> torch.Tensor:
         """返回当前 leg action 零点姿态。"""
-        if self._closedchain and self.cfg.height_conditioned_action_default:
+        if self.cfg.height_conditioned_action_default:
             return get_policy_default_from_height_cache(
                 self._env,
                 self.cfg.action_default_command_name,
@@ -315,9 +312,6 @@ class SerialLegDelayedAction(ActionTerm):
         update_active_targets: bool = True,
     ) -> torch.Tensor:
         """把腿部 action 解释为前杆角和主动杆夹角目标。"""
-        if not self._closedchain:
-            return leg_action * self._leg_action_scales + policy_default
-
         lower, upper = self._active_rod_angle_limits
         target_lower = float(lower) - float(self.cfg.active_rod_lower_target_overdrive)
         target = torch.empty_like(policy_default)
@@ -356,7 +350,7 @@ class SerialLegDelayedAction(ActionTerm):
     ) -> torch.Tensor:
         """把旧输出关节 CTBC bias 等效换算成当前 action 语义。
 
-        源 stair 任务的 CTBC 状态机输出的是旧 4 维开链腿部 action bias，
+        源 stair 任务的 CTBC 状态机输出的是输出关节语义的 4 维腿部 action bias，
         乘以旧 leg_scale=0.25 后表示 [lf0, lf1, rf0, rf1] 输出关节角增量。
         源模型左右腿关节轴均为 -Y，目标模型左腿轴改为 +Y，因此左腿两维
         需要取反，右腿保持不变。
@@ -368,9 +362,6 @@ class SerialLegDelayedAction(ActionTerm):
         output_action_bias = output_action_bias.to(self.device)
         source_to_target_sign = output_action_bias.new_tensor(_CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN)
         output_delta = output_action_bias * source_to_target_sign * _CTBC_SOURCE_OUTPUT_LEG_SCALE
-        if not self._closedchain:
-            return output_delta / self._leg_action_scales
-
         active_side = output_action_bias.reshape(-1, 2, 2).abs().amax(dim=-1) > 0.0
         active_env_ids = active_side.any(dim=1).nonzero().flatten()
         if active_env_ids.numel() == 0:
@@ -397,9 +388,6 @@ class SerialLegDelayedAction(ActionTerm):
         wheel_delta_xz: torch.Tensor,
     ) -> torch.Tensor:
         """把轮端后上方 Cartesian 位移反解成当前 action 语义下的增量。"""
-        if not self._closedchain:
-            return torch.zeros_like(leg_action)
-
         active_side = wheel_delta_xz.abs().amax(dim=-1) > 0.0
         active_env_ids = active_side.any(dim=1).nonzero().flatten()
         if active_env_ids.numel() == 0:
@@ -508,8 +496,6 @@ class SerialLegDelayedAction(ActionTerm):
 
     def _clamp_active_rod_angles(self, leg_target: torch.Tensor) -> torch.Tensor:
         """闭链下按同侧两主动杆夹角裁剪后杆目标。"""
-        if not self._closedchain:
-            return leg_target
         target = leg_target.clone()
         lower, upper = self._active_rod_angle_limits
         for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):

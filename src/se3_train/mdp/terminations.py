@@ -9,7 +9,7 @@ import torch
 from se3_shared import policy_leg_position_error_torch
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
-from se3_train.mdp.joint_indices import is_closedchain_model, policy_leg_joint_ids
+from se3_train.mdp.joint_indices import policy_leg_joint_ids
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -220,11 +220,7 @@ def catastrophic_state(
     if max_leg_pos_error is None:
         leg_pos_bad = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
     else:
-        leg_error = (
-            policy_leg_position_error_torch(leg_pos, leg_default)
-            if is_closedchain_model(robot)
-            else leg_pos - leg_default
-        )
+        leg_error = policy_leg_position_error_torch(leg_pos, leg_default)
         leg_pos_bad = torch.any(torch.abs(leg_error) > float(max_leg_pos_error), dim=1)
     leg_pos_bad_raw = leg_pos_bad
     recovery_mask = recovery_state.recovery_active_mask(env)

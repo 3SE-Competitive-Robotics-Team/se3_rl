@@ -317,7 +317,7 @@ se3_wheel_leg/
 ├── .env.example            # 环境变量模板
 ├── assets/
 │   ├── robots/serialleg/mjcf/
-│   │   └── serialleg_fidelity_cylinder_wheels.xml
+│   │   └── serialleg_closed_chain_v3_train_obb_trim.xml
 │   ├── base_model/         # 训练完成的基模（_gru.pt / _mlp.pt）
 │   └── trajectories/       # 跳跃参考轨迹（jump_0.4m.npz 等）
 ├── src/

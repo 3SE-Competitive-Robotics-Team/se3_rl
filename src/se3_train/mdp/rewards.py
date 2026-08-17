@@ -28,7 +28,6 @@ from se3_train.mdp.diagnostic_logging import (
 from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
     active_rod_angle_terms,
-    is_closedchain_model,
     leg_actuator_ids,
     policy_leg_joint_ids,
     wheel_actuator_ids,
@@ -147,8 +146,6 @@ def _policy_leg_pos_and_height_default(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """返回当前腿部位置和随高度指令变化的默认腿部姿态。"""
     joint_pos, default_pos = _policy_leg_pos_and_default(robot)
-    if not is_closedchain_model(robot):
-        return joint_pos, default_pos
     try:
         height_default = get_policy_default_from_height_cache(
             env,
@@ -167,9 +164,7 @@ def _policy_leg_position_delta(
     default_pos: torch.Tensor,
 ) -> torch.Tensor:
     """返回 current-default 语义的腿部误差；整周转前杆使用最近等价相位。"""
-    if is_closedchain_model(robot):
-        return policy_leg_position_error_torch(joint_pos, default_pos)
-    return joint_pos - default_pos
+    return policy_leg_position_error_torch(joint_pos, default_pos)
 
 
 def _active_rod_angles(robot) -> torch.Tensor:
@@ -296,20 +291,18 @@ def _policy_leg_acc(
 def _policy_leg_mirror_diffs(robot) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的左右腿镜像误差。"""
     joint_pos, _ = _policy_leg_pos_and_default(robot)
-    if is_closedchain_model(robot):
-        front_diff = torch.atan2(
-            torch.sin(joint_pos[:, 0] + joint_pos[:, 2]),
-            torch.cos(joint_pos[:, 0] + joint_pos[:, 2]),
+    front_diff = torch.atan2(
+        torch.sin(joint_pos[:, 0] + joint_pos[:, 2]),
+        torch.cos(joint_pos[:, 0] + joint_pos[:, 2]),
+    )
+    active_angles = []
+    for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
+        front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
+        active_angles.append(
+            front_coef * joint_pos[:, front_idx] + back_coef * joint_pos[:, back_idx]
         )
-        active_angles = []
-        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-            front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
-            active_angles.append(
-                front_coef * joint_pos[:, front_idx] + back_coef * joint_pos[:, back_idx]
-            )
-        active_angle = torch.stack(active_angles, dim=1)
-        return front_diff, active_angle[:, 0] - active_angle[:, 1]
-    return joint_pos[:, 0] - joint_pos[:, 2], joint_pos[:, 1] - joint_pos[:, 3]
+    active_angle = torch.stack(active_angles, dim=1)
+    return front_diff, active_angle[:, 0] - active_angle[:, 1]
 
 
 def _recovery_hard_tilt_mask(
@@ -2850,26 +2843,13 @@ def dof_pos_limits(
 ) -> torch.Tensor:
     """腿部软限位余量惩罚：闭链使用同侧两主动杆夹角。"""
     robot = env.scene[asset_cfg.name]
-    if is_closedchain_model(robot):
-        lower, upper = _SHARED_ROBOT.active_rod_soft_angle_limits
-        penalties = []
-        for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(robot):
-            angle = (
-                front_coef * robot.data.joint_pos[:, front_id]
-                + back_coef * robot.data.joint_pos[:, back_id]
-            )
-            penalties.append(-(angle - float(lower)).clip(max=0.0))
-            penalties.append((angle - float(upper)).clip(min=0.0))
-        return torch.stack(penalties, dim=1).sum(dim=1)
-
-    soft_limits = robot.data.soft_joint_pos_limits
-    if soft_limits is None:
-        return torch.zeros(env.num_envs, device=env.device)
-
-    leg_ids = policy_leg_joint_ids(robot)
-    pos = robot.data.joint_pos[:, leg_ids]
-    limits = soft_limits[:, leg_ids]
-
-    out_of_limits = -(pos - limits[:, :, 0]).clip(max=0.0)
-    out_of_limits += (pos - limits[:, :, 1]).clip(min=0.0)
-    return torch.sum(out_of_limits, dim=1)
+    lower, upper = _SHARED_ROBOT.active_rod_soft_angle_limits
+    penalties = []
+    for front_id, back_id, front_coef, back_coef in active_rod_angle_terms(robot):
+        angle = (
+            front_coef * robot.data.joint_pos[:, front_id]
+            + back_coef * robot.data.joint_pos[:, back_id]
+        )
+        penalties.append(-(angle - float(lower)).clip(max=0.0))
+        penalties.append((angle - float(upper)).clip(min=0.0))
+    return torch.stack(penalties, dim=1).sum(dim=1)

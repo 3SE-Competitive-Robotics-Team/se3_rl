@@ -16,7 +16,7 @@ import torch
 def legacy_jump_output_leg_values(reference: torch.Tensor) -> torch.Tensor:
     """把旧跳跃 6D 轨迹转换为当前闭链模型的输出腿坐标。"""
     output = reference[:, [0, 1, 3, 4]].clone()
-    # 旧开链 MJCF 的左腿轴方向与当前闭链模型相反，右腿方向一致。
+    # 旧参考轨迹的左腿输出关节轴方向与当前闭链模型相反，右腿方向一致。
     output[:, 0:2] = -output[:, 0:2]
     return output
 

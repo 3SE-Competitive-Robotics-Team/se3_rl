@@ -30,7 +30,7 @@ mpl.rcParams["font.sans-serif"] = [
 ]
 mpl.rcParams["axes.unicode_minus"] = False
 
-MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
+MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 WHEEL_RADIUS = 0.059
 DEFAULT_HIP = 0.6171
 DEFAULT_KNEE = 0.2070

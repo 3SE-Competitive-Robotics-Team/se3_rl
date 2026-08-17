@@ -19,8 +19,6 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_shared import output_to_policy_pos_torch
 from se3_train.mdp.joint_indices import (
-    is_closedchain_model,
-    output_leg_joint_ids,
     policy_leg_joint_ids,
 )
 from se3_train.mdp.jump_commands import JumpCommandTerm
@@ -299,13 +297,9 @@ def traj_joint_pos_tracking(
     height_match = torch.abs(h_target - ref_height) <= height_match_tol
 
     robot = env.scene[asset_cfg.name]
-    # 旧轨迹保存的是输出膝语义；闭链模型要先反解成四个主动杆目标。
-    if is_closedchain_model(robot):
-        leg_idx = policy_leg_joint_ids(robot)
-        ref_q_leg = output_to_policy_pos_torch(legacy_jump_output_leg_values(ref_q))
-    else:
-        leg_idx = output_leg_joint_ids(robot)
-        ref_q_leg = ref_q[:, [0, 1, 3, 4]]
+    # 旧轨迹保存的是输出膝语义；先反解成四个主动杆目标。
+    leg_idx = policy_leg_joint_ids(robot)
+    ref_q_leg = output_to_policy_pos_torch(legacy_jump_output_leg_values(ref_q))
     q_leg = robot.data.joint_pos[:, leg_idx]
 
     err = q_leg - ref_q_leg

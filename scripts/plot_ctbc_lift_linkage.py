@@ -49,7 +49,7 @@ MJCF_PATH = (
     / "robots"
     / "serialleg"
     / "mjcf"
-    / "serialleg_fidelity_cylinder_wheels.xml"
+    / "serialleg_closed_chain_v3_train_obb_trim.xml"
 )
 
 DEFAULT_FF_AMPLITUDE = 1.2

@@ -33,7 +33,6 @@ from se3_shared import (
 from se3_train.mdp import recovery_state
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
-    is_closedchain_model,
     joint_ids,
     policy_leg_joint_ids,
     tensor_ids,
@@ -1300,29 +1299,8 @@ def _add_closedchain_policy_leg_offset(
     policy_pos[:, 3] = policy_pos[:, 2] + right_active
 
 
-def _model_leg_pos_to_policy(asset: Entity, leg_pos: torch.Tensor) -> torch.Tensor:
-    """把模型可写的腿部位置转成 policy 主动杆语义。"""
-    return leg_pos.clone()
-
-
-def _policy_leg_pos_to_model(asset: Entity, policy_pos: torch.Tensor) -> torch.Tensor:
-    """把 policy 主动杆语义腿部位置转成模型可写关节。"""
-    return policy_pos
-
-
-def _policy_leg_vel_to_model(
-    asset: Entity,
-    policy_pos: torch.Tensor,
-    policy_vel: torch.Tensor,
-) -> torch.Tensor:
-    """把 policy 主动杆语义腿部速度转成模型可写关节速度。"""
-    return policy_vel
-
-
 def _clamp_active_rod_policy_pose(asset: Entity, policy_pos: torch.Tensor) -> None:
     """在 policy 主动杆语义下裁剪同侧两杆夹角。"""
-    if not is_closedchain_model(asset):
-        return
     lower, upper = _SHARED_ROBOT.active_rod_angle_limits
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
         front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
@@ -1392,28 +1370,24 @@ def _apply_policy_leg_reset(
 ) -> None:
     """把 policy 主动杆语义 reset 姿态写回模型关节。"""
     _clamp_active_rod_policy_pose(asset, policy_pos)
-    if is_closedchain_model(asset):
-        _write_leg_values(joint_pos, leg_ids, policy_pos, rows)
-        _write_leg_values(joint_vel, leg_ids, policy_vel, rows)
-        passive_ids = _closedchain_passive_joint_ids(asset, device=leg_ids.device)
-        _write_leg_values(
-            joint_pos,
-            passive_ids,
-            policy_to_closedchain_passive_pos_torch(policy_pos),
-            rows,
-        )
-        _write_leg_values(
-            joint_vel,
-            passive_ids,
-            policy_to_closedchain_passive_vel_torch(policy_pos, policy_vel),
-            rows,
-        )
-        return
-    _write_leg_values(joint_pos, leg_ids, _policy_leg_pos_to_model(asset, policy_pos), rows)
+    _write_leg_values(joint_pos, leg_ids, policy_pos, rows)
     _write_leg_values(
         joint_vel,
         leg_ids,
-        _policy_leg_vel_to_model(asset, policy_pos, policy_vel),
+        policy_vel,
+        rows,
+    )
+    passive_ids = _closedchain_passive_joint_ids(asset, device=leg_ids.device)
+    _write_leg_values(
+        joint_pos,
+        passive_ids,
+        policy_to_closedchain_passive_pos_torch(policy_pos),
+        rows,
+    )
+    _write_leg_values(
+        joint_vel,
+        passive_ids,
+        policy_to_closedchain_passive_vel_torch(policy_pos, policy_vel),
         rows,
     )
 
@@ -1789,29 +1763,10 @@ def _clamp_policy_leg_pose(
     *,
     rows: torch.Tensor | None = None,
 ) -> None:
-    """按模型语义裁剪腿部关节：闭链裁剪主动杆夹角，开链裁剪单关节限位。"""
-    if is_closedchain_model(asset):
-        policy_pos = _model_leg_pos_to_policy(asset, _leg_values(joint_pos, leg_ids, rows))
-        _clamp_active_rod_policy_pose(asset, policy_pos)
-        _write_leg_values(joint_pos, leg_ids, _policy_leg_pos_to_model(asset, policy_pos), rows)
-        return
-
-    soft_limits = asset.data.soft_joint_pos_limits
-    if soft_limits is None:
-        return
-    if rows is None:
-        joint_pos[:, leg_ids] = torch.clamp(
-            joint_pos[:, leg_ids],
-            soft_limits[env_ids[:, None], leg_ids, 0],
-            soft_limits[env_ids[:, None], leg_ids, 1],
-        )
-    else:
-        active_env_ids = env_ids[rows]
-        joint_pos[rows[:, None], leg_ids] = torch.clamp(
-            joint_pos[rows[:, None], leg_ids],
-            soft_limits[active_env_ids[:, None], leg_ids, 0],
-            soft_limits[active_env_ids[:, None], leg_ids, 1],
-        )
+    """按正式闭链模型的主动杆夹角裁剪腿部关节。"""
+    policy_pos = _leg_values(joint_pos, leg_ids, rows).clone()
+    _clamp_active_rod_policy_pose(asset, policy_pos)
+    _write_leg_values(joint_pos, leg_ids, policy_pos, rows)
 
 
 def reset_joints(
@@ -1970,31 +1925,14 @@ def reset_joints(
         if randomize_mask.any():
             random_rows = randomize_mask.nonzero().flatten()
             n_random = int(random_rows.numel())
-            policy_leg_pos = _model_leg_pos_to_policy(
-                asset,
-                _leg_values(joint_pos, leg_ids, random_rows),
-            )
+            policy_leg_pos = _leg_values(joint_pos, leg_ids, random_rows).clone()
             policy_leg_vel = torch.zeros_like(policy_leg_pos)
-            if is_closedchain_model(asset):
-                _add_closedchain_policy_leg_offset(
-                    env,
-                    policy_leg_pos,
-                    hip_joint_offset_range if hip_joint_offset_range is not None else 0.0,
-                    knee_joint_offset_range if knee_joint_offset_range is not None else 0.0,
-                )
-            else:
-                if hip_joint_offset_range is not None:
-                    policy_leg_pos[:, (0, 2)] += _sample_joint_offset(
-                        env,
-                        hip_joint_offset_range,
-                        (n_random, 2),
-                    )
-                if knee_joint_offset_range is not None:
-                    policy_leg_pos[:, (1, 3)] += _sample_joint_offset(
-                        env,
-                        knee_joint_offset_range,
-                        (n_random, 2),
-                    )
+            _add_closedchain_policy_leg_offset(
+                env,
+                policy_leg_pos,
+                hip_joint_offset_range if hip_joint_offset_range is not None else 0.0,
+                knee_joint_offset_range if knee_joint_offset_range is not None else 0.0,
+            )
             policy_leg_vel[:] = sample_uniform(
                 torch.tensor(float(joint_vel_range[0]), device=env.device),
                 torch.tensor(float(joint_vel_range[1]), device=env.device),
@@ -2014,26 +1952,14 @@ def reset_joints(
     elif joint_offset_range > 0.0 and randomize_mask.any():
         random_rows = randomize_mask.nonzero().flatten()
         n_random = int(random_rows.numel())
-        policy_leg_pos = _model_leg_pos_to_policy(
-            asset,
-            _leg_values(joint_pos, leg_ids, random_rows),
-        )
+        policy_leg_pos = _leg_values(joint_pos, leg_ids, random_rows).clone()
         policy_leg_vel = torch.zeros_like(policy_leg_pos)
-        if is_closedchain_model(asset):
-            _add_closedchain_policy_leg_offset(
-                env,
-                policy_leg_pos,
-                joint_offset_range,
-                joint_offset_range,
-            )
-        else:
-            offset = sample_uniform(
-                torch.tensor(-float(joint_offset_range), device=env.device),
-                torch.tensor(float(joint_offset_range), device=env.device),
-                (n_random, len(leg_ids)),
-                env.device,
-            )
-            policy_leg_pos += offset
+        _add_closedchain_policy_leg_offset(
+            env,
+            policy_leg_pos,
+            joint_offset_range,
+            joint_offset_range,
+        )
         policy_leg_vel[:] = sample_uniform(
             torch.tensor(float(joint_vel_range[0]), device=env.device),
             torch.tensor(float(joint_vel_range[1]), device=env.device),
@@ -2072,25 +1998,14 @@ def reset_joints(
         if local_recovery.any():
             n_recovery = int(local_recovery.sum().item())
             local_ids = local_recovery.nonzero().flatten()
-            policy_leg_pos = _model_leg_pos_to_policy(
-                asset, _leg_values(joint_pos, leg_ids, local_ids)
-            )
+            policy_leg_pos = _leg_values(joint_pos, leg_ids, local_ids).clone()
             policy_leg_vel = torch.zeros_like(policy_leg_pos)
-            if is_closedchain_model(asset):
-                _add_closedchain_policy_leg_offset(
-                    env,
-                    policy_leg_pos,
-                    recovery_joint_offset_range,
-                    recovery_joint_offset_range,
-                )
-            else:
-                offset = sample_uniform(
-                    torch.tensor(-float(recovery_joint_offset_range), device=env.device),
-                    torch.tensor(float(recovery_joint_offset_range), device=env.device),
-                    (n_recovery, len(leg_ids)),
-                    env.device,
-                )
-                policy_leg_pos += offset
+            _add_closedchain_policy_leg_offset(
+                env,
+                policy_leg_pos,
+                recovery_joint_offset_range,
+                recovery_joint_offset_range,
+            )
             policy_leg_vel[:] = sample_uniform(
                 torch.tensor(float(recovery_joint_vel_range[0]), device=env.device),
                 torch.tensor(float(recovery_joint_vel_range[1]), device=env.device),
@@ -2155,15 +2070,11 @@ def reset_joints(
                         library = JumpTrajLibrary.get(traj_paths, traj_heights, str(env.device))
                         h_targets = cmd[env_ids[rsi_done_mask], 6]
                         _, _, q_ref, q_vel, _, _ = library.gather(h_targets, frames[rsi_done_mask])
-                        # 轨迹是输出膝语义；闭链 reset 前转换成主动杆位置和速度。
-                        if is_closedchain_model(asset):
-                            output_pos = legacy_jump_output_leg_values(q_ref)
-                            output_vel = legacy_jump_output_leg_values(q_vel)
-                            leg_pos = output_to_policy_pos_torch(output_pos)
-                            leg_vel = output_to_policy_vel_torch(output_pos, output_vel)
-                        else:
-                            leg_pos = q_ref[:, [0, 1, 3, 4]]
-                            leg_vel = q_vel[:, [0, 1, 3, 4]]
+                        # 轨迹是输出膝语义；reset 前转换成主动杆位置和速度。
+                        output_pos = legacy_jump_output_leg_values(q_ref)
+                        output_vel = legacy_jump_output_leg_values(q_vel)
+                        leg_pos = output_to_policy_pos_torch(output_pos)
+                        leg_vel = output_to_policy_vel_torch(output_pos, output_vel)
                         _write_leg_values(
                             joint_pos,
                             leg_ids,
@@ -2192,35 +2103,34 @@ def reset_joints(
         except Exception:
             pass
 
-    if is_closedchain_model(asset):
-        policy_leg_pos = _model_leg_pos_to_policy(asset, _leg_values(joint_pos, leg_ids))
-        policy_leg_vel = _leg_values(joint_vel, leg_ids)
-        _apply_policy_leg_reset(
-            asset,
-            joint_pos,
-            joint_vel,
-            leg_ids,
-            policy_leg_pos,
-            policy_leg_vel,
+    policy_leg_pos = _leg_values(joint_pos, leg_ids).clone()
+    policy_leg_vel = _leg_values(joint_vel, leg_ids)
+    _apply_policy_leg_reset(
+        asset,
+        joint_pos,
+        joint_vel,
+        leg_ids,
+        policy_leg_pos,
+        policy_leg_vel,
+    )
+    if hasattr(env, "extras"):
+        lower, upper = _SHARED_ROBOT.active_rod_angle_limits
+        active_angles = torch.stack(
+            (
+                policy_leg_pos[:, 0] - policy_leg_pos[:, 1],
+                policy_leg_pos[:, 3] - policy_leg_pos[:, 2],
+            ),
+            dim=1,
         )
-        if hasattr(env, "extras"):
-            lower, upper = _SHARED_ROBOT.active_rod_angle_limits
-            active_angles = torch.stack(
-                (
-                    policy_leg_pos[:, 0] - policy_leg_pos[:, 1],
-                    policy_leg_pos[:, 3] - policy_leg_pos[:, 2],
-                ),
-                dim=1,
-            )
-            active_margin = torch.minimum(
-                active_angles - float(lower),
-                float(upper) - active_angles,
-            )
-            log = env.extras.setdefault("log", {})
-            log["Reset/closedchain_passive_seed_enabled"] = 1.0
-            log["Reset/closedchain_active_angle_min"] = float(active_angles.min().item())
-            log["Reset/closedchain_active_angle_max"] = float(active_angles.max().item())
-            log["Reset/closedchain_active_angle_margin_min"] = float(active_margin.min().item())
+        active_margin = torch.minimum(
+            active_angles - float(lower),
+            float(upper) - active_angles,
+        )
+        log = env.extras.setdefault("log", {})
+        log["Reset/closedchain_passive_seed_enabled"] = 1.0
+        log["Reset/closedchain_active_angle_min"] = float(active_angles.min().item())
+        log["Reset/closedchain_active_angle_max"] = float(active_angles.max().item())
+        log["Reset/closedchain_active_angle_margin_min"] = float(active_margin.min().item())
 
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
     if align_root_height_to_wheels:
@@ -2478,19 +2388,10 @@ def randomize_default_dof_pos(
         env.device,
     )
     selected_joint_pos = default_joint_pos[env_ids].clone()
-    policy_leg_pos = _model_leg_pos_to_policy(asset, selected_joint_pos[:, leg_ids])
+    policy_leg_pos = selected_joint_pos[:, leg_ids].clone()
     policy_leg_pos += leg_offset
     _clamp_active_rod_policy_pose(asset, policy_leg_pos)
-    selected_joint_pos[:, leg_ids] = _policy_leg_pos_to_model(asset, policy_leg_pos)
-
-    if not is_closedchain_model(asset):
-        soft_limits = asset.data.soft_joint_pos_limits
-        if soft_limits is not None:
-            selected_joint_pos[:, leg_ids] = torch.clamp(
-                selected_joint_pos[:, leg_ids],
-                soft_limits[env_ids[:, None], leg_ids, 0],
-                soft_limits[env_ids[:, None], leg_ids, 1],
-            )
+    selected_joint_pos[:, leg_ids] = policy_leg_pos
 
     default_joint_pos[env_ids] = selected_joint_pos
 

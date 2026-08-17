@@ -30,6 +30,11 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+from se3_shared import (
+    JointGroup,
+    output_to_policy_pos_np,
+    policy_to_closedchain_passive_pos_np,
+)
 from se3_shared.grounded_pose import find_wheel_collision_radius
 
 _MJCF_PATH = (
@@ -38,7 +43,7 @@ _MJCF_PATH = (
     / "robots"
     / "serialleg"
     / "mjcf"
-    / "serialleg_fidelity_cylinder_wheels.xml"
+    / "serialleg_closed_chain_v3_train_obb_trim.xml"
 )
 
 
@@ -68,11 +73,14 @@ class SerialLegFK:
         self._lw_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "l_wheel_Link")
         self._rw_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "r_wheel_Link")
 
-        # 受控关节在 qpos 中的索引
-        self._ctrl_qpos_idx: list[int] = []
-        for name in self.CTRL_JOINT_NAMES:
+        self._policy_qpos_idx: list[int] = []
+        for name in JointGroup.POLICY_JOINT_NAMES:
             jid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            self._ctrl_qpos_idx.append(self._model.jnt_qposadr[jid])
+            self._policy_qpos_idx.append(self._model.jnt_qposadr[jid])
+        self._passive_qpos_idx: list[int] = []
+        for name in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES:
+            jid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            self._passive_qpos_idx.append(self._model.jnt_qposadr[jid])
 
         # 基本物理参数
         self.total_mass: float = float(self._model.body_mass.sum())
@@ -83,7 +91,17 @@ class SerialLegFK:
         from se3_shared import RobotConfig as _SharedRobotCfg
 
         _shared = _SharedRobotCfg()
-        self.default_qpos = np.array(_shared.default_dof_pos)
+        self.default_qpos = np.asarray(
+            [
+                _shared.default_dof_pos[0],
+                _shared.default_output_knee_pos[0],
+                _shared.default_dof_pos[4],
+                _shared.default_dof_pos[2],
+                _shared.default_output_knee_pos[1],
+                _shared.default_dof_pos[5],
+            ],
+            dtype=np.float64,
+        )
         self.default_base_height: float = _shared.default_base_height
 
         # 轮子半径必须来自 collision geom。默认姿态的轮心高度可能穿地，不能当半径。
@@ -99,10 +117,14 @@ class SerialLegFK:
         self.wheel_y_offset: float = abs(lw_y - base_y)  # ≈ 0.131 m
 
     def _set_ctrl_qpos(self, q6: np.ndarray) -> None:
-        """设置受控关节角（6维），其余 qpos 保持默认。"""
+        """把旧输出关节语义的 6D 轨迹写入正式闭链模型。"""
         mujoco.mj_resetData(self._model, self._data)
-        for i, idx in enumerate(self._ctrl_qpos_idx):
-            self._data.qpos[idx] = q6[i]
+        output_q6 = np.asarray(q6, dtype=np.float64).reshape(6)
+        output_leg = output_q6[[0, 1, 3, 4]]
+        policy_leg = output_to_policy_pos_np(output_leg)
+        policy_q6 = np.concatenate((policy_leg, output_q6[[2, 5]]))
+        self._data.qpos[self._policy_qpos_idx] = policy_q6
+        self._data.qpos[self._passive_qpos_idx] = policy_to_closedchain_passive_pos_np(policy_leg)
 
     def fk(self, base_pos: np.ndarray, q6: np.ndarray) -> dict[str, np.ndarray]:
         """精确 FK：给定 base 位置和关节角，返回轮子世界坐标。

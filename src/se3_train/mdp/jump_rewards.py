@@ -24,7 +24,6 @@ from se3_shared import (
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
     active_leg_mirror_diffs,
-    is_closedchain_model,
     output_knee_joint_ids,
     policy_leg_joint_ids,
     wheel_joint_ids,
@@ -462,11 +461,8 @@ def jump_takeoff_impulse(
 
     knee_indices = output_knee_joint_ids(robot)
     knee_vel = robot.data.joint_vel[:, knee_indices]
-    if is_closedchain_model(robot):
-        # 闭链输出膝轴镜像：左膝正向、右膝负向共同表示伸腿。
-        extension_raw = 0.5 * (knee_vel[:, 0] - knee_vel[:, 1])
-    else:
-        extension_raw = -torch.mean(knee_vel, dim=1)
+    # 闭链输出膝轴镜像：左膝正向、右膝负向共同表示伸腿。
+    extension_raw = 0.5 * (knee_vel[:, 0] - knee_vel[:, 1])
     extension_vel = torch.clamp(extension_raw - min_knee_extension_vel, min=0.0)
 
     target_extension_vel = torch.clamp(ref_extension_vel, min=min_ref_knee_extension_vel)

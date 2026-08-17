@@ -6,7 +6,7 @@
 
 训练和仿真用的 MJCF 与 mesh 文件已放在 `assets/robots/serialleg/`。重新导出模型时，保持 MJCF 中的关节名和 mesh 相对路径不变。
 
-当前所有注册的 `SE3-WheelLegged-*` 训练任务和 sim2sim 默认模型都是真实闭链 OBB 版本，保持 policy 的 `[LF, LB, RF, RB, l_wheel, r_wheel]` 主动杆语义。MJCF 目录只保留 OBB 裁剪闭链主模型和旧高保真模型；两个四连杆 surrogate 已删除。正式 WheelLegged task 会显式固定为 closed-chain，不受 `SE3_ROBOT_MJCF_VARIANT` 或 `SE3_ROBOT_MJCF` 覆盖。
+当前所有注册的 `SE3-WheelLegged-*` 训练任务和 sim2sim 都固定使用真实闭链 OBB 模型，保持 policy 的 `[LF, LB, RF, RB, l_wheel, r_wheel]` 主动杆语义。MJCF 目录只保留 `serialleg_closed_chain_v3_train_obb_trim.xml`；旧高保真模型和两个四连杆 surrogate 均已删除。
 
 policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.50954 rad`（`129.95° - 43.46° = 86.49°`），对应腿长下限约 `0.135 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
 
@@ -19,11 +19,7 @@ default_coupler_pos = [1.401266340000, -1.401269410000]
 default_base_height = 0.22 m
 ```
 
-这只是两轮倒立系统的 reset 几何基点；零轮速开环 PD 仍不能替代策略的轮子平衡反馈。旧开链模型仍保留给显式诊断：
-
-```bash
-uv run se3-sim2sim --model assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml --viewer none --max-steps 200
-```
+这只是两轮倒立系统的 reset 几何基点；零轮速开环 PD 仍不能替代策略的轮子平衡反馈。
 
 闭链模型基础检查：
 

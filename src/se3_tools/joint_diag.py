@@ -7,28 +7,43 @@
     uv run se3-joint-diag
     uv run se3-joint-diag --mode sweep       # 自动扫描所有关节
     uv run se3-joint-diag --mode interactive  # 手动输入力矩测试
-    uv run se3-joint-diag --mode vmc          # 验证 VMC 控制器
 """
 
 import argparse
 
 import mujoco
-import numpy as np
 
-MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_fidelity_cylinder_wheels.xml"
+from se3_shared import JointGroup, RobotConfig
 
-ACTUATOR_NAMES = ["lf0_act", "lf1_act", "l_wheel_act", "rf0_act", "rf1_act", "r_wheel_act"]
+MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
+
+ACTUATOR_NAMES = list(JointGroup.POLICY_JOINT_NAMES)
+_ROBOT_CFG = RobotConfig()
 
 
 def load_model(mjcf_path: str):
-    model = mujoco.MjModel.from_xml_path(mjcf_path)
+    spec = mujoco.MjSpec.from_file(mjcf_path)
+    for joint_name in JointGroup.POLICY_JOINT_NAMES:
+        actuator = spec.add_actuator()
+        actuator.name = f"{joint_name}_diag_motor"
+        actuator.target = joint_name
+        actuator.trntype = mujoco.mjtTrn.mjTRN_JOINT
+        actuator.dyntype = mujoco.mjtDyn.mjDYN_NONE
+        actuator.gaintype = mujoco.mjtGain.mjGAIN_FIXED
+        actuator.biastype = mujoco.mjtBias.mjBIAS_NONE
+        actuator.gainprm[0] = 1.0
+    model = spec.compile()
     data = mujoco.MjData(model)
     return model, data
 
 
-def reset_standing(model, data, height: float = 0.30):
+def reset_standing(model, data, height: float = 0.22):
     mujoco.mj_resetData(model, data)
     data.qpos[2] = height
+    for joint_name, angle in _ROBOT_CFG.default_model_joint_pos.items():
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if joint_id >= 0:
+            data.qpos[model.jnt_qposadr[joint_id]] = float(angle)
     mujoco.mj_forward(model, data)
 
 
@@ -155,83 +170,15 @@ def mode_interactive(model, data, args):
         )
 
 
-def mode_vmc(model, data, args):
-    """验证 VMC 控制器响应。"""
-    print("=" * 60)
-    print("VMC: 验证虚拟模型控制器")
-    print("=" * 60)
-
-    L1, L2 = 0.180, 0.200
-
-    def fk(th1, th2):
-        end_x = L1 * np.cos(th1) - L2 * np.sin(th1 + th2)
-        end_y = L1 * np.sin(th1) + L2 * np.cos(th1 + th2)
-        L0 = np.sqrt(end_x**2 + end_y**2)
-        theta0 = np.arctan2(end_x, end_y)
-        return L0, theta0
-
-    # 默认关节角下的 VMC 状态
-    reset_standing(model, data, args.height)
-    print("\n默认关节角 (全零):")
-    L0, theta0 = fk(0.0, 0.0)
-    print(f"  L0 = {L0:.4f} m (目标约 0.22~0.28)")
-    print(f"  theta0 = {theta0:.4f} rad ({np.degrees(theta0):.1f} deg)")
-    print(f"  end_x = {L1 * np.cos(0) - L2 * np.sin(0):.4f} m")
-    print(f"  end_y = {L1 * np.sin(0) + L2 * np.cos(0):.4f} m")
-
-    # 扫描 f1 关节角,看 L0 变化
-    print("\n扫描 lf1_Joint 角度,观察 L0 变化:")
-    print(f"  {'f1 (rad)':>10s} | {'L0 (m)':>8s} | {'theta0 (deg)':>12s}")
-    print("  " + "-" * 40)
-    for f1 in np.linspace(-0.6, 0.8, 8):
-        L0, theta0 = fk(0.0, f1)
-        print(f"  {f1:+10.3f} | {L0:8.4f} | {np.degrees(theta0):+12.1f}")
-
-    # 验证轮子方向
-    print("\n轮子方向测试:")
-    for act_id, name in [(2, "l_wheel"), (5, "r_wheel")]:
-        reset_standing(model, data, args.height)
-        x0 = data.qpos[0]
-        data.ctrl[act_id] = 3.0
-        for _ in range(200):
-            mujoco.mj_step(model, data)
-        dx = data.qpos[0] - x0
-        print(f"  {name} ctrl=+3.0: dx={dx:+.4f} ({'前进' if dx > 0 else '后退'})")
-
-    # 验证伸腿方向
-    print("\n伸腿方向测试 (f1 ctrl -> 高度变化):")
-    for ctrl_val in [-20, -10, +10, +20]:
-        reset_standing(model, data, args.height)
-        z0 = data.xpos[1, 2]
-        data.ctrl[1] = ctrl_val  # lf1
-        data.ctrl[4] = ctrl_val  # rf1
-        for _ in range(100):
-            mujoco.mj_step(model, data)
-        dz = data.xpos[1, 2] - z0
-        print(f"  f1 ctrl={ctrl_val:+3d}: dz={dz:+.4f} ({'升高' if dz > 0 else '降低'})")
-
-    # 验证 f0 对 theta0 的影响
-    print("\n大腿方向测试 (f0 ctrl -> 倾斜方向):")
-    for ctrl_val in [-10, +10]:
-        reset_standing(model, data, args.height)
-        x0 = data.qpos[0]
-        data.ctrl[0] = ctrl_val  # lf0
-        data.ctrl[3] = ctrl_val  # rf0
-        for _ in range(100):
-            mujoco.mj_step(model, data)
-        dx = data.qpos[0] - x0
-        print(f"  f0 ctrl={ctrl_val:+3d}: dx={dx:+.4f} ({'前倾' if dx > 0 else '后倾'})")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="终端交互式关节诊断工具")
     parser.add_argument("--mjcf", default=MJCF_PATH, help="MJCF 模型路径")
-    parser.add_argument("--height", type=float, default=0.30, help="初始基座高度")
+    parser.add_argument("--height", type=float, default=0.22, help="初始基座高度")
     parser.add_argument("--steps", type=int, default=50, help="sweep 模式每次仿真步数")
     parser.add_argument(
         "--mode",
-        choices=["sweep", "interactive", "vmc"],
-        default="vmc",
+        choices=["sweep", "interactive"],
+        default="sweep",
         help="运行模式",
     )
     args = parser.parse_args()
@@ -242,8 +189,6 @@ def main() -> None:
         mode_sweep(model, data, args)
     elif args.mode == "interactive":
         mode_interactive(model, data, args)
-    elif args.mode == "vmc":
-        mode_vmc(model, data, args)
 
 
 if __name__ == "__main__":

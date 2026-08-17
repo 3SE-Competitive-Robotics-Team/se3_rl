@@ -227,6 +227,21 @@ def policy_to_output_pos_np(policy_pos: np.ndarray) -> np.ndarray:
     return out.reshape(original_shape)
 
 
+def policy_to_closedchain_passive_pos_np(policy_pos: np.ndarray) -> np.ndarray:
+    """NumPy 版本：映射闭链被动关节 [LF1, L coupler, RF1, R coupler]。"""
+    arr = np.asarray(policy_pos, dtype=np.float64)
+    original_shape = arr.shape
+    rows = arr.reshape(-1, 4)
+    out = np.empty_like(rows)
+    left_alpha = np.clip(rows[:, 0] - rows[:, 1], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = np.clip(rows[:, 3] - rows[:, 2], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    out[:, 0] = output_knee_from_active_angle_np_array(left_alpha)
+    out[:, 1] = _coupler_from_active_angle_analytic_np_array(left_alpha)
+    out[:, 2] = -output_knee_from_active_angle_np_array(right_alpha)
+    out[:, 3] = -_coupler_from_active_angle_analytic_np_array(right_alpha)
+    return out.reshape(original_shape)
+
+
 def output_knee_from_active_angle_np(active_angle: float) -> float:
     """NumPy 版本：由主动杆夹角计算左腿输出膝关节角。"""
     alpha_grid, knee_grid, _, _, _ = _fourbar_lut_np()
@@ -262,6 +277,31 @@ def _coupler_from_active_angle_analytic_torch(active_angle: torch.Tensor) -> tor
     coupler_world_angle = torch.atan2(cz - pz, cx - px)
     total_rotation = coupler_local_angle - coupler_world_angle
     return _wrap_angle_torch(total_rotation - beta)
+
+
+def _coupler_from_active_angle_analytic_np_array(active_angle: np.ndarray) -> np.ndarray:
+    """解析计算左腿 coupler 关节角的 NumPy 版本。"""
+    alpha = np.clip(np.asarray(active_angle, dtype=np.float64), _ACTIVE_LOWER, _ACTIVE_UPPER)
+    beta = -alpha
+    cos_b = np.cos(beta)
+    sin_b = np.sin(beta)
+    px = cos_b * _DRIVE_X + sin_b * _DRIVE_Z
+    pz = -sin_b * _DRIVE_X + cos_b * _DRIVE_Z
+
+    dx = px - _KNEE_X
+    dz = pz - _KNEE_Z
+    dist = np.sqrt(np.maximum(dx * dx + dz * dz, 1.0e-12))
+    ex = dx / dist
+    ez = dz / dist
+
+    along = (_CALF_LEN**2 - _COUPLER_LEN**2 + dist * dist) / (2.0 * dist)
+    height = np.sqrt(np.maximum(_CALF_LEN**2 - along * along, 0.0))
+    cx = _KNEE_X + along * ex - height * ez
+    cz = _KNEE_Z + along * ez + height * ex
+
+    coupler_local_angle = math.atan2(_COUPLER_Z, _COUPLER_X)
+    coupler_world_angle = np.arctan2(cz - pz, cx - px)
+    return _wrap_angle_np_array(coupler_local_angle - coupler_world_angle - beta)
 
 
 def _output_knee_from_active_angle_analytic_np_array(active_angle: np.ndarray) -> np.ndarray:

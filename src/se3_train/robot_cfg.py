@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import mujoco
@@ -11,61 +10,21 @@ from se3_train.torque_speed_actuator import TorqueSpeedCurveActuatorCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
-_OPENCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_fidelity_cylinder_wheels.xml"
-_CLOSEDCHAIN_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
-_MJCF_ENV_VAR = "SE3_ROBOT_MJCF"
-_MJCF_VARIANT_ENV_VAR = "SE3_ROBOT_MJCF_VARIANT"
+_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 
 _ROBOT_CFG = SharedRobotConfig()
 
 _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
 
-def _resolve_mjcf_path() -> Path:
-    """解析训练使用的 MJCF 路径，默认使用真实 closed-chain 模型。"""
-    override = os.environ.get(_MJCF_ENV_VAR)
-    if override:
-        path = Path(override).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        path = path.resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"{_MJCF_ENV_VAR} 指向的 MJCF 不存在: {path}")
-        return path
-
-    variant = os.environ.get(_MJCF_VARIANT_ENV_VAR, "closedchain").strip().lower()
-    if variant in {
-        "default",
-        "closedchain",
-        "closedchain-obb",
-        "closedchain_obb",
-        "no-spring",
-        "no_spring",
-    }:
-        return _CLOSEDCHAIN_MJCF_PATH
-    if variant in {"openchain"}:
-        return _OPENCHAIN_MJCF_PATH
-    raise ValueError(
-        f"{_MJCF_VARIANT_ENV_VAR}={variant!r} 不支持；可选 closedchain/openchain，"
-        f"或用 {_MJCF_ENV_VAR} 指定 MJCF 路径。"
-    )
-
-
-def _leg_joint_names_for(mjcf_path: Path) -> tuple[str, ...]:
-    """根据模型变体选择腿部电机目标。"""
-    if mjcf_path.name == _OPENCHAIN_MJCF_PATH.name:
-        return JointGroup.OPENCHAIN_LEG_NAMES
-    return JointGroup.POLICY_LEG_NAMES
-
-
-def _serialleg_spec_for_training(mjcf_path: Path) -> mujoco.MjSpec:
+def _serialleg_spec_for_training() -> mujoco.MjSpec:
     """Load SerialLeg MJCF without its standalone world floor.
 
     MJLab scenes provide terrain separately. Keeping the MJCF's global plane
     covers generated stair pits at z=0 and makes robots collide with a flat
     barrier instead of the stair terrain.
     """
-    spec = mujoco.MjSpec.from_file(str(mjcf_path))
+    spec = mujoco.MjSpec.from_file(str(_MJCF_PATH))
     for geom in list(spec.worldbody.geoms):
         if geom.name == "floor":
             spec.delete(geom)
@@ -73,14 +32,10 @@ def _serialleg_spec_for_training(mjcf_path: Path) -> mujoco.MjSpec:
     return spec
 
 
-def get_serialleg_cfg(
-    *, mjcf_path: Path | None = None, wheel_kd_override: float | None = None
-) -> EntityCfg:
-    """构造训练实体；默认沿用全局 MJCF，也允许按任务显式覆盖。"""
-    mjcf_path = _resolve_mjcf_path() if mjcf_path is None else Path(mjcf_path)
-    leg_joint_names = _leg_joint_names_for(mjcf_path)
+def get_serialleg_closedchain_cfg(*, wheel_kd_override: float | None = None) -> EntityCfg:
+    """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。"""
     leg_actuator_cfg = DcMotorActuatorCfg(
-        target_names_expr=leg_joint_names,
+        target_names_expr=JointGroup.POLICY_LEG_NAMES,
         stiffness=_ROBOT_CFG.leg_kp,
         damping=_ROBOT_CFG.leg_kd,
         saturation_effort=DM8009P.stall_torque,
@@ -89,7 +44,7 @@ def get_serialleg_cfg(
     )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
     return EntityCfg(
-        spec_fn=lambda: _serialleg_spec_for_training(mjcf_path),
+        spec_fn=_serialleg_spec_for_training,
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,
@@ -107,12 +62,4 @@ def get_serialleg_cfg(
             joint_pos=_ROBOT_CFG.default_model_joint_pos,
             joint_vel={".*": 0.0},
         ),
-    )
-
-
-def get_serialleg_closedchain_cfg(*, wheel_kd_override: float | None = None) -> EntityCfg:
-    """构造固定使用真实 closed-chain MJCF 的 SerialLeg 训练实体。"""
-    return get_serialleg_cfg(
-        mjcf_path=_CLOSEDCHAIN_MJCF_PATH,
-        wheel_kd_override=wheel_kd_override,
     )
