@@ -93,6 +93,8 @@ class AssignEnvGroups(ManagerTermBase):
             if not isinstance(env_groups, dict) or not env_groups:
                 raise ValueError("env_groups 必须是非空的 {组名: 概率} 字典。")
             group_names = tuple(str(name) for name in env_groups)
+            if len(set(group_names)) != len(group_names):
+                raise ValueError(f"环境组名转换为字符串后必须唯一：{group_names}")
             probabilities = tuple(float(value) for value in env_groups.values())
         else:
             if probabilities is None:
@@ -119,6 +121,7 @@ class AssignEnvGroups(ManagerTermBase):
         permutation = torch.randperm(env.num_envs, device=env.device)
         env.env_group_ids = group_ids[permutation]
         env.env_group_names = group_names
+        env.env_group_name_to_id = {name: group_id for group_id, name in enumerate(group_names)}
         env.env_group_counts = counts
         env.num_env_groups = int(probs.numel())
 
@@ -158,6 +161,41 @@ def env_group_mask(
     return torch.isin(current, requested)
 
 
+def _resolve_group_names(
+    env: ManagerBasedRlEnv,
+    group_names: str | Sequence[str],
+) -> tuple[int, ...]:
+    """通过环境保存的映射把稳定组名解析为当前组编号。"""
+    name_to_id = getattr(env, "env_group_name_to_id", None)
+    if not isinstance(name_to_id, dict):
+        raise RuntimeError(
+            "env_group_name_to_id 尚未初始化，请先配置 AssignEnvGroups startup event。"
+        )
+    requested = (group_names,) if isinstance(group_names, str) else tuple(group_names)
+    if not requested:
+        raise ValueError("group_names 不能为空。")
+    invalid = [name for name in requested if not isinstance(name, str)]
+    if invalid:
+        raise TypeError(f"group_names 必须只包含字符串，实际包含：{invalid}")
+    unknown = [name for name in requested if name not in name_to_id]
+    if unknown:
+        raise ValueError(f"未知环境组 {unknown}，可用组为：{tuple(name_to_id)}")
+    return tuple(int(name_to_id[name]) for name in requested)
+
+
+def _validate_group_ids(env: ManagerBasedRlEnv, group_ids: tuple[int, ...]) -> tuple[int, ...]:
+    """检查显式组编号是否落在已分配的环境组范围内。"""
+    num_groups = getattr(env, "num_env_groups", None)
+    if not isinstance(num_groups, int):
+        raise RuntimeError("num_env_groups 尚未初始化，请先配置 AssignEnvGroups startup event。")
+    if not group_ids:
+        raise ValueError("group_ids 不能为空。")
+    invalid = [group_id for group_id in group_ids if not 0 <= group_id < num_groups]
+    if invalid:
+        raise ValueError(f"环境组编号 {invalid} 超出有效范围 [0, {num_groups})。")
+    return group_ids
+
+
 class _FilteredGroupTermBase(ManagerTermBase):
     """按 ``env_group_ids`` 过滤 wrapped MDP term 的公共实现。"""
 
@@ -165,8 +203,13 @@ class _FilteredGroupTermBase(ManagerTermBase):
         super().__init__(env)
         self.wrapped_func, self.wrapped_params = _parse_wrapped_term(cfg, env)
         filter_cfg = cfg.params.get("filter")
+        explicit_group_names = cfg.params.get("group_names")
         explicit_group_ids = cfg.params.get("group_ids")
-        if explicit_group_ids is not None:
+        if explicit_group_names is not None and explicit_group_ids is not None:
+            raise ValueError("过滤器不能同时配置 group_names 和 group_ids。")
+        if explicit_group_names is not None:
+            self.group_ids = _resolve_group_names(env, explicit_group_names)
+        elif explicit_group_ids is not None:
             requested = torch.as_tensor(
                 explicit_group_ids,
                 device=env.device,
@@ -174,19 +217,23 @@ class _FilteredGroupTermBase(ManagerTermBase):
             ).reshape(-1)
             self.group_ids = tuple(int(value) for value in requested.detach().cpu().tolist())
         elif isinstance(filter_cfg, dict):
-            if filter_cfg.get("field_name", "env_group_ids") != "env_group_ids":
-                raise ValueError("当前过滤器只支持 field_name='env_group_ids'。")
+            field_name = filter_cfg.get("field_name", "env_group_ids")
+            if field_name not in {"env_group_ids", "env_group_names"}:
+                raise ValueError("环境组过滤只支持 field_name='env_group_ids/env_group_names'。")
             operation = filter_cfg.get("op", "eq")
             if operation == "eq":
-                self.group_ids = (int(filter_cfg["value"]),)
+                requested_values = (filter_cfg["value"],)
             elif operation == "in":
-                self.group_ids = tuple(int(value) for value in filter_cfg["values"])
+                requested_values = tuple(filter_cfg["values"])
             else:
                 raise ValueError(f"环境组过滤只支持 eq/in，实际为 {operation}。")
+            if field_name == "env_group_names":
+                self.group_ids = _resolve_group_names(env, requested_values)
+            else:
+                self.group_ids = tuple(int(value) for value in requested_values)
         else:
-            raise ValueError("过滤器需要 group_ids 或 filter 配置。")
-        if not self.group_ids:
-            raise ValueError("环境组过滤列表不能为空。")
+            raise ValueError("过滤器需要 group_names、group_ids 或 filter 配置。")
+        self.group_ids = _validate_group_ids(env, self.group_ids)
 
         if hasattr(self.wrapped_func, "model_fields"):
             self.model_fields = self.wrapped_func.model_fields
@@ -223,6 +270,15 @@ class FilteredEventWrapper(_FilteredGroupTermBase):
 
 class FilteredRewardWrapper(_FilteredGroupTermBase):
     """只在指定环境组保留 wrapped reward，其余环境返回零。"""
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        """同步重置 wrapped reward 在全部实际 reset 环境上的内部状态。"""
+        reset_func = getattr(self.wrapped_func, "reset", None)
+        if not callable(reset_func):
+            return
+        requested = _resolve_env_ids(self._env, env_ids)
+        if requested.numel() > 0:
+            reset_func(env_ids=requested)
 
     def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
         reward = self.wrapped_func(env, **self.wrapped_params)
