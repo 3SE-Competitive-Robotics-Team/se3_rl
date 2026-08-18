@@ -312,10 +312,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "assign_env_groups": EventTermCfg(
             func=env_groups.AssignEnvGroups,
             mode="startup",
-            params={
-                "env_groups": _PLAY_ENV_GROUPS if play else _TRAIN_ENV_GROUPS,
-                "shuffle": False,
-            },
+            params={"env_groups": _PLAY_ENV_GROUPS if play else _TRAIN_ENV_GROUPS},
         )
     }
     reset_scene_event = inherited_events.get("reset_scene_to_default")
