@@ -77,6 +77,16 @@ _GEOM_BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
 _GEOM_MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
 
 
+def _should_log_reset_diagnostics(
+    env: ManagerBasedRlEnv,
+    interval_steps: int = 64,
+) -> bool:
+    """按策略步限频 reset 诊断，避免小批 reset 反复同步 GPU。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(1, int(getattr(env, "_se3_reset_log_interval_steps", interval_steps)))
+    return step % interval == 0
+
+
 def _stage_value(stage: dict, key: str, default):
     """读取 recovery stage 字段，缺省时使用默认值。"""
     return stage.get(key, default)
@@ -680,9 +690,11 @@ def reset_root_state_recovery_standard_poses(
     pos[:, 0] += _sample_range(pos_xy_range, (n,))
     pos[:, 1] += _sample_range(pos_xy_range, (n,))
 
-    weights = torch.tensor(tuple(float(v) for v in pose_weights), device=env.device)
-    if torch.any(weights < 0.0) or float(weights.sum().item()) <= 0.0:
+    weight_values = tuple(float(value) for value in pose_weights)
+    weight_sum = sum(weight_values)
+    if any(value < 0.0 for value in weight_values) or weight_sum <= 0.0:
         raise ValueError(f"recovery 标准姿态权重非法: {pose_weights}")
+    weights = torch.tensor(weight_values, device=env.device)
     pose_bins = torch.bucketize(
         torch.rand(n, device=env.device),
         torch.cumsum(weights / weights.sum(), dim=0)[:-1],
@@ -720,7 +732,7 @@ def reset_root_state_recovery_standard_poses(
     )
     env._recovery_stage_step = int(stage.get("iteration", stage.get("step", 0)))
     env._recovery_stage_prob = 1.0
-    env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[0].item() / weights.sum().item())
+    env._recovery_stage_fallen_pose_prob = 1.0 - weight_values[0] / weight_sum
     env._recovery_stage_cache_prob = 0.0
     init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
     init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
@@ -754,7 +766,7 @@ def reset_root_state_recovery_standard_poses(
     env._jump_pose_ref_pos_w[env_ids] = pos
     env._jump_pose_ref_yaw[env_ids] = init_yaw
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         for idx, name in enumerate(("standing", "left_side", "right_side", "prone", "supine")):
             log[f"Reset/standard_pose_{name}_ratio"] = (pose_bins == idx).float().mean().item()
@@ -1275,7 +1287,7 @@ def reset_root_state_recovery_discovery_mixed(
             recovery_grace_steps=recovery_grace_steps,
         )
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         log.update(
             {
@@ -1546,7 +1558,7 @@ def _lift_root_to_wheel_clearance(
         asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
         env.sim.forward()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         after_wheel_bottom = before_wheel_bottom + adjustment
         log["Reset/wheel_clearance_before_min_m"] = float(before_wheel_bottom.min().item())
@@ -1799,11 +1811,10 @@ def snap_root_to_collision_clearance(
         asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
         env.sim.forward()
 
-    after_min_z, _ = _collision_geom_min_z(env, asset, active_env_ids)
-    before_clearance = before_min_z - env.scene.env_origins[active_env_ids, 2]
-    after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
-
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
+        after_min_z, _ = _collision_geom_min_z(env, asset, active_env_ids)
+        before_clearance = before_min_z - env.scene.env_origins[active_env_ids, 2]
+        after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
         log = env.extras.setdefault("log", {})
         log["Reset/collision_snap_geom_count"] = float(geom_count)
         log["Reset/collision_snap_target_clearance_mean_m"] = float(target_clearance.mean().item())
@@ -2044,7 +2055,7 @@ def reset_joints(
             rows=random_rows,
         )
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         log["Reset/joint_curriculum_progress"] = float(curriculum_progress)
         log["Reset/joint_randomization_prob"] = float(joint_randomization_prob)
@@ -2203,7 +2214,7 @@ def reset_joints(
             policy_leg_vel[recompute_passive_rows],
             rows=recompute_passive_rows,
         )
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         lower, upper = _SHARED_ROBOT.active_rod_angle_limits
         active_angles = torch.stack(
             (
