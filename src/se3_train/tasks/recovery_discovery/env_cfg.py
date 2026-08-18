@@ -362,40 +362,28 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "use_iterations": True,
         "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
     }
-    cfg.events["reset_root_state_loco"] = EventTermCfg(
-        func=env_groups.FilteredEventWrapper,
+    cfg.events["reset_root_state"] = EventTermCfg(
+        func=mdp_events.reset_root_state_recovery_discovery_mixed,
         mode="reset",
         params={
-            "group_names": ("loco",),
-            "wrapped_term": {
-                "func": mdp_events.reset_root_state_recovery_discovery_mixed,
-                "params": {**root_common_params, "pose_weights": (1.0, 0.0, 0.0, 0.0, 0.0)},
+            **root_common_params,
+            "pose_weights_by_group": {
+                "loco": (1.0, 0.0, 0.0, 0.0, 0.0),
+                "recover": (0.0, 0.20, 0.20, 0.30, 0.30),
             },
-        },
-    )
-    cfg.events["reset_root_state_recover"] = EventTermCfg(
-        func=env_groups.FilteredEventWrapper,
-        mode="reset",
-        params={
-            "group_names": ("recover",),
-            "wrapped_term": {
-                "func": mdp_events.reset_root_state_recovery_discovery_mixed,
-                "params": {
-                    **root_common_params,
-                    "pose_weights": (0.0, 0.20, 0.20, 0.30, 0.30),
-                    "recovery_state_cache_path": str(_RECOVERY_STATE_CACHE_PATH),
-                    "recovery_state_cache_split": "train",
-                    "source_curriculum_stages": [
-                        {"iteration": 0, "cache_ratio": 0.0},
-                        {"iteration": 300, "cache_ratio": 0.0},
-                        {"iteration": 800, "cache_ratio": 0.0},
-                        {"iteration": 1500, "cache_ratio": 0.10},
-                        {"iteration": 2000, "cache_ratio": 0.25},
-                        {"iteration": 2600, "cache_ratio": 0.45},
-                        {"iteration": 3400, "cache_ratio": 0.60},
-                        {"iteration": 4200, "cache_ratio": 0.70},
-                    ],
-                },
+            "recovery_state_cache_path": str(_RECOVERY_STATE_CACHE_PATH),
+            "recovery_state_cache_split": "train",
+            "source_curriculum_stages_by_group": {
+                "recover": [
+                    {"iteration": 0, "cache_ratio": 0.0},
+                    {"iteration": 300, "cache_ratio": 0.0},
+                    {"iteration": 800, "cache_ratio": 0.0},
+                    {"iteration": 1500, "cache_ratio": 0.10},
+                    {"iteration": 2000, "cache_ratio": 0.25},
+                    {"iteration": 2600, "cache_ratio": 0.45},
+                    {"iteration": 3400, "cache_ratio": 0.60},
+                    {"iteration": 4200, "cache_ratio": 0.70},
+                ],
             },
         },
     )
@@ -411,51 +399,38 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "use_iterations": True,
         "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
     }
-    cfg.events["reset_joints_loco"] = EventTermCfg(
-        func=env_groups.FilteredEventWrapper,
+    cfg.events["reset_joints"] = EventTermCfg(
+        func=mdp_events.reset_joints,
         mode="reset",
         params={
-            "group_names": ("loco",),
-            "wrapped_term": {"func": mdp_events.reset_joints, "params": joint_common_params},
-        },
-    )
-    cfg.events["reset_joints_recover"] = EventTermCfg(
-        func=env_groups.FilteredEventWrapper,
-        mode="reset",
-        params={
-            "group_names": ("recover",),
-            "wrapped_term": {
-                "func": mdp_events.reset_joints,
-                "params": {
-                    **joint_common_params,
-                    "curriculum_stages": [
-                        {
-                            "iteration": 0,
-                            "joint_offset_range": 0.0,
-                            "joint_vel_range": (0.0, 0.0),
-                            "joint_randomization_prob": 0.0,
-                        },
-                        {
-                            "iteration": 300,
-                            "joint_offset_range": 0.10,
-                            "joint_vel_range": (-0.20, 0.20),
-                            "joint_randomization_prob": 0.25,
-                        },
-                        {
-                            "iteration": 800,
-                            "joint_offset_range": 0.20,
-                            "joint_vel_range": (-0.40, 0.40),
-                            "joint_randomization_prob": 0.50,
-                        },
-                        {
-                            "iteration": 1500,
-                            "joint_offset_range": 0.25,
-                            "joint_vel_range": (-0.50, 0.50),
-                            "joint_randomization_prob": 0.75,
-                        },
-                    ],
+            **joint_common_params,
+            "randomization_group_names": ("recover",),
+            "curriculum_stages": [
+                {
+                    "iteration": 0,
+                    "joint_offset_range": 0.0,
+                    "joint_vel_range": (0.0, 0.0),
+                    "joint_randomization_prob": 0.0,
                 },
-            },
+                {
+                    "iteration": 300,
+                    "joint_offset_range": 0.10,
+                    "joint_vel_range": (-0.20, 0.20),
+                    "joint_randomization_prob": 0.25,
+                },
+                {
+                    "iteration": 800,
+                    "joint_offset_range": 0.20,
+                    "joint_vel_range": (-0.40, 0.40),
+                    "joint_randomization_prob": 0.50,
+                },
+                {
+                    "iteration": 1500,
+                    "joint_offset_range": 0.25,
+                    "joint_vel_range": (-0.50, 0.50),
+                    "joint_randomization_prob": 0.75,
+                },
+            ],
         },
     )
 
@@ -625,28 +600,26 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = env_cfg(play=play)
     grouped_events = dict(cfg.events)
 
-    recover_root_wrapper = grouped_events["reset_root_state_recover"]
-    recover_root_wrapped = recover_root_wrapper.params["wrapped_term"]
-    root_params = dict(recover_root_wrapped["params"])
+    root_params = dict(grouped_events["reset_root_state"].params)
+    root_params.pop("pose_weights_by_group", None)
+    source_stages_by_group = root_params.pop("source_curriculum_stages_by_group", {})
     root_params.update(
         {
             "pose_weights": (0.08, 0.17, 0.17, 0.29, 0.29),
-            "source_curriculum_stages": [
-                {"iteration": 0, "cache_ratio": 0.0, "near_upright_ratio": 0.0},
-                {"iteration": 300, "cache_ratio": 0.0, "near_upright_ratio": 0.0},
-                {"iteration": 800, "cache_ratio": 0.0, "near_upright_ratio": 0.0},
-                {"iteration": 1500, "cache_ratio": 0.10, "near_upright_ratio": 0.0},
-                {"iteration": 2000, "cache_ratio": 0.25, "near_upright_ratio": 0.0},
-                {"iteration": 2600, "cache_ratio": 0.45, "near_upright_ratio": 0.0},
-                {"iteration": 3400, "cache_ratio": 0.60, "near_upright_ratio": 0.05},
-                {"iteration": 4200, "cache_ratio": 0.70, "near_upright_ratio": 0.05},
-            ],
+            "source_curriculum_stages": source_stages_by_group.get("recover"),
         }
     )
+    if root_params["source_curriculum_stages"] is not None:
+        root_params["source_curriculum_stages"] = [
+            {
+                **stage,
+                "near_upright_ratio": 0.05 if int(stage["iteration"]) >= 3400 else 0.0,
+            }
+            for stage in root_params["source_curriculum_stages"]
+        ]
 
-    recover_joint_wrapper = grouped_events["reset_joints_recover"]
-    recover_joint_wrapped = recover_joint_wrapper.params["wrapped_term"]
-    joint_params = dict(recover_joint_wrapped["params"])
+    joint_params = dict(grouped_events["reset_joints"].params)
+    joint_params.pop("randomization_group_names", None)
 
     cfg.events = {}
     reset_scene = grouped_events.get("reset_scene_to_default")
