@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 
-from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
+
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
 
 _BASE_MODEL_DIR = "base_model"
 
@@ -24,7 +26,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         resume = False
     else:
         max_iterations = 1500
-        logger = os.environ.get("SE3_LOGGER", "tensorboard")
+        logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
 
     return RslRlOnPolicyRunnerCfg(

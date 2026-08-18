@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 
-from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
+
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
 
 _DEFAULT_LOAD_RUN = "base_model"
 _DEFAULT_GRU_LOAD_CHECKPOINT = "rough_base\\.pt"
@@ -47,7 +49,7 @@ def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
         # 直接从台阶 level 0 开始训练；保持源仓库 stair GRU 的 64-step rollout。
         # CTBC 第 0-200 轮满幅启用，200->500 轮退火，之后进入无辅助台阶课程。
         max_iterations = int(os.environ.get("SE3_STAIR_MAX_ITERATIONS", "3200"))
-        logger = os.environ.get("SE3_LOGGER", "tensorboard")
+        logger = os.environ.get("SE3_LOGGER", "wandb")
         resume = True
 
     # 从低 std 的 34 维 GRU 基模 warm-start 时，3e-4 的首个 Adam step 会让 KL 爆炸。
