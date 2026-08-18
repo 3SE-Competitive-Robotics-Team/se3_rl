@@ -9,9 +9,12 @@ from pathlib import Path
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 
+from se3_train.mdp import env_groups, terminations
 from se3_train.mdp import events as mdp_events
 from se3_train.tasks.recovery import curriculums, rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
@@ -22,6 +25,9 @@ _RECOVERY_STATE_CACHE_PATH = (
 )
 _DISCOVERY_MAX_LIN_VEL_X = 1.89
 _DISCOVERY_MAX_ANG_VEL_YAW = 9.41
+_STEPS_PER_POLICY_ITER = 24
+_TRAIN_ENV_GROUPS = {"loco": 0.5, "recover": 0.5}
+_PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
 RECOVERY_DISCOVERY_HISTORY_LENGTH = 5
 
 _DISCOVERY_REWARD_WEIGHTS = {
@@ -301,148 +307,209 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.standing_height_range = (0.24, 0.30)
 
     cfg.curriculum = {}
-    cfg.events.pop("push_robots", None)
-    cfg.events["reset_root_state"] = EventTermCfg(
-        func=mdp_events.reset_root_state_recovery_discovery_mixed,
+    inherited_events = dict(cfg.events)
+    cfg.events = {
+        "assign_env_groups": EventTermCfg(
+            func=env_groups.AssignEnvGroups,
+            mode="startup",
+            params={"env_groups": _PLAY_ENV_GROUPS if play else _TRAIN_ENV_GROUPS},
+        )
+    }
+    reset_scene_event = inherited_events.get("reset_scene_to_default")
+    if reset_scene_event is not None:
+        cfg.events["reset_scene_to_default"] = reset_scene_event
+
+    root_common_params = {
+        "asset_cfg": SceneEntityCfg("robot"),
+        "pos_xy_range": (-0.15, 0.15),
+        "height_offset_range": (0.0, 0.02),
+        "yaw_range": (-math.pi, math.pi),
+        "roll_jitter_range": (-math.radians(5.0), math.radians(5.0)),
+        "pitch_jitter_range": (-math.radians(5.0), math.radians(5.0)),
+        "lin_vel_range": (0.0, 0.0),
+        "ang_vel_range": (0.0, 0.0),
+        "clearance_range": (0.001, 0.005),
+        "standard_curriculum_stages": [
+            {
+                "iteration": 0,
+                "roll_jitter_range": (-math.radians(5.0), math.radians(5.0)),
+                "pitch_jitter_range": (-math.radians(5.0), math.radians(5.0)),
+                "lin_vel_range": (0.0, 0.0),
+                "ang_vel_range": (0.0, 0.0),
+            },
+            {
+                "iteration": 300,
+                "roll_jitter_range": (-math.radians(10.0), math.radians(10.0)),
+                "pitch_jitter_range": (-math.radians(10.0), math.radians(10.0)),
+                "lin_vel_range": (-0.03, 0.03),
+                "ang_vel_range": (-0.10, 0.10),
+            },
+            {
+                "iteration": 800,
+                "roll_jitter_range": (-math.radians(15.0), math.radians(15.0)),
+                "pitch_jitter_range": (-math.radians(15.0), math.radians(15.0)),
+                "lin_vel_range": (-0.05, 0.05),
+                "ang_vel_range": (-0.20, 0.20),
+            },
+            {
+                "iteration": 1500,
+                "roll_jitter_range": (-math.radians(20.0), math.radians(20.0)),
+                "pitch_jitter_range": (-math.radians(20.0), math.radians(20.0)),
+                "lin_vel_range": (-0.08, 0.08),
+                "ang_vel_range": (-0.30, 0.30),
+            },
+        ],
+        "use_iterations": True,
+        "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+    }
+    cfg.events["reset_root_state_loco"] = EventTermCfg(
+        func=env_groups.FilteredEventWrapper,
         mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "pos_xy_range": (-0.15, 0.15),
-            "height_offset_range": (0.0, 0.02),
-            "yaw_range": (-math.pi, math.pi),
-            "roll_jitter_range": (-math.radians(5.0), math.radians(5.0)),
-            "pitch_jitter_range": (-math.radians(5.0), math.radians(5.0)),
-            "lin_vel_range": (0.0, 0.0),
-            "ang_vel_range": (0.0, 0.0),
-            "clearance_range": (0.001, 0.005),
-            "pose_weights": (0.08, 0.17, 0.17, 0.29, 0.29),
-            "recovery_state_cache_path": str(_RECOVERY_STATE_CACHE_PATH),
-            "recovery_state_cache_split": "train",
-            "source_curriculum_stages": [
-                {
-                    "iteration": 0,
-                    "cache_ratio": 0.0,
-                    "near_upright_ratio": 0.0,
-                },
-                {
-                    "iteration": 300,
-                    "cache_ratio": 0.0,
-                    "near_upright_ratio": 0.0,
-                },
-                {
-                    "iteration": 800,
-                    "cache_ratio": 0.0,
-                    "near_upright_ratio": 0.0,
-                },
-                {
-                    "iteration": 1500,
-                    "cache_ratio": 0.10,
-                    "near_upright_ratio": 0.0,
-                },
-                {
-                    "iteration": 2000,
-                    "cache_ratio": 0.25,
-                    "near_upright_ratio": 0.0,
-                },
-                {
-                    "iteration": 2600,
-                    "cache_ratio": 0.45,
-                    "near_upright_ratio": 0.0,
-                },
-                {
-                    "iteration": 3400,
-                    "cache_ratio": 0.60,
-                    "near_upright_ratio": 0.05,
-                },
-                {
-                    "iteration": 4200,
-                    "cache_ratio": 0.70,
-                    "near_upright_ratio": 0.05,
-                },
-            ],
-            "standard_curriculum_stages": [
-                {
-                    "iteration": 0,
-                    "roll_jitter_range": (-math.radians(5.0), math.radians(5.0)),
-                    "pitch_jitter_range": (-math.radians(5.0), math.radians(5.0)),
-                    "lin_vel_range": (0.0, 0.0),
-                    "ang_vel_range": (0.0, 0.0),
-                },
-                {
-                    "iteration": 300,
-                    "roll_jitter_range": (-math.radians(10.0), math.radians(10.0)),
-                    "pitch_jitter_range": (-math.radians(10.0), math.radians(10.0)),
-                    "lin_vel_range": (-0.03, 0.03),
-                    "ang_vel_range": (-0.10, 0.10),
-                },
-                {
-                    "iteration": 800,
-                    "roll_jitter_range": (-math.radians(15.0), math.radians(15.0)),
-                    "pitch_jitter_range": (-math.radians(15.0), math.radians(15.0)),
-                    "lin_vel_range": (-0.05, 0.05),
-                    "ang_vel_range": (-0.20, 0.20),
-                },
-                {
-                    "iteration": 1500,
-                    "roll_jitter_range": (-math.radians(20.0), math.radians(20.0)),
-                    "pitch_jitter_range": (-math.radians(20.0), math.radians(20.0)),
-                    "lin_vel_range": (-0.08, 0.08),
-                    "ang_vel_range": (-0.30, 0.30),
-                },
-            ],
-            "use_iterations": True,
-            "steps_per_policy_iter": 64,
+            "group_names": ("loco",),
+            "wrapped_term": {
+                "func": mdp_events.reset_root_state_recovery_discovery_mixed,
+                "params": {**root_common_params, "pose_weights": (1.0, 0.0, 0.0, 0.0, 0.0)},
+            },
         },
     )
-    cfg.events["reset_joints"] = EventTermCfg(
-        func=mdp_events.reset_joints,
+    cfg.events["reset_root_state_recover"] = EventTermCfg(
+        func=env_groups.FilteredEventWrapper,
         mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "joint_offset_range": 0.0,
-            "joint_vel_range": (0.0, 0.0),
-            "wheel_joint_vel_range": (0.0, 0.0),
-            "joint_randomization_prob": 0.0,
-            "align_root_height_to_wheels": True,
-            "height_conditioned_default": True,
-            "curriculum_stages": [
-                {
-                    "iteration": 0,
-                    "joint_offset_range": 0.0,
-                    "joint_vel_range": (0.0, 0.0),
-                    "joint_randomization_prob": 0.0,
+            "group_names": ("recover",),
+            "wrapped_term": {
+                "func": mdp_events.reset_root_state_recovery_discovery_mixed,
+                "params": {
+                    **root_common_params,
+                    "pose_weights": (0.0, 0.20, 0.20, 0.30, 0.30),
+                    "recovery_state_cache_path": str(_RECOVERY_STATE_CACHE_PATH),
+                    "recovery_state_cache_split": "train",
+                    "source_curriculum_stages": [
+                        {"iteration": 0, "cache_ratio": 0.0},
+                        {"iteration": 300, "cache_ratio": 0.0},
+                        {"iteration": 800, "cache_ratio": 0.0},
+                        {"iteration": 1500, "cache_ratio": 0.10},
+                        {"iteration": 2000, "cache_ratio": 0.25},
+                        {"iteration": 2600, "cache_ratio": 0.45},
+                        {"iteration": 3400, "cache_ratio": 0.60},
+                        {"iteration": 4200, "cache_ratio": 0.70},
+                    ],
                 },
-                {
-                    "iteration": 300,
-                    "joint_offset_range": 0.10,
-                    "joint_vel_range": (-0.20, 0.20),
-                    "joint_randomization_prob": 0.25,
+            },
+        },
+    )
+
+    joint_common_params = {
+        "asset_cfg": SceneEntityCfg("robot"),
+        "joint_offset_range": 0.0,
+        "joint_vel_range": (0.0, 0.0),
+        "wheel_joint_vel_range": (0.0, 0.0),
+        "joint_randomization_prob": 0.0,
+        "align_root_height_to_wheels": True,
+        "height_conditioned_default": True,
+        "use_iterations": True,
+        "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+    }
+    cfg.events["reset_joints_loco"] = EventTermCfg(
+        func=env_groups.FilteredEventWrapper,
+        mode="reset",
+        params={
+            "group_names": ("loco",),
+            "wrapped_term": {"func": mdp_events.reset_joints, "params": joint_common_params},
+        },
+    )
+    cfg.events["reset_joints_recover"] = EventTermCfg(
+        func=env_groups.FilteredEventWrapper,
+        mode="reset",
+        params={
+            "group_names": ("recover",),
+            "wrapped_term": {
+                "func": mdp_events.reset_joints,
+                "params": {
+                    **joint_common_params,
+                    "curriculum_stages": [
+                        {
+                            "iteration": 0,
+                            "joint_offset_range": 0.0,
+                            "joint_vel_range": (0.0, 0.0),
+                            "joint_randomization_prob": 0.0,
+                        },
+                        {
+                            "iteration": 300,
+                            "joint_offset_range": 0.10,
+                            "joint_vel_range": (-0.20, 0.20),
+                            "joint_randomization_prob": 0.25,
+                        },
+                        {
+                            "iteration": 800,
+                            "joint_offset_range": 0.20,
+                            "joint_vel_range": (-0.40, 0.40),
+                            "joint_randomization_prob": 0.50,
+                        },
+                        {
+                            "iteration": 1500,
+                            "joint_offset_range": 0.25,
+                            "joint_vel_range": (-0.50, 0.50),
+                            "joint_randomization_prob": 0.75,
+                        },
+                    ],
                 },
-                {
-                    "iteration": 800,
-                    "joint_offset_range": 0.20,
-                    "joint_vel_range": (-0.40, 0.40),
-                    "joint_randomization_prob": 0.50,
-                },
-                {
-                    "iteration": 1500,
-                    "joint_offset_range": 0.25,
-                    "joint_vel_range": (-0.50, 0.50),
-                    "joint_randomization_prob": 0.75,
-                },
-            ],
-            "use_iterations": True,
-            "steps_per_policy_iter": 64,
+            },
+        },
+    )
+
+    for event_name, event_cfg in inherited_events.items():
+        if event_name not in {
+            "reset_scene_to_default",
+            "reset_root_state",
+            "reset_joints",
+            "push_robots",
+        }:
+            cfg.events[event_name] = event_cfg
+
+    cfg.observations["env_group"] = ObservationGroupCfg(
+        terms={"group_id": ObservationTermCfg(func=env_groups.env_group_id_obs)},
+        concatenate_terms=True,
+        enable_corruption=False,
+    )
+
+    cfg.terminations["loco_bad_orientation"] = TerminationTermCfg(
+        func=env_groups.FilteredTerminationWrapper,
+        time_out=False,
+        params={
+            "group_names": ("loco",),
+            "wrapped_term": {
+                "func": terminations.bad_orientation_delayed,
+                "params": {"limit_angle": math.radians(60.0), "max_steps": 25},
+            },
+        },
+    )
+    cfg.terminations["recover_stagnation"] = TerminationTermCfg(
+        func=env_groups.FilteredTerminationWrapper,
+        time_out=False,
+        params={
+            "group_names": ("recover",),
+            "wrapped_term": {
+                "func": terminations.recovery_stagnation,
+                "params": {"max_steps": 300, "min_delta": 0.02},
+            },
         },
     )
     if not play:
-        cfg.events["push_robots"] = EventTermCfg(
-            func=mdp_events.push_robots,
+        cfg.events["push_robots_loco"] = EventTermCfg(
+            func=env_groups.FilteredEventWrapper,
             mode="interval",
             interval_range_s=(8.0, 12.0),
             params={
-                "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)},
-                "asset_cfg": SceneEntityCfg("robot"),
+                "group_names": ("loco",),
+                "wrapped_term": {
+                    "func": mdp_events.push_robots,
+                    "params": {
+                        "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)},
+                        "asset_cfg": SceneEntityCfg("robot"),
+                    },
+                },
             },
         )
         cfg.curriculum = {
@@ -451,7 +518,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={
                     "command_name": "velocity_height",
                     "use_iterations": True,
-                    "steps_per_policy_iter": 64,
+                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
                     "velocity_stages": [
                         {
                             "iteration": 0,
@@ -497,7 +564,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={
                     "command_name": "velocity_height",
                     "use_iterations": True,
-                    "steps_per_policy_iter": 64,
+                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
                     "height_stages": [
                         {
                             "iteration": 0,
@@ -522,7 +589,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 func=curriculums.push_disturbance,
                 params={
                     "use_iterations": True,
-                    "steps_per_policy_iter": 64,
+                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
                     "push_stages": [
                         {
                             "iteration": 0,
@@ -546,6 +613,78 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }
 
     _configure_discovery_reward_contract(cfg)
+    return cfg
+
+
+def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """生成与分组实验同超参数、但使用旧混合 reset 的公平基线。"""
+
+    cfg = env_cfg(play=play)
+    grouped_events = dict(cfg.events)
+
+    recover_root_wrapper = grouped_events["reset_root_state_recover"]
+    recover_root_wrapped = recover_root_wrapper.params["wrapped_term"]
+    root_params = dict(recover_root_wrapped["params"])
+    root_params.update(
+        {
+            "pose_weights": (0.08, 0.17, 0.17, 0.29, 0.29),
+            "source_curriculum_stages": [
+                {"iteration": 0, "cache_ratio": 0.0, "near_upright_ratio": 0.0},
+                {"iteration": 300, "cache_ratio": 0.0, "near_upright_ratio": 0.0},
+                {"iteration": 800, "cache_ratio": 0.0, "near_upright_ratio": 0.0},
+                {"iteration": 1500, "cache_ratio": 0.10, "near_upright_ratio": 0.0},
+                {"iteration": 2000, "cache_ratio": 0.25, "near_upright_ratio": 0.0},
+                {"iteration": 2600, "cache_ratio": 0.45, "near_upright_ratio": 0.0},
+                {"iteration": 3400, "cache_ratio": 0.60, "near_upright_ratio": 0.05},
+                {"iteration": 4200, "cache_ratio": 0.70, "near_upright_ratio": 0.05},
+            ],
+        }
+    )
+
+    recover_joint_wrapper = grouped_events["reset_joints_recover"]
+    recover_joint_wrapped = recover_joint_wrapper.params["wrapped_term"]
+    joint_params = dict(recover_joint_wrapped["params"])
+
+    cfg.events = {}
+    reset_scene = grouped_events.get("reset_scene_to_default")
+    if reset_scene is not None:
+        cfg.events["reset_scene_to_default"] = reset_scene
+    cfg.events["reset_root_state"] = EventTermCfg(
+        func=mdp_events.reset_root_state_recovery_discovery_mixed,
+        mode="reset",
+        params=root_params,
+    )
+    cfg.events["reset_joints"] = EventTermCfg(
+        func=mdp_events.reset_joints,
+        mode="reset",
+        params=joint_params,
+    )
+    for event_name in (
+        "friction",
+        "restitution",
+        "base_mass",
+        "inertia",
+        "com",
+        "pd_gains",
+        "default_dof_pos",
+        "snap_root_to_collision_clearance",
+    ):
+        event = grouped_events.get(event_name)
+        if event is not None:
+            cfg.events[event_name] = event
+    grouped_push = grouped_events.get("push_robots_loco")
+    if grouped_push is not None:
+        wrapped_push = grouped_push.params["wrapped_term"]
+        cfg.events["push_robots"] = EventTermCfg(
+            func=wrapped_push["func"],
+            mode="interval",
+            interval_range_s=grouped_push.interval_range_s,
+            params=dict(wrapped_push["params"]),
+        )
+
+    cfg.observations.pop("env_group", None)
+    cfg.terminations.pop("loco_bad_orientation", None)
+    cfg.terminations.pop("recover_stagnation", None)
     return cfg
 
 
