@@ -111,6 +111,7 @@ class AssignEnvGroups(ManagerTermBase):
             raise ValueError(f"分组概率总和必须为有限正数：{probabilities}")
         probs = probs / total
         counts = _normalized_group_counts(probs, env.num_envs)
+        shuffle = bool(cfg.params.get("shuffle", True))
 
         group_ids = torch.empty(env.num_envs, device=env.device, dtype=torch.long)
         offset = 0
@@ -118,8 +119,10 @@ class AssignEnvGroups(ManagerTermBase):
             if count > 0:
                 group_ids[offset : offset + count] = group_id
                 offset += count
-        permutation = torch.randperm(env.num_envs, device=env.device)
-        env.env_group_ids = group_ids[permutation]
+        if shuffle:
+            permutation = torch.randperm(env.num_envs, device=env.device)
+            group_ids = group_ids[permutation]
+        env.env_group_ids = group_ids
         env.env_group_names = group_names
         env.env_group_name_to_id = {name: group_id for group_id, name in enumerate(group_names)}
         env.env_group_counts = counts
