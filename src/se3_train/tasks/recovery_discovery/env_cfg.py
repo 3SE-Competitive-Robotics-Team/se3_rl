@@ -9,7 +9,7 @@ from pathlib import Path
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
@@ -468,10 +468,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         }:
             cfg.events[event_name] = event_cfg
 
-    cfg.observations["env_group"] = ObservationGroupCfg(
-        terms={"group_id": ObservationTermCfg(func=env_groups.env_group_id_obs)},
-        concatenate_terms=True,
-        enable_corruption=False,
+    critic_cfg = cfg.observations["critic"]
+    cfg.observations["critic"] = replace(
+        critic_cfg,
+        terms={
+            **critic_cfg.terms,
+            "group_id": ObservationTermCfg(func=env_groups.env_group_id_obs),
+        },
     )
 
     cfg.terminations["loco_bad_orientation"] = TerminationTermCfg(
@@ -682,7 +685,11 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params=dict(wrapped_push["params"]),
         )
 
-    cfg.observations.pop("env_group", None)
+    critic_cfg = cfg.observations["critic"]
+    cfg.observations["critic"] = replace(
+        critic_cfg,
+        terms={name: term for name, term in critic_cfg.terms.items() if name != "group_id"},
+    )
     cfg.terminations.pop("loco_bad_orientation", None)
     cfg.terminations.pop("recover_stagnation", None)
     return cfg

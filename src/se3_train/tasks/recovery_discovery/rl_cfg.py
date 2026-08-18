@@ -32,7 +32,7 @@ def _model_cfg(
     )
 
 
-def _rl_cfg(*, smoke: bool, recurrent: bool, grouped: bool = True) -> RslRlOnPolicyRunnerCfg:
+def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
     """生成网络类型以外完全一致的 Discovery PPO 配置。"""
     smoke_enabled = smoke or os.environ.get("SE3_SMOKE", "0") == "1"
     logger = "tensorboard" if smoke_enabled else os.environ.get("SE3_LOGGER", "tensorboard")
@@ -45,11 +45,7 @@ def _rl_cfg(*, smoke: bool, recurrent: bool, grouped: bool = True) -> RslRlOnPol
     )
 
     return RslRlOnPolicyRunnerCfg(
-        obs_groups=(
-            {"actor": ("actor",), "critic": ("critic", "env_group")}
-            if grouped
-            else {"actor": ("actor",), "critic": ("critic",)}
-        ),
+        obs_groups={"actor": ("actor",), "critic": ("critic",)},
         actor=_model_cfg(
             recurrent=recurrent,
             distribution_cfg={
@@ -95,4 +91,4 @@ def mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 def ungrouped_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成不读取 env group 的公平基线 MLP PPO 配置。"""
 
-    return _rl_cfg(smoke=smoke, recurrent=False, grouped=False)
+    return _rl_cfg(smoke=smoke, recurrent=False)
