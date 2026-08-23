@@ -564,6 +564,7 @@ def tracking_lin_vel(
     idle = (torch.abs(cmd[:, 0]) < 0.08) & (torch.abs(cmd[:, 1]) < 0.08) & locomotion
 
     _accumulate_command_curriculum_metric(env, "lin_score", reward, moving)
+    _accumulate_command_curriculum_metric(env, "lin_score_all", reward, locomotion)
     _accumulate_command_curriculum_metric(env, "upright_score", gate, locomotion)
 
     wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
@@ -636,6 +637,7 @@ def tracking_ang_vel(
     )
     moving = (torch.abs(cmd[:, 1]) >= 0.2) & ~jump_flag
     _accumulate_command_curriculum_metric(env, "yaw_score", reward, moving)
+    _accumulate_command_curriculum_metric(env, "yaw_score_all", reward, ~jump_flag)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
@@ -1089,6 +1091,14 @@ def leg_torques(
     """腿部主动杆电机力矩平方和。"""
     robot = env.scene[asset_cfg.name]
     torques, _ = _policy_leg_torque_and_vel(env, robot)
+    torque_limit = max(min(_SHARED_ROBOT.torque_limits[: torques.shape[1]]), 1.0e-6)
+    torque_saturated = torch.max(torch.abs(torques), dim=1).values >= 0.95 * torque_limit
+    _accumulate_command_curriculum_metric(
+        env,
+        "leg_torque_saturation",
+        torque_saturated.float(),
+        torch.ones(env.num_envs, device=env.device, dtype=torch.bool),
+    )
     penalty = torch.sum(torques**2, dim=1)
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
@@ -1106,6 +1116,13 @@ def wheel_torques(
     """
     robot = env.scene[asset_cfg.name]
     torques = robot.data.actuator_force[:, wheel_actuator_ids(robot)]
+    torque_saturated = torch.max(torch.abs(torques), dim=1).values >= float(max_torque)
+    _accumulate_command_curriculum_metric(
+        env,
+        "wheel_torque_saturation",
+        torque_saturated.float(),
+        torch.ones(env.num_envs, device=env.device, dtype=torch.bool),
+    )
     excess = torch.clamp(torch.abs(torques) - max_torque, min=0.0)
     return torch.sum(excess**2, dim=1)
 
@@ -1453,6 +1470,72 @@ def recovery_upright_zero_velocity_penalty(
     return result
 
 
+def _accumulate_recovery_curriculum_diagnostics(
+    env: ManagerBasedRlEnv,
+    *,
+    command_name: str,
+    base_height_sensor_name: str,
+    wheel_sensor_name: str,
+    action_saturation_threshold: float,
+    force_threshold: float,
+    asset_cfg: SceneEntityCfg,
+) -> None:
+    """逐步累计恢复就绪度与动作饱和率，供分组速度课程读取。"""
+    if not _command_curriculum_metrics_enabled(env):
+        return
+
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    upright_15 = -pg_z > math.cos(math.radians(15.0))
+
+    height_sensor: TerrainHeightSensor = env.scene[base_height_sensor_name]
+    base_height = torch.nan_to_num(
+        height_sensor.data.heights[:, 0],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    height_ok_2cm = torch.abs(base_height - cmd[:, 4]) < 0.02
+
+    wheel_sensor: ContactSensor = env.scene[wheel_sensor_name]
+    if wheel_sensor.data.force is None:
+        both_wheels_contact = torch.zeros(
+            env.num_envs,
+            device=env.device,
+            dtype=torch.bool,
+        )
+    else:
+        wheel_force = finite_contact_force_norm(wheel_sensor.data.force)
+        both_wheels_contact = (wheel_force > float(force_threshold)).all(dim=1)
+
+    actor_action = env.action_manager.action
+    action_term = _action_term_for_robot(env, robot)
+    action = _select_action_tensor(
+        action_term,
+        actor_action.shape,
+        actor_action,
+        "policy_action",
+        "raw_action",
+    )
+    action_saturated = torch.max(torch.abs(action), dim=1).values > float(
+        action_saturation_threshold
+    )
+    active = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+    _accumulate_command_curriculum_metric(
+        env,
+        "ready_score",
+        (upright_15 & height_ok_2cm & both_wheels_contact).float(),
+        active,
+    )
+    _accumulate_command_curriculum_metric(
+        env,
+        "action_saturation",
+        action_saturated.float(),
+        active,
+    )
+
+
 def recovery_diagnostics(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1470,6 +1553,15 @@ def recovery_diagnostics(
 ) -> torch.Tensor:
     """记录 recovery one-policy 诊断量，返回 0 以避免改变奖励语义。"""
     zero = torch.zeros(env.num_envs, device=env.device)
+    _accumulate_recovery_curriculum_diagnostics(
+        env,
+        command_name=command_name,
+        base_height_sensor_name=base_height_sensor_name,
+        wheel_sensor_name=wheel_sensor_name,
+        action_saturation_threshold=action_saturation_threshold,
+        force_threshold=force_threshold,
+        asset_cfg=asset_cfg,
+    )
     if not hasattr(env, "extras"):
         return zero
 
@@ -2247,6 +2339,12 @@ def leg_contact_penalty(
 
     force_mag = finite_contact_force_norm(data.force)
     has_contact = (force_mag > float(force_threshold)).any(dim=1)
+    _accumulate_command_curriculum_metric(
+        env,
+        "leg_contact",
+        has_contact.float(),
+        torch.ones(env.num_envs, device=env.device, dtype=torch.bool),
+    )
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Recovery/diag_leg_contact_penalty_rate"] = (
@@ -2775,6 +2873,12 @@ def collision(
 
     force_mag = finite_contact_force_norm(data.force)
     contact_count = (force_mag > 0.1).float().sum(dim=1)
+    _accumulate_command_curriculum_metric(
+        env,
+        "base_contact",
+        (contact_count > 0.0).float(),
+        torch.ones(env.num_envs, device=env.device, dtype=torch.bool),
+    )
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         has_contact = contact_count > 0.0

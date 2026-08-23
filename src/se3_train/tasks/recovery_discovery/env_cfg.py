@@ -59,6 +59,56 @@ _DISCOVERY_REWARD_WEIGHTS = {
 }
 
 
+def _ungrouped_velocity_curriculum_cfg() -> CurriculumTermCfg:
+    """保留不分组对照实验原有的固定速度课程。"""
+    return CurriculumTermCfg(
+        func=curriculums.commands_vel,
+        params={
+            "command_name": "velocity_height",
+            "use_iterations": True,
+            "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
+            "velocity_stages": [
+                {
+                    "iteration": 0,
+                    "lin_vel_x_range": (0.0, 0.0),
+                    "ang_vel_yaw_range": (0.0, 0.0),
+                },
+                {
+                    "iteration": 1500,
+                    "lin_vel_x_range": (0.0, 0.0),
+                    "ang_vel_yaw_range": (0.0, 0.0),
+                },
+                {
+                    "iteration": 2000,
+                    "lin_vel_x_range": (-0.5, 0.5),
+                    "ang_vel_yaw_range": (-1.0, 1.0),
+                },
+                {
+                    "iteration": 2600,
+                    "lin_vel_x_range": (-1.0, 1.0),
+                    "ang_vel_yaw_range": (-2.5, 2.5),
+                },
+                {
+                    "iteration": 3400,
+                    "lin_vel_x_range": (-1.6, 1.6),
+                    "ang_vel_yaw_range": (-5.0, 5.0),
+                },
+                {
+                    "iteration": 4200,
+                    "lin_vel_x_range": (
+                        -_DISCOVERY_MAX_LIN_VEL_X,
+                        _DISCOVERY_MAX_LIN_VEL_X,
+                    ),
+                    "ang_vel_yaw_range": (
+                        -_DISCOVERY_MAX_ANG_VEL_YAW,
+                        _DISCOVERY_MAX_ANG_VEL_YAW,
+                    ),
+                },
+            ],
+        },
+    )
+
+
 def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     """显式装配 Discovery 奖励表，并在配置漂移时直接失败。"""
 
@@ -503,49 +553,29 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         )
         cfg.curriculum = {
             "commands_vel": CurriculumTermCfg(
-                func=curriculums.commands_vel,
+                func=curriculums.GroupedRewardVelocityCurriculum,
                 params={
                     "command_name": "velocity_height",
-                    "use_iterations": True,
-                    "steps_per_policy_iter": _STEPS_PER_POLICY_ITER,
-                    "velocity_stages": [
-                        {
-                            "iteration": 0,
-                            "lin_vel_x_range": (0.0, 0.0),
-                            "ang_vel_yaw_range": (0.0, 0.0),
-                        },
-                        {
-                            "iteration": 1500,
-                            "lin_vel_x_range": (0.0, 0.0),
-                            "ang_vel_yaw_range": (0.0, 0.0),
-                        },
-                        {
-                            "iteration": 2000,
-                            "lin_vel_x_range": (-0.5, 0.5),
-                            "ang_vel_yaw_range": (-1.0, 1.0),
-                        },
-                        {
-                            "iteration": 2600,
-                            "lin_vel_x_range": (-1.0, 1.0),
-                            "ang_vel_yaw_range": (-2.5, 2.5),
-                        },
-                        {
-                            "iteration": 3400,
-                            "lin_vel_x_range": (-1.6, 1.6),
-                            "ang_vel_yaw_range": (-5.0, 5.0),
-                        },
-                        {
-                            "iteration": 4200,
-                            "lin_vel_x_range": (
-                                -_DISCOVERY_MAX_LIN_VEL_X,
-                                _DISCOVERY_MAX_LIN_VEL_X,
-                            ),
-                            "ang_vel_yaw_range": (
-                                -_DISCOVERY_MAX_ANG_VEL_YAW,
-                                _DISCOVERY_MAX_ANG_VEL_YAW,
-                            ),
-                        },
-                    ],
+                    "loco_group_name": "loco",
+                    "recover_group_name": "recover",
+                    "loco_init_level": 0.15,
+                    "recover_init_level": 0.10,
+                    "level_step": 0.05,
+                    "max_lin_vel_x": _DISCOVERY_MAX_LIN_VEL_X,
+                    "max_ang_vel_yaw": _DISCOVERY_MAX_ANG_VEL_YAW,
+                    "evaluation_window_steps": 1000,
+                    "required_consecutive_windows": 2,
+                    "min_episodes_per_window": 32,
+                    "min_tracking_samples": 256,
+                    "lin_score_threshold": 0.80,
+                    "yaw_score_threshold": 0.70,
+                    "recover_ready_threshold": 0.60,
+                    "loco_survival_threshold": 0.98,
+                    "loco_base_contact_max": 0.02,
+                    "action_saturation_max": 0.35,
+                    "leg_torque_saturation_max": 0.20,
+                    "wheel_torque_saturation_max": 0.20,
+                    "base_contact_termination_name": "loco_base_contact",
                 },
             ),
             "commands_height": CurriculumTermCfg(
@@ -677,6 +707,8 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("loco_bad_orientation", None)
     cfg.terminations.pop("loco_base_contact", None)
     cfg.terminations.pop("recover_stagnation", None)
+    if not play:
+        cfg.curriculum["commands_vel"] = _ungrouped_velocity_curriculum_cfg()
     return cfg
 
 
