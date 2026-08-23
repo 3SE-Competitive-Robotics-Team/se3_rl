@@ -293,6 +293,21 @@ def catastrophic_state(
     return terminated
 
 
+def base_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """机身接触地面时立即终止。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+    force_mag = finite_contact_force_norm(data.force)
+    return force_mag.max(dim=1).values > float(force_threshold)
+
+
 def leg_contact(
     env: ManagerBasedRlEnv,
     sensor_name: str,

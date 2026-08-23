@@ -459,7 +459,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "group_names": ("loco",),
             "wrapped_term": {
                 "func": terminations.bad_orientation_delayed,
-                "params": {"limit_angle": math.radians(60.0), "max_steps": 25},
+                "params": {"limit_angle": math.radians(30.0), "max_steps": 25},
+            },
+        },
+    )
+    cfg.terminations["loco_base_contact"] = TerminationTermCfg(
+        func=env_groups.FilteredTerminationWrapper,
+        time_out=False,
+        params={
+            "group_names": ("loco",),
+            "wrapped_term": {
+                "func": terminations.base_contact,
+                "params": {"sensor_name": "collision_sensor", "force_threshold": 1.0},
             },
         },
     )
@@ -664,6 +675,7 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         terms={name: term for name, term in critic_cfg.terms.items() if name != "group_id"},
     )
     cfg.terminations.pop("loco_bad_orientation", None)
+    cfg.terminations.pop("loco_base_contact", None)
     cfg.terminations.pop("recover_stagnation", None)
     return cfg
 
