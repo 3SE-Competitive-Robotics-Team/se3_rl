@@ -570,12 +570,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "lin_score_threshold": 0.80,
                     "yaw_score_threshold": 0.70,
                     "recover_ready_threshold": 0.60,
-                    "loco_survival_threshold": 0.98,
-                    "loco_base_contact_max": 0.02,
-                    "action_saturation_max": 0.35,
-                    "leg_torque_saturation_max": 0.20,
-                    "wheel_torque_saturation_max": 0.20,
-                    "base_contact_termination_name": "loco_base_contact",
                 },
             ),
             "commands_height": CurriculumTermCfg(

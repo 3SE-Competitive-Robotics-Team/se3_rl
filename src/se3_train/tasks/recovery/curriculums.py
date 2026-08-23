@@ -27,11 +27,6 @@ _CURRICULUM_METRIC_NAMES = (
     "lin_score_all",
     "yaw_score_all",
     "ready_score",
-    "action_saturation",
-    "leg_torque_saturation",
-    "wheel_torque_saturation",
-    "leg_contact",
-    "base_contact",
 )
 
 
@@ -80,8 +75,6 @@ class _GroupWindow:
     """一个环境组在当前评估窗口内的完整 episode 统计。"""
 
     episode_count: torch.Tensor
-    survival_sum: torch.Tensor
-    base_contact_terminations: torch.Tensor
     metrics: dict[str, _MetricWindow]
 
     @classmethod
@@ -89,8 +82,6 @@ class _GroupWindow:
         """在训练设备上创建一个空统计窗口。"""
         return cls(
             episode_count=torch.zeros((), device=device, dtype=torch.long),
-            survival_sum=torch.zeros((), device=device),
-            base_contact_terminations=torch.zeros((), device=device, dtype=torch.long),
             metrics={name: _MetricWindow.create(device) for name in _CURRICULUM_METRIC_NAMES},
         )
 
@@ -109,9 +100,9 @@ class _GroupState:
 class GroupedRewardVelocityCurriculum(ManagerTermBase):
     """按 loco/recover 奖励分别推进速度包络。
 
-    loco 只使用真实移动命令的跟踪分数，并要求完整存活且无 base contact；
-    recover 使用包含起身阶段的整段 episode 跟踪分数和 ready 比例。两组均受
-    动作与力矩饱和安全门约束，课程只升不降，且 recover 永不超过 loco。
+    loco 使用真实移动命令的线速度与角速度跟踪分数；recover 使用包含起身阶段的
+    整段 episode 跟踪分数和 ready 比例。两组分别连续达标后升级，课程只升不降，
+    且 recover 永不超过 loco。
     """
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv) -> None:
@@ -132,14 +123,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
         self._lin_score_threshold = float(params.get("lin_score_threshold", 0.80))
         self._yaw_score_threshold = float(params.get("yaw_score_threshold", 0.70))
         self._recover_ready_threshold = float(params.get("recover_ready_threshold", 0.60))
-        self._loco_survival_threshold = float(params.get("loco_survival_threshold", 0.98))
-        self._loco_base_contact_max = float(params.get("loco_base_contact_max", 0.02))
-        self._action_saturation_max = float(params.get("action_saturation_max", 0.35))
-        self._leg_torque_saturation_max = float(params.get("leg_torque_saturation_max", 0.20))
-        self._wheel_torque_saturation_max = float(params.get("wheel_torque_saturation_max", 0.20))
-        self._base_contact_termination_name = str(
-            params.get("base_contact_termination_name", "loco_base_contact")
-        )
 
         loco_level = float(params.get("loco_init_level", 0.15))
         recover_level = float(params.get("recover_init_level", 0.10))
@@ -187,13 +170,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
                 f"{self._command_name} 必须是 VelocityHeightCommandTerm，"
                 f"实际为 {type(self._command_term).__name__}。"
             )
-        try:
-            env.termination_manager.get_term(self._base_contact_termination_name)
-        except ValueError as error:
-            raise ValueError(
-                f"速度课程找不到 loco base contact 终止项：{self._base_contact_termination_name}"
-            ) from error
-
         # runner 会随机化初始 episode_length；每个 env 的首个 reset 因而不是完整 episode。
         self._has_completed_initial_fragment = torch.zeros(
             self.num_envs,
@@ -226,11 +202,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
             "lin_score_threshold": self._lin_score_threshold,
             "yaw_score_threshold": self._yaw_score_threshold,
             "recover_ready_threshold": self._recover_ready_threshold,
-            "loco_survival_threshold": self._loco_survival_threshold,
-            "loco_base_contact_max": self._loco_base_contact_max,
-            "action_saturation_max": self._action_saturation_max,
-            "leg_torque_saturation_max": self._leg_torque_saturation_max,
-            "wheel_torque_saturation_max": self._wheel_torque_saturation_max,
         }
         invalid = {name: value for name, value in thresholds.items() if not 0.0 <= value <= 1.0}
         if invalid:
@@ -261,7 +232,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
             self._recover_group_name: False,
         }
         upgrade_events = dict(evaluation_events)
-        safety_blocks = dict(evaluation_events)
         step = int(getattr(env, "common_step_counter", 0))
 
         for group_name in (self._loco_group_name, self._recover_group_name):
@@ -278,12 +248,11 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
                 continue
 
             evaluation_events[group_name] = True
-            passed, performance_ok, safety_ok = self._evaluate_group(group_name)
+            passed = self._evaluate_group(group_name)
             if passed:
                 state.pass_streak = min(state.pass_streak + 1, self._required_passes)
             else:
                 state.pass_streak = 0
-            safety_blocks[group_name] = performance_ok and not safety_ok
 
             if state.pass_streak >= self._required_passes:
                 upper_level = (
@@ -310,7 +279,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
         return self._log_state(
             evaluation_events=evaluation_events,
             upgrade_events=upgrade_events,
-            safety_blocks=safety_blocks,
         )
 
     def _resolve_env_ids(
@@ -327,10 +295,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
     def _collect_completed_episodes(self, env_ids: torch.Tensor) -> None:
         """按环境组消费完整 episode 指标。"""
         all_group_ids = self._env.env_group_ids
-        max_episode_length = max(1, int(self._env.max_episode_length))
-        base_contact_termination = self._env.termination_manager.get_term(
-            self._base_contact_termination_name
-        )
 
         for group_name, group_id in self._group_ids.items():
             group_env_ids = env_ids[all_group_ids[env_ids] == group_id]
@@ -339,13 +303,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
 
             window = self._states[group_name].window
             window.episode_count += group_env_ids.numel()
-            survival = torch.clamp(
-                self._env.episode_length_buf[group_env_ids].float() / max_episode_length,
-                0.0,
-                1.0,
-            )
-            window.survival_sum += survival.sum()
-            window.base_contact_terminations += base_contact_termination[group_env_ids].sum()
 
             for metric_name in _CURRICULUM_METRIC_NAMES:
                 sums = getattr(self._env, f"_command_curriculum_{metric_name}_sum", None)
@@ -367,8 +324,8 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
             if isinstance(counts, torch.Tensor):
                 counts[env_ids] = 0.0
 
-    def _evaluate_group(self, group_name: str) -> tuple[bool, bool, bool]:
-        """计算一个窗口是否满足任务表现与安全门。"""
+    def _evaluate_group(self, group_name: str) -> bool:
+        """计算一个窗口是否满足对应组的奖励表现。"""
         state = self._states[group_name]
         window = state.window
         is_loco = group_name == self._loco_group_name
@@ -387,32 +344,15 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
             and yaw_metric.mean >= self._yaw_score_threshold
         )
         episode_count = max(1, int(window.episode_count.item()))
-        survival_score = float(window.survival_sum.item()) / episode_count
-        base_contact_rate = float(window.base_contact_terminations.item()) / episode_count
         ready_metric = window.metrics["ready_score"]
 
         if is_loco:
-            task_ok = (
-                survival_score >= self._loco_survival_threshold
-                and base_contact_rate <= self._loco_base_contact_max
-            )
+            task_ok = True
         else:
             task_ok = (
                 ready_metric.samples > 0 and ready_metric.mean >= self._recover_ready_threshold
             )
 
-        action_metric = window.metrics["action_saturation"]
-        leg_torque_metric = window.metrics["leg_torque_saturation"]
-        wheel_torque_metric = window.metrics["wheel_torque_saturation"]
-        safety_samples_ok = all(
-            metric.samples > 0 for metric in (action_metric, leg_torque_metric, wheel_torque_metric)
-        )
-        safety_ok = (
-            safety_samples_ok
-            and action_metric.mean <= self._action_saturation_max
-            and leg_torque_metric.mean <= self._leg_torque_saturation_max
-            and wheel_torque_metric.mean <= self._wheel_torque_saturation_max
-        )
         performance_ok = tracking_ok and task_ok
 
         state.last_metrics = {
@@ -422,19 +362,11 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
             "lin_score": lin_metric.mean,
             "yaw_score": yaw_metric.mean,
             "ready_score": ready_metric.mean,
-            "survival_score": survival_score,
-            "base_contact_termination_rate": base_contact_rate,
-            "leg_contact_rate": window.metrics["leg_contact"].mean,
-            "base_contact_step_rate": window.metrics["base_contact"].mean,
-            "action_saturation_rate": action_metric.mean,
-            "leg_torque_saturation_rate": leg_torque_metric.mean,
-            "wheel_torque_saturation_rate": wheel_torque_metric.mean,
             "tracking_samples_ok": float(tracking_samples_ok),
             "performance_ok": float(performance_ok),
-            "safety_ok": float(safety_ok),
-            "passed": float(performance_ok and safety_ok),
+            "passed": float(performance_ok),
         }
-        return performance_ok and safety_ok, performance_ok, safety_ok
+        return performance_ok
 
     def _apply_all_group_ranges(self) -> None:
         """把两个组当前级别写入命令生成器的逐环境范围。"""
@@ -455,7 +387,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
         *,
         evaluation_events: dict[str, bool],
         upgrade_events: dict[str, bool],
-        safety_blocks: dict[str, bool],
     ) -> dict[str, float]:
         """生成 CurriculumManager 可直接写入 W&B 的标量状态。"""
         result: dict[str, float] = {}
@@ -469,7 +400,6 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
                 "pass_streak": float(state.pass_streak),
                 "evaluation_event": float(evaluation_events[group_name]),
                 "upgrade_event": float(upgrade_events[group_name]),
-                "safety_block": float(safety_blocks[group_name]),
                 **state.last_metrics,
             }
             for key, value in values.items():
