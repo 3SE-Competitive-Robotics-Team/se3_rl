@@ -96,7 +96,7 @@ uv run prek install
 ```bash
 uv run python --version
 uv --version
-uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
+uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('viser:', version('viser'))"
 uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
 ```
 
@@ -187,26 +187,18 @@ ls logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt | sort -V
 
 不要用字典序判断最新模型，`model_900.pt` 会排在 `model_1000.pt` 后面。
 
-## 7. 跑第一次 sim2sim
+## 7. 跑第一次 sim2sim Viser
 
-sim2sim 用标准 MuJoCo CPU，可以在训练机器或本地电脑上跑。
-
-```bash
-uv run se3-sim2sim --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
-uv run se3-sim2sim --checkpoint logs/.../model_4999.pt --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --checkpoint logs/.../model_4999.pt --viewer none --max-steps 200 --print-every 20 --course walk-sweep
-```
-
-sim2sim 默认启用 yaw PID 闭环，目标 yaw 为 0 度。需要开环回放或其它高级参数时，仍可直接用 `uv run`：
+交互式 sim2sim 使用 `se3-sim2x` 的标准 MuJoCo CPU adapter，可以在训练机器或本地电脑上跑。
+训练保存 checkpoint 时会自动把 ONNX 放到对应 run 的 `onnx/` 目录。
 
 ```bash
-uv run se3-sim2sim \
-    --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt \
-    --no-yaw-pid \
-    --viewer none \
-    --max-steps 200
+./scripts/run_sim2x.sh
 ```
+
+打开终端输出的 Viser URL（通常是 `http://127.0.0.1:8080/`），然后在 `Models` 页签按
+`Experiment → Run ID → ONNX` 选择模型。浏览器每秒扫描一次
+`logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx`，训练产生新 ONNX 后不需要重启。
 
 ## 8. 第一次实验完成标准
 
@@ -217,7 +209,7 @@ uv run se3-sim2sim \
 - CPU smoke 正常结束。
 - W&B 项目页能看到正式训练 run。
 - `logs/rsl_rl/se3_wheel_leg/<timestamp>/` 下生成 checkpoint。
-- 无 GUI sim2sim 能跑完，终端没有 traceback。
+- `se3-sim2x` 启动成功，Viser 中能选择并运行当前实验的 ONNX。
 
 完成后，你有了修改训练代码、重新训练、再用 sim2sim 验证的完整闭环。
 
@@ -258,12 +250,13 @@ git commit
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
 
-### sim2sim 找不到 checkpoint
+### sim2x 看不到模型
 
-显式传入 checkpoint 路径：
+确认 run 目录中存在自动导出的 ONNX：
 
 ```bash
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000 --course walk-sweep
+ls logs/rsl_rl/<experiment>/<run_id>/onnx/model_*.onnx
 ```
 
-如果 checkpoint 在远程训练机上，先把对应的 `model_*.pt` 和 `params/` 目录同步到本地。
+如果模型在远程训练机上，需要把 `onnx/model_*.onnx` 同步到本地相同目录层级。旧 artifact
+缺少完整 `se3.meta.v1` 字段时必须从 checkpoint 重新导出，runtime 不会猜测缺失配置。

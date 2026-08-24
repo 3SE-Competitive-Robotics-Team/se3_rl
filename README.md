@@ -2,7 +2,8 @@
 
 SerialLeg 轮腿机器人（6 DOF）的强化学习训练与 sim2sim 验证框架。训练端用 MJLab（MuJoCo-Warp GPU 加速）跑 PPO，验证端用标准 MuJoCo CPU，两端通过 `se3_shared` 共享机器人常量、观测维度和动作延迟配置，保证 sim2sim gap 可控。
 
-> 迁移状态：`se3_sim2sim` 和 `se3_deploy` 已计划 deprecated。现有入口为兼容历史训练、回放和 NX 调试保留；新开发建议迁移到 `https://github.com/3SE-Competitive-Robotics-Team/se3-mono`。
+> 当前 sim2sim 入口为 [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x)。
+> `src/se3_sim2sim` 与 `src/se3_deploy` 仅为尚未清理的历史代码，不再作为文档中的操作入口。
 
 ## 前置条件
 
@@ -17,18 +18,26 @@ SerialLeg 轮腿机器人（6 DOF）的强化学习训练与 sim2sim 验证框�
 src/
 ├── se3_shared/     # 训练和 sim2sim 共享配置，包含关节语义、PD 增益、动作缩放、延迟参数
 ├── se3_train/      # MJLab 训练环境，含 MDP（奖励、观测、事件）和 PPO 配置
-├── se3_sim2sim/    # MuJoCo CPU 验证，Rerun 可视化（计划 deprecated）
-├── se3_deploy/     # NX 真机部署 runtime（计划 deprecated，优先迁移 se3-mono）
+├── se3_sim2sim/    # 历史兼容代码，待删除
+├── se3_deploy/     # 历史 NX runtime，待删除
 ├── se3_tools/      # 关节方向和默认姿态诊断工具
 ├── se3_jump_to/    # 跳跃参考轨迹生成与回放
 └── se3_flow_match/ # Flow Matching 蒸馏（暂不可用，待迁移 34D 观测）
+
+submodules/
+└── se3-sim2x/      # 共用 ONNX runtime 与 MuJoCo/Viser adapter
 ```
 
 机器人模型位于 `assets/robots/serialleg/`，训练产物默认写入 `logs/rsl_rl/se3_wheel_leg/`。
 
+新的部署入口是带 `se3.meta.v1` 的单个 ONNX artifact。submodule 中的 `se3_runtime` 已统一处理
+MLP、History-MLP、GRU 的 observation/state/action 语义；完整调用约定见
+[ONNX metadata runtime](docs/onnx_runtime.md)。
+
 ## 环境准备
 
 ```bash
+git submodule update --init --recursive
 uv sync
 uv run prek install
 ```
@@ -44,7 +53,7 @@ uv sync
 uv run prek install
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
-uv run se3-sim2sim --max-steps 3000 --course walk-sweep
+./scripts/run_sim2x.sh
 ```
 
 训练指标上传到 W&B 项目：[se3_wheel_leg](https://wandb.ai/3se-competitive-robotics-team/se3_wheel_leg)。
@@ -57,7 +66,7 @@ uv run se3-sim2sim --max-steps 3000 --course walk-sweep
 uv sync
 uv run prek install
 uv run python --version
-uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
+uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('viser:', version('viser'))"
 uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
 ```
 
@@ -80,13 +89,17 @@ uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
 
-### Sim2sim 验证
+### Sim2sim Viser
 
 ```bash
-uv run se3-sim2sim --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --checkpoint logs/.../model_4999.pt --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+./scripts/run_sim2x.sh
 ```
+
+启动后访问终端打印的地址，通常为 `http://127.0.0.1:8080/`。服务持续扫描
+`logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx`，可在 Viser 的 `Models` 页签依次选择
+Experiment、Run ID 和 ONNX；训练新导出的模型会自动出现在列表中。
+
+完整用法和 artifact 要求见 [ONNX metadata runtime](docs/onnx_runtime.md)。
 
 ### 代码质量
 
@@ -102,21 +115,14 @@ uv run prek run --all-files
 rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
 ```
 
-## 动作延迟
-
-训练端和 sim2sim 共享 `se3_shared.ActionDelayConfig`，默认 5 ms，reset 时在 4-6 ms 随机采样。sim2sim 支持命令行覆盖：
-
-```bash
-uv run se3-sim2sim --action-delay-ms 5 --action-delay-min-ms 4 --action-delay-max-ms 6
-uv run se3-sim2sim --no-action-delay
-```
-
 ## 文档
 
+- [文档索引](docs/README.md)
 - [新手入门](docs/how_to_start.md)
 - [训练指南](docs/train.md)
 - [训练性能记录](docs/perf.md)
 - [训练任务架构](docs/task_architecture.md)
+- [ONNX metadata runtime](docs/onnx_runtime.md)
 - 远程机器运维：先读 [remote-dev-se3 公用流程](.agents/skills/remote-dev-se3/SKILL.md)，再选择对应 machine profile
 - [GRU 反倒起身训练方案](docs/plan/gru_recovery_training.md)
 - [MoE 多速度域方案](docs/plan/moe_multi_speed.md)
@@ -126,6 +132,6 @@ uv run se3-sim2sim --no-action-delay
 ## 注意事项
 
 - 所有 Python 命令通过 `uv` 执行，不直接用 `python` 或 `pip`。
-- `.env`、`logs/`、`wandb/`、Rerun 回放文件不应提交。
+- `.env`、`logs/`、`wandb/` 和本地回放文件不应提交。
 - 训练 checkpoint 较大，分享仓库时单独传 `model_*.pt`，不要提交到 Git。
 - W&B 初始化或运行期写入失败时，runner 会自动降级到本地 TensorBoard，训练和 checkpoint 保存继续进行；远程长训仍建议先确保代理可用，避免丢在线日志。

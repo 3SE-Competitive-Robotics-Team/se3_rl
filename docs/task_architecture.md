@@ -31,9 +31,9 @@
 - `rewards.py`、`curriculums.py` 提供台阶爬升奖励、地形等级课程和诊断项。
 - `env_cfg.py` 同时接入 recovery replay 状态缓存，用于提升台阶训练中跌倒后的恢复覆盖率。
 
-台阶任务的远程值守应运行 native MuJoCo closedchain
-`se3-sim2sim --viewer viser --stair-terrain`，并确认台阶参与真实碰撞。checkpoint 来源、
-远程连接和本地缓存目录由当前 machine profile 决定，不属于任务架构契约。
+台阶任务的远程值守使用 `./scripts/run_sim2x.sh` 启动 native MuJoCo/Viser，并在
+`Models` 页签选择对应 experiment、run id 和 ONNX。checkpoint 来源、远程连接和本地缓存
+目录由当前 machine profile 决定，不属于任务架构契约。
 
 ## 单个 task 的目录结构
 

@@ -1,5 +1,7 @@
 # 膝关节弹簧力矩建模方案
 
+> 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
+
 > 状态：Phase 1-3 已实现（MJCF 显式四连杆 + spatial tendon 弹簧）。Phase 4 观测扩展待实现。
 
 ## 动机

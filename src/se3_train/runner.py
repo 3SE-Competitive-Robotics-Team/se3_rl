@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import torch
 from mjlab.rl import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
 
 from se3_train.async_logging import Se3AsyncHostLogger, async_host_logger_enabled
+from se3_train.onnx_metadata import (
+    build_deployment_onnx_metadata,
+    embed_onnx_metadata,
+)
 from se3_train.training_runtime import (
     IterationTimer,
     IterationTiming,
@@ -35,6 +40,17 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _policy_type(policy: torch.nn.Module) -> str:
+    """返回与实际 ONNX 状态接口一致的策略类型。"""
+    if not bool(getattr(policy, "is_recurrent", False)):
+        return "mlp"
+    recurrent_module = getattr(getattr(policy, "rnn", None), "rnn", None)
+    policy_type = type(recurrent_module).__name__.lower()
+    if policy_type not in {"gru", "lstm"}:
+        raise TypeError(f"暂不支持 recurrent policy 类型: {type(recurrent_module).__name__}")
+    return policy_type
 
 
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
@@ -65,6 +81,79 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 f"[SE3 Runtime] check_nan={'enabled' if self._se3_check_nan_enabled else 'disabled'}",
                 flush=True,
             )
+
+    def save(self, path: str, infos: dict | None = None) -> None:
+        """保存 checkpoint，并为同一迭代生成带部署契约的 ONNX。"""
+        super().save(path, infos=infos)
+        if self.is_distributed and self.gpu_global_rank != 0:
+            return
+
+        checkpoint_path = Path(path)
+        export_dir = checkpoint_path.parent / "onnx"
+        filename = f"{checkpoint_path.stem}.onnx"
+        try:
+            self.export_policy_to_onnx(
+                str(export_dir),
+                filename=filename,
+                source_checkpoint=checkpoint_path,
+            )
+        except Exception as error:
+            print(
+                f"[SE3 ONNX] 导出失败，checkpoint 已保留: {checkpoint_path}: {error}",
+                flush=True,
+            )
+            return
+        print(f"[SE3 ONNX] exported: {export_dir / filename}", flush=True)
+
+    def export_policy_to_onnx(
+        self,
+        path: str,
+        filename: str = "policy.onnx",
+        verbose: bool = False,
+        *,
+        source_checkpoint: str | Path | None = None,
+    ) -> None:
+        """复用 MJLab 导出器，并原子写入从 live env 构建的 metadata。"""
+        policy = self.alg.get_policy()
+        actor_was_training = self.alg.actor.training
+        critic_was_training = self.alg.critic.training
+        policy_was_training = policy.training
+        rnd = getattr(self.alg, "rnd", None)
+        rnd_was_training = bool(rnd.training) if rnd is not None else False
+
+        export_dir = Path(path)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        final_path = export_dir / filename
+        temp_name = f".{filename}.{os.getpid()}.tmp.onnx"
+        temp_path = export_dir / temp_name
+
+        self.alg.eval_mode()
+        policy.eval()
+        try:
+            super().export_policy_to_onnx(
+                str(export_dir),
+                filename=temp_name,
+                verbose=verbose,
+            )
+            metadata = build_deployment_onnx_metadata(
+                self.env.unwrapped,
+                observation_group_names=list(policy.obs_groups),
+            )
+            embed_onnx_metadata(
+                temp_path,
+                metadata,
+                policy_iteration=self.current_learning_iteration,
+                policy_type=_policy_type(policy),
+                source_checkpoint=source_checkpoint,
+            )
+            os.replace(temp_path, final_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+            self.alg.actor.train(actor_was_training)
+            self.alg.critic.train(critic_was_training)
+            policy.train(policy_was_training)
+            if rnd is not None:
+                rnd.train(rnd_was_training)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """运行 PPO 训练循环，并记录采样、return、update 的分段耗时。"""

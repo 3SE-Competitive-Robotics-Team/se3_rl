@@ -1,5 +1,7 @@
 # MJLab 训练运行时升级计划
 
+> 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
+
 ## 目标
 
 不切换到 UniLab，不改变 SerialLeg 的 MJLab/MuJoCo-Warp 仿真平台。只吸收 UniLab 暴露出的工程经验，把 SE3 的 MJLab 训练运行时做深：

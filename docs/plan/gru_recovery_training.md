@@ -1,5 +1,7 @@
 # GRU 反倒起身训练规范
 
+> 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
+
 > 状态：已被统一的 Recovery-Discovery 任务取代。本文仅保留历史训练契约和实验结果，其中的 `SE3-WheelLegged-Recovery-GRU` 命令不再是当前正式入口。新训练使用 `SE3-WheelLegged-Recovery-Discovery-GRU` 或 `SE3-WheelLegged-Recovery-Discovery-MLP`。
 
 ## 目标

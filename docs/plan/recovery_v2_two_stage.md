@@ -1,5 +1,7 @@
 # Recovery V2 两阶段训练方案
 
+> 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
+
 > 状态：历史方案，已被单一 Recovery-Discovery 任务取代。本文仅保留两阶段设计的历史背景和实验记录；新训练使用 `SE3-WheelLegged-Recovery-Discovery-GRU` 或 `SE3-WheelLegged-Recovery-Discovery-MLP`。
 
 ## 背景

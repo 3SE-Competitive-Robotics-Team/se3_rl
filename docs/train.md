@@ -51,27 +51,18 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 ### Viser 训练值守（必开）
 
 远程训练的连接方式、checkpoint 交换通道和本地目录由选定的 machine profile 决定，
-公用训练文档不提供某台机器的默认入口。值守侧应运行与训练任务匹配的
-`se3-play` 或 native MuJoCo `se3-sim2sim`，并确认策略、模型和碰撞地形都与训练契约一致。
-
-非台阶任务或本地临时调试仍可用 `se3-play --viewer viser` 打开对应 task/checkpoint。不要只看 W&B 或终端日志，也不要依赖 `--viewer auto`；没有可见 Viser 窗口，或本机/laptop 值守未通过验收，本次训练视为没有完成启动值守检查。
-
-已有 checkpoint 时，非台阶任务可用 trained policy 打开：
+公用训练文档不提供某台机器的默认入口。ONNX 生成后，值守侧统一运行 native MuJoCo
+`se3-sim2x`，并确认策略、模型和碰撞地形都与训练契约一致。
 
 ```bash
-uv run se3-play SE3-WheelLegged-Flat-GRU --checkpoint-file logs/rsl_rl/se3_wheel_leg/<run>/model_<iter>.pt --viewer viser --num-envs 1
-uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --checkpoint-file logs/rsl_rl/se3_wheel_leg/<run>/model_<iter>.pt --viewer viser --num-envs 1
+./scripts/run_sim2x.sh
 ```
 
-新 run 第一个 checkpoint 尚未生成时，非台阶任务可先用零动作打开同任务环境，确认模型、地面接触和 viewer 管线；首个 checkpoint 出现后立刻切到 trained policy：
+打开终端输出的 URL，在 `Models` 页签按 `Experiment → Run ID → ONNX` 切换。服务会持续
+监听 `logs/rsl_rl`，无需为每个 checkpoint 重启。
 
-```bash
-uv run se3-play SE3-WheelLegged-Flat-GRU --agent zero --viewer viser --num-envs 1
-uv run se3-play SE3-WheelLegged-Jump-FineTune-GRU --agent zero --viewer viser --num-envs 1
-```
-
-台阶任务使用 native MuJoCo sim2sim 值守时，必须确认台阶是真实 worldbody 碰撞地形，
-不是只参与显示的 overlay。远端来源、缓存目录和 watcher 参数从当前 machine profile 获取。
+当前 run 尚未生成第一个 ONNX 时，先检查训练日志和 MuJoCo 模型；ONNX 出现后再做策略
+值守，不用零动作 viewer 冒充策略验收。远端产物来源和同步方式从当前 machine profile 获取。
 
 ### 本地/单卡 GPU 训练
 
@@ -139,66 +130,24 @@ logs/rsl_rl/se3_wheel_leg/2026-05-05_23-13-57/
 ├── ...
 ├── model_4900.pt
 ├── model_4999.pt     # 5000 轮训练的最终模型
+├── onnx/
+│   ├── model_0.onnx
+│   ├── model_100.onnx
+│   └── model_4999.onnx
 └── params/
 ```
 
-## 评估/回放
+## Sim2sim 验证
 
-正式 sim2sim 回放和验证使用 `se3-sim2sim`，Rerun 负责记录轨迹、控制量曲线和
-可复查的 `.rrd` 文件。远程 checkpoint 如何同步到本地由选定的 machine profile 决定：
-
-```bash
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000
-```
-
-不传 `--checkpoint` 时，程序自动选 `logs/rsl_rl/se3_wheel_leg/` 下编号最高的 `model_*.pt`，编号相同时选较新的 run。
-
-需要保存 Rerun 回放文件：
+从主仓库根目录启动常驻浏览器：
 
 ```bash
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --max-steps 3000 --rerun-record replays/local_manual/model_4999__walk-sweep.rrd
+./scripts/run_sim2x.sh
 ```
 
-Rerun 录制后拉回本地必须按固定命名存放，避免不同机器、不同 run、不同 course 的 `.rrd` 互相覆盖：
-
-```text
-remote_artifacts/<experiment_id>/rrd/<run_label>/<task_name>__<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].rrd
-remote_artifacts/<experiment_id>/summaries/<run_label>/<task_name>__<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].json
-remote_artifacts/<experiment_id>/logs/<run_label>/<task_name>__<checkpoint>__<course>[__<case>]__rec-<YYYYMMDD-HHMMSS>[__rN].log
-```
-
-字段约定：
-- `experiment_id`：本次实验的稳定名字，格式为 `<topic>_<YYYYMMDD>`；如果实验本身按小时批次区分，可用 `<topic>_<YYYYMMDD_HHMM>`。多机器或 A/B 对比时把机器/分支写进 topic，例如 `l40s_unilab_vs_mjlab_20260603`。
-- `run_label`：同一实验内的短标签，只用小写字母、数字、下划线或连字符，例如 `mjlab`、`unilab`、`jump_pretrain`、`recovery_gru`。
-- `task_name`：训练任务名，直接使用任务 ID 或它的稳定短名；长期值守拉回本地的 `.rrd` 文件名至少必须能从这里看出任务名。
-- `checkpoint`：直接使用 checkpoint 文件名去掉 `.pt`，例如 `model_4999`，不要写成 `latest`、`final` 或 `best`。
-- `course`：使用 sim2sim 的 course 名，例如 `walk-sweep`、`jump-sweep`；手工单场景也必须写一个稳定名字，例如 `manual-stand`。
-- `case`：同一 checkpoint + course 下的初始姿态、目标高度或特殊扰动，例如 `roll90`、`h0p4`、`yaw-pid-off`；没有区分项时省略。
-- `rec-<YYYYMMDD-HHMMSS>`：录制开始时间，使用远程训练机本地时间；跨机器 A/B 时统一使用北京时间。
-- `rN`：只有在同一 checkpoint、course、case 重新录制且需要保留旧文件时使用，从 `r2` 开始。
-
-示例：
-
-```text
-remote_artifacts/l40s_unilab_vs_mjlab_20260603/rrd/unilab/SE3-WheelLegged-Flat-GRU__model_1800__walk-sweep__rec-20260603-141927.rrd
-remote_artifacts/l40s_unilab_vs_mjlab_20260603/summaries/unilab/SE3-WheelLegged-Flat-GRU__model_1800__walk-sweep__rec-20260603-141927.json
-remote_artifacts/recovery_roll_sweep_20260603/rrd/recovery_gru/SE3-WheelLegged-Recovery-GRU__model_1200__manual-recovery__roll90__rec-20260603-133809.rrd
-remote_artifacts/jump_height_ab_20260603/rrd/pretrain/SE3-WheelLegged-Jump-PreTrain-GRU__model_900__jump-sweep__h0p4__rec-20260603-104522.rrd
-```
-
-远程录制时可以先写 `.rrd.tmp`，确认文件非空后再原子重命名为最终 `.rrd`；拉回本地时只拉最终 `.rrd`、同名 `.json` summary 和同名 `.log`。禁止把远程绝对路径或机器随机目录名直接塞进 `.rrd` 文件名；除 `rec-<YYYYMMDD-HHMMSS>` 外的来源信息写到 `state/recorded.tsv` 或 summary JSON 里。
-
-`replays/`、`remote_artifacts/` 和 `.rrd` 文件是本地验证产物，不提交。
-
-## Sim2Sim 验证
-
-纯 MuJoCo CPU，macOS 可跑：
-
-```bash
-uv run se3-sim2sim --checkpoint logs/rsl_rl/se3_wheel_leg/<timestamp>/model_4999.pt --viewer none --max-steps 200 --print-every 20
-```
-
-训练指标曲线通过 TensorBoard 本地记录。策略回放、轨迹检查、控制量曲线和 `.rrd` 文件都由 `se3-sim2sim` 的 Rerun 产出。
+在 `Models` 页签按 `Experiment → Run ID → ONNX` 选择 artifact。切换成功会同时重置仿真、
+history/hidden state、previous action 和动作延迟状态。具体契约见
+[ONNX metadata runtime](onnx_runtime.md)。
 
 ## 常见问题
 
