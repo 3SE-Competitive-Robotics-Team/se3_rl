@@ -29,6 +29,7 @@ _DISCOVERY_MAX_ANG_VEL_YAW = 9.41
 _STEPS_PER_POLICY_ITER = 24
 _TRAIN_ENV_GROUPS = {"loco": 0.5, "recover": 0.5}
 _PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
+_TRAIN_NUM_ENVS_PER_RANK = 8192
 RECOVERY_DISCOVERY_HISTORY_LENGTH = 5
 _LOCO_TN_SAFE_RATIO = 0.80
 _RECOVER_TN_SAFE_RATIO = 0.80
@@ -392,6 +393,8 @@ def _assert_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """标准姿态 Discovery 环境配置。"""
     cfg = recovery_env_cfg(play=play)
+    if not play:
+        cfg.scene.num_envs = _TRAIN_NUM_ENVS_PER_RANK
 
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.lin_vel_x_range = (0.0, 0.0)

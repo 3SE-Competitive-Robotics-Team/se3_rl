@@ -137,6 +137,10 @@ logs/rsl_rl/SE3-WheelLegged-Flat-GRU/2026-05-05_23-13-57/
 └── params/
 ```
 
+使用 W&B logger 时，每次保存的 `model_*.pt` checkpoint 会上传到对应 run，便于直接用
+`se3-play --wandb-run-path ...` 下载回放。`onnx/model_*.onnx` 仅保存在训练机本地，不上传
+W&B；需要 sim2sim 验证时按远程训练机 profile 约定的产物通道同步。
+
 ## Sim2sim 验证
 
 从主仓库根目录启动常驻浏览器：

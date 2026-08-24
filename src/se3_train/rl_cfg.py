@@ -11,13 +11,13 @@ from mjlab.rl import RslRlOnPolicyRunnerCfg as MjlabRslRlOnPolicyRunnerCfg
 
 @dataclass
 class RslRlOnPolicyRunnerCfg(MjlabRslRlOnPolicyRunnerCfg):
-    """提供在线 W&B 默认配置，并禁止上传 checkpoint。"""
+    """提供在线 W&B 默认配置，并上传 PyTorch checkpoint。"""
 
     logger: Literal["wandb", "tensorboard"] = "wandb"
     wandb_project: str = field(
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "se3-wheel-leg")
     )
-    upload_model: bool = False
+    upload_model: bool = True
 
 
 def bind_task_name(
