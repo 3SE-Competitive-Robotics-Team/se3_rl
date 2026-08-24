@@ -25,7 +25,8 @@ submodules/
 └── se3-sim2x/      # 共用 ONNX runtime 与 MuJoCo/Viser adapter
 ```
 
-机器人模型位于 `assets/robots/serialleg/`，训练产物默认写入 `logs/rsl_rl/se3_wheel_leg/`。
+机器人模型位于 `assets/robots/serialleg/`，训练产物默认写入
+`logs/rsl_rl/<task_name>/<run_id>/`。
 
 新的部署入口是带 `se3.meta.v1` 的单个 ONNX artifact。submodule 中的 `se3_runtime` 已统一处理
 MLP、History-MLP、GRU 的 observation/state/action 语义；完整调用约定见
@@ -53,7 +54,7 @@ uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1
 ./scripts/run_sim2x.sh
 ```
 
-训练指标上传到 W&B 项目：[se3_wheel_leg](https://wandb.ai/3se-competitive-robotics-team/se3_wheel_leg)。
+训练指标按 Task 分别上传到同名 W&B Project，结构为 `Entity → Task Project → Run`。
 
 ## 常用命令
 
@@ -93,8 +94,8 @@ uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1
 ```
 
 启动后访问终端打印的地址，通常为 `http://127.0.0.1:8080/`。服务持续扫描
-`logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx`，可在 Viser 的 `Models` 页签依次选择
-Experiment、Run ID 和 ONNX；训练新导出的模型会自动出现在列表中。
+`logs/rsl_rl/<task_name>/<run_id>/onnx/*.onnx`，可在 Viser 的 `Models` 页签依次选择
+Task、Run ID 和 ONNX；训练新导出的模型会自动出现在列表中。
 
 完整用法和 artifact 要求见 [ONNX metadata runtime](docs/onnx_runtime.md)。
 

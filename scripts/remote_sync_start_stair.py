@@ -202,10 +202,9 @@ def parse_args() -> argparse.Namespace:
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
     """生成把 ONNX 同步到固定目录后启动 sim2x 的提示。"""
-    del args
     actual_run_dir = run_dir or "<run-id>"
     return (
-        "将远端 logs/rsl_rl/<experiment>/"
+        f"将远端 logs/rsl_rl/{args.task}/"
         f"{actual_run_dir}/onnx 同步到本地相同目录层级，然后运行：\n"
         "./scripts/run_sim2x.sh"
     )
@@ -261,7 +260,7 @@ fi
         ""
         if args.from_scratch
         else (
-            "test -f logs/rsl_rl/se3_wheel_leg/"
+            f"test -f {shlex.quote(f'logs/rsl_rl/{args.task}')}/"
             f"{shlex.quote(args.load_run)}/{shlex.quote(checkpoint_file)}"
         )
     )
@@ -374,8 +373,8 @@ sleep 3
 kill -0 "$pid"
 run_dir=""
 for _ in $(seq 1 30); do
-  if [ -d logs/rsl_rl/se3_wheel_leg ]; then
-    run_dir_lines=$(find logs/rsl_rl/se3_wheel_leg -mindepth 1 -maxdepth 1 -type d \
+  if [ -d {shlex.quote(f'logs/rsl_rl/{args.task}')} ]; then
+    run_dir_lines=$(find {shlex.quote(f'logs/rsl_rl/{args.task}')} -mindepth 1 -maxdepth 1 -type d \
       -name '*_{args.run_name}' -printf '%T@ %f\n' | sort -nr)
     run_dir=$(printf '%s\n' "$run_dir_lines" | sed -n '1s/^[^ ]* //p')
   fi

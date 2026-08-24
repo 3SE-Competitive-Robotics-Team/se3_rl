@@ -11,10 +11,20 @@ from mjlab.rl import RslRlOnPolicyRunnerCfg as MjlabRslRlOnPolicyRunnerCfg
 
 @dataclass
 class RslRlOnPolicyRunnerCfg(MjlabRslRlOnPolicyRunnerCfg):
-    """统一在线 W&B 项目，并默认禁止上传 checkpoint。"""
+    """提供在线 W&B 默认配置，并禁止上传 checkpoint。"""
 
     logger: Literal["wandb", "tensorboard"] = "wandb"
     wandb_project: str = field(
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "se3-wheel-leg")
     )
     upload_model: bool = False
+
+
+def bind_task_name(
+    cfg: RslRlOnPolicyRunnerCfg,
+    task_name: str,
+) -> RslRlOnPolicyRunnerCfg:
+    """将注册任务名绑定为本地 experiment 和 W&B Project。"""
+    cfg.experiment_name = task_name
+    cfg.wandb_project = os.environ.get("WANDB_PROJECT", task_name)
+    return cfg

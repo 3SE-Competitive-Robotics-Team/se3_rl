@@ -120,10 +120,10 @@ save_interval=100,    # 每 100 轮保存一次 checkpoint
 
 ## 训练产物
 
-checkpoint 保存在 `logs/rsl_rl/se3_wheel_leg/<timestamp>/`，每 100 轮一个 `.pt` 文件：
+checkpoint 保存在 `logs/rsl_rl/<task_name>/<run_id>/`，每 100 轮一个 `.pt` 文件：
 
 ```
-logs/rsl_rl/se3_wheel_leg/2026-05-05_23-13-57/
+logs/rsl_rl/SE3-WheelLegged-Flat-GRU/2026-05-05_23-13-57/
 ├── model_0.pt
 ├── model_100.pt
 ├── model_200.pt

@@ -149,7 +149,7 @@ uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 - 默认跑 5000 轮。
 - 每 100 轮保存一次 checkpoint。
 - 把训练指标上传到 W&B。
-- 把本地产物写入 `logs/rsl_rl/se3_wheel_leg/<timestamp>/`。
+- 把本地产物写入 `logs/rsl_rl/<task_name>/<run_id>/`。
 
 训练过程中打开 W&B 项目页，确认新 run 出现，reward、loss、episode length 等曲线持续更新。
 
@@ -164,7 +164,7 @@ pkill -f "se3-train"
 checkpoint 在：
 
 ```text
-logs/rsl_rl/se3_wheel_leg/<timestamp>/
+logs/rsl_rl/<task_name>/<run_id>/
 ```
 
 常见文件：
@@ -182,7 +182,7 @@ params/
 按数字排序查看 checkpoint：
 
 ```bash
-ls logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt | sort -V
+ls logs/rsl_rl/<task_name>/<run_id>/model_*.pt | sort -V
 ```
 
 不要用字典序判断最新模型，`model_900.pt` 会排在 `model_1000.pt` 后面。
@@ -197,8 +197,8 @@ ls logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt | sort -V
 ```
 
 打开终端输出的 Viser URL（通常是 `http://127.0.0.1:8080/`），然后在 `Models` 页签按
-`Experiment → Run ID → ONNX` 选择模型。浏览器每秒扫描一次
-`logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx`，训练产生新 ONNX 后不需要重启。
+`Task → Run ID → ONNX` 选择模型。浏览器每秒扫描一次
+`logs/rsl_rl/<task_name>/<run_id>/onnx/*.onnx`，训练产生新 ONNX 后不需要重启。
 
 ## 8. 第一次实验完成标准
 
@@ -208,7 +208,7 @@ ls logs/rsl_rl/se3_wheel_leg/<timestamp>/model_*.pt | sort -V
 - `uv run prek run --all-files` 通过。
 - CPU smoke 正常结束。
 - W&B 项目页能看到正式训练 run。
-- `logs/rsl_rl/se3_wheel_leg/<timestamp>/` 下生成 checkpoint。
+- `logs/rsl_rl/<task_name>/<run_id>/` 下生成 checkpoint。
 - `se3-sim2x` 启动成功，Viser 中能选择并运行当前实验的 ONNX。
 
 完成后，你有了修改训练代码、重新训练、再用 sim2sim 验证的完整闭环。
@@ -255,7 +255,7 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num
 确认 run 目录中存在自动导出的 ONNX：
 
 ```bash
-ls logs/rsl_rl/<experiment>/<run_id>/onnx/model_*.onnx
+ls logs/rsl_rl/<task_name>/<run_id>/onnx/model_*.onnx
 ```
 
 如果模型在远程训练机上，需要把 `onnx/model_*.onnx` 同步到本地相同目录层级。旧 artifact

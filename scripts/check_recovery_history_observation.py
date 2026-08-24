@@ -9,10 +9,15 @@ from typing import Any
 import numpy as np
 import torch
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.tasks.registry import load_rl_cfg
+from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
 from se3_shared import ObservationConfig
-from se3_train.tasks.recovery_discovery import HISTORY_MLP_TASK_ID, MLP_TASK_ID
+from se3_train.rl_cfg import bind_task_name
+from se3_train.tasks.recovery_discovery import (
+    GROUPED_MLP_TASK_ID,
+    HISTORY_MLP_TASK_ID,
+    MLP_TASK_ID,
+)
 from se3_train.tasks.recovery_discovery.env_cfg import (
     RECOVERY_DISCOVERY_HISTORY_LENGTH,
     env_cfg,
@@ -72,11 +77,24 @@ def _assert_config_contract() -> None:
     )
     if _canonical(history) != _canonical(baseline):
         raise AssertionError("除 actor history 外，环境配置发生漂移")
+    grouped = load_env_cfg(GROUPED_MLP_TASK_ID, play=False)
+    grouped_actor = grouped.observations["actor"]
+    if grouped_actor.history_length != RECOVERY_DISCOVERY_HISTORY_LENGTH:
+        raise AssertionError(
+            f"Grouped-MLP actor history length 错误: {grouped_actor.history_length}"
+        )
+    if not grouped_actor.flatten_history_dim:
+        raise AssertionError("Grouped-MLP actor history 必须展开为 MLP 输入")
+    if grouped.observations["critic"].history_length is not None:
+        raise AssertionError("Grouped-MLP critic 不应引入历史观测")
     history_rl = load_rl_cfg(HISTORY_MLP_TASK_ID)
     baseline_rl = load_rl_cfg(MLP_TASK_ID)
-    if _canonical(history_rl) != _canonical(baseline_rl):
+    history_rl_contract = replace(history_rl, experiment_name="", wandb_project="")
+    baseline_rl_contract = replace(baseline_rl, experiment_name="", wandb_project="")
+    if _canonical(history_rl_contract) != _canonical(baseline_rl_contract):
         raise AssertionError("History-MLP 与单帧 MLP 的 PPO 配置不一致")
-    if _canonical(history_rl) != _canonical(mlp_rl_cfg()):
+    expected_history_rl = bind_task_name(mlp_rl_cfg(), HISTORY_MLP_TASK_ID)
+    if _canonical(history_rl) != _canonical(expected_history_rl):
         raise AssertionError("History-MLP 注册的 PPO 配置与配置工厂不一致")
 
 
@@ -114,7 +132,7 @@ def _assert_rollout_contract() -> None:
         expected_actor_dim = base_num_obs * RECOVERY_DISCOVERY_HISTORY_LENGTH
         if actor0.shape != (2, expected_actor_dim):
             raise AssertionError(f"actor shape 错误: {tuple(actor0.shape)}")
-        if critic0.shape != (2, 40):
+        if critic0.shape != (2, 41):
             raise AssertionError(f"critic shape 错误: {tuple(critic0.shape)}")
         if not torch.isfinite(actor0).all() or not torch.isfinite(critic0).all():
             raise AssertionError("reset observation 含 NaN/Inf")
@@ -157,7 +175,7 @@ def main() -> int:
     print(
         "recovery history observation contract ok: "
         f"34D x {RECOVERY_DISCOVERY_HISTORY_LENGTH} = "
-        f"{ObservationConfig().num_obs * RECOVERY_DISCOVERY_HISTORY_LENGTH}D actor, 40D critic"
+        f"{ObservationConfig().num_obs * RECOVERY_DISCOVERY_HISTORY_LENGTH}D actor, 41D critic"
     )
     return 0
 
