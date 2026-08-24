@@ -14,6 +14,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 
+from se3_shared import JointGroup
 from se3_train.mdp import env_groups, terminations
 from se3_train.mdp import events as mdp_events
 from se3_train.tasks.recovery import curriculums, rewards
@@ -29,6 +30,10 @@ _STEPS_PER_POLICY_ITER = 24
 _TRAIN_ENV_GROUPS = {"loco": 0.5, "recover": 0.5}
 _PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
 RECOVERY_DISCOVERY_HISTORY_LENGTH = 5
+_LOCO_TN_SAFE_RATIO = 0.80
+_RECOVER_TN_SAFE_RATIO = 0.80
+_LOCO_TN_REWARD_WEIGHT = -0.50
+_RECOVER_TN_REWARD_WEIGHT = -0.50
 
 _DISCOVERY_REWARD_WEIGHTS = {
     "tracking_lin_vel": 3.0,
@@ -48,6 +53,8 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "leg_dof_acc": -2.5e-7,
     "leg_power": -1.0e-4,
     "wheel_torques": -1.0e-4,
+    "tn_envelope_violation_loco": _LOCO_TN_REWARD_WEIGHT,
+    "tn_envelope_violation_recover": _RECOVER_TN_REWARD_WEIGHT,
     "joint_mirror": -0.05,
     "dof_pos_limits": -5.0,
     "collision": -1.0,
@@ -57,6 +64,33 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "wheel_contact_without_cmd": 0.1,
     "diagnostics": 1.0,
 }
+
+
+def _group_tn_reward_cfg(
+    *,
+    group_name: str,
+    safe_tn_ratio: float,
+    weight: float,
+) -> RewardTermCfg:
+    """构造只作用于一个环境组的 substep TN 包络越界奖励。"""
+    return RewardTermCfg(
+        func=env_groups.FilteredRewardWrapper,
+        weight=weight,
+        params={
+            "group_names": (group_name,),
+            "wrapped_term": {
+                "func": rewards.NormalizedTnEnvelopeViolation,
+                "params": {
+                    "safe_tn_ratio": safe_tn_ratio,
+                    "asset_cfg": SceneEntityCfg(
+                        "robot",
+                        joint_names=JointGroup.POLICY_JOINT_NAMES,
+                        preserve_order=True,
+                    ),
+                },
+            },
+        },
+    )
 
 
 def _ungrouped_velocity_curriculum_cfg() -> CurriculumTermCfg:
@@ -246,6 +280,16 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         func=rewards.wheel_torques,
         weight=-1.0e-4,
         params={"max_torque": 3.0, "asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["tn_envelope_violation_loco"] = _group_tn_reward_cfg(
+        group_name="loco",
+        safe_tn_ratio=_LOCO_TN_SAFE_RATIO,
+        weight=_LOCO_TN_REWARD_WEIGHT,
+    )
+    cfg.rewards["tn_envelope_violation_recover"] = _group_tn_reward_cfg(
+        group_name="recover",
+        safe_tn_ratio=_RECOVER_TN_SAFE_RATIO,
+        weight=_RECOVER_TN_REWARD_WEIGHT,
     )
     cfg.rewards["joint_mirror"] = RewardTermCfg(
         func=rewards.joint_mirror,
@@ -633,6 +677,20 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """生成与分组实验同超参数、但使用旧混合 reset 的公平基线。"""
 
     cfg = env_cfg(play=play)
+    cfg.rewards.pop("tn_envelope_violation_loco")
+    cfg.rewards.pop("tn_envelope_violation_recover")
+    cfg.rewards["tn_envelope_violation"] = RewardTermCfg(
+        func=rewards.NormalizedTnEnvelopeViolation,
+        weight=_LOCO_TN_REWARD_WEIGHT,
+        params={
+            "safe_tn_ratio": _LOCO_TN_SAFE_RATIO,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=JointGroup.POLICY_JOINT_NAMES,
+                preserve_order=True,
+            ),
+        },
+    )
     grouped_events = dict(cfg.events)
 
     root_params = dict(grouped_events["reset_root_state"].params)

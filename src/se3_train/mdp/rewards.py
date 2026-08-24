@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
+from mjlab.managers import ManagerTermBase
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
@@ -36,6 +37,7 @@ from se3_train.mdp.joint_indices import (
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+    from mjlab.managers.manager_base import ManagerTermBaseCfg
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
@@ -1081,6 +1083,101 @@ def angular_momentum(env: ManagerBasedRlEnv) -> torch.Tensor:
     root_body_id = robot.data.indexing.root_body_id
     angmom = env.sim.data.subtree_angmom[:, root_body_id]
     return torch.sum(angmom**2, dim=-1) * gate
+
+
+class NormalizedTnEnvelopeViolation(ManagerTermBase):
+    """惩罚一个 policy step 内各电机限幅前请求扭矩的 TN 包络峰值越界。"""
+
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv) -> None:
+        super().__init__(env)
+        self._safe_tn_ratio = float(cfg.params["safe_tn_ratio"])
+        if not 0.0 < self._safe_tn_ratio <= 1.0:
+            raise ValueError(f"safe_tn_ratio 必须位于 (0, 1]，实际为 {self._safe_tn_ratio}")
+
+        asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
+        self._asset = env.scene[asset_cfg.name]
+        num_joints = int(self._asset.data.joint_pos.shape[1])
+        if isinstance(asset_cfg.joint_ids, slice):
+            selected_joint_ids = torch.arange(num_joints, device=env.device, dtype=torch.long)[
+                asset_cfg.joint_ids
+            ]
+        else:
+            selected_joint_ids = torch.as_tensor(
+                asset_cfg.joint_ids,
+                device=env.device,
+                dtype=torch.long,
+            )
+        if selected_joint_ids.numel() == 0:
+            raise ValueError("TN 包络奖励至少需要选择一个关节")
+
+        selected_mask = torch.zeros(num_joints, device=env.device, dtype=torch.bool)
+        selected_mask[selected_joint_ids] = True
+        covered_mask = torch.zeros_like(selected_mask)
+        self._accumulator_key = id(self)
+        self._actuator_entries: list[tuple[Any, torch.Tensor]] = []
+
+        required_methods = (
+            "register_tn_violation_accumulator",
+            "consume_tn_violation_accumulator",
+            "reset_tn_violation_accumulator",
+        )
+        for actuator in self._asset.actuators:
+            if not all(callable(getattr(actuator, name, None)) for name in required_methods):
+                continue
+            target_ids = actuator.target_ids
+            selected_targets = selected_mask[target_ids]
+            if not torch.any(selected_targets):
+                continue
+
+            force_limit = getattr(actuator, "force_limit", None)
+            if not isinstance(force_limit, torch.Tensor):
+                raise RuntimeError("TN 包络奖励要求 actuator 提供已初始化的 force_limit")
+            selected_limits = force_limit[:, selected_targets]
+            if not torch.all(torch.isfinite(selected_limits)) or torch.any(selected_limits <= 0.0):
+                raise RuntimeError("TN 包络奖励要求所选电机具有有限且为正的额定扭矩")
+
+            actuator.register_tn_violation_accumulator(
+                self._accumulator_key,
+                self._safe_tn_ratio,
+            )
+            self._actuator_entries.append((actuator, selected_targets))
+            covered_mask[target_ids[selected_targets]] = True
+
+        uncovered_ids = selected_joint_ids[~covered_mask[selected_joint_ids]]
+        if uncovered_ids.numel() > 0:
+            uncovered_names = [
+                self._asset.joint_names[int(joint_id)] for joint_id in uncovered_ids.tolist()
+            ]
+            raise RuntimeError(
+                "TN 包络奖励所选关节必须全部使用支持 substep 统计的 actuator，"
+                f"未覆盖关节为 {uncovered_names}"
+            )
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        for actuator, _ in self._actuator_entries:
+            actuator.reset_tn_violation_accumulator(self._accumulator_key, env_ids)
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        safe_tn_ratio: float,
+        asset_cfg: SceneEntityCfg,
+    ) -> torch.Tensor:
+        del env, safe_tn_ratio, asset_cfg
+        penalty = torch.zeros(self.num_envs, device=self.device)
+        for actuator, selected_targets in self._actuator_entries:
+            peak_violation = actuator.consume_tn_violation_accumulator(self._accumulator_key)[
+                :, selected_targets
+            ]
+            force_limit = actuator.force_limit[:, selected_targets]
+            normalized_violation = torch.nan_to_num(
+                peak_violation / force_limit,
+                nan=1.0e6,
+                posinf=1.0e6,
+                neginf=1.0e6,
+            )
+            penalty += torch.sum(torch.square(normalized_violation), dim=1)
+        return penalty
 
 
 def leg_torques(

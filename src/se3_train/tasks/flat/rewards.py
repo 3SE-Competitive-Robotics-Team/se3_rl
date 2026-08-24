@@ -12,6 +12,7 @@ from se3_train.mdp.jump_rewards import (
     idle_wheel_motion_penalty_no_jump,
 )
 from se3_train.mdp.rewards import (
+    NormalizedTnEnvelopeViolation,
     action_rate,
     action_smoothness,
     ang_vel_xy,
@@ -40,6 +41,7 @@ from se3_train.mdp.rewards import (
 )
 
 __all__ = [
+    "NormalizedTnEnvelopeViolation",
     "action_rate",
     "action_smoothness",
     "ang_vel_xy",

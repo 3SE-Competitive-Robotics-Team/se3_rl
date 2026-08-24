@@ -1,12 +1,14 @@
 from pathlib import Path
 
 import mujoco
-from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from se3_shared import DM8009P, M3508_C620_14, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_train.torque_speed_actuator import TorqueSpeedCurveActuatorCfg
+from se3_train.torque_speed_actuator import (
+    TnTrackedDcMotorActuatorCfg,
+    TorqueSpeedCurveActuatorCfg,
+)
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
@@ -33,7 +35,7 @@ def _serialleg_spec_for_training() -> mujoco.MjSpec:
 
 def get_serialleg_closedchain_cfg(*, wheel_kd_override: float | None = None) -> EntityCfg:
     """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。"""
-    leg_actuator_cfg = DcMotorActuatorCfg(
+    leg_actuator_cfg = TnTrackedDcMotorActuatorCfg(
         target_names_expr=JointGroup.POLICY_LEG_NAMES,
         stiffness=_ROBOT_CFG.leg_kp,
         damping=_ROBOT_CFG.leg_kd,
