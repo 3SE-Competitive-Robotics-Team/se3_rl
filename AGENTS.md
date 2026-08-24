@@ -4,12 +4,12 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 主仓库 7 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（历史兼容，待删除）、`se3_deploy`（历史 NX runtime，待删除）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
+- 主仓库 5 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
 - `submodules/se3-sim2x` 提供 `se3_runtime` 与 `se3_runtime_mujoco`，作为 sim2sim / sim2real 共用链路
 - 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
-迁移约定：交互式 sim2sim 必须使用纯 Python [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x) submodule，不以 Rust runtime 为目标。`se3_sim2sim` 和 `se3_deploy` 是待删除的历史兼容模块，不再作为操作入口或新增功能。Agent 在主动使用 `se3_deploy` 或执行 NX 真机部署/调试命令前，必须先询问主人是否继续使用旧链路；用户已经明确要求时可以继续。
+交互式 sim2sim 必须使用纯 Python [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x) submodule，不以 Rust runtime 为目标。真机 adapter 暂未搭建，不得恢复已删除的旧 NX runtime。
 
 ## 术语表 (Glossary)
 
@@ -168,8 +168,8 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 
 ### ONNX 共用 runtime
 
-`submodules/se3-sim2x/src/se3_runtime` 只依赖 NumPy、ONNX 和 ONNX Runtime，不得反向依赖 `se3_train`、
-`se3_sim2sim` 或 `se3_deploy`。sim2sim 与 sim2real adapter 必须共同调用
+`submodules/se3-sim2x/src/se3_runtime` 只依赖 NumPy、ONNX 和 ONNX Runtime，不得反向依赖 `se3_train`。
+sim2sim 与 sim2real adapter 必须共同调用
 `PolicyRuntime`，不得分别实现 observation/action 数学。
 
 - `PolicyBundle.load()` 严格校验 `se3.meta.v1`、contract hash 和 ONNX I/O
@@ -336,8 +336,6 @@ se3_wheel_leg/
 │   ├── se3_flow_match/    # Flow Matching（暂不可用，待迁移 34D）
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
-│   ├── se3_sim2sim/        # 历史兼容代码，待删除
-│   ├── se3_deploy/         # 历史 NX runtime，待删除
 │   ├── se3_tools/          # 关节诊断和模型查看工具
 │   └── se3_jump_to/        # 跳跃参考轨迹生成
 └── submodules/

@@ -402,24 +402,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
-    """生成通过 GitHub Release 值守的本机 watcher 指令。"""
+    """生成把 ONNX 同步到固定目录后启动 sim2x 的提示。"""
     actual_run_dir = run_dir or f"<run-dir-for-{args.run_name}>"
-    release_tag = "run-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", actual_run_dir)
-    run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
-    command_height_arg = (
-        f"  --command-height {args.watch_command_height:g} `\n"
-        if args.watch_command_height is not None
-        else ""
-    )
+    del args
     return (
-        "uv run --no-sync python scripts/local_checkpoint_viser_watcher.py `\n"
-        "  --source github-release `\n"
-        f"  --github-release-tag {release_tag} `\n"
-        f"{run_dir_arg}"
-        f"  --terrain-level {args.watch_terrain_level} `\n"
-        f"{command_height_arg}"
-        f"  --interval-iters {args.watch_interval_iters} `\n"
-        "  --poll-seconds 60"
+        "将远端 logs/rsl_rl/<experiment>/"
+        f"{actual_run_dir}/onnx 同步到本地相同目录层级，然后运行：\n"
+        "./scripts/run_sim2x.sh"
     )
 
 
@@ -664,7 +653,7 @@ echo "TRAIN_RUN_DIR=$run_dir"
         f"bash -lc {shlex.quote(f'tail -f {log_path}')}"
     )
     print(subprocess.list2cmdline(ssh_args(args, log_command)))
-    print("\n本机 GitHub Release watcher 指令:")
+    print("\n本机 sim2x 值守:")
     print(watch_remote_command(args, run_dir=run_dir))
 
 

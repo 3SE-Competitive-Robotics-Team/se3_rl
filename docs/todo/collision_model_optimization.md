@@ -25,7 +25,7 @@
 ## 验证方式
 
 - 使用 `uv run se3-joint-viewer --geom-view both` 对比 visual 与 collision 位置。
-- 使用 MuJoCo 或 Rerun 对比接触点数量、接触位置和姿态变化。
+- 使用 MuJoCo/Viser 对比接触点数量、接触位置和姿态变化。
 - 跑 smoke 训练，确认环境不崩溃且无 overflow warning。
 - 做短训对比，观察奖励曲线、站立稳定性、轮子接地行为和跌倒后的接触表现。
 - 如果容量需求明显下降，再评估是否可以降低 `nconmax/njmax` 以节省显存和计算。

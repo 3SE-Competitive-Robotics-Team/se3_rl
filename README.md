@@ -3,7 +3,6 @@
 SerialLeg 轮腿机器人（6 DOF）的强化学习训练与 sim2sim 验证框架。训练端用 MJLab（MuJoCo-Warp GPU 加速）跑 PPO，验证端用标准 MuJoCo CPU，两端通过 `se3_shared` 共享机器人常量、观测维度和动作延迟配置，保证 sim2sim gap 可控。
 
 > 当前 sim2sim 入口为 [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x)。
-> `src/se3_sim2sim` 与 `src/se3_deploy` 仅为尚未清理的历史代码，不再作为文档中的操作入口。
 
 ## 前置条件
 
@@ -18,8 +17,6 @@ SerialLeg 轮腿机器人（6 DOF）的强化学习训练与 sim2sim 验证框�
 src/
 ├── se3_shared/     # 训练和 sim2sim 共享配置，包含关节语义、PD 增益、动作缩放、延迟参数
 ├── se3_train/      # MJLab 训练环境，含 MDP（奖励、观测、事件）和 PPO 配置
-├── se3_sim2sim/    # 历史兼容代码，待删除
-├── se3_deploy/     # 历史 NX runtime，待删除
 ├── se3_tools/      # 关节方向和默认姿态诊断工具
 ├── se3_jump_to/    # 跳跃参考轨迹生成与回放
 └── se3_flow_match/ # Flow Matching 蒸馏（暂不可用，待迁移 34D 观测）
@@ -124,7 +121,6 @@ rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
 - [训练任务架构](docs/task_architecture.md)
 - [ONNX metadata runtime](docs/onnx_runtime.md)
 - 远程机器运维：先读 [remote-dev-se3 公用流程](.agents/skills/remote-dev-se3/SKILL.md)，再选择对应 machine profile
-- [GRU 反倒起身训练方案](docs/plan/gru_recovery_training.md)
 - [MoE 多速度域方案](docs/plan/moe_multi_speed.md)
 - [膝关节弹簧建模方案](docs/plan/knee_spring_modeling.md)
 - [碰撞模型优化记录](docs/todo/collision_model_optimization.md)

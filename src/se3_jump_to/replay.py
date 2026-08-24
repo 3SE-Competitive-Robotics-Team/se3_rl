@@ -1,6 +1,6 @@
-"""NPC 参考轨迹的完整 3D MuJoCo Rerun 重放。
+"""NPC 参考轨迹的完整 3D MuJoCo/Viser 重放。
 
-复用 se3_sim2sim 的 RerunViewer，渲染完整的机器人 3D 模型。
+复用 se3-sim2x 的通用 scene adapter，渲染完整的机器人 3D 模型。
 
 用法：
     uv run se3-jump-to-replay --traj assets/trajectories/jump_0.6m.npz
@@ -18,11 +18,12 @@ import mujoco
 import numpy as np
 
 from se3_jump_to.kinematics import legacy_jump_output_leg_values_np
+from se3_runtime_mujoco import MujocoSceneViewer
 from se3_shared import JointGroup, output_to_policy_pos_np, policy_to_closedchain_passive_pos_np
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="NPC 轨迹 3D Rerun 重放")
+    parser = argparse.ArgumentParser(description="NPC 轨迹 3D Viser 重放")
     parser.add_argument(
         "--traj",
         type=str,
@@ -40,6 +41,7 @@ def main() -> None:
         action="store_true",
         help="循环播放",
     )
+    parser.add_argument("--port", type=int, default=8080, help="Viser HTTP 端口")
     args = parser.parse_args()
 
     # 加载轨迹
@@ -52,7 +54,6 @@ def main() -> None:
     base_pos: np.ndarray = d["base_pos"]  # (N, 3)
     base_vel: np.ndarray = d["base_vel"]  # (N, 3)
     q_ref: np.ndarray = d["q_ref"]  # (N, 6)
-    grf_left: np.ndarray = d["grf_left"]  # (N_stance, 3)
     dt = float(d["dt"])
     t_stance = float(d["t_stance"])
     t_flight = float(d["t_flight"])
@@ -88,13 +89,8 @@ def main() -> None:
     lw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "l_wheel_Link")
     rw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "r_wheel_Link")
 
-    # 初始化 RerunViewer（完整 3D 机器人渲染）
-    from se3_sim2sim.rerun_viewer import RerunViewer
-
-    viewer = RerunViewer(app_id="se3_jump_to_replay", spawn=True, follow_body="base_link")
-    viewer.log_model(model)
-    print("[Replay] Rerun 已启动，完整 3D 机器人渲染中...")
-    print("[Replay] 请在 Rerun 窗口中查看 3D 动作序列")
+    viewer = MujocoSceneViewer(model, port=args.port, label="se3_jump_to_replay")
+    print(f"[Replay] Viser 已启动: {viewer.url}")
 
     # 播放循环
     play_count = 0
@@ -140,32 +136,7 @@ def main() -> None:
             rw_z = float(data.xpos[rw_id, 2])
             wheel_clr = max(lw_z, rw_z) - 0.059
 
-            grf_z = float(grf_left[step, 2]) if step < len(grf_left) else 0.0
-
-            # 用 RerunViewer 渲染完整 3D 机器人
-            telemetry = {
-                "height": float(pos[2]),
-                "wheel_clearance": wheel_clr,
-                "tilt_deg": 0.0,
-                "fail_tilt_deg": 80.0,
-                "reward": grf_z / 300.0,  # 用 GRF 归一化值作为 reward 显示
-                "base_ang_vel_body": [0.0, 0.0, 0.0],
-                "base_ang_vel_world": [0.0, 0.0, 0.0],
-                "projected_gravity": [0.0, 0.0, -1.0],
-                "dof_pos": list(q),
-                "dof_vel": [0.0] * 6,
-                "policy_action_raw": [0.0] * 6,
-                "policy_action_clipped": [0.0] * 6,
-                "last_action": list(q),
-                "last_ctrl": [0.0] * 6,
-                "yaw_pid": {
-                    "current_yaw": 0.0,
-                    "target_yaw": 0.0,
-                    "error": 0.0,
-                    "command": 0.0,
-                },
-            }
-            viewer.log_state(model, data, step=step, telemetry=telemetry)
+            viewer.update(data)
 
             # 控制台输出（每 10 步）
             if step % 10 == 0:

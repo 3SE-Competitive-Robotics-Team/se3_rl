@@ -1,6 +1,6 @@
 """SE3 轮腿机器人共享配置。
 
-训练（se3_train）和验证（se3_sim2sim）的单一参数来源。
+训练端共享配置；部署契约在保存 checkpoint 时写入 ONNX metadata，供 se3-sim2x 消费。
 """
 
 from .action_delay import ActionDelayConfig, delay_seconds_to_steps

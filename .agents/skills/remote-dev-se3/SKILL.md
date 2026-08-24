@@ -52,7 +52,8 @@ profile 是运行参数来源，不是凭据存储。密码、Token、私钥和�
 5. 执行 checkpoint、CUDA、GPU 与进程预检查。
 6. 启动训练并记录 PID、日志、run 目录和实际命令。
 7. 持续检查训练 iteration、关键指标、GPU 使用和错误日志。
-8. 通过用户 profile 指定的产物通道同步 checkpoint，并在本机完成 Viser/sim2sim 验收。
+8. 通过用户 profile 指定的产物通道同步 `onnx/model_*.onnx`，并在本机运行
+   `./scripts/run_sim2x.sh` 完成 Viser/sim2sim 验收。
 
 ## 通用脚本约定
 
@@ -89,5 +90,6 @@ uv run python scripts/remote_sync_start_training.py \
 - CUDA compat/toolkit 路径必须由 profile 或显式参数给出，并由启动脚本检查。
 - 无外网训练使用 `WANDB_MODE=offline`，避免日志上传阻塞训练或影响 checkpoint 保存。
 - checkpoint 按数字版本排序，不能用字典序判断最新文件。
-- watcher 必须先确认 checkpoint 写入稳定，再原子替换本地文件。
+- 同步器必须先确认 ONNX 写入稳定，再原子替换本地文件，并保持
+  `logs/rsl_rl/<experiment>/<run_id>/onnx/` 目录层级。
 - Viser 验收同时检查策略、仿真模型、碰撞地形和实际 HTTP 可用性，不能只确认进程存在。

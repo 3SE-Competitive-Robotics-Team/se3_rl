@@ -201,31 +201,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
-    """生成与本次远端训练参数对应的本地 watcher 指令。"""
-    run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
-    route_args = (
-        f"  --entry-host {args.entry_host} `\n  --inner-host {args.inner_host} `\n"
-        if args.inner_host
-        else f"  --host {args.entry_host} `\n"
-    )
-    command_height_arg = (
-        f"  --command-height {args.watch_command_height:g} `\n"
-        if args.watch_command_height is not None
-        else ""
-    )
+    """生成把 ONNX 同步到固定目录后启动 sim2x 的提示。"""
+    del args
+    actual_run_dir = run_dir or "<run-id>"
     return (
-        "uv run python scripts/watch_remote_train_local.py `\n"
-        f"{route_args}"
-        f"  --namespace {args.namespace} `\n"
-        f"  --pod {args.pod} `\n"
-        f"  --remote-project {args.remote_project} `\n"
-        f"{run_dir_arg}"
-        f"  --task {args.task} `\n"
-        f"  --terrain-level {args.watch_terrain_level} `\n"
-        f"{command_height_arg}"
-        f"  --interval-iters {args.watch_interval_iters} `\n"
-        "  --poll-seconds 60 `\n"
-        "  --viewer viser"
+        "将远端 logs/rsl_rl/<experiment>/"
+        f"{actual_run_dir}/onnx 同步到本地相同目录层级，然后运行：\n"
+        "./scripts/run_sim2x.sh"
     )
 
 

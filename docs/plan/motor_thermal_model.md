@@ -81,9 +81,10 @@ thermal_obs = (motor_temp - T_amb) / (T_max - T_amb)  # 归一化到 [0, 1]
 
 共 6 维，加在现有 critic 特权观测后面。actor 不观测温度——策略通过感受到的转矩退化间接学会规避。
 
-### sim2sim 端（`se3_sim2sim/robot.py`）
+### sim2x MuJoCo adapter
 
-在 `WheelLeggedRobot` 里加 `motor_temp` 数组，`_compute_pd_torques` 里应用温度相关限流，`telemetry()` 暴露温度字段。
+在 `se3_runtime_mujoco` adapter 中增加 `motor_temp` 状态，执行器管线应用温度相关限流，
+telemetry 暴露温度字段；参数由 ONNX metadata 提供，不在 adapter 中维护第二套默认值。
 
 ### 共享配置（`se3_shared`）
 
@@ -105,7 +106,7 @@ class ThermalConfig:
 ### Phase 1：热模型 + sim2sim 验证
 
 - 在 `se3_shared` 加 `ThermalConfig`
-- 在 `se3_sim2sim` 实现热状态更新和限流，`telemetry()` 暴露温度
+- 扩展 ONNX metadata，并在 `se3_runtime_mujoco` 实现热状态更新和限流
 - 用 2.5 m/s 持续跑 60 秒，观察温度曲线和限流触发时机
 - 标定 `R_th` / `C_th`，使升温曲线与实测或 C620 手册匹配
 

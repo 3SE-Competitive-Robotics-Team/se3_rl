@@ -1,7 +1,7 @@
-"""Rerun + 终端交互式关节诊断工具。
+"""Viser + 终端交互式关节诊断工具。
 
-通过终端命令逐个测试关节和轮子方向，同时在 Rerun 记录模型状态、
-关节位置、关节速度和 actuator control。远程无 GUI 检查可使用 ``--viewer none``。
+通过终端命令逐个测试关节和轮子方向，同时在 Viser 显示 MuJoCo 状态。
+远程无 GUI 检查可使用 ``--viewer none``。
 
 用法:
     uv run se3-joint-diag
@@ -12,10 +12,9 @@
 import argparse
 
 import mujoco
-import numpy as np
 
+from se3_runtime_mujoco import MujocoSceneViewer
 from se3_shared import JointGroup, RobotConfig
-from se3_sim2sim.rerun_viewer import RerunViewer
 
 MJCF_PATH = "assets/robots/serialleg/mjcf/serialleg_closed_chain_v3_train_obb_trim.xml"
 
@@ -66,68 +65,18 @@ def get_base_state(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, obje
     }
 
 
-def _policy_joint_state(
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-) -> tuple[np.ndarray, np.ndarray]:
-    """按 policy-order 读取诊断关节的位置和速度。"""
-    pos = np.empty(len(ACTUATOR_NAMES), dtype=np.float64)
-    vel = np.empty_like(pos)
-    for index, joint_name in enumerate(ACTUATOR_NAMES):
-        joint_id = model.joint(joint_name).id
-        pos[index] = data.qpos[model.jnt_qposadr[joint_id]]
-        vel[index] = data.qvel[model.jnt_dofadr[joint_id]]
-    return pos, vel
-
-
-def _log_rerun_state(
-    viewer: RerunViewer | None,
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    step: int,
-) -> None:
-    """向 Rerun 记录闭链模型、关节状态和 actuator control。"""
-    if viewer is None:
-        return
-    dof_pos, dof_vel = _policy_joint_state(model, data)
-    base_id = model.body("base_link").id
-    zeros = np.zeros(len(ACTUATOR_NAMES), dtype=np.float64)
-    base_ang_vel_world = np.asarray(data.qvel[3:6], dtype=np.float64)
-    base_rotation = np.asarray(data.xmat[base_id], dtype=np.float64).reshape(3, 3)
-    base_ang_vel_body = base_rotation.T @ base_ang_vel_world
-    tilt_deg = float(np.rad2deg(np.arccos(np.clip(base_rotation[2, 2], -1.0, 1.0))))
-    viewer.log_state(
-        model,
-        data,
-        step=step,
-        telemetry={
-            "height": float(data.xpos[base_id, 2]),
-            "tilt_deg": tilt_deg,
-            "fail_tilt_deg": 90.0,
-            "reward": 0.0,
-            "last_ctrl": np.asarray(data.ctrl, dtype=np.float64),
-            "base_ang_vel_body": base_ang_vel_body,
-            "base_ang_vel_world": base_ang_vel_world,
-            "dof_pos": dof_pos,
-            "dof_vel": dof_vel,
-            "policy_action_raw": zeros,
-            "policy_action_clipped": zeros,
-            "last_action": zeros,
-        },
-    )
-
-
 def _step_simulation(
     model: mujoco.MjModel,
     data: mujoco.MjData,
     steps: int,
-    viewer: RerunViewer | None,
+    viewer: MujocoSceneViewer | None,
     sequence_step: int,
 ) -> int:
-    """推进仿真并逐步写入 Rerun，返回新的全局步号。"""
+    """推进仿真并逐步更新 Viser，返回新的全局步号。"""
     for _ in range(steps):
         mujoco.mj_step(model, data)
-        _log_rerun_state(viewer, model, data, sequence_step)
+        if viewer is not None:
+            viewer.update(data)
         sequence_step += 1
     return sequence_step
 
@@ -136,7 +85,7 @@ def mode_sweep(
     model: mujoco.MjModel,
     data: mujoco.MjData,
     args: argparse.Namespace,
-    viewer: RerunViewer | None,
+    viewer: MujocoSceneViewer | None,
 ) -> None:
     """自动扫描每个 actuator 的正/负方向响应。"""
     print("=" * 60)
@@ -183,7 +132,7 @@ def mode_interactive(
     model: mujoco.MjModel,
     data: mujoco.MjData,
     args: argparse.Namespace,
-    viewer: RerunViewer | None,
+    viewer: MujocoSceneViewer | None,
 ) -> None:
     """手动输入 ctrl 值测试。"""
     print("=" * 60)
@@ -200,7 +149,8 @@ def mode_interactive(
 
     reset_standing(model, data, args.height)
     sequence_step = 0
-    _log_rerun_state(viewer, model, data, sequence_step)
+    if viewer is not None:
+        viewer.update(data)
     sequence_step += 1
 
     while True:
@@ -277,14 +227,14 @@ def mode_interactive(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Rerun + 终端交互式关节诊断工具")
+    parser = argparse.ArgumentParser(description="Viser + 终端交互式关节诊断工具")
     parser.add_argument("--mjcf", default=MJCF_PATH, help="MJCF 模型路径")
     parser.add_argument("--height", type=float, default=0.22, help="初始基座高度")
     parser.add_argument("--steps", type=int, default=50, help="sweep 模式每次仿真步数")
     parser.add_argument(
         "--viewer",
-        choices=["rerun", "none"],
-        default="rerun",
+        choices=["viser", "none"],
+        default="viser",
         help="动态诊断可视化后端",
     )
     parser.add_argument(
@@ -297,13 +247,7 @@ def main() -> None:
 
     model, data = load_model(args.mjcf)
 
-    viewer = (
-        RerunViewer(app_id="se3_joint_diag", spawn=True, follow_body="base_link")
-        if args.viewer == "rerun"
-        else None
-    )
-    if viewer is not None:
-        viewer.log_model(model)
+    viewer = MujocoSceneViewer(model, label="se3_joint_diag") if args.viewer == "viser" else None
     try:
         if args.mode == "sweep":
             mode_sweep(model, data, args, viewer)

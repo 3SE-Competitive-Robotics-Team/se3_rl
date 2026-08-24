@@ -34,5 +34,4 @@
 ./scripts/run_sim2x.sh
 ```
 
-服务扫描 `logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx`。旧 `se3_sim2sim` 和
-`se3_deploy` 不再提供当前操作文档；真机 adapter 尚未开始搭建。
+服务扫描 `logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx`。真机 adapter 尚未开始搭建。
