@@ -11,12 +11,12 @@ from test_onnx_metadata import _fake_env, _policy_input, _write_runtime_model
 
 from se3_runtime import (
     DecodedPolicyAction,
+    PolicyActionDecoder,
     PolicyControlLoop,
     PolicyInput,
     PolicyRuntime,
 )
 from se3_runtime_mujoco import (
-    MujocoAdapterError,
     MujocoPolicyAdapter,
     MujocoViserViewer,
 )
@@ -72,7 +72,7 @@ def _runtime_artifact(path: Path, action_values: list[float]) -> PolicyRuntime:
         path,
         metadata,
         policy_iteration=20,
-        policy_type="mlp",
+        is_rnn=False,
     )
     return PolicyRuntime.load(path, action_delay_random_seed=1)
 
@@ -121,9 +121,12 @@ class MujocoPolicyAdapterTests(unittest.TestCase):
                 artifact_path=runtime.bundle.path,
             )
             policy_input = adapter.read_policy_input()
+            expected_leg_default = PolicyActionDecoder(runtime.contract).policy_default(
+                adapter.commands
+            )
             np.testing.assert_allclose(
                 policy_input.robot.policy_joint_position,
-                runtime.contract.robot.default_joint_position,
+                np.concatenate((expected_leg_default, np.zeros(2))),
                 rtol=0.0,
                 atol=1.0e-9,
             )
@@ -148,20 +151,19 @@ class MujocoPolicyAdapterTests(unittest.TestCase):
         self.assertTrue((control.effort >= control.lower_effort_limit).all())
         self.assertTrue((control.effort <= control.upper_effort_limit).all())
 
-    def test_rejects_model_override_with_wrong_hash(self) -> None:
+    def test_v2_rejects_missing_model_override(self) -> None:
         with TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             runtime = _runtime_artifact(
-                temp_path / "hash.onnx",
+                temp_path / "asset.onnx",
                 [0.0] * 6,
             )
-            wrong_model = temp_path / "wrong.xml"
-            wrong_model.write_bytes(_MODEL_PATH.read_bytes() + b"\n")
+            missing_model = temp_path / "missing.xml"
 
-            with self.assertRaisesRegex(MujocoAdapterError, "SHA-256"):
+            with self.assertRaisesRegex(FileNotFoundError, "MJCF 不存在"):
                 MujocoPolicyAdapter(
                     runtime.contract,
-                    model_path=wrong_model,
+                    model_path=missing_model,
                     artifact_path=runtime.bundle.path,
                 )
 

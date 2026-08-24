@@ -28,7 +28,7 @@ submodules/
 机器人模型位于 `assets/robots/serialleg/`，训练产物默认写入
 `logs/rsl_rl/<task_name>/<run_id>/`。
 
-新的部署入口是带 `se3.meta.v1` 的单个 ONNX artifact。submodule 中的 `se3_runtime` 已统一处理
+新的部署入口是带 `se3.meta.v2` 的单个 ONNX artifact（旧 v1 仍兼容）。submodule 中的 `se3_runtime` 已统一处理
 MLP、History-MLP、GRU 的 observation/state/action 语义；完整调用约定见
 [ONNX metadata runtime](docs/onnx_runtime.md)。
 

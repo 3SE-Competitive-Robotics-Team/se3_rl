@@ -47,17 +47,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _policy_type(policy: torch.nn.Module) -> str:
-    """返回与实际 ONNX 状态接口一致的策略类型。"""
-    if not bool(getattr(policy, "is_recurrent", False)):
-        return "mlp"
-    recurrent_module = getattr(getattr(policy, "rnn", None), "rnn", None)
-    policy_type = type(recurrent_module).__name__.lower()
-    if policy_type not in {"gru", "lstm"}:
-        raise TypeError(f"暂不支持 recurrent policy 类型: {type(recurrent_module).__name__}")
-    return policy_type
-
-
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
     """带 SE3 运行时画像的 MJLab on-policy runner。"""
 
@@ -103,7 +92,6 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             self.export_policy_to_onnx(
                 str(export_dir),
                 filename=filename,
-                source_checkpoint=checkpoint_path,
             )
         except Exception as error:
             print(
@@ -118,8 +106,6 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         path: str,
         filename: str = "policy.onnx",
         verbose: bool = False,
-        *,
-        source_checkpoint: str | Path | None = None,
     ) -> None:
         """复用 MJLab 导出器，并原子写入从 live env 构建的 metadata。"""
         policy = self.alg.get_policy()
@@ -151,8 +137,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 temp_path,
                 metadata,
                 policy_iteration=self.current_learning_iteration,
-                policy_type=_policy_type(policy),
-                source_checkpoint=source_checkpoint,
+                is_rnn=bool(policy.is_recurrent),
             )
             os.replace(temp_path, final_path)
         finally:

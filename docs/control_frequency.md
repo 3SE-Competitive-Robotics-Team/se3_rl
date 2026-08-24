@@ -18,8 +18,8 @@
 当前约定：
 
 - 训练端：各 `src/se3_train/tasks/<task>/env_cfg.py` 通过共享机器人配置读取 `_ROBOT_DEFAULTS.control_decimation` 和 `_ROBOT_DEFAULTS.sim_dt`。
-- ONNX producer：`src/se3_train/onnx_metadata.py` 从 live env 写入 `physics_dt_s` 和
-  `control_decimation`。
+- ONNX producer：`src/se3_train/onnx_metadata.py` 从 live env 写入 `sim_dt`、`decimation`、
+  `step_dt` 和 `inference_hz`。
 - sim2x：`PolicyBundle` 校验 metadata，`PolicyControlLoop` 严格按其中的 decimation 推进。
 - 奖励/课程中按秒换算 step 时，优先读取环境实际 `step_dt`；没有 `step_dt` 时才用 `physics_dt * decimation` 兜底。
 

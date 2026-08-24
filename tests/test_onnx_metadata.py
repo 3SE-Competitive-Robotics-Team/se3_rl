@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import unittest
-from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -40,7 +39,6 @@ from se3_train.onnx_metadata import (
     ONNX_METADATA_KEY,
     SCHEMA_NAME,
     build_deployment_onnx_metadata,
-    deployment_contract_hash,
     embed_onnx_metadata,
 )
 
@@ -308,18 +306,11 @@ def _policy_input(
     )
 
 
-def _rewrite_contract(
-    path: Path,
-    mutate: Callable[[dict[str, Any]], None],
-    *,
-    refresh_hash: bool,
-) -> None:
+def _rewrite_descriptor(path: Path, mutate: Any) -> None:
     model = onnx.load(path)
     prop = next(item for item in model.metadata_props if item.key == ONNX_METADATA_KEY)
     payload = json.loads(prop.value)
     mutate(payload)
-    if refresh_hash:
-        payload["meta"]["contract_hash"] = deployment_contract_hash(payload)
     prop.value = json.dumps(
         payload,
         ensure_ascii=False,
@@ -331,7 +322,7 @@ def _rewrite_contract(
 
 
 class OnnxMetadataTests(unittest.TestCase):
-    def test_single_frame_contract_reads_live_command_and_action_cfg(self) -> None:
+    def test_single_frame_descriptor_matches_kyber_shape_and_live_cfg(self) -> None:
         env = _fake_env()
         metadata = build_deployment_onnx_metadata(
             env,
@@ -339,67 +330,59 @@ class OnnxMetadataTests(unittest.TestCase):
         )
 
         self.assertEqual(metadata["meta"]["schema_name"], SCHEMA_NAME)
-        observation = metadata["policy_io"]["observation"]
-        self.assertEqual(observation["frame_dim"], 34)
-        self.assertEqual(observation["input_dim"], 34)
-        self.assertEqual(observation["actor_group_order"], ["actor"])
-        self.assertEqual(metadata["policy_io"]["groups"]["actor"]["history"]["mode"], "none")
+        self.assertEqual(
+            set(metadata),
+            {"meta", "robot", "commands", "policy_io"},
+        )
+        self.assertEqual(
+            set(metadata["policy_io"]),
+            {"groups", "references", "action"},
+        )
+        self.assertNotIn("contract_hash", metadata["meta"])
+        self.assertNotIn("onnx", metadata["policy_io"])
+        self.assertNotIn("policy", metadata["policy_io"])
+        terms = metadata["policy_io"]["groups"]["actor"]["terms"]
+        self.assertEqual([term["name"] for term in terms], list(_TERM_WIDTHS))
+        self.assertTrue(all(term["history_length"] == 1 for term in terms))
         self.assertEqual(metadata["policy_io"]["action"]["scale"], [0.25] * 4 + [45.0] * 2)
-        self.assertEqual(metadata["meta"]["sim"]["mujoco"]["integrator"], "implicitfast")
-        self.assertEqual(metadata["robot"]["actuators"]["damping"][4:6], [0.08, 0.08])
-        actuator_metadata = metadata["robot"]["actuators"]
-        self.assertAlmostEqual(actuator_metadata["peak_effort_limit"][4], 4.5 * 14.0 / 19.0)
-        self.assertAlmostEqual(actuator_metadata["rated_effort_limit"][4], 3.0 * 14.0 / 19.0)
+        self.assertEqual(metadata["meta"]["sim"]["inference_hz"], 50.0)
+        self.assertEqual(
+            metadata["commands"],
+            {"velocity_height": {"dimension": 8}},
+        )
+        self.assertNotIn("ranges", metadata["commands"]["velocity_height"])
+        self.assertEqual(metadata["robot"]["KD"][4:6], [0.08, 0.08])
+        self.assertEqual(metadata["robot"]["armature"], [0.0] * 6)
+        self.assertEqual(metadata["robot"]["effort_limit"][:4], [20.0] * 4)
         self.assertAlmostEqual(
-            actuator_metadata["velocity_limit"][4],
+            metadata["robot"]["velocity_limit"][4],
             482.0 * 19.0 / 14.0 * 2.0 * np.pi / 60.0,
         )
-        self.assertIsNone(actuator_metadata["torque_speed_curve"][4])
-        self.assertEqual(
-            metadata["policy_io"]["action"]["default_strategy"]["mode"],
-            "serialleg_height_conditioned_policy_default.v1",
-        )
+        self.assertFalse(metadata["meta"]["assets"]["robot_config_overridden"])
 
         env.command_manager.cfg.lin_vel_x_range = (-2.5, 3.0)
         env.scene["robot"].actuators[1].cfg.damping = 0.31
-        env.cfg.sim.mujoco.iterations = 77
         updated = build_deployment_onnx_metadata(
             env,
             observation_group_names=("actor",),
         )
-        self.assertEqual(
-            updated["commands"]["velocity_height"]["ranges"]["lin_vel_x"],
-            [-2.5, 3.0],
-        )
-        self.assertEqual(updated["robot"]["actuators"]["damping"][4:6], [0.31, 0.31])
-        self.assertEqual(updated["meta"]["sim"]["mujoco"]["iterations"], 77)
-        self.assertNotEqual(
-            metadata["meta"]["contract_hash"],
-            updated["meta"]["contract_hash"],
-        )
+        self.assertEqual(updated["commands"], metadata["commands"])
+        self.assertEqual(updated["robot"]["KD"][4:6], [0.31, 0.31])
+        self.assertTrue(updated["meta"]["assets"]["robot_config_overridden"])
 
-    def test_history_mlp_contract_is_term_major_oldest_first_and_170d(self) -> None:
+    def test_history_mlp_descriptor_records_only_per_term_history(self) -> None:
         metadata = build_deployment_onnx_metadata(
             _fake_env(history_length=5),
             observation_group_names=("actor",),
         )
 
-        observation = metadata["policy_io"]["observation"]
         group = metadata["policy_io"]["groups"]["actor"]
-        self.assertEqual(observation["frame_dim"], 34)
-        self.assertEqual(observation["input_dim"], 170)
-        self.assertEqual(group["history"]["mode"], "per_term_circular_buffer")
-        self.assertEqual(group["history"]["length"], 5)
-        self.assertEqual(group["history"]["order"], "oldest_to_newest")
-        self.assertEqual(group["history"]["flatten_layout"], "term_major")
-        self.assertEqual(group["history"]["reset_fill"], "repeat_first_sample")
+        self.assertEqual(set(group), {"terms"})
         self.assertEqual(
-            sum(term["flattened_width"] for term in group["terms"]),
+            sum(_TERM_WIDTHS[term["name"]] * term["history_length"] for term in group["terms"]),
             170,
         )
-        for term in group["terms"]:
-            self.assertEqual(term["history_length"], 5)
-            self.assertEqual(term["flattened_width"], term["base_width"] * 5)
+        self.assertTrue(all(term["history_length"] == 5 for term in group["terms"]))
 
     def test_embed_mlp_preserves_properties_and_does_not_mutate_builder_output(self) -> None:
         metadata = build_deployment_onnx_metadata(
@@ -414,8 +397,7 @@ class OnnxMetadataTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=7,
-                policy_type="mlp",
-                source_checkpoint="run/model_7.pt",
+                is_rnn=False,
             )
             model = onnx.load(model_path)
 
@@ -425,19 +407,13 @@ class OnnxMetadataTests(unittest.TestCase):
         self.assertEqual(props["existing.key"], "preserved")
         self.assertEqual(stored, embedded)
         self.assertEqual(stored["meta"]["training"]["policy_iteration"], 7)
-        self.assertEqual(stored["meta"]["training"]["source_checkpoint"], "model_7.pt")
-        self.assertEqual(stored["policy_io"]["policy"]["type"], "mlp")
-        self.assertEqual(stored["policy_io"]["onnx"]["inputs"][0]["shape"], [1, 34])
+        self.assertFalse(stored["meta"]["training"]["is_rnn"])
+        self.assertIsInstance(stored["meta"]["training"]["export_timestamp"], str)
+        self.assertIsInstance(stored["meta"]["training"]["export_tag"], str)
+        self.assertNotIn("source_checkpoint", stored["meta"]["training"])
+        self.assertEqual(set(stored["policy_io"]), {"groups", "references", "action"})
 
-        changed_provenance = deepcopy(stored)
-        changed_provenance["meta"]["training"]["policy_iteration"] = 999
-        changed_provenance["meta"]["training"]["exported_at"] = "2099-01-01T00:00:00+00:00"
-        self.assertEqual(
-            deployment_contract_hash(stored),
-            deployment_contract_hash(changed_provenance),
-        )
-
-    def test_embed_gru_records_explicit_hidden_state_io(self) -> None:
+    def test_embed_gru_records_only_is_rnn_and_uses_graph_as_io_source(self) -> None:
         metadata = build_deployment_onnx_metadata(
             _fake_env(),
             observation_group_names=("actor",),
@@ -449,21 +425,16 @@ class OnnxMetadataTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=8,
-                policy_type="gru",
+                is_rnn=True,
             )
+            model = onnx.load(model_path)
 
-        graph = embedded["policy_io"]["onnx"]
-        self.assertEqual([entry["name"] for entry in graph["inputs"]], ["obs", "h_in"])
-        self.assertEqual(
-            [entry["name"] for entry in graph["outputs"]],
-            ["actions", "h_out"],
-        )
-        self.assertEqual(
-            embedded["policy_io"]["policy"]["state"]["reset"],
-            "zeros_on_episode_reset",
-        )
+        self.assertTrue(embedded["meta"]["training"]["is_rnn"])
+        self.assertEqual([value.name for value in model.graph.input], ["obs", "h_in"])
+        self.assertEqual([value.name for value in model.graph.output], ["actions", "h_out"])
+        self.assertNotIn("onnx", embedded["policy_io"])
 
-    def test_embed_rejects_history_contract_with_single_frame_graph(self) -> None:
+    def test_embed_rejects_history_descriptor_with_single_frame_graph(self) -> None:
         metadata = build_deployment_onnx_metadata(
             _fake_env(history_length=5),
             observation_group_names=("actor",),
@@ -476,7 +447,7 @@ class OnnxMetadataTests(unittest.TestCase):
                     model_path,
                     metadata,
                     policy_iteration=1,
-                    policy_type="mlp",
+                    is_rnn=False,
                 )
 
 
@@ -493,7 +464,7 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=3,
-                policy_type="mlp",
+                is_rnn=False,
             )
 
             bundle = PolicyBundle.load(model_path)
@@ -506,11 +477,13 @@ class PolicyBundleTests(unittest.TestCase):
         self.assertEqual(bundle.contract.frame_dim, 34)
         self.assertEqual(bundle.contract.input_dim, 34)
         self.assertEqual(bundle.contract.action.dimension, 6)
+        self.assertEqual(bundle.contract.schema_version, 2)
+        self.assertIsNone(bundle.contract.robot.asset.sha256)
         self.assertEqual(actions.shape, (1, 6))
         with self.assertRaises(FrozenInstanceError):
             bundle.contract.input_dim = 1
         with self.assertRaises(TypeError):
-            bundle.contract.metadata["meta"]["schema_version"] = 2
+            bundle.contract.metadata["meta"]["schema_name"] = "changed"
 
     def test_loads_170d_history_mlp_contract(self) -> None:
         metadata = build_deployment_onnx_metadata(
@@ -524,7 +497,7 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=4,
-                policy_type="mlp",
+                is_rnn=False,
             )
             contract = PolicyBundle.load(model_path).contract
 
@@ -547,7 +520,7 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=5,
-                policy_type="gru",
+                is_rnn=True,
             )
             bundle = PolicyBundle.load(model_path)
             outputs = bundle.session.run(
@@ -571,7 +544,7 @@ class PolicyBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(PolicyBundleError, "缺少 metadata key"):
                 PolicyBundle.load(model_path)
 
-    def test_rejects_schema_version_even_with_refreshed_hash(self) -> None:
+    def test_rejects_wrong_descriptor_schema(self) -> None:
         metadata = build_deployment_onnx_metadata(
             _fake_env(),
             observation_group_names=("actor",),
@@ -583,17 +556,16 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=6,
-                policy_type="mlp",
+                is_rnn=False,
             )
-            _rewrite_contract(
+            _rewrite_descriptor(
                 model_path,
-                lambda payload: payload["meta"].__setitem__("schema_version", 2),
-                refresh_hash=True,
+                lambda payload: payload["meta"].__setitem__("schema_name", "other"),
             )
-            with self.assertRaisesRegex(PolicyContractError, "schema_version"):
+            with self.assertRaisesRegex(PolicyContractError, "schema_name"):
                 PolicyBundle.load(model_path)
 
-    def test_rejects_stale_contract_hash(self) -> None:
+    def test_rejects_is_rnn_different_from_onnx_graph(self) -> None:
         metadata = build_deployment_onnx_metadata(
             _fake_env(),
             observation_group_names=("actor",),
@@ -605,17 +577,16 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=7,
-                policy_type="mlp",
+                is_rnn=False,
             )
-            _rewrite_contract(
+            _rewrite_descriptor(
                 model_path,
-                lambda payload: payload["policy_io"]["action"].__setitem__("raw_clip", 99.0),
-                refresh_hash=False,
+                lambda payload: payload["meta"]["training"].__setitem__("is_rnn", True),
             )
-            with self.assertRaisesRegex(PolicyContractError, "contract_hash"):
+            with self.assertRaisesRegex(PolicyContractError, "is_rnn"):
                 PolicyBundle.load(model_path)
 
-    def test_rejects_unsupported_history_layout_with_valid_hash(self) -> None:
+    def test_rejects_mixed_history_lengths(self) -> None:
         metadata = build_deployment_onnx_metadata(
             _fake_env(history_length=5),
             observation_group_names=("actor",),
@@ -627,17 +598,15 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=8,
-                policy_type="mlp",
+                is_rnn=False,
             )
-            _rewrite_contract(
+            _rewrite_descriptor(
                 model_path,
-                lambda payload: payload["policy_io"]["groups"]["actor"]["history"].__setitem__(
-                    "flatten_layout",
-                    "frame_major",
+                lambda payload: payload["policy_io"]["groups"]["actor"]["terms"][0].__setitem__(
+                    "history_length", 4
                 ),
-                refresh_hash=True,
             )
-            with self.assertRaisesRegex(PolicyContractError, "flatten_layout"):
+            with self.assertRaisesRegex(PolicyContractError, "混合 history_length"):
                 PolicyBundle.load(model_path)
 
     def test_rejects_runtime_graph_shape_different_from_metadata(self) -> None:
@@ -652,14 +621,14 @@ class PolicyBundleTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=9,
-                policy_type="mlp",
+                is_rnn=False,
             )
             model = onnx.load(model_path)
             model.graph.input[0].type.tensor_type.shape.dim[1].dim_value = 35
             onnx.checker.check_model(model)
             onnx.save(model, model_path)
 
-            with self.assertRaisesRegex(PolicyContractError, "Runtime inputs"):
+            with self.assertRaisesRegex(PolicyContractError, "ONNX obs"):
                 PolicyBundle.load(model_path)
 
 
@@ -678,7 +647,7 @@ class PolicyRuntimeTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=10,
-                policy_type="mlp",
+                is_rnn=False,
             )
             contract = PolicyBundle.load(model_path).contract
 
@@ -714,7 +683,7 @@ class PolicyRuntimeTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=11,
-                policy_type="mlp",
+                is_rnn=False,
             )
             runtime = PolicyRuntime.load(model_path)
 
@@ -761,7 +730,7 @@ class PolicyRuntimeTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=12,
-                policy_type="mlp",
+                is_rnn=False,
             )
             runtime = PolicyRuntime.load(model_path, action_delay_random_seed=1)
             first = runtime.infer(policy_input)
@@ -793,7 +762,7 @@ class PolicyRuntimeTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=13,
-                policy_type="mlp",
+                is_rnn=False,
             )
             contract = PolicyBundle.load(model_path).contract
 
@@ -839,7 +808,7 @@ class PolicyRuntimeTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=14,
-                policy_type="gru",
+                is_rnn=True,
             )
             runtime = PolicyRuntime.load(model_path)
 
@@ -869,7 +838,7 @@ class PolicyRuntimeTests(unittest.TestCase):
                 model_path,
                 metadata,
                 policy_iteration=15,
-                policy_type="mlp",
+                is_rnn=False,
             )
             contract = PolicyBundle.load(model_path).contract
 

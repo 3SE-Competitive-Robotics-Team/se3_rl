@@ -258,5 +258,6 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-FlowMatch-Wheel-GRU --env.scene.num
 ls logs/rsl_rl/<task_name>/<run_id>/onnx/model_*.onnx
 ```
 
-如果模型在远程训练机上，需要把 `onnx/model_*.onnx` 同步到本地相同目录层级。旧 artifact
-缺少完整 `se3.meta.v1` 字段时必须从 checkpoint 重新导出，runtime 不会猜测缺失配置。
+如果模型在远程训练机上，需要把 `onnx/model_*.onnx` 同步到本地相同目录层级。新导出
+artifact 使用 `se3.meta.v2`；已有完整 v1 artifact 仍可加载，更早的不完整临时格式需要从
+checkpoint 重新导出。
