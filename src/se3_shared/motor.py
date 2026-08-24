@@ -111,38 +111,42 @@ class MotorSpec:
 
 # ─── 3508 + C620，轮子改 14:1 减速比 ─────────────────────────────────────
 
+_M3508_REFERENCE_GEAR_RATIO = 19.0
 _M3508_WHEEL_GEAR_RATIO = 14.0
-_M3508_14_NO_LOAD_SPEED = 71.81
-_M3508_14_MAX_TORQUE = 3.71
+_M3508_19_NO_LOAD_SPEED_RPM = 482.0
+_M3508_19_RATED_TORQUE = 3.0
+_M3508_19_PEAK_TORQUE = 4.5
 
-# 由 C620 电流闭环负载特性图数字化，再按 19:1 -> 14:1 映射得到。
-# 原图只覆盖到约 32.9 rad/s；更低速度沿用最后测得的 3.71 N·m 上限。
-M3508_C620_14_TORQUE_SPEED_CURVE: tuple[tuple[float, float], ...] = (
-    (0.00, 3.71),
-    (32.93, 3.71),
-    (49.07, 3.61),
-    (57.82, 3.54),
-    (63.65, 3.46),
-    (65.29, 3.39),
-    (65.70, 3.32),
-    (67.43, 2.95),
-    (69.28, 2.21),
-    (70.90, 1.47),
-    (71.37, 0.74),
-    (71.81, 0.00),
+# 官方 19:1 输出轴参数按减速比换算到 14:1 输出轴。
+_M3508_14_NO_LOAD_SPEED = (
+    _M3508_19_NO_LOAD_SPEED_RPM
+    * _M3508_REFERENCE_GEAR_RATIO
+    / _M3508_WHEEL_GEAR_RATIO
+    * 2.0
+    * math.pi
+    / 60.0
+)
+_M3508_14_RATED_TORQUE = (
+    _M3508_19_RATED_TORQUE
+    * _M3508_WHEEL_GEAR_RATIO
+    / _M3508_REFERENCE_GEAR_RATIO
+)
+_M3508_14_PEAK_TORQUE = (
+    _M3508_19_PEAK_TORQUE
+    * _M3508_WHEEL_GEAR_RATIO
+    / _M3508_REFERENCE_GEAR_RATIO
 )
 
 M3508_C620_14 = MotorSpec(
     name="M3508-C620-14to1",
     rated_voltage=24.0,
     gear_ratio=_M3508_WHEEL_GEAR_RATIO,
-    stall_torque=_M3508_14_MAX_TORQUE,
+    stall_torque=_M3508_14_PEAK_TORQUE,
     no_load_speed=_M3508_14_NO_LOAD_SPEED,
-    rated_torque=_M3508_14_MAX_TORQUE,
+    rated_torque=_M3508_14_RATED_TORQUE,
     rated_current=20.0,
     stall_current=20.0,
     phase_resistance=0.194,
-    torque_speed_curve=M3508_C620_14_TORQUE_SPEED_CURVE,
 )
 
 # 旧名字保留为兼容别名，新增代码优先使用 M3508_C620_14。

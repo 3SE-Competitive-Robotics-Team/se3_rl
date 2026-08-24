@@ -174,8 +174,9 @@ def _fake_env(history_length: int = 1) -> SimpleNamespace:
         cfg=SimpleNamespace(
             stiffness=0.0,
             damping=robot.wheel_kd,
+            saturation_effort=M3508_C620_14.stall_torque,
             effort_limit=M3508_C620_14.rated_torque,
-            torque_speed_curve=M3508_C620_14.torque_speed_curve,
+            velocity_limit=M3508_C620_14.no_load_speed,
         ),
     )
     return SimpleNamespace(
@@ -346,10 +347,14 @@ class OnnxMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["policy_io"]["action"]["scale"], [0.25] * 4 + [45.0] * 2)
         self.assertEqual(metadata["meta"]["sim"]["mujoco"]["integrator"], "implicitfast")
         self.assertEqual(metadata["robot"]["actuators"]["damping"][4:6], [0.08, 0.08])
-        self.assertEqual(
-            metadata["robot"]["actuators"]["torque_speed_curve"][4],
-            [list(point) for point in M3508_C620_14.torque_speed_curve],
+        actuator_metadata = metadata["robot"]["actuators"]
+        self.assertAlmostEqual(actuator_metadata["peak_effort_limit"][4], 4.5 * 14.0 / 19.0)
+        self.assertAlmostEqual(actuator_metadata["rated_effort_limit"][4], 3.0 * 14.0 / 19.0)
+        self.assertAlmostEqual(
+            actuator_metadata["velocity_limit"][4],
+            482.0 * 19.0 / 14.0 * 2.0 * np.pi / 60.0,
         )
+        self.assertIsNone(actuator_metadata["torque_speed_curve"][4])
         self.assertEqual(
             metadata["policy_io"]["action"]["default_strategy"]["mode"],
             "serialleg_height_conditioned_policy_default.v1",
