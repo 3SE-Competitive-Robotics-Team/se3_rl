@@ -13,7 +13,7 @@ from .rl_cfg import mlp_rl_cfg, rl_cfg, ungrouped_mlp_rl_cfg
 TASK_ID = "SE3-WheelLegged-Recovery-Discovery-GRU"
 MLP_TASK_ID = "SE3-WheelLegged-Recovery-Discovery-MLP"
 HISTORY_MLP_TASK_ID = "SE3-WheelLegged-Recovery-Discovery-History-MLP"
-GROUPED_MLP_TASK_ID = "SE3-WheelLegged-Recovery-Discovery-Grouped-MLP"
+GROUPED_MLP_TASK_ID = "SE3-WheelLegged-Recovery-Loco-Grouped-MLP"
 UNGROUPED_MLP_TASK_ID = "SE3-WheelLegged-Recovery-Discovery-Ungrouped-MLP"
 
 
