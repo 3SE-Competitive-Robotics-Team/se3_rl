@@ -179,7 +179,6 @@ remote: /root/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/2026-06-12_23-30-0
 | `Recovery/diag_upright_30deg_rate` | `0.930-0.941` |
 | `Recovery/diag_height_error_abs_m` | `0.0048-0.0053 m` |
 | `Recovery/diag_height_ok_2cm_rate` | `0.956-0.965` |
-| `Recovery/diag_raw_action_saturation_rate` | `0.039-0.045` |
 | `Episode_Termination/catastrophic_state` | `0.000` |
 
 `model_1500.pt` 不是最终部署模型，只作为 Deploy 阶段 warm-start 的 Discovery 候选。后续进入 Deploy 前，需要先用固定标准姿态评估和 Viser 复核动作质量；如需更激进的高峰候选，可保留 `model_1400.pt` 作为对照。
@@ -361,7 +360,6 @@ Recovery/success_rate_by_pose_type/right_side
 Recovery/time_to_upright_s
 Recovery/upright_hold_rate
 Recovery/final_height_error_abs_m
-Recovery/action_saturation_rate
 Recovery/leg_contact_rate
 ```
 

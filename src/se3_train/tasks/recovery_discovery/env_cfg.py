@@ -364,7 +364,6 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "asset_cfg": SceneEntityCfg("robot"),
             "force_threshold": 1.0,
             "contact_force_threshold": 20.0,
-            "action_saturation_threshold": 0.95,
             "active_rod_margin_warning": 0.05,
             "log_interval_steps": 256,
             "core_log_interval_steps": 64,
