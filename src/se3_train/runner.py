@@ -9,7 +9,12 @@ import torch
 from mjlab.rl import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
 
-from se3_train.async_logging import Se3AsyncHostLogger, async_host_logger_enabled
+from se3_train.async_logging import (
+    Se3AsyncHostLogger,
+    Se3RolloutMetricsLogger,
+    async_host_logger_enabled,
+    expand_episode_log_buffers,
+)
 from se3_train.onnx_metadata import (
     build_deployment_onnx_metadata,
     embed_onnx_metadata,
@@ -68,6 +73,9 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         self._se3_runtime_info_logged = False
         self._se3_async_host_logger_enabled = async_host_logger_enabled()
         self._se3_last_async_logger_flush_s = 0.0
+        self._se3_episode_log_window_size = expand_episode_log_buffers(
+            self.logger, self.env.num_envs
+        )
         self._se3_stage_warm_start_loaded = False
         self._se3_check_nan_enabled = _env_flag(
             "SE3_CHECK_NAN",
@@ -174,6 +182,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         async_logger = (
             Se3AsyncHostLogger(self.logger) if self._se3_async_host_logger_enabled else None
         )
+        rollout_metrics_logger = Se3RolloutMetricsLogger(self.logger, self.env)
 
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
@@ -200,6 +209,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                         self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
                     else:
                         async_logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+                    rollout_metrics_logger.process_env_step(rewards, dones, intrinsic_rewards)
 
                 timer.mark_collect_done()
                 self.alg.compute_returns(obs)
@@ -227,6 +237,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 action_std=self.alg.get_policy().output_std,
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
             )
+            rollout_metrics_logger.log(it)
             self._log_profile_scalars(it, timing)
             if not self.is_distributed or self.gpu_global_rank == 0:
                 write_training_status(
@@ -270,6 +281,11 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             writer.add_scalar(
                 "Runtime/check_nan_enabled",
                 float(self._se3_check_nan_enabled),
+                iteration,
+            )
+            writer.add_scalar(
+                "Runtime/episode_log_window_size",
+                self._se3_episode_log_window_size,
                 iteration,
             )
             self._se3_runtime_info_logged = True
