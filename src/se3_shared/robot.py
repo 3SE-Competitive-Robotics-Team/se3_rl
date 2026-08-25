@@ -118,6 +118,8 @@ class RobotConfig(BaseModel):
     leg_kp: float = 60.0
     leg_kd: float = 3.0
     wheel_kd: float = 0.08
+    knee_gas_spring_force: float = 300.0
+    knee_gas_spring_compensation_enabled: bool = True
     torque_limits: tuple[float, ...] = (
         DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
         DM8009P.stall_torque,
