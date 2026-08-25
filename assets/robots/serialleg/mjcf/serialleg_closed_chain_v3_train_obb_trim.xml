@@ -251,7 +251,11 @@
       <site site="r_spring_p2" />
     </spatial>
   </tendon>
-  <!-- 默认训练模型不启用气弹簧常力，只保留挂点和 tendon 几何。 -->
+  <actuator>
+    <!-- gain 为 0、常量 bias 为 300，使 actuator 无需控制输入即可持续拉紧 tendon。 -->
+    <general name="l_knee_gas_spring" tendon="l_knee_spring" gaintype="fixed" gainprm="0" biastype="affine" biasprm="300 0 0" forcelimited="true" forcerange="0 300" />
+    <general name="r_knee_gas_spring" tendon="r_knee_spring" gaintype="fixed" gainprm="0" biastype="affine" biasprm="300 0 0" forcelimited="true" forcerange="0 300" />
+  </actuator>
   <keyframe>
     <key name="standing" qpos="0 0 0.22 1 0 0 0 -0.275422946189 -1.242259649307 0 -1.592100148957 1.401266340000 0.275422946189 1.242259649307 0 1.592100148957 -1.401269410000" />
   </keyframe>
