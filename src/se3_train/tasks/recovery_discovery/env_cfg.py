@@ -390,6 +390,18 @@ def _assert_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         raise RuntimeError(f"Recovery-Discovery reward weight drifted: {bad_weights}")
 
 
+def _apply_actor_history(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
+    """把 actor 观测换成五帧展平历史；critic 与其余训练契约保持不变。"""
+
+    actor_cfg = cfg.observations["actor"]
+    cfg.observations["actor"] = replace(
+        actor_cfg,
+        history_length=RECOVERY_DISCOVERY_HISTORY_LENGTH,
+        flatten_history_dim=True,
+    )
+    return cfg
+
+
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """标准姿态 Discovery 环境配置。"""
     cfg = recovery_env_cfg(play=play)
@@ -676,7 +688,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 
 def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """生成与分组实验同超参数、但使用旧混合 reset 的公平基线。"""
+    """生成与分组实验同超参数、但使用旧混合 reset 的公平基线。
+
+    actor 观测与分组任务一致，同样使用五帧展平历史，使唯一差异是 env 分组本身。
+    """
 
     cfg = env_cfg(play=play)
     cfg.rewards.pop("tn_envelope_violation_loco")
@@ -763,17 +778,10 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("recover_stagnation", None)
     if not play:
         cfg.curriculum["commands_vel"] = _ungrouped_velocity_curriculum_cfg()
-    return cfg
+    return _apply_actor_history(cfg)
 
 
 def history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """生成五帧 actor 历史观测版本，critic 与其余训练契约保持不变。"""
 
-    cfg = env_cfg(play=play)
-    actor_cfg = cfg.observations["actor"]
-    cfg.observations["actor"] = replace(
-        actor_cfg,
-        history_length=RECOVERY_DISCOVERY_HISTORY_LENGTH,
-        flatten_history_dim=True,
-    )
-    return cfg
+    return _apply_actor_history(env_cfg(play=play))
