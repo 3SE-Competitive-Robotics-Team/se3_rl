@@ -119,7 +119,9 @@ class RobotConfig(BaseModel):
     leg_kd: float = 3.0
     wheel_kd: float = 0.08
     knee_gas_spring_force: float = 300.0
-    knee_gas_spring_compensation_enabled: bool = True
+    # 关闭前馈，让策略直接面对带弹簧的 plant 并学会利用这份抗重力力矩；
+    # 开启则电机自己抵消弹簧，等于放弃硬件收益还多占 10-18 N·m 包络。
+    knee_gas_spring_compensation_enabled: bool = False
     torque_limits: tuple[float, ...] = (
         DM8009P.stall_torque,  # 40 N·m 峰值，允许起跳时短时大力矩（连续额定 20 N·m）
         DM8009P.stall_torque,
