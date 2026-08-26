@@ -141,6 +141,8 @@ class _FakeActionManager:
             height_conditioned_action_default=True,
             action_default_command_name="velocity_height",
             active_rod_lower_target_overdrive=0.2,
+            knee_gas_spring_force=300.0,
+            knee_gas_spring_compensation_enabled=True,
         )
         self._term = SimpleNamespace(cfg=self.cfg)
 

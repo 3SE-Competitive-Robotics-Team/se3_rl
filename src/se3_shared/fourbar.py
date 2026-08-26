@@ -115,7 +115,9 @@ def knee_gas_spring_compensation_torque_torch(
     output_knee = output_knee_from_active_angle_torch(active_angle)
     spring_length_jacobian = _knee_spring_length_jacobian_torch(output_knee)
     output_knee_jacobian = output_knee_jacobian_torch(active_angle, right_side=False)
-    compensation = float(spring_force) * spring_length_jacobian * output_knee_jacobian
+    # MJCF 里 actuator 正力推长 tendon，弹簧在主动杆坐标下的广义力为 +F·dL/dα；
+    # 前馈要抵消它，因此取负号。改这个符号等于换掉策略所处的 plant。
+    compensation = -float(spring_force) * spring_length_jacobian * output_knee_jacobian
     out = torch.stack(
         (
             compensation[:, 0],
@@ -296,7 +298,8 @@ def knee_gas_spring_compensation_torque_np(
         alpha_grid,
         output_knee_jacobian_grid,
     )
-    compensation = float(spring_force) * spring_length_jacobian * output_knee_jacobian
+    # 与 torch 版同一约定：弹簧广义力为 +F·dL/dα，抵消它需要取负号。
+    compensation = -float(spring_force) * spring_length_jacobian * output_knee_jacobian
     out = np.stack(
         (
             compensation[:, 0],

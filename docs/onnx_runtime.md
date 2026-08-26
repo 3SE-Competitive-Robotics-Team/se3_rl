@@ -30,6 +30,7 @@ robot
 ├── policy_joint_names
 ├── KP / KD / armature
 ├── effort_limit / velocity_limit
+├── knee_gas_spring     # force / compensation_enabled
 └── init_state / links
 commands
 └── velocity_height.dimension
@@ -63,6 +64,7 @@ policy_io
 - actor observation term 顺序、scale、clip 和 history length；
 - command 名称和维度；
 - policy-order 关节、PD、armature、effort/velocity limit；
+- 膝关节气弹簧力值与电机前馈补偿开关；
 - action scale、offset 和 clip。
 
 [`src/se3_train/runner.py`](../src/se3_train/runner.py) 在 checkpoint 保存后自动导出同名
@@ -82,6 +84,15 @@ runtime 版本固定：
 - command 默认值为 `height=0.22`，其余字段为 `0`；
 - command 交互控件边界由 runtime 固定，只用于输入校验和 Viser，不代表训练范围；
 - 未导出的 MuJoCo solver 字段使用 MJLab 默认配置。
+
+`robot.knee_gas_spring` 是可选字段，用于让 sim2sim 复现训练端的膝关节气弹簧前馈：
+
+- 声明时 `SerialLegActuatorController` 在 PD 之后、T-N 限幅之前叠加同一份前馈力矩，
+  与训练端 `SerialLegDelayedAction` 的算法和插入点一致；
+- **缺省视为 `compensation_enabled=false`**，即 2026-08 之前导出的 artifact 保持原 sim2sim
+  行为不变。要让旧策略也走前馈必须重新导出 ONNX；
+- 力值与开关来自训练端 action term cfg（默认取 `RobotConfig.knee_gas_spring_force`），
+  因此 artifact 自带其训练时的气弹簧契约，不由 runtime 猜测。
 
 v2 不含资产 hash。单模型加载通过固定 `asset_name` 选取 MJCF；Viser 热切换要求候选
 session 解析到同一个 MJCF 路径。旧 v1 仍按原规则严格校验 contract hash 和 MJCF hash。
