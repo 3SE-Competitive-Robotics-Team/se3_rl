@@ -172,7 +172,16 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "tracking_upright_full_cos": math.cos(math.radians(15.0)),
         },
     )
-    cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
+    cfg.rewards["upward"] = RewardTermCfg(
+        func=rewards.upward,
+        weight=3.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "use_wheel_ground_factor": True,
+            "wheel_ground_clearance_scale": 0.10,
+            "wheel_ground_factor_floor": 0.5,
+        },
+    )
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
     cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
     cfg.rewards["tracking_height"] = RewardTermCfg(
@@ -308,7 +317,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         params={
             "sensor_name": "collision_sensor",
             "asset_cfg": SceneEntityCfg("robot"),
-            "use_recovery_gate": False,
+            "use_recovery_gate": True,
         },
     )
     cfg.rewards["contact_forces"] = RewardTermCfg(
