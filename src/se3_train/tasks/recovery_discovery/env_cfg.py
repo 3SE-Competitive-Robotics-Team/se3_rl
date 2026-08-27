@@ -26,7 +26,7 @@ _RECOVERY_STATE_CACHE_PATH = (
 )
 _DISCOVERY_MAX_LIN_VEL_X = 1.89
 _DISCOVERY_MAX_ANG_VEL_YAW = 9.41
-_STEPS_PER_POLICY_ITER = 24
+_STEPS_PER_POLICY_ITER = 64
 _TRAIN_ENV_GROUPS = {"loco": 0.5, "recover": 0.5}
 _PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
 _TRAIN_NUM_ENVS_PER_RANK = 8192
@@ -255,8 +255,8 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         weight=-0.03,
         params={
             "command_name": "velocity_height",
-            "gate_start_deg": 90.0,
-            "gate_full_deg": 30.0,
+            "gate_start_deg": 181.0,
+            "gate_full_deg": 180.0,
             "max_penalty": 80.0,
             "leg_scale": 1.0,
             "wheel_scale": 2.0,

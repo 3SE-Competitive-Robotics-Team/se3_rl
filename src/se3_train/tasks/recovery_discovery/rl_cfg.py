@@ -73,7 +73,7 @@ def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
         ),
         experiment_name="se3_wheel_leg",
         save_interval=200,
-        num_steps_per_env=24,
+        num_steps_per_env=64,
         max_iterations=max_iterations,
         logger=logger,
         resume=False,
