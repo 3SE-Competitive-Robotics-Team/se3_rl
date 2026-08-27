@@ -1061,11 +1061,15 @@ def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
     return robot.data.root_link_lin_vel_b[:, 2] ** 2 * gate
 
 
-def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """横滚/俯仰角速度平方和,直立门控。"""
+def ang_vel_xy(
+    env: ManagerBasedRlEnv,
+    *,
+    use_upright_gate: bool = True,
+) -> torch.Tensor:
+    """横滚/俯仰角速度平方和，可选直立门控。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _upright_factor(pg_z) if use_upright_gate else torch.ones_like(pg_z)
     ang_vel = robot.data.root_link_ang_vel_b
     return (ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2) * gate
 

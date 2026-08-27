@@ -174,7 +174,11 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     )
     cfg.rewards["upward"] = RewardTermCfg(func=rewards.upward, weight=3.0)
     cfg.rewards["lin_vel_z"] = RewardTermCfg(func=rewards.lin_vel_z, weight=-2.0)
-    cfg.rewards["ang_vel_xy"] = RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.05)
+    cfg.rewards["ang_vel_xy"] = RewardTermCfg(
+        func=rewards.ang_vel_xy,
+        weight=-0.05,
+        params={"use_upright_gate": False},
+    )
     cfg.rewards["tracking_height"] = RewardTermCfg(
         func=rewards.tracking_height,
         weight=-1500.0,
@@ -255,8 +259,8 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         weight=-0.03,
         params={
             "command_name": "velocity_height",
-            "gate_start_deg": 90.0,
-            "gate_full_deg": 30.0,
+            "gate_start_deg": 181.0,
+            "gate_full_deg": 180.0,
             "max_penalty": 80.0,
             "leg_scale": 1.0,
             "wheel_scale": 2.0,
