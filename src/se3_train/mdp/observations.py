@@ -15,6 +15,7 @@ from se3_shared import (
     ObservationConfig,
     policy_leg_phase_active_obs_torch,
 )
+from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.contact_utils import (
     contact_force_nonfinite_env_mask,
     finite_contact_force_norm,
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
 # 模块级观测配置，作为缩放系数的单一来源
 _OBS_CFG = ObservationConfig()
+_NOMINAL_KNEE_SPRING_FORCE = SharedRobotConfig().knee_gas_spring_force
 _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR = "_wheel_contact_force_nonfinite_total"
 _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR = "_wheel_contact_force_sample_total"
 _DEFAULT_CONTACT_DEBUG_LOG_INTERVAL_STEPS = 256
@@ -116,6 +118,18 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
         return torch.zeros(env.num_envs, 2, device=env.device)
     _record_wheel_contact_force_nonfinite(env, data.force)
     return _finite_clamp(finite_contact_force_norm(data.force))
+
+
+def knee_gas_spring_force_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """左右膝气弹簧当前恒力，按额定值归一，2D（特权信息,critic 专用）。
+
+    值来自 randomize_knee_spring_force 的采样缓存；任务未启用该 DR 事件时
+    弹簧力就是 MJCF 额定值，退化为常数 1。
+    """
+    values = getattr(env, "_knee_spring_force", None)
+    if not isinstance(values, torch.Tensor) or values.shape[0] != env.num_envs:
+        return torch.ones(env.num_envs, 2, device=env.device)
+    return _finite_clamp(values / _NOMINAL_KNEE_SPRING_FORCE)
 
 
 def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.Tensor) -> None:

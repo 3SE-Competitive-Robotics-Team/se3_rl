@@ -2570,6 +2570,60 @@ def randomize_pd_gains(
             ] * kd_scale.squeeze(-1)
 
 
+@requires_model_fields("actuator_biasprm", "actuator_forcerange")
+def randomize_knee_spring_force(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    force_scale_range: tuple[float, float] = (0.9, 1.1),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """随机化膝关节气弹簧恒力（左右腿独立采样），模拟充气压差与装配公差。
+
+    弹簧在 MJCF 里是恒力 tendon actuator（gain=0、biasprm[0]=F），逐 env 改写
+    biasprm[0] 即改弹簧力；forcerange 上限同步抬到采样值，避免 DR 上尾被
+    MJCF 静态 forcerange 截断。采样值缓存在 env._knee_spring_force，
+    供 critic 特权观测与诊断日志读取。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    asset: Entity = env.scene[asset_cfg.name]
+    spring_ids = actuator_ids(asset, JointGroup.KNEE_SPRING_ACTUATOR_NAMES)
+    n = len(env_ids)
+
+    default_biasprm = env.sim.get_default_field("actuator_biasprm")
+    nominal = default_biasprm[list(spring_ids), 0]
+    if not torch.all(nominal > 0.0):
+        raise ValueError(f"气弹簧 actuator 默认恒力必须为正，实际为 {nominal.tolist()}")
+
+    scale = sample_uniform(
+        torch.tensor(float(force_scale_range[0]), device=env.device),
+        torch.tensor(float(force_scale_range[1]), device=env.device),
+        (n, len(spring_ids)),
+        env.device,
+    )
+    force = nominal.unsqueeze(0) * scale
+
+    buffer = getattr(env, "_knee_spring_force", None)
+    if not isinstance(buffer, torch.Tensor) or buffer.shape != (env.num_envs, len(spring_ids)):
+        buffer = torch.zeros(env.num_envs, len(spring_ids), device=env.device)
+        env._knee_spring_force = buffer
+    buffer[env_ids] = force
+
+    for column, aid in enumerate(spring_ids):
+        env.sim.model.actuator_biasprm[env_ids, aid, 0] = force[:, column]
+        env.sim.model.actuator_forcerange[env_ids, aid, 1] = force[:, column]
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Spring/force_mean": force.mean().item(),
+                "Spring/force_min": force.min().item(),
+                "Spring/force_max": force.max().item(),
+            }
+        )
+
+
 def randomize_default_dof_pos(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,

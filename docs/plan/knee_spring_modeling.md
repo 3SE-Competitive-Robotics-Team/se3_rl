@@ -7,14 +7,27 @@
 > - 已实现：MJCF `l_knee_spring` / `r_knee_spring` spatial tendon + 300 N **恒力** actuator；
 >   `se3_shared.fourbar` 解析前馈力矩；训练端 `SerialLegDelayedAction` 与 sim2sim
 >   `SerialLegActuatorController` 使用同一算法、同一插入点（PD 之后、T-N 限幅之前）。
-> - **未实现**：本文原方案的线性刚度弹簧（`k=900/4000 N/m`）、`xfrc_applied` 施力路径、
->   刚度域随机化、Phase 4 观测扩展。这些段落保留为设计历史，不代表代码现状。
+> - **未实现**：本文原方案的线性刚度弹簧（`k=900/4000 N/m`）与 `xfrc_applied` 施力路径。
+>   这些段落保留为设计历史，不代表代码现状。原方案的「刚度域随机化」「Phase 4 观测扩展」
+>   已在 2026-08-29 以恒力 DR + critic 特权观测的形式落地，见下一条。
 > - **2026-08-26 修正**：前馈力矩符号原本与弹簧同号（等于把弹簧加了两遍），已翻转为真正
 >   抵消，见下方「符号约定」。`7c9c155` 之后、本次修正之前导出的 ONNX 与 checkpoint 所处
 >   的 plant 与现在不同，不能直接对比。
 > - **2026-08-26 决定：前馈默认关闭**（`RobotConfig.knee_gas_spring_compensation_enabled
 >   = False`）。弹簧仍在 MJCF 里生效，策略直接面对带弹簧的 plant，先验证它能否学会利用这份
 >   抗重力力矩；见下方「为什么默认不做补偿」。
+> - **2026-08-29 spring_final 接入**：整套弹簧实现移植到 MJLab 1.5.3 基线（main），并补齐
+>   「让策略学会利用弹簧」缺的三件事：
+>   1. **恒力域随机化**：`randomize_knee_spring_force` startup 事件，左右腿独立采样
+>      `U[0.9, 1.1]×300 N` 写 `actuator_biasprm[..., 0]`，`forcerange` 上限同步抬到采样值。
+>      量级取自 ETH PEA 论文（RA-L 2023, arXiv 2301.03509）student 训练的 ±10% 弹簧参数扰动。
+>   2. **critic 特权观测 +2 维**：`knee_gas_spring_force_obs` 输出采样力/额定力，actor 34 维
+>      部署契约不动，GRU actor 靠本体感受历史自适应（对应 ETH 论文 teacher-student 结构）。
+>   3. **奖励不加新项**：`leg_torques`/`leg_power` 只统计电机 actuator（按名解析、排除弹簧），
+>      弹簧出力免费、电机出力挨罚，利用行为按 DLR bert（arXiv 2209.07171）的结论自发涌现。
+>   同时发现并修复 MJLab 1.5.3 迁移引入的 DR 静默塌缩（所有 randomize_* 事件补
+>   `requires_model_fields` 申报，见 `docs/common_mistakes.md` 第 3 条）。40k recovery cache
+>   直接复用 spring_add 生成的带弹簧版本（生成工具、校验契约与 MJCF 逐字节一致，hash 可过）。
 
 ## 动机
 

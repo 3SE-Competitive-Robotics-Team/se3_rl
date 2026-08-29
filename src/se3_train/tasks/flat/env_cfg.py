@@ -172,6 +172,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=observations.base_height_obs,
             params={"sensor_name": "critic_height_sensor"},
         ),
+        "knee_gas_spring_force": ObservationTermCfg(
+            func=observations.knee_gas_spring_force_obs,
+        ),
     }
 
     cfg.observations = {
@@ -531,6 +534,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={
                     "kp_range": (0.9, 1.1),  # 收窄:配合 stall_torque 上限,避免 kp 偏软时振荡跪地
                     "kd_range": (0.9, 1.1),
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+            ),
+            "knee_spring_force": EventTermCfg(
+                func=events.randomize_knee_spring_force,
+                mode="startup",
+                params={
+                    # 左右腿独立 ±10%：气弹簧充气压差与装配公差（ETH PEA 论文同量级）
+                    "force_scale_range": (0.9, 1.1),
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),
