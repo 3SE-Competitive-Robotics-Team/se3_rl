@@ -27,6 +27,22 @@ POSE_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
 }
 
 
+# 评测必须复现 checkpoint 训练时的 action 零点语义。该 flag 由 CLI 显式指定，
+# 因为 ONNX metadata 目前不记录它（见 backlog B18）。None = 沿用任务注册的默认值。
+_ACTION_DEFAULT_OVERRIDE: bool | None = None
+
+
+def _apply_action_default_override(cfg) -> None:
+    if _ACTION_DEFAULT_OVERRIDE is None:
+        return
+    term = cfg.actions["delayed_action"]
+    term.height_conditioned_action_default = bool(_ACTION_DEFAULT_OVERRIDE)
+    print(
+        f"[cfg] height_conditioned_action_default = {term.height_conditioned_action_default}",
+        flush=True,
+    )
+
+
 @dataclass(frozen=True)
 class PoseResult:
     task: str
@@ -54,6 +70,7 @@ def _build_env_cfg(
     command_height: float,
 ):
     cfg = load_env_cfg(task_name, play=True)
+    _apply_action_default_override(cfg)
     cfg.scene.num_envs = int(num_envs)
     cfg.episode_length_s = float(episode_s)
     cfg.auto_reset = False
@@ -66,6 +83,11 @@ def _build_env_cfg(
     command_cfg.standing_ratio = 1.0
 
     root_params = cfg.events["reset_root_state"].params
+    # 分组任务用 ``*_by_group`` 承载 reset 分布，且在 reset 事件里优先于标量参数。
+    # 定姿评测必须先清掉它们，否则下面的 ``pose_weights`` 会被静默忽略，
+    # 实际跑出来的是分组的随机倒地分布而不是被点名的那个姿态。
+    root_params.pop("pose_weights_by_group", None)
+    root_params.pop("source_curriculum_stages_by_group", None)
     root_params.update(
         {
             "pos_xy_range": (0.0, 0.0),
@@ -97,6 +119,18 @@ def _build_env_cfg(
         }
     )
     _set_if_present(joint_params, "wheel_joint_vel_range", (0.0, 0.0))
+    joint_params.pop("randomization_group_names", None)
+
+    # 定姿契约后置断言：只要还有 by_group 覆盖存活，评测结果就不是被点名的姿态。
+    leaked = [
+        k
+        for k in ("pose_weights_by_group", "source_curriculum_stages_by_group")
+        if k in root_params
+    ]
+    if leaked:
+        raise RuntimeError(f"定姿 reset 契约被分组参数覆盖: {leaked}")
+    if root_params.get("pose_weights") != POSE_WEIGHTS[pose]:
+        raise RuntimeError(f"定姿 pose_weights 未生效: {root_params.get('pose_weights')}")
     return cfg
 
 
@@ -257,7 +291,16 @@ def main() -> None:
     parser.add_argument("--hold-s", type=float, default=0.5)
     parser.add_argument("--device", default=None)
     parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument(
+        "--height-conditioned-action-default",
+        choices=("true", "false"),
+        default=None,
+        help="覆盖 action 零点语义，必须与 checkpoint 训练时一致；缺省沿用任务默认。",
+    )
     args = parser.parse_args()
+    global _ACTION_DEFAULT_OVERRIDE
+    if args.height_conditioned_action_default is not None:
+        _ACTION_DEFAULT_OVERRIDE = args.height_conditioned_action_default == "true"
 
     configure_torch_backends()
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
