@@ -47,8 +47,10 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.scene.entities["robot"] = get_serialleg_closedchain_cfg(
         wheel_kd_override=_RECOVERY_WHEEL_KD
     )
-    cfg.sim.nconmax = 64
-    cfg.sim.njmax = 256
+    # 2026-08-29 性能画像（docs/perf_full_pipeline_20260829.md）：实测 nacon p95=21、
+    # nefc 训练峰值 114，48/192 余量充足且零 overflow；ABBA 吞吐 +1.6%、显存 -96 MiB。
+    cfg.sim.nconmax = 48
+    cfg.sim.njmax = 192
     action_cfg = cfg.actions["delayed_action"]
     # 临时对比实验（删除日期：2026-07-10）：恢复旧 recovery action contract，
     # 验证合并后训练退化是否来自 flat action 语义漂移；实验结束后改为显式任务契约。
