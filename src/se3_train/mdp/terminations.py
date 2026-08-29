@@ -119,13 +119,14 @@ class BadOrientationDelayed:
                     )
                     / denominator
                 )
-                raw_rate, counted_rate, grace_rate, termination_rate = rates.tolist()
+                # 保持 0 维 GPU tensor 入 log，避免 rollout 内主机同步；
+                # RSL-RL logger 在迭代末统一转换。
                 env.extras.setdefault("log", {}).update(
                     {
-                        "Recovery/bad_orientation_raw_rate": raw_rate,
-                        "Recovery/bad_orientation_counted_rate": counted_rate,
-                        "Recovery/bad_orientation_grace_rate": grace_rate,
-                        "Recovery/bad_orientation_termination_rate": termination_rate,
+                        "Recovery/bad_orientation_raw_rate": rates[0],
+                        "Recovery/bad_orientation_counted_rate": rates[1],
+                        "Recovery/bad_orientation_grace_rate": rates[2],
+                        "Recovery/bad_orientation_termination_rate": rates[3],
                     }
                 )
             # reset 日志会被清空，所以先缓存逐环境诊断，由 command reset 阶段搬运到 log。
@@ -201,20 +202,16 @@ class RecoveryStagnation:
         if hasattr(env, "extras") and _should_log_step(env):
             active_float = active.float()
             denominator = active_float.sum().clamp_min(1.0)
-            stagnation_mean, termination_rate = (
-                torch.stack(
-                    (
-                        (self._stagnation_count.float() * active_float).sum(),
-                        (terminated.float() * active_float).sum(),
-                    )
+            values = torch.stack(
+                (
+                    (self._stagnation_count.float() * active_float).sum(),
+                    (terminated.float() * active_float).sum(),
                 )
-                .div(denominator)
-                .tolist()
-            )
+            ).div(denominator)
             env.extras.setdefault("log", {}).update(
                 {
-                    "Recovery/stagnation_steps": stagnation_mean,
-                    "Recovery/stagnation_termination_rate": termination_rate,
+                    "Recovery/stagnation_steps": values[0],
+                    "Recovery/stagnation_termination_rate": values[1],
                 }
             )
         return terminated
@@ -276,18 +273,18 @@ def catastrophic_state(
     if hasattr(env, "extras") and _should_log_step(env):
         env.extras.setdefault("log", {}).update(
             {
-                "Episode_Termination/catastrophic_state": terminated.float().mean().item(),
-                "Debug/catastrophic_nonfinite": (~finite).float().mean().item(),
-                "Debug/catastrophic_leg_pos": leg_pos_bad.float().mean().item(),
-                "Debug/catastrophic_leg_pos_raw": leg_pos_bad_raw.float().mean().item(),
+                "Episode_Termination/catastrophic_state": terminated.float().mean(),
+                "Debug/catastrophic_nonfinite": (~finite).float().mean(),
+                "Debug/catastrophic_leg_pos": leg_pos_bad.float().mean(),
+                "Debug/catastrophic_leg_pos_raw": leg_pos_bad_raw.float().mean(),
                 "Debug/catastrophic_leg_pos_recovery": (
-                    (leg_pos_bad_raw & recovery_mask).float().mean().item()
+                    (leg_pos_bad_raw & recovery_mask).float().mean()
                     if recovery_mask.shape[0] == env.num_envs
                     else 0.0
                 ),
-                "Debug/catastrophic_leg_vel": leg_vel_bad.float().mean().item(),
-                "Debug/catastrophic_root_vel": (root_lin_bad | root_ang_bad).float().mean().item(),
-                "Debug/catastrophic_height": height_bad.float().mean().item(),
+                "Debug/catastrophic_leg_vel": leg_vel_bad.float().mean(),
+                "Debug/catastrophic_root_vel": (root_lin_bad | root_ang_bad).float().mean(),
+                "Debug/catastrophic_height": height_bad.float().mean(),
             }
         )
     return terminated
@@ -469,21 +466,19 @@ class LegContactDelayed:
         terminated = self._fail_count > int(max_steps)
 
         if hasattr(env, "extras"):
+            # 本块无 _should_log_step 门控、每个 policy step 都执行：全程保持
+            # 0 维 GPU tensor，且用 clamp 分母替代 mask.any() 分支避免主机同步。
+            recovery_float = recovery_mask.float()
+            recovery_denominator = recovery_float.sum().clamp_min(1.0)
             env.extras.setdefault("log", {}).update(
                 {
-                    "Stair/diag_leg_heavy_contact_rate": has_contact.float().mean().item(),
-                    "Stair/diag_leg_contact_delayed_termination_rate": (
-                        terminated.float().mean().item()
-                    ),
+                    "Stair/diag_leg_heavy_contact_rate": has_contact.float().mean(),
+                    "Stair/diag_leg_contact_delayed_termination_rate": (terminated.float().mean()),
                     "Recovery/leg_contact_grace_rate": (
-                        in_recovery_grace[recovery_mask].float().mean().item()
-                        if recovery_mask.any()
-                        else 0.0
+                        (in_recovery_grace.float() * recovery_float).sum() / recovery_denominator
                     ),
                     "Recovery/leg_contact_delayed_termination_rate": (
-                        terminated[recovery_mask].float().mean().item()
-                        if recovery_mask.any()
-                        else 0.0
+                        (terminated.float() * recovery_float).sum() / recovery_denominator
                     ),
                 }
             )

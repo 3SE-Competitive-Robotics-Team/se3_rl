@@ -134,9 +134,14 @@ def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.T
     if interval > 1 and (step - 1) % interval != 0:
         return
 
-    nonfinite_envs = int(contact_force_nonfinite_env_mask(force).sum().item())
-    total = int(getattr(env, _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR, 0)) + nonfinite_envs
-    samples = int(getattr(env, _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR, 0)) + env.num_envs
+    # 累计值保持 0 维 GPU tensor：``.item()`` 会在 rollout 内制造主机同步点；
+    # RSL-RL logger 在迭代末对 extras 张量统一转换。
+    nonfinite_envs = contact_force_nonfinite_env_mask(force).sum().float()
+    previous_total = getattr(env, _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR, None)
+    if not isinstance(previous_total, torch.Tensor):
+        previous_total = torch.zeros((), device=env.device)
+    total = previous_total + nonfinite_envs
+    samples = float(getattr(env, _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR, 0)) + env.num_envs
     setattr(env, _WHEEL_CONTACT_FORCE_NONFINITE_TOTAL_ATTR, total)
     setattr(env, _WHEEL_CONTACT_FORCE_SAMPLE_TOTAL_ATTR, samples)
 
@@ -146,7 +151,7 @@ def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.T
                 "Debug/wheel_contact_force_nonfinite_last_envs": nonfinite_envs,
                 "Debug/wheel_contact_force_nonfinite_total_envs": total,
                 "Debug/wheel_contact_force_obs_total_envs": samples,
-                "Debug/wheel_contact_force_nonfinite_rate": total / max(samples, 1),
+                "Debug/wheel_contact_force_nonfinite_rate": total / max(samples, 1.0),
             }
         )
 
