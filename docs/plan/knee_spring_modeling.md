@@ -2,7 +2,19 @@
 
 > 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
 
-> 状态：Phase 1-3 已实现（MJCF 显式四连杆 + spatial tendon 弹簧）。Phase 4 观测扩展待实现。
+> 状态（2026-08-26 复核）：落地实现与本文最初的设计方案**不同**，以下为当前真实状态。
+>
+> - 已实现：MJCF `l_knee_spring` / `r_knee_spring` spatial tendon + 300 N **恒力** actuator；
+>   `se3_shared.fourbar` 解析前馈力矩；训练端 `SerialLegDelayedAction` 与 sim2sim
+>   `SerialLegActuatorController` 使用同一算法、同一插入点（PD 之后、T-N 限幅之前）。
+> - **未实现**：本文原方案的线性刚度弹簧（`k=900/4000 N/m`）、`xfrc_applied` 施力路径、
+>   刚度域随机化、Phase 4 观测扩展。这些段落保留为设计历史，不代表代码现状。
+> - **2026-08-26 修正**：前馈力矩符号原本与弹簧同号（等于把弹簧加了两遍），已翻转为真正
+>   抵消，见下方「符号约定」。`7c9c155` 之后、本次修正之前导出的 ONNX 与 checkpoint 所处
+>   的 plant 与现在不同，不能直接对比。
+> - **2026-08-26 决定：前馈默认关闭**（`RobotConfig.knee_gas_spring_compensation_enabled
+>   = False`）。弹簧仍在 MJCF 里生效，策略直接面对带弹簧的 plant，先验证它能否学会利用这份
+>   抗重力力矩；见下方「为什么默认不做补偿」。
 
 ## 动机
 
@@ -15,7 +27,109 @@ SerialLeg 膝关节（lf1/rf1）安装有物理弹簧，用于补偿重力力矩
 3. 弹簧参数集中管理在 `se3_shared`，训练/验证共享单一来源
 4. 支持刚度域随机化（DR），提升策略鲁棒性
 
-## 实际传动机构
+## 实际实现（以代码与 MJCF 为准）
+
+### 拓扑：弹簧挂在大腿与小腿之间，不在驱动杆上
+
+正式 MJCF 里 `l_spring_p1` 是 **`lf0_Link`（大腿）** 上的 site，`l_spring_p2` 是
+**`lf1_Link`（小腿）** 上的 site。弹簧跨过膝轴连接大腿和小腿，**不涉及驱动杆**。因此下文
+「弹簧安装位置」「广义力分配」两节里 P₁ 在驱动杆上、需要经传动比 `n(θ)` 折算的分析
+**不是当前模型**，仅保留为早期设计推演。
+
+实测校验：把 `l_spring_p2` 的 MJCF 坐标减去膝轴坐标，与 `se3_shared/fourbar.py` 的
+`_SPRING_P2_FROM_KNEE_{X,Z}` 逐位一致；`_KNEE_{X,Z}` 也与 MJCF 的膝轴位置逐位一致。
+
+### MJCF 侧：300 N 恒力 actuator
+
+```xml
+<spatial name="l_knee_spring" width="0.003" rgba="0.2 0.6 1 1">
+  <site site="l_spring_p1" />
+  <site site="l_spring_p2" />
+</spatial>
+<general name="l_knee_gas_spring" tendon="l_knee_spring" gaintype="fixed" gainprm="0"
+         biastype="affine" biasprm="300 0 0" forcelimited="true" forcerange="0 300" />
+```
+
+`gainprm=0` + `biasprm[0]=300` 使 actuator 力恒为 300 N，与 tendon 长度、速度、ctrl 均无关，
+所以它是**恒力气弹簧**而不是线性弹簧。MuJoCo 的 actuator 约定为
+`qfrc_actuator = +force · ∂L/∂q`（已用 `qfrc_actuator[lf1] / (300·∂L/∂q_lf1) = 1.000000` 实测确认），
+正力**推长** tendon。
+
+弹簧长度与等效力矩随主动杆夹角 α 的实测变化（`policy_pos=(0, -α, 0, α)`）：
+
+| α (rad) | 0.000 | 0.377 | 0.755 | 1.132 | 1.510 |
+|---------|-------|-------|-------|-------|-------|
+| tendon 长度 L (m) | 0.2273 | 0.2051 | 0.1818 | 0.1601 | 0.1435 |
+| 弹簧广义力矩 τ_α,spring (N·m) | -16.89 | -18.36 | -18.29 | -15.71 | -10.34 |
+
+前馈力矩即 `-τ_α,spring`，同一位姿下为 `+16.89 … +10.34 N·m`。α 增大对应下蹲，
+`τ_α,spring` 全程为负说明弹簧一直在推着腿伸直，即抬升机身。
+
+全行程 ΔL = 0.0838 m，单腿 300 N 做功 25.2 J（双腿 50.3 J）。`|τ_α|` 落在
+10.3–18.6 N·m，而 DM8009P 连续额定只有 20 N·m —— **前馈项本身就占用 52%–93% 的额定
+力矩包络**，且每个 physics tick 都在施加。任何关于力矩余量的判断都必须把这一项算进去。
+
+### 代码路径
+
+| 层 | 位置 | 职责 |
+|----|------|------|
+| 共享数学 | `se3_shared/fourbar.py::knee_gas_spring_compensation_torque_{torch,np}` | `τ = F · (dL/dθ) · (dθ/dα)`，输出 policy 序 `[c, -c, -c, c]` |
+| 训练端 | `se3_train/mdp/actions.py::SerialLegDelayedAction.apply_actions` | 用带 encoder bias 的测量角计算，写 `set_joint_effort_target`，mjlab 在 PD 之后叠加、再过 T-N 限幅 |
+| sim2sim | `se3_runtime/_serialleg_v1.py::knee_gas_spring_compensation_torque` | 纯 NumPy 同算法复刻（`se3_runtime` 不得反向依赖 `se3_shared`） |
+| sim2sim | `se3_runtime/policy_actuator.py::SerialLegActuatorController.compute` | 在 PD 之后、`np.clip` T-N 限幅之前叠加，与训练端插入点一致 |
+| 契约 | `robot.knee_gas_spring = {force, compensation_enabled}` | 由 `se3_train/onnx_metadata.py` 导出，`policy_descriptor` → `policy_contract` 解析 |
+
+两端 cadence 也一致：mjlab 的 `apply_action()` 每个 physics substep 执行一次，sim2sim 的
+`apply_decoded_action()` 同样每个 physics tick 重算，因此前馈不是 policy 频率的零阶保持。
+
+**旧 artifact 兼容**：metadata 里没有 `robot.knee_gas_spring` 的 artifact 按
+`compensation_enabled=false` 解释，即保持接入前的 sim2sim 行为。要让老策略也走前馈必须重新导出 ONNX。
+
+### 为什么默认不做补偿
+
+弹簧的广义力矩在名义站立姿态就已经是这个量级（`height_conditioned_policy_default` 求出零点
+姿态后代入，单腿）：
+
+| 指令高度 (m) | 0.20 | 0.22 | 0.26 | 0.30 | 0.32 |
+|--------------|------|------|------|------|------|
+| α (rad) | 1.461 | 1.312 | 1.029 | 0.744 | 0.595 |
+| \|τ_α,spring\| (N·m) | 11.16 | 13.46 | 16.70 | 18.33 | 18.58 |
+| 占 DM8009P 额定 20 N·m | 55.8% | 67.3% | 83.5% | 91.6% | 92.9% |
+
+方向上 `τ_α,spring` 全程推动腿伸直，正是对抗重力，这也是真机装这根弹簧的目的。开启前馈等于
+让电机把这份力矩原样抵消掉：plant 回到无弹簧状态，但电机每个 tick 都要额外掏 11-18 N·m，
+可用 PD 余量被压缩到额定的 7%-44%，包络打满时还抵消不干净。也就是说**开前馈比不装弹簧更差**
+——同样的 plant，却多付一份力矩。
+
+因此默认 `knee_gas_spring_compensation_enabled = False`：弹簧在 MJCF 里照常生效，策略直接
+学带弹簧的 plant。前馈实现与契约字段全部保留，改成 `True` 即可复现「电机抵消弹簧」那一版。
+
+### 符号约定
+
+前馈取 `τ = -F · (dL/dθ) · (dθ/dα)`，即弹簧广义力矩的相反数，作用是让策略面对的 plant 回到
+无弹簧状态，同时让 T-N 包络如实反映真机电机为抵消弹簧付出的力矩。
+
+`7c9c155` 引入时符号写反了（与弹簧同号，等于把弹簧加了两遍），2026-08-26 已翻转。判定与
+复核依据：
+
+- MuJoCo 的 actuator 约定为 `qfrc_actuator = +force·∂L/∂q`，实测
+  `qfrc_actuator[lf1] / (300·∂L/∂q_lf1) = 1.000000`，即正力推长 tendon；
+- 约束一致的 reduced 坐标下弹簧广义力矩为 `τ_α,spring = +F·dL/dα`；
+- 修正后 `comp[0] / (F·dL/dα) = -0.999999`，与弹簧严格反号。
+
+闭环 sim2sim 对照（零动作策略、250 policy step、机身高度）：
+
+| 配置 | 修正前 | 修正后 |
+|------|--------|--------|
+| 无弹簧 MJCF | 0.1849 m | 0.1849 m |
+| 弹簧、无前馈 | 0.2537 m | 0.2537 m |
+| 弹簧 + 前馈 | 0.2802 m | 0.2011 m |
+
+修正后「弹簧 + 前馈」回到接近无弹簧 plant（高度差 16 mm、关节角差 0.036 rad），残差来自
+T-N 限幅：该位姿下 PD + 前馈已经打满包络，电机没有余量把弹簧完全抵消掉。这是真机同样存在的
+物理限制，不是实现误差。
+
+## 实际传动机构（早期设计推演，非当前模型）
 
 ### 整体布局
 
@@ -215,7 +329,11 @@ F_reaction_at_D = 小腿对大腿在 D 处的约束力（由牛顿第三定律�
 
 由于简化 MJCF 模型没有显式四连杆，实现时用 `xfrc_applied` 对 body 施力让 MuJoCo 自动处理。
 
-### 参数表
+### 参数表（设计稿，未落地）
+
+> 下表是线性弹簧方案的占位参数，**代码里不存在这些常量**。真实几何见
+> `se3_shared/fourbar.py` 的 `_SPRING_P1_{X,Z}` / `_SPRING_P2_FROM_KNEE_{X,Z}`，
+> 真实力值见 `se3_shared/robot.py::RobotConfig.knee_gas_spring_force = 300.0`（恒力，无刚度）。
 
 | 参数 | 符号 | 当前值 | 单位 | 说明 |
 |------|------|--------|------|------|
@@ -232,15 +350,18 @@ F_reaction_at_D = 小腿对大腿在 D 处的约束力（由牛顿第三定律�
 | 铰接偏移 1 | δ₀ | 0.004 | m | 驱动杆侧球头长度 |
 | 铰接偏移 2 | δ₁ | 0.0095 | m | 小腿侧球头长度 |
 
-### 域随机化
+### 域随机化（未实现）
 
-训练时对刚度 k 进行域随机化：
+线性弹簧方案曾计划对刚度 k 做域随机化：
 
 - 每次 reset 从 `[k_min, k_max]` 均匀采样（推荐 `[900, 980]`）
 - 左右腿独立采样，shape `(num_envs, 2)`
 - 可选 curriculum：前 N 步线性缩放力矩从 0→1，避免初始策略被大弹簧力干扰
 
-## 实现计划
+恒力方案下对应的随机化对象应是力值 F 而不是刚度 k，当前**没有任何气弹簧域随机化**：
+MJCF 的 300 N 与 `RobotConfig.knee_gas_spring_force` 都是固定值。
+
+## 实现计划（原设计，未按此执行）
 
 ### Phase 1：共享配置
 
@@ -321,17 +442,38 @@ class SpringConfig:
 
 ## 验证标准
 
-1. **Smoke 测试通过**：加入弹簧后 `SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None` 正常完成
-2. **力矩曲线合理**：θ ∈ [-π/4, π/4] 范围内力矩单调、量级在 ±2 N·m 以内
-3. **sim2sim 一致性**：训练端和 sim2sim 端在同一 θ 序列下力矩误差 < 1e-6
-4. **训练收敛**：flat 任务 2000 iter 后 reward 不低于无弹簧 baseline 的 90%
+1. **Smoke 测试通过**：加入弹簧后 `SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None` 正常完成 —— 未做。
+2. **力矩曲线合理**：原判据「±2 N·m 以内」是线性弹簧方案的量级，恒力方案实测为
+   10.3–18.6 N·m，判据本身已作废，应改为按额定力矩占比评估。
+3. **sim2sim 一致性**：训练端和 sim2sim 端在同一 θ 序列下力矩误差 < 1e-6 —— **已通过**。
+   4096 组随机 policy 位姿下 `se3_runtime` 与 `se3_shared` NumPy 实现的最大偏差为 `0.0`
+   （逐位相同），与 torch float64 的偏差为 `1.6e-11`；训练实际用的 float32 张量偏差为
+   `6.6e-3 N·m`，属于 dtype 精度而非算法差异。回归用例见
+   `tests/test_runtime_mujoco.py::KneeGasSpringCompensationTests`。
+4. **训练收敛**：flat 任务 2000 iter 后 reward 不低于无弹簧 baseline 的 90% —— 未做，
+   目前没有任何带气弹簧的训练 run 记录。
 
 ## 风险与注意事项
 
-- 弹簧参数来源于 CAD 设计图或实测。实际装配后可能有偏差，需要 system identification 校准
-- β=35° 对应的是弹簧在膝关节完全伸直时的挂点角，需确认和 MJCF 中的零位定义一致
-- 力矩方向符号取决于关节正方向约定，集成后第一件事是检查弹簧力矩是否抵抗重力（而非加剧屈膝）
-- 域随机化范围不宜过大，否则策略难收敛。初期 k ∈ [900, 980] 较保守
-- **四连杆传动比**：驱动杆角度 φ 和膝关节角度 θ 之间的映射 φ=f(θ) 需要从 CAD 导出或用四连杆正运动学求解
-- **简化 MJCF 的局限**：当前 MJCF 是串联链没有四连杆，弹簧力通过 xfrc_applied 施加时，引擎用简化模型的 Jacobian 来分配广义力。如果四连杆的传动比和 1:1 偏差大，可能需要手动计算广义力再用 qfrc_applied 精确施加
-- **两种实现路径的取舍**：如果 P₁ 离髋轴很近（a 很小），弹簧对髋关节的力矩贡献可能很小，此时 Phase 2 可退化为只加膝关节。需要先用实际参数算出两个关节的力矩量级来决策
+当前有效：
+
+- **力矩包络占用**：前馈项 10.3–18.6 N·m 对 DM8009P 额定 20 N·m 是 52%–93%，会显著压缩
+  PD 可用余量，T-N 越界统计（`TnTrackedDcMotorActuator`）的读数含义随之改变。包络打满时
+  弹簧无法被完全抵消，plant 会偏向「带弹簧」一侧。
+- **符号翻转前后的 artifact 不可混比**：`7c9c155` 之后、2026-08-26 修正之前的导出物所处
+  plant 与现在不同。
+- **两端符号必须同步**：`se3_shared/fourbar.py` 与 `se3_runtime/_serialleg_v1.py` 是两份独立
+  实现，只改一边会直接产生 sim2sim gap。回归用例
+  `tests/test_runtime_mujoco.py::KneeGasSpringCompensationTests` 会挡住这种情况。
+- **弹簧参数来源于 CAD 设计图或实测**，实际装配后可能有偏差，需要 system identification 校准。
+- **没有域随机化**：F 固定 300 N，真机装配差异不在训练分布内。
+- **旧 ONNX 不带 `robot.knee_gas_spring`**，sim2sim 会按无前馈解释；混跑新旧 artifact 时要注意
+  这不是同一个 plant。
+
+已随实现方案作废（保留说明来源）：
+
+- β=35° 挂点角判据 —— 恒力方案不使用 α/β 挂点角参数。
+- k ∈ [900, 980] 域随机化范围 —— 没有刚度这个量。
+- 四连杆传动比 φ=f(θ) 需从 CAD 导出 —— 已由 `fourbar.py` 的 LUT 从 MJCF 几何解析求出。
+- xfrc_applied 与简化 MJCF 的 Jacobian 分配 —— 现在弹簧由 MJCF tendon actuator 直接产生，
+  广义力由 MuJoCo 在真实闭链上求解，不存在这条路径。

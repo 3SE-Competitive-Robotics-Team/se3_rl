@@ -25,6 +25,11 @@ _COUPLER_Z = 0.00108627
 _COUPLER_LEN = math.hypot(_COUPLER_X, _COUPLER_Z)
 _CALF_LEN = math.hypot(_CALF_X, _CALF_Z)
 _CALF_ZERO_ANGLE = math.atan2(_CALF_Z, _CALF_X)
+# 气弹簧挂点来自正式 MJCF 的 l_spring_p1，以及 l_spring_p2 相对膝轴的位置。
+_SPRING_P1_X = 0.00705
+_SPRING_P1_Z = -0.04678497
+_SPRING_P2_FROM_KNEE_X = -0.04031536
+_SPRING_P2_FROM_KNEE_Z = -0.05168073
 _ACTIVE_LOWER = 0.0
 _ACTIVE_UPPER = math.radians(129.95 - 43.46)
 _LUT_SIZE = 8192
@@ -93,6 +98,36 @@ def policy_to_closedchain_passive_pos_torch(policy_pos: torch.Tensor) -> torch.T
     out[:, 2] = -output_knee_from_active_angle_torch(right_alpha)
     out[:, 3] = -coupler_from_active_angle_torch(right_alpha)
     return out
+
+
+def knee_gas_spring_compensation_torque_torch(
+    policy_pos: torch.Tensor,
+    spring_force: float,
+) -> torch.Tensor:
+    """计算抵消恒力气弹簧的四个主动电机前馈力矩。"""
+    if policy_pos.shape[-1] != 4:
+        raise ValueError(f"policy_pos 最后一维必须为 4，实际为 {policy_pos.shape}")
+    original_shape = policy_pos.shape
+    rows = policy_pos.reshape(-1, 4)
+    left_alpha = (rows[:, 0] - rows[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = (rows[:, 3] - rows[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
+    active_angle = torch.stack((left_alpha, right_alpha), dim=1)
+    output_knee = output_knee_from_active_angle_torch(active_angle)
+    spring_length_jacobian = _knee_spring_length_jacobian_torch(output_knee)
+    output_knee_jacobian = output_knee_jacobian_torch(active_angle, right_side=False)
+    # MJCF 里 actuator 正力推长 tendon，弹簧在主动杆坐标下的广义力为 +F·dL/dα；
+    # 前馈要抵消它，因此取负号。改这个符号等于换掉策略所处的 plant。
+    compensation = -float(spring_force) * spring_length_jacobian * output_knee_jacobian
+    out = torch.stack(
+        (
+            compensation[:, 0],
+            -compensation[:, 0],
+            -compensation[:, 1],
+            compensation[:, 1],
+        ),
+        dim=1,
+    )
+    return out.reshape(original_shape)
 
 
 def output_to_policy_pos_torch(output_pos: torch.Tensor) -> torch.Tensor:
@@ -239,6 +274,41 @@ def policy_to_closedchain_passive_pos_np(policy_pos: np.ndarray) -> np.ndarray:
     out[:, 1] = _coupler_from_active_angle_analytic_np_array(left_alpha)
     out[:, 2] = -output_knee_from_active_angle_np_array(right_alpha)
     out[:, 3] = -_coupler_from_active_angle_analytic_np_array(right_alpha)
+    return out.reshape(original_shape)
+
+
+def knee_gas_spring_compensation_torque_np(
+    policy_pos: np.ndarray,
+    spring_force: float,
+) -> np.ndarray:
+    """NumPy 版本：计算抵消恒力气弹簧的主动电机前馈力矩。"""
+    arr = np.asarray(policy_pos, dtype=np.float64)
+    if arr.shape[-1] != 4:
+        raise ValueError(f"policy_pos 最后一维必须为 4，实际为 {arr.shape}")
+    original_shape = arr.shape
+    rows = arr.reshape(-1, 4)
+    left_alpha = np.clip(rows[:, 0] - rows[:, 1], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    right_alpha = np.clip(rows[:, 3] - rows[:, 2], _ACTIVE_LOWER, _ACTIVE_UPPER)
+    active_angle = np.stack((left_alpha, right_alpha), axis=1)
+    output_knee = output_knee_from_active_angle_np_array(active_angle)
+    spring_length_jacobian = _knee_spring_length_jacobian_np(output_knee)
+    alpha_grid, _, _, _, output_knee_jacobian_grid = _fourbar_lut_np()
+    output_knee_jacobian = _interp_lut_np(
+        active_angle,
+        alpha_grid,
+        output_knee_jacobian_grid,
+    )
+    # 与 torch 版同一约定：弹簧广义力为 +F·dL/dα，抵消它需要取负号。
+    compensation = -float(spring_force) * spring_length_jacobian * output_knee_jacobian
+    out = np.stack(
+        (
+            compensation[:, 0],
+            -compensation[:, 0],
+            -compensation[:, 1],
+            compensation[:, 1],
+        ),
+        axis=1,
+    )
     return out.reshape(original_shape)
 
 
@@ -574,6 +644,30 @@ def _leg_vector_torch(output_knee: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     return x, z
 
 
+def _knee_spring_length_jacobian_torch(output_knee: torch.Tensor) -> torch.Tensor:
+    """计算气弹簧长度对物理输出膝角的导数。"""
+    p1_x = torch.as_tensor(_SPRING_P1_X, device=output_knee.device, dtype=output_knee.dtype)
+    p1_z = torch.as_tensor(_SPRING_P1_Z, device=output_knee.device, dtype=output_knee.dtype)
+    p2_x = torch.as_tensor(
+        _SPRING_P2_FROM_KNEE_X,
+        device=output_knee.device,
+        dtype=output_knee.dtype,
+    )
+    p2_z = torch.as_tensor(
+        _SPRING_P2_FROM_KNEE_Z,
+        device=output_knee.device,
+        dtype=output_knee.dtype,
+    )
+    cos_q = torch.cos(output_knee)
+    sin_q = torch.sin(output_knee)
+    rotated_x = cos_q * p2_x + sin_q * p2_z
+    rotated_z = -sin_q * p2_x + cos_q * p2_z
+    delta_x = _KNEE_X + rotated_x - p1_x
+    delta_z = _KNEE_Z + rotated_z - p1_z
+    length = torch.sqrt((delta_x * delta_x + delta_z * delta_z).clamp_min(1.0e-12))
+    return (delta_x * rotated_z - delta_z * rotated_x) / length
+
+
 def _leg_vector_np(output_knee: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     knee = np.asarray(output_knee, dtype=np.float64)
     cos_q = np.cos(knee)
@@ -585,3 +679,16 @@ def _leg_vector_np(output_knee: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     x = _KNEE_X + rot_calf_x + rot_wheel_x
     z = _KNEE_Z + rot_calf_z + rot_wheel_z
     return x, z
+
+
+def _knee_spring_length_jacobian_np(output_knee: np.ndarray) -> np.ndarray:
+    """NumPy 版本：计算气弹簧长度对物理输出膝角的导数。"""
+    knee = np.asarray(output_knee, dtype=np.float64)
+    cos_q = np.cos(knee)
+    sin_q = np.sin(knee)
+    rotated_x = cos_q * _SPRING_P2_FROM_KNEE_X + sin_q * _SPRING_P2_FROM_KNEE_Z
+    rotated_z = -sin_q * _SPRING_P2_FROM_KNEE_X + cos_q * _SPRING_P2_FROM_KNEE_Z
+    delta_x = _KNEE_X + rotated_x - _SPRING_P1_X
+    delta_z = _KNEE_Z + rotated_z - _SPRING_P1_Z
+    length = np.maximum(np.hypot(delta_x, delta_z), 1.0e-12)
+    return (delta_x * rotated_z - delta_z * rotated_x) / length

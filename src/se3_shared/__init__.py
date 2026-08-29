@@ -20,6 +20,8 @@ from .action_history import (
     wrap_front_action_value_delta_torch,
 )
 from .fourbar import (
+    knee_gas_spring_compensation_torque_np,
+    knee_gas_spring_compensation_torque_torch,
     output_leg_length_limits_torch,
     output_leg_wheel_xz_np,
     output_leg_wheel_xz_torch,
@@ -94,6 +96,8 @@ __all__ = [
     "delay_seconds_to_steps",
     "front_action_period_from_scale",
     "front_action_periods_from_scales",
+    "knee_gas_spring_compensation_torque_np",
+    "knee_gas_spring_compensation_torque_torch",
     "output_leg_length_limits_torch",
     "output_leg_wheel_xz_np",
     "output_leg_wheel_xz_torch",

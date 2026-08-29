@@ -16,6 +16,7 @@ from mjlab.utils.lab_api.math import quat_apply_inverse
 from se3_shared import DM8009P, M3508_HEXROLL, JointGroup, TaskMode
 from se3_train.mdp import rewards
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.joint_indices import leg_actuator_ids, wheel_actuator_ids
 from se3_train.mdp.jump_rewards import _landing_impulse_support_error
 from se3_train.mdp.task_modes import mode_weight
 
@@ -1245,7 +1246,8 @@ def gait_no_wheel_drive(
     所以同时惩罚轮速和轮子执行器出力。
     """
     robot = env.scene[asset_cfg.name]
-    wheel_torque = robot.data.actuator_force[:, JointGroup.WHEEL_ACTUATORS]
+    # 按名称解析 actuator 索引：MJCF 引入气弹簧 actuator 后电机不再占据固定槽位。
+    wheel_torque = robot.data.actuator_force[:, list(wheel_actuator_ids(robot))]
     wheel_vel = robot.data.joint_vel[:, JointGroup.WHEELS]
     torque_cost = torch.sum((wheel_torque / float(M3508_HEXROLL.rated_torque)) ** 2, dim=1)
     vel_cost = torch.sum((wheel_vel / 20.0) ** 2, dim=1)
@@ -1650,12 +1652,13 @@ def loco_torque_limit_cost(
     """NP3O torque_limit 对应项：超过连续额定力矩的部分产生代价。"""
     robot = env.scene[asset_cfg.name]
     torques = robot.data.actuator_force
+    # 按名称解析 actuator 索引：MJCF 引入气弹簧 actuator 后电机不再占据固定槽位。
     leg_excess = torch.clamp(
-        torch.abs(torques[:, JointGroup.LEG_ACTUATORS]) - float(DM8009P.rated_torque),
+        torch.abs(torques[:, list(leg_actuator_ids(robot))]) - float(DM8009P.rated_torque),
         min=0.0,
     )
     wheel_excess = torch.clamp(
-        torch.abs(torques[:, JointGroup.WHEEL_ACTUATORS]) - float(M3508_HEXROLL.rated_torque),
+        torch.abs(torques[:, list(wheel_actuator_ids(robot))]) - float(M3508_HEXROLL.rated_torque),
         min=0.0,
     )
     cost = torch.sum(leg_excess**2, dim=1) + torch.sum(wheel_excess**2, dim=1)

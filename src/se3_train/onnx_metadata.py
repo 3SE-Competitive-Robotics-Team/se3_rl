@@ -94,6 +94,7 @@ def build_deployment_onnx_metadata(
             "effort_limit": actuator_metadata["effort_limit"],
             "velocity_limit": actuator_metadata["velocity_limit"],
             "torque_speed_curve": actuator_metadata["torque_speed_curve"],
+            "knee_gas_spring": _build_knee_gas_spring_metadata(runtime_env),
             "init_state": _build_initial_state(runtime_env, robot),
             "root_link": "base_link",
             "imu_link": "base_link",
@@ -316,6 +317,22 @@ def _build_compiled_policy_armature(
             )
         armature[joint_name] = value
     return armature
+
+
+def _build_knee_gas_spring_metadata(runtime_env: Any) -> dict[str, Any]:
+    """导出膝关节恒力气弹簧与电机前馈补偿契约，供 sim2sim/sim2real 复现同一力矩。"""
+    try:
+        cfg = runtime_env.action_manager.get_term("delayed_action").cfg
+    except (AttributeError, KeyError, TypeError) as error:
+        raise TypeError("live env 缺少 delayed_action term，无法导出气弹簧契约") from error
+
+    force = float(getattr(cfg, "knee_gas_spring_force", 0.0))
+    compensation_enabled = bool(getattr(cfg, "knee_gas_spring_compensation_enabled", False))
+    if force < 0.0:
+        raise ValueError(f"knee_gas_spring_force 必须非负，实际为 {force}")
+    if compensation_enabled and force <= 0.0:
+        raise ValueError("启用气弹簧补偿时 knee_gas_spring_force 必须为正数")
+    return {"force": force, "compensation_enabled": compensation_enabled}
 
 
 def _build_command_metadata(command_manager: Any) -> dict[str, Any]:

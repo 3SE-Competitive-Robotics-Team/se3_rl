@@ -12,6 +12,7 @@ from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from se3_shared import (
     ActionDelayConfig,
     JointGroup,
+    knee_gas_spring_compensation_torque_torch,
     output_leg_length_limits_torch,
     output_leg_wheel_xz_torch,
     output_to_policy_pos_torch,
@@ -53,6 +54,8 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     height_conditioned_action_default: bool = False
     action_default_command_name: str = "velocity_height"
     active_rod_lower_target_overdrive: float = _SHARED_ROBOT.active_rod_lower_target_overdrive
+    knee_gas_spring_force: float = _SHARED_ROBOT.knee_gas_spring_force
+    knee_gas_spring_compensation_enabled: bool = _SHARED_ROBOT.knee_gas_spring_compensation_enabled
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -90,6 +93,8 @@ class SerialLegDelayedAction(ActionTerm):
             )
         if cfg.action_clip is not None and cfg.action_clip <= 0.0:
             raise ValueError(f"action_clip must be positive or None, got {cfg.action_clip}")
+        if cfg.knee_gas_spring_force < 0.0:
+            raise ValueError(f"knee_gas_spring_force 必须非负，实际为 {cfg.knee_gas_spring_force}")
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
@@ -119,6 +124,7 @@ class SerialLegDelayedAction(ActionTerm):
         self._policy_leg_torque = torch.zeros(self.num_envs, 4, device=self.device)
         self._policy_leg_vel = torch.zeros_like(self._policy_leg_torque)
         self._policy_leg_target = torch.zeros_like(self._policy_leg_torque)
+        self._knee_gas_spring_compensation_torque = torch.zeros_like(self._policy_leg_torque)
         self._active_rod_angle_target = torch.zeros(self.num_envs, 2, device=self.device)
         self._active_rod_angle_target_clamped = torch.zeros(
             self.num_envs, 2, device=self.device, dtype=torch.bool
@@ -189,6 +195,10 @@ class SerialLegDelayedAction(ActionTerm):
     @property
     def policy_leg_target(self) -> torch.Tensor:
         return self._policy_leg_target
+
+    @property
+    def knee_gas_spring_compensation_torque(self) -> torch.Tensor:
+        return self._knee_gas_spring_compensation_torque
 
     @property
     def active_rod_angle_target(self) -> torch.Tensor:
@@ -283,6 +293,22 @@ class SerialLegDelayedAction(ActionTerm):
         )
         servo_leg_target = servo_leg_target - self._entity.data.encoder_bias[:, self._leg_joint_ids]
         self._entity.set_joint_position_target(servo_leg_target, joint_ids=self._leg_joint_ids)
+        if self.cfg.knee_gas_spring_compensation_enabled:
+            measured_leg_pos = (
+                current_leg_pos + self._entity.data.encoder_bias[:, self._leg_joint_ids]
+            )
+            self._knee_gas_spring_compensation_torque[:] = (
+                knee_gas_spring_compensation_torque_torch(
+                    measured_leg_pos,
+                    self.cfg.knee_gas_spring_force,
+                )
+            )
+        else:
+            self._knee_gas_spring_compensation_torque.zero_()
+        self._entity.set_joint_effort_target(
+            self._knee_gas_spring_compensation_torque,
+            joint_ids=self._leg_joint_ids,
+        )
         self._policy_leg_torque[:] = self._entity.data.actuator_force[:, self._leg_actuator_ids]
         self._policy_leg_vel[:] = self._entity.data.joint_vel[:, self._leg_joint_ids]
         wheel_target = (
@@ -504,6 +530,7 @@ class SerialLegDelayedAction(ActionTerm):
         self._ctbc_wheel_delta_xz[resolved_env_ids] = 0.0
         self._policy_leg_torque[resolved_env_ids] = 0.0
         self._policy_leg_vel[resolved_env_ids] = 0.0
+        self._knee_gas_spring_compensation_torque[resolved_env_ids] = 0.0
         self._action_fifo[:, resolved_env_ids] = 0.0
         self._resample_delay(resolved_env_ids)
 

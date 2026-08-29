@@ -7,18 +7,26 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
+import torch
 from test_onnx_metadata import _fake_env, _policy_input, _write_runtime_model
 
 from se3_runtime import (
     DecodedPolicyAction,
     PolicyActionDecoder,
+    PolicyBundle,
     PolicyControlLoop,
     PolicyInput,
     PolicyRuntime,
+    SerialLegActuatorController,
 )
+from se3_runtime._serialleg_v1 import knee_gas_spring_compensation_torque
 from se3_runtime_mujoco import (
     MujocoPolicyAdapter,
     MujocoViserViewer,
+)
+from se3_shared.fourbar import (
+    knee_gas_spring_compensation_torque_np,
+    knee_gas_spring_compensation_torque_torch,
 )
 from se3_train.onnx_metadata import (
     build_deployment_onnx_metadata,
@@ -205,6 +213,99 @@ class MujocoPolicyAdapterTests(unittest.TestCase):
 
             self.assertTrue(viewer.closed)
             viewer.close()
+
+
+class KneeGasSpringCompensationTests(unittest.TestCase):
+    """校验 sim2sim 与训练端使用同一份气弹簧前馈力矩。"""
+
+    def test_runtime_matches_training_compensation_torque(self) -> None:
+        rng = np.random.default_rng(20260826)
+        samples = rng.uniform(-1.5, 1.5, size=(512, 4))
+        runtime = np.stack([knee_gas_spring_compensation_torque(row, 300.0) for row in samples])
+
+        np.testing.assert_allclose(
+            runtime,
+            knee_gas_spring_compensation_torque_np(samples, 300.0),
+            atol=1.0e-12,
+        )
+        np.testing.assert_allclose(
+            runtime,
+            knee_gas_spring_compensation_torque_torch(
+                torch.as_tensor(samples, dtype=torch.float64),
+                300.0,
+            ).numpy(),
+            atol=1.0e-6,
+        )
+
+    def test_controller_adds_compensation_before_torque_limit(self) -> None:
+        position = np.asarray((0.35, -0.45, -0.35, 0.45, 0.0, 0.0))
+        velocity = np.zeros(6)
+        action = _decoded_action(position[:4])
+        with TemporaryDirectory() as temp_dir:
+            enabled = _contract_with_gas_spring(
+                Path(temp_dir) / "spring.onnx",
+                declared=True,
+            )
+            legacy = _contract_with_gas_spring(
+                Path(temp_dir) / "legacy.onnx",
+                declared=False,
+            )
+
+        self.assertTrue(enabled.robot.knee_gas_spring.compensation_enabled)
+        self.assertEqual(enabled.robot.knee_gas_spring.force, 300.0)
+        self.assertFalse(legacy.robot.knee_gas_spring.compensation_enabled)
+
+        with_spring = SerialLegActuatorController(enabled).compute(
+            action,
+            policy_joint_position=position,
+            policy_joint_velocity=velocity,
+        )
+        without_spring = SerialLegActuatorController(legacy).compute(
+            action,
+            policy_joint_position=position,
+            policy_joint_velocity=velocity,
+        )
+        expected = knee_gas_spring_compensation_torque(position[:4], 300.0)
+
+        np.testing.assert_allclose(with_spring.knee_gas_spring_compensation, expected)
+        np.testing.assert_allclose(without_spring.knee_gas_spring_compensation, np.zeros(4))
+        np.testing.assert_allclose(
+            with_spring.unclipped_effort[:4] - without_spring.unclipped_effort[:4],
+            expected,
+        )
+        np.testing.assert_allclose(
+            with_spring.unclipped_effort[4:6],
+            without_spring.unclipped_effort[4:6],
+        )
+        np.testing.assert_array_less(
+            np.abs(with_spring.effort),
+            with_spring.upper_effort_limit + 1.0e-9,
+        )
+
+
+def _decoded_action(leg_position_target: np.ndarray) -> DecodedPolicyAction:
+    """构造一个只用于 actuator 力矩计算的最小动作。"""
+    return DecodedPolicyAction(
+        clipped_action=np.zeros(6),
+        leg_position_target=np.asarray(leg_position_target, dtype=np.float64),
+        wheel_velocity_target=np.zeros(2),
+        policy_leg_default=np.zeros(4),
+        active_rod_angle_target=np.zeros(2),
+        active_rod_target_clamped=np.zeros(2, dtype=bool),
+    )
+
+
+def _contract_with_gas_spring(path: Path, *, declared: bool):
+    """导出一个带或不带 `robot.knee_gas_spring` 声明的 artifact 契约。"""
+    metadata = build_deployment_onnx_metadata(
+        _fake_env(),
+        observation_group_names=("actor",),
+    )
+    if not declared:
+        del metadata["robot"]["knee_gas_spring"]
+    _write_runtime_model(path, 34, [0.0] * 6, recurrent=False)
+    embed_onnx_metadata(path, metadata, policy_iteration=20, is_rnn=False)
+    return PolicyBundle.load(path).contract
 
 
 if __name__ == "__main__":
