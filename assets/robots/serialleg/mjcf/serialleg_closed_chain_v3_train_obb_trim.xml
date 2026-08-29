@@ -91,7 +91,7 @@
     <mesh name="legcoacd_r_coupler_Link_03" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_03.stl" />
   </asset>
   <worldbody>
-    <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="1.0 0.005 0.0001" solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2" condim="3" contype="1" conaffinity="1" />
+    <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1" />
     <light name="spotlight" mode="targetbodycom" target="base_link" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -6 4" cutoff="30" />
     <body name="base_link" pos="0 0 0.22">
       <freejoint />
