@@ -225,42 +225,13 @@ def _wheel_clearance_stats(
     env: ManagerBasedRlEnv,
     robot,
     asset_cfg: SceneEntityCfg,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """返回左右轮底离地最小、平均和最大高度。"""
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """返回左右轮底离地最小高度和平均高度。"""
     body_ids = _wheel_body_ids(env, asset_cfg)
     wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
     ground_z = env.scene.env_origins[:, 2].unsqueeze(1)
     wheel_bottom = wheel_pos_w[:, :, 2] - ground_z - _FOURBAR_WHEEL_RADIUS_M
-    return (
-        wheel_bottom.min(dim=1).values,
-        wheel_bottom.mean(dim=1),
-        wheel_bottom.max(dim=1).values,
-    )
-
-
-def _wheel_ground_factor(
-    env: ManagerBasedRlEnv,
-    robot,
-    asset_cfg: SceneEntityCfg,
-    *,
-    clearance_scale: float = 0.10,
-    floor: float = 0.5,
-) -> torch.Tensor:
-    """按双轮中较高轮子的离地高度生成连续轮地门控。"""
-    if clearance_scale <= 0.0:
-        raise ValueError(f"clearance_scale 必须大于 0，实际为 {clearance_scale}")
-    if not 0.0 <= floor <= 1.0:
-        raise ValueError(f"floor 必须位于 [0, 1]，实际为 {floor}")
-
-    _, _, wheel_clearance_max = _wheel_clearance_stats(env, robot, asset_cfg)
-    clearance = torch.nan_to_num(
-        wheel_clearance_max,
-        nan=1.0,
-        posinf=1.0,
-        neginf=0.0,
-    ).clamp(min=0.0)
-    proximity = 1.0 / (1.0 + clearance / float(clearance_scale))
-    return float(floor) + (1.0 - float(floor)) * proximity
+    return wheel_bottom.min(dim=1).values, wheel_bottom.mean(dim=1)
 
 
 def _contact_diagnostic_stats(
@@ -479,41 +450,24 @@ def _recovery_penalty_gate(
     return torch.where(in_recovery_grace, torch.zeros_like(upright), upright)
 
 
-def upward(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-    *,
-    use_wheel_ground_factor: bool = False,
-    wheel_ground_clearance_scale: float = 0.10,
-    wheel_ground_factor_floor: float = 0.5,
-) -> torch.Tensor:
-    """全局向上奖励；可选用连续双轮离地因子塑造自起接触时序。"""
-    robot = env.scene[asset_cfg.name]
+def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """全局向上奖励，不区分 roll/pitch 轴向来源。"""
+    robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    ground_factor = torch.ones_like(pg_z)
-    if use_wheel_ground_factor:
-        ground_factor = _wheel_ground_factor(
-            env,
-            robot,
-            asset_cfg,
-            clearance_scale=wheel_ground_clearance_scale,
-            floor=wheel_ground_factor_floor,
-        )
-    reward = _upward_score(pg_z) * ground_factor
+    reward = _upward_score(pg_z)
 
     if hasattr(env, "extras") and _should_log_step(env):
         tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
         upright_15 = tilt < torch.deg2rad(torch.as_tensor(15.0, device=env.device))
         log = env.extras.setdefault("log", {})
-        values = {
-            "Locomotion/upward": reward.mean().item(),
-            "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
-            "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
-            "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
-        }
-        if use_wheel_ground_factor:
-            values["Recovery/diag_wheel_ground_factor"] = ground_factor.mean().item()
-        log.update(values)
+        log.update(
+            {
+                "Locomotion/upward": reward.mean().item(),
+                "SelfRight/tilt_deg": torch.rad2deg(tilt).mean().item(),
+                "SelfRight/upright_15deg_rate": upright_15.float().mean().item(),
+                "Locomotion/upright_gate": _upright_factor(pg_z).mean().item(),
+            }
+        )
         _log_cached_reset_diagnostics(env)
 
     return reward
@@ -1107,11 +1061,15 @@ def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
     return robot.data.root_link_lin_vel_b[:, 2] ** 2 * gate
 
 
-def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """横滚/俯仰角速度平方和,直立门控。"""
+def ang_vel_xy(
+    env: ManagerBasedRlEnv,
+    *,
+    use_upright_gate: bool = True,
+) -> torch.Tensor:
+    """横滚/俯仰角速度平方和，可选直立门控。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _upright_factor(pg_z) if use_upright_gate else torch.ones_like(pg_z)
     ang_vel = robot.data.root_link_ang_vel_b
     return (ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2) * gate
 
@@ -1845,9 +1803,7 @@ def recovery_diagnostics(
     lower_limit_close = lower_margin < float(active_rod_margin_warning)
     upper_limit_close = upper_margin < float(active_rod_margin_warning)
     limit_penalty = dof_pos_limits(env, asset_cfg=asset_cfg)
-    wheel_clearance_min, wheel_clearance_mean, wheel_clearance_max = _wheel_clearance_stats(
-        env, robot, asset_cfg
-    )
+    wheel_clearance_min, wheel_clearance_mean = _wheel_clearance_stats(env, robot, asset_cfg)
 
     wheel_contact_ratio, wheel_max_force, wheel_mean_force = _contact_diagnostic_stats(
         env, wheel_sensor_name, force_threshold
@@ -1969,7 +1925,6 @@ def recovery_diagnostics(
             "Recovery/diag_dof_pos_limits_active_rate": (limit_penalty > 0.0).float().mean().item(),
             "Recovery/diag_wheel_clearance_min_m": wheel_clearance_min.min().item(),
             "Recovery/diag_wheel_clearance_mean_m": wheel_clearance_mean.mean().item(),
-            "Recovery/diag_wheel_clearance_max_m": wheel_clearance_max.mean().item(),
             "Recovery/diag_wheel_penetration_rate": (wheel_clearance_min < -0.001)
             .float()
             .mean()
