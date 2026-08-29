@@ -171,12 +171,17 @@ class VelocityHeightCommandTerm(CommandTerm):
             )
         return lin_low, lin_high, yaw_low, yaw_high
 
-    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
-        """重置指令项，并保留 reset 事件阶段已预采样的指令。"""
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, torch.Tensor]:
+        """重置指令项，并保留 reset 事件阶段已预采样的指令。
+
+        metrics 以 0 维 GPU tensor 返回：reset 每个 policy step 都会执行，
+        逐项 ``.item()`` 会在 rollout 内制造主机同步点。RSL-RL logger 在迭代末
+        对 extras 张量统一 ``torch.mean``，无需在此转换。
+        """
         assert isinstance(env_ids, torch.Tensor)
         extras = {}
         for metric_name, metric_value in self.metrics.items():
-            extras[metric_name] = torch.mean(metric_value[env_ids]).item()
+            extras[metric_name] = torch.mean(metric_value[env_ids])
             metric_value[env_ids] = 0.0
 
         pre_mask = self._pre_resampled_for_reset[env_ids]
@@ -233,22 +238,21 @@ class VelocityHeightCommandTerm(CommandTerm):
         reset_counted_bad = counted_bad[env_ids]
         reset_grace = recovery_grace[env_ids]
 
-        def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
-            if not mask.any():
-                return 0.0
-            return values[mask].float().mean().item()
+        # 每个 policy step 的 reset 都会走到这里：全程保持 0 维 GPU tensor 且不
+        # 触发 mask.any()/.item() 之类的主机同步；空 mask 用 clamp 分母得 0。
+        def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            selected = (values.float() * mask.float()).sum()
+            return selected / mask.float().sum().clamp(min=1.0)
 
         log = self._env.extras.setdefault("log", {})
         log.update(
             {
                 "Episode_Termination/bad_orientation_recovery": (reset_terminated & reset_recovery)
                 .float()
-                .sum()
-                .item(),
+                .sum(),
                 "Episode_Termination/bad_orientation_flat": (reset_terminated & reset_flat)
                 .float()
-                .sum()
-                .item(),
+                .sum(),
                 "Recovery/bad_orientation_raw_rate": _masked_rate(reset_raw_bad, reset_recovery),
                 "Recovery/bad_orientation_counted_rate": _masked_rate(
                     reset_counted_bad, reset_recovery

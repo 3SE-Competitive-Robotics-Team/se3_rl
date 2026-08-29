@@ -785,18 +785,18 @@ def reset_root_state_recovery_standard_poses(
     if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         for idx, name in enumerate(("standing", "left_side", "right_side", "prone", "supine")):
-            log[f"Reset/standard_pose_{name}_ratio"] = (pose_bins == idx).float().mean().item()
+            log[f"Reset/standard_pose_{name}_ratio"] = (pose_bins == idx).float().mean()
         log.update(
             {
                 "Reset/standard_pose_curriculum_progress": float(curriculum_progress),
-                "Reset/standard_pose_mean_init_tilt_deg": torch.rad2deg(init_tilt).mean().item(),
-                "Reset/standard_pose_mean_base_height_m": base_height.mean().item(),
-                "Reset/standard_pose_root_lin_vel_norm": torch.linalg.norm(vel[:, 0:3], dim=1)
-                .mean()
-                .item(),
-                "Reset/standard_pose_root_ang_vel_norm": torch.linalg.norm(vel[:, 3:6], dim=1)
-                .mean()
-                .item(),
+                "Reset/standard_pose_mean_init_tilt_deg": torch.rad2deg(init_tilt).mean(),
+                "Reset/standard_pose_mean_base_height_m": base_height.mean(),
+                "Reset/standard_pose_root_lin_vel_norm": torch.linalg.norm(
+                    vel[:, 0:3], dim=1
+                ).mean(),
+                "Reset/standard_pose_root_ang_vel_norm": torch.linalg.norm(
+                    vel[:, 3:6], dim=1
+                ).mean(),
             }
         )
 
@@ -1367,11 +1367,11 @@ def reset_root_state_recovery_discovery_mixed(
         log.update(
             {
                 "Reset/source_curriculum_progress": float(source_progress),
-                "Reset/source_standard_ratio": standard_mask.float().mean().item(),
-                "Reset/source_cache_ratio": cache_mask.float().mean().item(),
-                "Reset/source_near_upright_ratio": near_upright_mask.float().mean().item(),
-                "Reset/source_cache_target_ratio": cache_ratios.mean().item(),
-                "Reset/source_near_upright_target_ratio": near_upright_ratios.mean().item(),
+                "Reset/source_standard_ratio": standard_mask.float().mean(),
+                "Reset/source_cache_ratio": cache_mask.float().mean(),
+                "Reset/source_near_upright_ratio": near_upright_mask.float().mean(),
+                "Reset/source_cache_target_ratio": cache_ratios.mean(),
+                "Reset/source_near_upright_target_ratio": near_upright_ratios.mean(),
             }
         )
 
@@ -1636,13 +1636,13 @@ def _lift_root_to_wheel_clearance(
     if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         after_wheel_bottom = before_wheel_bottom + adjustment
-        log["Reset/wheel_clearance_before_min_m"] = float(before_wheel_bottom.min().item())
-        log["Reset/wheel_clearance_after_min_m"] = float(after_wheel_bottom.min().item())
-        log["Reset/wheel_clearance_adjustment_max_m"] = float(adjustment.max().item())
-        log["Reset/wheel_clearance_adjustment_min_m"] = float(adjustment.min().item())
-        log["Reset/wheel_clearance_adjustment_mean_m"] = float(adjustment.mean().item())
+        log["Reset/wheel_clearance_before_min_m"] = float(before_wheel_bottom.min())
+        log["Reset/wheel_clearance_after_min_m"] = float(after_wheel_bottom.min())
+        log["Reset/wheel_clearance_adjustment_max_m"] = float(adjustment.max())
+        log["Reset/wheel_clearance_adjustment_min_m"] = float(adjustment.min())
+        log["Reset/wheel_clearance_adjustment_mean_m"] = float(adjustment.mean())
         log["Reset/wheel_clearance_adjustment_ratio"] = float(
-            (torch.abs(adjustment) > 1.0e-6).float().mean().item()
+            (torch.abs(adjustment) > 1.0e-6).float().mean()
         )
         log["Reset/wheel_clearance_mode_terrain"] = float(mode == "terrain")
 
@@ -1892,19 +1892,17 @@ def snap_root_to_collision_clearance(
         after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
         log = env.extras.setdefault("log", {})
         log["Reset/collision_snap_geom_count"] = float(geom_count)
-        log["Reset/collision_snap_target_clearance_mean_m"] = float(target_clearance.mean().item())
-        log["Reset/collision_snap_before_min_m"] = float(before_clearance.min().item())
-        log["Reset/collision_snap_before_mean_m"] = float(before_clearance.mean().item())
-        log["Reset/collision_snap_after_min_m"] = float(after_clearance.min().item())
-        log["Reset/collision_snap_after_mean_m"] = float(after_clearance.mean().item())
-        log["Reset/collision_snap_adjustment_min_m"] = float(adjustment.min().item())
-        log["Reset/collision_snap_adjustment_max_m"] = float(adjustment.max().item())
-        log["Reset/collision_snap_adjustment_mean_m"] = float(adjustment.mean().item())
-        log["Reset/collision_snap_adjustment_abs_mean_m"] = float(
-            torch.abs(adjustment).mean().item()
-        )
+        log["Reset/collision_snap_target_clearance_mean_m"] = float(target_clearance.mean())
+        log["Reset/collision_snap_before_min_m"] = float(before_clearance.min())
+        log["Reset/collision_snap_before_mean_m"] = float(before_clearance.mean())
+        log["Reset/collision_snap_after_min_m"] = float(after_clearance.min())
+        log["Reset/collision_snap_after_mean_m"] = float(after_clearance.mean())
+        log["Reset/collision_snap_adjustment_min_m"] = float(adjustment.min())
+        log["Reset/collision_snap_adjustment_max_m"] = float(adjustment.max())
+        log["Reset/collision_snap_adjustment_mean_m"] = float(adjustment.mean())
+        log["Reset/collision_snap_adjustment_abs_mean_m"] = float(torch.abs(adjustment).mean())
         log["Reset/collision_snap_adjustment_ratio"] = float(
-            (torch.abs(adjustment) > 1.0e-6).float().mean().item()
+            (torch.abs(adjustment) > 1.0e-6).float().mean()
         )
 
 
@@ -2155,12 +2153,10 @@ def reset_joints(
         log = env.extras.setdefault("log", {})
         log["Reset/joint_curriculum_progress"] = float(curriculum_progress)
         log["Reset/joint_randomization_prob"] = float(joint_randomization_prob)
-        log["Reset/joint_randomization_ratio"] = randomize_mask.float().mean().item()
+        log["Reset/joint_randomization_ratio"] = randomize_mask.float().mean()
         log["Reset/full_joint_randomization"] = float(full_joint_randomization)
         log["Reset/wheel_joint_vel_randomization_prob"] = float(wheel_joint_randomization_prob)
-        log["Reset/wheel_joint_vel_randomization_ratio"] = (
-            wheel_randomize_mask.float().mean().item()
-        )
+        log["Reset/wheel_joint_vel_randomization_ratio"] = wheel_randomize_mask.float().mean()
 
     recovery_mask = getattr(env, "_recovery_reset_mask", None)
     if (
@@ -2325,9 +2321,9 @@ def reset_joints(
         )
         log = env.extras.setdefault("log", {})
         log["Reset/closedchain_passive_seed_enabled"] = 1.0
-        log["Reset/closedchain_active_angle_min"] = float(active_angles.min().item())
-        log["Reset/closedchain_active_angle_max"] = float(active_angles.max().item())
-        log["Reset/closedchain_active_angle_margin_min"] = float(active_margin.min().item())
+        log["Reset/closedchain_active_angle_min"] = float(active_angles.min())
+        log["Reset/closedchain_active_angle_max"] = float(active_angles.max())
+        log["Reset/closedchain_active_angle_margin_min"] = float(active_margin.min())
 
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
     if align_root_height_to_wheels:
