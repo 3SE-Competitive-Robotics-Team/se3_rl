@@ -14,6 +14,7 @@ import mujoco
 import numpy as np
 import torch
 from mjlab.entity import Entity
+from mjlab.managers.event_manager import RecomputeLevel, requires_model_fields
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import (
     euler_xyz_from_quat,
@@ -36,6 +37,7 @@ from se3_shared import (
 from se3_train.mdp import recovery_state
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
+    actuator_ids,
     joint_ids,
     policy_leg_joint_ids,
     tensor_ids,
@@ -2375,13 +2377,18 @@ def push_robots(
     )
 
 
+@requires_model_fields("geom_friction")
 def randomize_friction(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     friction_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """随机化几何体摩擦系数。"""
+    """随机化几何体摩擦系数。
+
+    MJLab 1.5.3 起 model field 默认是共享 world 的 size-1 数组，必须用
+    requires_model_fields 申报展开，否则逐 env 写入会静默塌缩成单一共享值。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -2404,6 +2411,7 @@ def randomize_friction(
             env.sim.model.geom_friction[env_ids, gid, 0] = friction.squeeze(-1)
 
 
+@requires_model_fields("geom_margin")
 def randomize_restitution(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2435,6 +2443,7 @@ def randomize_restitution(
             env.sim.model.geom_margin[env_ids, gid] = 0.0
 
 
+@requires_model_fields("body_mass", recompute=RecomputeLevel.set_const)
 def randomize_base_mass(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2461,6 +2470,7 @@ def randomize_base_mass(
     env.sim.model.body_mass[env_ids, base_body_idx] = default_mass[base_body_idx] + added_mass
 
 
+@requires_model_fields("body_inertia", recompute=RecomputeLevel.set_const_0)
 def randomize_inertia(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2485,6 +2495,7 @@ def randomize_inertia(
     env.sim.model.body_inertia[env_ids, base_body_idx] = default_inertia[base_body_idx] * scale
 
 
+@requires_model_fields("body_ipos", recompute=RecomputeLevel.set_const)
 def randomize_com(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2509,6 +2520,7 @@ def randomize_com(
     env.sim.model.body_ipos[env_ids, base_body_idx] = default_ipos[base_body_idx] + offset
 
 
+@requires_model_fields("actuator_gainprm", "actuator_biasprm")
 def randomize_pd_gains(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
