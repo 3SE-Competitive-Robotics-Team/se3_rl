@@ -373,8 +373,8 @@ sleep 3
 kill -0 "$pid"
 run_dir=""
 for _ in $(seq 1 30); do
-  if [ -d {shlex.quote(f'logs/rsl_rl/{args.task}')} ]; then
-    run_dir_lines=$(find {shlex.quote(f'logs/rsl_rl/{args.task}')} -mindepth 1 -maxdepth 1 -type d \
+  if [ -d {shlex.quote(f"logs/rsl_rl/{args.task}")} ]; then
+    run_dir_lines=$(find {shlex.quote(f"logs/rsl_rl/{args.task}")} -mindepth 1 -maxdepth 1 -type d \
       -name '*_{args.run_name}' -printf '%T@ %f\n' | sort -nr)
     run_dir=$(printf '%s\n' "$run_dir_lines" | sed -n '1s/^[^ ]* //p')
   fi
