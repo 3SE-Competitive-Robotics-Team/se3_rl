@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+script_dir="$(cd -- "$(dirname -- "${script_path}")" && pwd)"
+queue_root="$(cd -- "${script_dir}/.." && pwd)"
+config_path="${SE3_QUEUE_CONFIG:-${queue_root}/config.env}"
+
+if [[ -f "${config_path}" ]]; then
+  # shellcheck disable=SC1090
+  source "${config_path}"
+fi
+
+: "${SE3_QUEUE_ROOT:?必须配置 SE3_QUEUE_ROOT}"
+: "${SE3_QUEUE_REPO:?必须配置 SE3_QUEUE_REPO}"
+: "${SE3_QUEUE_UV:?必须配置 SE3_QUEUE_UV}"
+
+queue_script="${SE3_QUEUE_SCRIPT:-${SE3_QUEUE_ROOT}/bin/se3_training_queue.py}"
+exec env -u LD_LIBRARY_PATH -u VIRTUAL_ENV \
+  "${SE3_QUEUE_UV}" run --no-project python "${queue_script}" "$@"
