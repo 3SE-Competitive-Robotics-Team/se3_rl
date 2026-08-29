@@ -66,7 +66,7 @@ uv sync
 torch 2.11.0+cu128
 mujoco 3.8.0
 mjlab 1.3.0
-rerun-sdk 0.31.4
+viser 1.0.30
 warp-lang 1.12.1
 ```
 
@@ -84,9 +84,9 @@ gpufree 按量计费时，默认把 GPU 时间看成最贵资源。代码修改�
 
 1. **本地改代码**：在本机完成代码修改、文档修改、ruff、CPU smoke 和提交。远程源码同步必须走 git，不用 GPU 实例在线等待。
 2. **无卡模式开机准备环境**：需要整理远程仓库、安装依赖、写 `.env`、配置 SSH key、执行 `uv sync`、创建 `se3_env.sh`、拉取 checkpoint 或做 CPU smoke 时，用控制台的无卡模式开机。无卡模式下不要期待 `nvidia-smi` 可用，训练命令必须带 `--gpu-ids None` 且 `num_envs=1`。
-3. **GPU 模式短验证**：准备开训前再把 L40S 单卡实例切到 GPU 模式。先跑 GPU smoke 和 20-50 iter benchmark，确认 `torch.cuda.device_count()==1`、wandb 有日志、checkpoint 能保存、Rerun 监控能产物落盘。
-4. **GPU 模式长训**：只有确认短验证方向正确后才启动长轮训练。训练必须在 tmux 中运行，必须同步拉取 checkpoint/Rerun。
-5. **收尾立刻关机**：训练停止、checkpoint 和 Rerun 拉回本地后，先确认无 `se3-train` 进程和无未同步产物，再从控制台关机。不要让 GPU 实例空转等下一次改代码。
+3. **GPU 模式短验证**：准备开训前再把 L40S 单卡实例切到 GPU 模式。先跑 GPU smoke 和 20-50 iter benchmark，确认 `torch.cuda.device_count()==1`、W&B 有日志、checkpoint 和 ONNX 能保存。
+4. **GPU 模式长训**：只有确认短验证方向正确后才启动长轮训练。训练必须在 tmux 中运行，必须同步拉取 checkpoint 和 ONNX。
+5. **收尾立刻关机**：训练停止、checkpoint 和 ONNX 拉回本地后，先确认无 `se3-train` 进程和无未同步产物，再从控制台关机。不要让 GPU 实例空转等下一次改代码。
 
 无卡模式可做：
 

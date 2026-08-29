@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
-| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` | 唯一倒地自启任务；三个入口共享奖励、课程和 PPO 配置，History-MLP 仅将 actor 扩展为五帧历史观测 |
+| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-MLP` / `SE3-WheelLegged-Recovery-Discovery-Ungrouped-MLP` | 唯一倒地自启任务；五个入口共享奖励、课程和 PPO 配置，Recovery-Loco-Grouped-MLP 使用 loco/recover 分组与五帧历史观测 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
@@ -31,9 +31,9 @@
 - `rewards.py`、`curriculums.py` 提供台阶爬升奖励、地形等级课程和诊断项。
 - `env_cfg.py` 同时接入 recovery replay 状态缓存，用于提升台阶训练中跌倒后的恢复覆盖率。
 
-台阶任务的远程值守应运行 native MuJoCo closedchain
-`se3-sim2sim --viewer viser --stair-terrain`，并确认台阶参与真实碰撞。checkpoint 来源、
-远程连接和本地缓存目录由当前 machine profile 决定，不属于任务架构契约。
+台阶任务的远程值守使用 `./scripts/run_sim2x.sh` 启动 native MuJoCo/Viser，并在
+`Models` 页签选择对应 experiment、run id 和 ONNX。checkpoint 来源、远程连接和本地缓存
+目录由当前 machine profile 决定，不属于任务架构契约。
 
 ## 单个 task 的目录结构
 

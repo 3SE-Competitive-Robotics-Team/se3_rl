@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import torch
 from mjlab.rl import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
 
-from se3_train.async_logging import Se3AsyncHostLogger, async_host_logger_enabled
+from se3_train.async_logging import (
+    Se3AsyncHostLogger,
+    Se3RolloutMetricsLogger,
+    async_host_logger_enabled,
+    expand_episode_log_buffers,
+)
+from se3_train.onnx_metadata import (
+    build_deployment_onnx_metadata,
+    embed_onnx_metadata,
+)
 from se3_train.training_runtime import (
     IterationTimer,
     IterationTiming,
@@ -52,6 +62,9 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         self._se3_runtime_info_logged = False
         self._se3_async_host_logger_enabled = async_host_logger_enabled()
         self._se3_last_async_logger_flush_s = 0.0
+        self._se3_episode_log_window_size = expand_episode_log_buffers(
+            self.logger, self.env.num_envs
+        )
         self._se3_stage_warm_start_loaded = False
         self._se3_check_nan_enabled = _env_flag(
             "SE3_CHECK_NAN",
@@ -65,6 +78,75 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 f"[SE3 Runtime] check_nan={'enabled' if self._se3_check_nan_enabled else 'disabled'}",
                 flush=True,
             )
+
+    def save(self, path: str, infos: dict | None = None) -> None:
+        """保存 checkpoint，并为同一迭代生成带部署契约的 ONNX。"""
+        super().save(path, infos=infos)
+        if self.is_distributed and self.gpu_global_rank != 0:
+            return
+
+        checkpoint_path = Path(path)
+        export_dir = checkpoint_path.parent / "onnx"
+        filename = f"{checkpoint_path.stem}.onnx"
+        try:
+            self.export_policy_to_onnx(
+                str(export_dir),
+                filename=filename,
+            )
+        except Exception as error:
+            print(
+                f"[SE3 ONNX] 导出失败，checkpoint 已保留: {checkpoint_path}: {error}",
+                flush=True,
+            )
+            return
+        print(f"[SE3 ONNX] exported: {export_dir / filename}", flush=True)
+
+    def export_policy_to_onnx(
+        self,
+        path: str,
+        filename: str = "policy.onnx",
+        verbose: bool = False,
+    ) -> None:
+        """复用 MJLab 导出器，并原子写入从 live env 构建的 metadata。"""
+        policy = self.alg.get_policy()
+        actor_was_training = self.alg.actor.training
+        critic_was_training = self.alg.critic.training
+        policy_was_training = policy.training
+        rnd = getattr(self.alg, "rnd", None)
+        rnd_was_training = bool(rnd.training) if rnd is not None else False
+
+        export_dir = Path(path)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        final_path = export_dir / filename
+        temp_name = f".{filename}.{os.getpid()}.tmp.onnx"
+        temp_path = export_dir / temp_name
+
+        self.alg.eval_mode()
+        policy.eval()
+        try:
+            super().export_policy_to_onnx(
+                str(export_dir),
+                filename=temp_name,
+                verbose=verbose,
+            )
+            metadata = build_deployment_onnx_metadata(
+                self.env.unwrapped,
+                observation_group_names=list(policy.obs_groups),
+            )
+            embed_onnx_metadata(
+                temp_path,
+                metadata,
+                policy_iteration=self.current_learning_iteration,
+                is_rnn=bool(policy.is_recurrent),
+            )
+            os.replace(temp_path, final_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+            self.alg.actor.train(actor_was_training)
+            self.alg.critic.train(critic_was_training)
+            policy.train(policy_was_training)
+            if rnd is not None:
+                rnd.train(rnd_was_training)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """运行 PPO 训练循环，并记录采样、return、update 的分段耗时。"""
@@ -85,6 +167,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         async_logger = (
             Se3AsyncHostLogger(self.logger) if self._se3_async_host_logger_enabled else None
         )
+        rollout_metrics_logger = Se3RolloutMetricsLogger(self.logger, self.env)
 
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
@@ -111,6 +194,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                         self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
                     else:
                         async_logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+                    rollout_metrics_logger.process_env_step(rewards, dones, intrinsic_rewards)
 
                 timer.mark_collect_done()
                 self.alg.compute_returns(obs)
@@ -138,6 +222,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 action_std=self.alg.get_policy().output_std,
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
             )
+            rollout_metrics_logger.log(it)
             self._log_profile_scalars(it, timing)
             if not self.is_distributed or self.gpu_global_rank == 0:
                 write_training_status(
@@ -181,6 +266,11 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             writer.add_scalar(
                 "Runtime/check_nan_enabled",
                 float(self._se3_check_nan_enabled),
+                iteration,
+            )
+            writer.add_scalar(
+                "Runtime/episode_log_window_size",
+                self._se3_episode_log_window_size,
                 iteration,
             )
             self._se3_runtime_info_logged = True

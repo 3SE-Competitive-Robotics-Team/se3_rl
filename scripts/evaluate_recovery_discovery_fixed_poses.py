@@ -27,6 +27,22 @@ POSE_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
 }
 
 
+# 评测必须复现 checkpoint 训练时的 action 零点语义。该 flag 由 CLI 显式指定，
+# 因为 ONNX metadata 目前不记录它（见 backlog B18）。None = 沿用任务注册的默认值。
+_ACTION_DEFAULT_OVERRIDE: bool | None = None
+
+
+def _apply_action_default_override(cfg) -> None:
+    if _ACTION_DEFAULT_OVERRIDE is None:
+        return
+    term = cfg.actions["delayed_action"]
+    term.height_conditioned_action_default = bool(_ACTION_DEFAULT_OVERRIDE)
+    print(
+        f"[cfg] height_conditioned_action_default = {term.height_conditioned_action_default}",
+        flush=True,
+    )
+
+
 @dataclass(frozen=True)
 class PoseResult:
     task: str
@@ -36,7 +52,6 @@ class PoseResult:
     success_rate: float
     mean_standup_time_s: float | None
     final_height_error_m: float
-    action_saturation_rate: float
     leg_contact_rate: float
     early_done_rate: float
     final_tilt_deg: float
@@ -55,6 +70,7 @@ def _build_env_cfg(
     command_height: float,
 ):
     cfg = load_env_cfg(task_name, play=True)
+    _apply_action_default_override(cfg)
     cfg.scene.num_envs = int(num_envs)
     cfg.episode_length_s = float(episode_s)
     cfg.auto_reset = False
@@ -67,6 +83,11 @@ def _build_env_cfg(
     command_cfg.standing_ratio = 1.0
 
     root_params = cfg.events["reset_root_state"].params
+    # 分组任务用 ``*_by_group`` 承载 reset 分布，且在 reset 事件里优先于标量参数。
+    # 定姿评测必须先清掉它们，否则下面的 ``pose_weights`` 会被静默忽略，
+    # 实际跑出来的是分组的随机倒地分布而不是被点名的那个姿态。
+    root_params.pop("pose_weights_by_group", None)
+    root_params.pop("source_curriculum_stages_by_group", None)
     root_params.update(
         {
             "pos_xy_range": (0.0, 0.0),
@@ -98,6 +119,18 @@ def _build_env_cfg(
         }
     )
     _set_if_present(joint_params, "wheel_joint_vel_range", (0.0, 0.0))
+    joint_params.pop("randomization_group_names", None)
+
+    # 定姿契约后置断言：只要还有 by_group 覆盖存活，评测结果就不是被点名的姿态。
+    leaked = [
+        k
+        for k in ("pose_weights_by_group", "source_curriculum_stages_by_group")
+        if k in root_params
+    ]
+    if leaked:
+        raise RuntimeError(f"定姿 reset 契约被分组参数覆盖: {leaked}")
+    if root_params.get("pose_weights") != POSE_WEIGHTS[pose]:
+        raise RuntimeError(f"定姿 pose_weights 未生效: {root_params.get('pose_weights')}")
     return cfg
 
 
@@ -128,7 +161,6 @@ def _evaluate_pose(
     success_height_tolerance: float,
     success_tilt_deg: float,
     hold_s: float,
-    action_saturation_threshold: float,
     device: str,
 ) -> PoseResult:
     env_cfg = _build_env_cfg(task_name, pose, num_envs, episode_s, command_height)
@@ -152,7 +184,6 @@ def _evaluate_pose(
     success_streak = torch.zeros(base_env.num_envs, device=base_env.device, dtype=torch.long)
     success_time = torch.full((base_env.num_envs,), torch.nan, device=base_env.device)
     sample_count = torch.zeros(base_env.num_envs, device=base_env.device)
-    saturation_sum = torch.zeros_like(sample_count)
     leg_contact_sum = torch.zeros_like(sample_count)
     final_height_error = torch.full_like(sample_count, torch.nan)
     final_tilt_deg = torch.full_like(sample_count, torch.nan)
@@ -177,13 +208,10 @@ def _evaluate_pose(
             neginf=0.0,
         )
         height_error = torch.abs(base_height - command_height)
-        action = base_env.action_manager.action
-        action_saturated = torch.max(torch.abs(action), dim=1).values > action_saturation_threshold
         leg_contact_ratio, _, _ = _contact_diagnostic_stats(base_env, "leg_contact_sensor", 1.0)
         leg_contact = leg_contact_ratio > 0.0
 
         sample_count[active_ids] += 1.0
-        saturation_sum[active_ids] += action_saturated[active_ids].float()
         leg_contact_sum[active_ids] += leg_contact[active_ids].float()
         final_height_error[active_ids] = height_error[active_ids]
         final_tilt_deg[active_ids] = tilt_deg[active_ids]
@@ -221,7 +249,6 @@ def _evaluate_pose(
         success_rate=float(success.float().mean().item()),
         mean_standup_time_s=mean_time,
         final_height_error_m=float(torch.nanmean(final_height_error).item()),
-        action_saturation_rate=float((saturation_sum / valid_samples).mean().item()),
         leg_contact_rate=float((leg_contact_sum / valid_samples).mean().item()),
         early_done_rate=float(early_done.float().mean().item()),
         final_tilt_deg=float(torch.nanmean(final_tilt_deg).item()),
@@ -232,8 +259,8 @@ def _evaluate_pose(
 
 def _format_result_table(results: list[PoseResult]) -> str:
     lines = [
-        "| task | checkpoint | pose | success | standup_time_s | height_err_m | action_sat | leg_contact | early_done | final_tilt_deg |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| task | checkpoint | pose | success | standup_time_s | height_err_m | leg_contact | early_done | final_tilt_deg |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in results:
         time_text = "n/a" if item.mean_standup_time_s is None else f"{item.mean_standup_time_s:.3f}"
@@ -241,8 +268,8 @@ def _format_result_table(results: list[PoseResult]) -> str:
             "| "
             f"{item.task} | {item.checkpoint} | {item.pose} | "
             f"{item.success_rate:.3f} | {time_text} | "
-            f"{item.final_height_error_m:.4f} | {item.action_saturation_rate:.3f} | "
-            f"{item.leg_contact_rate:.3f} | {item.early_done_rate:.3f} | "
+            f"{item.final_height_error_m:.4f} | {item.leg_contact_rate:.3f} | "
+            f"{item.early_done_rate:.3f} | "
             f"{item.final_tilt_deg:.2f} |"
         )
     return "\n".join(lines)
@@ -262,10 +289,18 @@ def main() -> None:
     parser.add_argument("--success-height-tolerance", type=float, default=0.02)
     parser.add_argument("--success-tilt-deg", type=float, default=15.0)
     parser.add_argument("--hold-s", type=float, default=0.5)
-    parser.add_argument("--action-saturation-threshold", type=float, default=0.95)
     parser.add_argument("--device", default=None)
     parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument(
+        "--height-conditioned-action-default",
+        choices=("true", "false"),
+        default=None,
+        help="覆盖 action 零点语义，必须与 checkpoint 训练时一致；缺省沿用任务默认。",
+    )
     args = parser.parse_args()
+    global _ACTION_DEFAULT_OVERRIDE
+    if args.height_conditioned_action_default is not None:
+        _ACTION_DEFAULT_OVERRIDE = args.height_conditioned_action_default == "true"
 
     configure_torch_backends()
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -289,7 +324,6 @@ def main() -> None:
                     success_height_tolerance=args.success_height_tolerance,
                     success_tilt_deg=args.success_tilt_deg,
                     hold_s=args.hold_s,
-                    action_saturation_threshold=args.action_saturation_threshold,
                     device=device,
                 )
             )

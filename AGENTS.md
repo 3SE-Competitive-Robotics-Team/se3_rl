@@ -4,11 +4,12 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 7 个 Python 包：`se3_shared`（训练和验证共享配置）、`se3_train`（MJLab 训练）、`se3_sim2sim`（sim2sim 验证，计划 deprecated）、`se3_deploy`（NX 真机部署 runtime，计划 deprecated）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
+- 主仓库 5 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
+- `submodules/se3-sim2x` 提供 `se3_runtime` 与 `se3_runtime_mujoco`，作为 sim2sim / sim2real 共用链路
 - 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
-迁移约定：`se3_sim2sim` 和 `se3_deploy` 为历史兼容模块，后续建议迁移到 `https://github.com/3SE-Competitive-Robotics-Team/se3-mono`。Agent 在主动使用 `se3_deploy` 或执行 NX 真机部署/调试命令前，必须先询问主人是否继续使用旧链路；用户已经明确要求时可以继续。
+交互式 sim2sim 必须使用纯 Python [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x) submodule，不以 Rust runtime 为目标。真机 adapter 暂未搭建，不得恢复已删除的旧 NX runtime。
 
 ## 术语表 (Glossary)
 
@@ -35,10 +36,11 @@
 
 ```bash
 # Setup / 检查
+git submodule update --init --recursive
 uv sync
 uv run prek install
 uv run python --version
-uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('rerun-sdk:', version('rerun-sdk'))"
+uv run python -c "import mujoco, torch; from importlib.metadata import version; print('mujoco:', mujoco.__version__); print('torch:', torch.__version__); print('viser:', version('viser'))"
 uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available()); print('GPU 数量:', torch.cuda.device_count())"
 
 # 代码质量
@@ -55,11 +57,8 @@ uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
 
-# 评估 / sim2sim（纯 MuJoCo CPU + Rerun，macOS 可运行）
-uv run se3-sim2sim --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --checkpoint <checkpoint> --max-steps 3000 --course walk-sweep
-uv run se3-sim2sim --viewer none --max-steps 200 --print-every 20 --course walk-sweep
-uv run se3-sim2sim --checkpoint <checkpoint> --viewer none --max-steps 200 --print-every 20 --course walk-sweep
+# 交互式 sim2sim（纯 MuJoCo CPU + Viser）
+./scripts/run_sim2x.sh
 
 # 清理
 rm -rf logs/ replays/ MUJOCO_LOG.TXT
@@ -76,8 +75,6 @@ uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1024
 uv run se3-jump-to --height 0.4 --output assets/trajectories/jump_0.4m.npz
 uv run se3-jump-to --height 0.6 --output assets/trajectories/jump_0.6m.npz
 
-# 跳跃 sim2sim 验证（每隔 5s 触发一次原地跳跃）
-uv run se3-sim2sim --checkpoint <ckpt> --jump-interval-s 5.0 --jump-target-height 0.4
 ```
 
 ## 开发流程
@@ -142,12 +139,13 @@ Smoke 模式特点：
   feat(se3_train): 新增动作延迟配置
 
   - 训练端按 reset 采样动作延迟
-  - sim2sim 支持同一套延迟参数
-  - 添加命令行覆盖参数
+  - ONNX metadata 导出同一套延迟参数
+  - sim2x runtime 按 physics tick 执行延迟
   ```
 
 ### 可视化
-- **动态日志/回放**（sim2sim 轨迹、训练曲线、实时诊断）：必须使用 `rerun-sdk`，禁止 matplotlib
+- **交互式 sim2sim**：必须使用 `se3-sim2x` 的 Viser adapter
+- **训练指标**：使用 W&B 或 TensorBoard，不把 viewer 当作指标存储
 - **静态分析小工具**（参数曲线、几何示意图、包络线等一次性绘图脚本）：允许使用 matplotlib，放在 `scripts/` 目录，参考 `scripts/plot_tn_envelope.py`
 - 可视化是仓库长期建设的一部分，必须严肃对待
 
@@ -167,6 +165,20 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 1. 训练端和验证端使用同一套机器人常量
 2. 避免动作缩放、默认姿态、观测布局、控制频率或延迟参数漂移导致 sim2sim gap
 3. 后续添加 GRU、恢复任务或部署导出时，有明确的 runtime contract
+
+### ONNX 共用 runtime
+
+`submodules/se3-sim2x/src/se3_runtime` 只依赖 NumPy、ONNX 和 ONNX Runtime，不得反向依赖 `se3_train`。
+sim2sim 与 sim2real adapter 必须共同调用
+`PolicyRuntime`，不得分别实现 observation/action 数学。
+
+- `PolicyBundle.load()` 严格校验 `se3.meta.v1`、contract hash 和 ONNX I/O
+- `PolicyObservationBuilder` 按 metadata 顺序构造单帧或 term-major History-MLP 输入
+- `PolicyRuntime` 管理 raw previous action 和 GRU hidden state，episode reset 时统一清零
+- `PolicyActionPipeline` 只能按 physics tick 推进动作延迟，禁止按 policy tick 近似
+- MuJoCo、真机通讯和 Viser 均属于 adapter，不得进入 runtime core
+
+完整接口与调度约定见 `docs/onnx_runtime.md`。
 
 ### MJLab 环境结构
 ```
@@ -324,8 +336,8 @@ se3_wheel_leg/
 │   ├── se3_flow_match/    # Flow Matching（暂不可用，待迁移 34D）
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
-│   ├── se3_sim2sim/        # sim2sim 验证（计划 deprecated，迁移 se3-mono）
-│   ├── se3_deploy/         # NX 真机部署 runtime（计划 deprecated，使用前先确认）
 │   ├── se3_tools/          # 关节诊断和模型查看工具
 │   └── se3_jump_to/        # 跳跃参考轨迹生成
+└── submodules/
+    └── se3-sim2x/          # 共用 ONNX runtime 与 MuJoCo/Viser adapter
 ```

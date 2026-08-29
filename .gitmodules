@@ -1,0 +1,3 @@
+[submodule "submodules/se3-sim2x"]
+	path = submodules/se3-sim2x
+	url = https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x.git

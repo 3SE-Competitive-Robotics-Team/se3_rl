@@ -1,4 +1,0 @@
-interface:
-  display_name: "SE3 ONNX Export"
-  short_description: "Export GRU actor checkpoint to ONNX for deployment"
-  default_prompt: "Export the SE3 actor model to ONNX format"

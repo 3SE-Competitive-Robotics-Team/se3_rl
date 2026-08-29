@@ -234,6 +234,9 @@ class _FilteredGroupTermBase(ManagerTermBase):
         else:
             raise ValueError("过滤器需要 group_names、group_ids 或 filter 配置。")
         self.group_ids = _validate_group_ids(env, self.group_ids)
+        self._active_mask = env_group_mask(env, self.group_ids)
+        self._active_ids = torch.nonzero(self._active_mask, as_tuple=False).flatten()
+        self._inactive_ids = torch.nonzero(~self._active_mask, as_tuple=False).flatten()
 
         if hasattr(self.wrapped_func, "model_fields"):
             self.model_fields = self.wrapped_func.model_fields
@@ -242,14 +245,24 @@ class _FilteredGroupTermBase(ManagerTermBase):
         cfg.params = {}
 
     def _mask(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        return env_group_mask(env, self.group_ids)
+        del env
+        return self._active_mask
+
+    def _filter_env_ids(
+        self,
+        env_ids: torch.Tensor | Sequence[int] | slice | None,
+    ) -> torch.Tensor:
+        """用启动时缓存的组 mask 过滤环境编号。"""
+        if env_ids is None:
+            return self._active_ids
+        requested = _resolve_env_ids(self._env, env_ids)
+        return requested[self._active_mask[requested]]
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         reset_func = getattr(self.wrapped_func, "reset", None)
         if not callable(reset_func):
             return
-        requested = _resolve_env_ids(self._env, env_ids)
-        active_ids = requested[self._mask(self._env)[requested]]
+        active_ids = self._filter_env_ids(env_ids)
         if active_ids.numel() > 0:
             reset_func(env_ids=active_ids)
 
@@ -262,8 +275,7 @@ class FilteredEventWrapper(_FilteredGroupTermBase):
         env: ManagerBasedRlEnv,
         env_ids: torch.Tensor | slice | None,
     ) -> None:
-        requested = _resolve_env_ids(env, env_ids)
-        active_ids = requested[self._mask(env)[requested]]
+        active_ids = self._filter_env_ids(env_ids)
         if active_ids.numel() > 0:
             self.wrapped_func(env, active_ids, **self.wrapped_params)
 
@@ -293,18 +305,27 @@ class FilteredTerminationWrapper(_FilteredGroupTermBase):
     """只在指定环境组保留 wrapped termination。"""
 
     def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
-        active = self._mask(env)
-        terminated = self.wrapped_func(env, **self.wrapped_params)
+        active = self._active_mask
+        supports_active_mask = bool(getattr(self.wrapped_func, "supports_active_mask", False))
+        if supports_active_mask:
+            terminated = self.wrapped_func(
+                env,
+                active_mask=active,
+                **self.wrapped_params,
+            )
+        else:
+            terminated = self.wrapped_func(env, **self.wrapped_params)
         if not isinstance(terminated, torch.Tensor) or terminated.shape != (env.num_envs,):
             shape = getattr(terminated, "shape", None)
             raise ValueError(f"wrapped termination 必须返回 ({env.num_envs},)，实际为 {shape}。")
         terminated = terminated.to(device=env.device, dtype=torch.bool)
 
-        # stateful termination 会在全环境上更新计数，需清掉非本组状态，避免切组后继承。
-        reset_func = getattr(self.wrapped_func, "reset", None)
-        inactive_ids = torch.nonzero(~active, as_tuple=False).flatten()
-        if callable(reset_func) and inactive_ids.numel() > 0:
-            reset_func(env_ids=inactive_ids)
+        # 旧 stateful term 不理解 active_mask 时仍需清理非本组状态；支持组内更新的 term
+        # 会自行避免写入非本组，不再每步 nonzero 和重置半批环境。
+        if not supports_active_mask:
+            reset_func = getattr(self.wrapped_func, "reset", None)
+            if callable(reset_func) and self._inactive_ids.numel() > 0:
+                reset_func(env_ids=self._inactive_ids)
         return terminated & active
 
 

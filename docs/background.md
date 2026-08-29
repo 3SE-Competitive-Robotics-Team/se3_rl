@@ -18,7 +18,7 @@
 |------|------|
 | 减速比 | 14:1 |
 | 额定电压 | 24 V |
-| T-N 等效截距（输出轴） | 82.0 N·m（仅用于高速掉矩包络） |
+| 峰值转矩（输出轴） | 4.5 N·m × 14 / 19 ≈ **3.32 N·m** |
 | 空载转速（输出轴） | 654 rpm ≈ **68.5 rad/s** |
 | 额定连续转矩（输出轴） | 2.21 N·m |
 | 最大持续电流 | 20 A |
@@ -52,9 +52,10 @@
 ω_no_load = 482 rpm × 19 / 14 ≈ 654 rpm ≈ 68.5 rad/s
 ω_cont    = 469 rpm × 19 / 14 ≈ 636 rpm ≈ 66.7 rad/s
 τ_cont    = 3.0 N·m × 14 / 19 ≈ 2.21 N·m
+τ_peak    = 4.5 N·m × 14 / 19 ≈ 3.32 N·m
 ```
 
-为了复用 MJLab 的线性 T-N 包络，代码中的 `stall_torque` 使用经过官方 3 N·m @ 469 rpm 点的外推截距；真实连续输出力矩仍由 `rated_torque=2.21 N·m` 限幅。RL 训练和 sim2sim 的轮子 action scale 当前共享为 `45.0 rad/s`，保守低于 `M3508_C620_14.no_load_speed`，避免把满幅动作直接顶到空载速度边界。Recovery-Discovery GRU/MLP 当前轮子速度阻尼 `wheel_kd=0.08`，sim2sim 也使用同一共享默认。
+训练与 sim2sim 使用 MJLab 原生线性 DC 电机包络：`saturation_effort=3.32 N·m`、`effort_limit=2.21 N·m`、`velocity_limit=68.5 rad/s`。RL 训练和 sim2sim 的轮子 action scale 当前共享为 `45.0 rad/s`，保守低于 `M3508_C620_14.no_load_speed`，避免把满幅动作直接顶到空载速度边界。Recovery-Discovery GRU/MLP 当前轮子速度阻尼 `wheel_kd=0.08`，sim2sim 也使用同一共享默认。
 
 ## 动作空间和关节契约
 

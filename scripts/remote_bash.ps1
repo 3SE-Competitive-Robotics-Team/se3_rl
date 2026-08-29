@@ -168,12 +168,14 @@ if ($DryRun) {
     exit 0
 }
 
+$encodedBootstrap = [System.Convert]::ToBase64String(
+    [System.Text.Encoding]::UTF8.GetBytes($bootstrapScript)
+)
+
 if ([string]::IsNullOrWhiteSpace($InnerHost)) {
-    $bootstrapScript | & ssh @SshArgs $HostAlias "bash" "-s"
+    # PowerShell 向原生命令管道写入字符串时会附加 CRLF，解码前先移除行尾字符。
+    $encodedBootstrap | & ssh @SshArgs $HostAlias "tr -d '\r\n' | base64 -d | bash"
 } else {
-    $encodedBootstrap = [System.Convert]::ToBase64String(
-        [System.Text.Encoding]::UTF8.GetBytes($bootstrapScript)
-    )
     $innerCommand = "echo $encodedBootstrap | base64 -d | bash"
     $innerTarget = if ([string]::IsNullOrWhiteSpace($InnerUser)) {
         $InnerHost

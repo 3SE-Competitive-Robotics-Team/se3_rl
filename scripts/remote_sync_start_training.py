@@ -402,24 +402,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def watch_remote_command(args: argparse.Namespace, run_dir: str | None = None) -> str:
-    """生成通过 GitHub Release 值守的本机 watcher 指令。"""
+    """生成把 ONNX 同步到固定目录后启动 sim2x 的提示。"""
     actual_run_dir = run_dir or f"<run-dir-for-{args.run_name}>"
-    release_tag = "run-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", actual_run_dir)
-    run_dir_arg = f"  --run-dir {run_dir} `\n" if run_dir else ""
-    command_height_arg = (
-        f"  --command-height {args.watch_command_height:g} `\n"
-        if args.watch_command_height is not None
-        else ""
-    )
     return (
-        "uv run --no-sync python scripts/local_checkpoint_viser_watcher.py `\n"
-        "  --source github-release `\n"
-        f"  --github-release-tag {release_tag} `\n"
-        f"{run_dir_arg}"
-        f"  --terrain-level {args.watch_terrain_level} `\n"
-        f"{command_height_arg}"
-        f"  --interval-iters {args.watch_interval_iters} `\n"
-        "  --poll-seconds 60"
+        f"将远端 logs/rsl_rl/{args.task}/"
+        f"{actual_run_dir}/onnx 同步到本地相同目录层级，然后运行：\n"
+        "./scripts/run_sim2x.sh"
     )
 
 
@@ -483,7 +471,7 @@ fi
         ""
         if args.from_scratch
         else (
-            "test -f logs/rsl_rl/se3_wheel_leg/"
+            f"test -f {shlex.quote(f'logs/rsl_rl/{args.task}')}/"
             f"{shlex.quote(args.load_run)}/{shlex.quote(checkpoint_file)}"
         )
     )
@@ -617,7 +605,8 @@ export CUDA_TOOLKIT_LIB_DIR={shlex.quote(args.cuda_toolkit_lib_dir)}
 export LD_LIBRARY_PATH="$CUDA_COMPAT_DIR:$CUDA_TOOLKIT_LIB_DIR"
 export PYTHONPATH="$PWD/src${{PYTHONPATH:+:$PYTHONPATH}}"
 export MUJOCO_GL=egl
-export WANDB_MODE=offline
+export WANDB_MODE=online
+export WANDB_USERNAME=luzhongjin365-se3
 export SE3_LOGGER=wandb
 export SE3_FULL_RESUME={full_resume_value}
 {stair_offset_line}
@@ -632,8 +621,8 @@ sleep 3
 kill -0 "$pid"
 run_dir=""
 for _ in $(seq 1 30); do
-  if [ -d logs/rsl_rl/se3_wheel_leg ]; then
-    run_dir_lines=$(find logs/rsl_rl/se3_wheel_leg -mindepth 1 -maxdepth 1 -type d \
+  if [ -d {shlex.quote(f"logs/rsl_rl/{args.task}")} ]; then
+    run_dir_lines=$(find {shlex.quote(f"logs/rsl_rl/{args.task}")} -mindepth 1 -maxdepth 1 -type d \
       -name '*_{args.run_name}' -printf '%T@ %f\n' | sort -nr)
     run_dir=$(printf '%s\n' "$run_dir_lines" | sed -n '1s/^[^ ]* //p')
   fi
@@ -663,7 +652,7 @@ echo "TRAIN_RUN_DIR=$run_dir"
         f"bash -lc {shlex.quote(f'tail -f {log_path}')}"
     )
     print(subprocess.list2cmdline(ssh_args(args, log_command)))
-    print("\n本机 GitHub Release watcher 指令:")
+    print("\n本机 sim2x 值守:")
     print(watch_remote_command(args, run_dir=run_dir))
 
 

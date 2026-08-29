@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 
-from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
+
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
 
 
 def _model_cfg(
@@ -36,7 +38,7 @@ def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
     """生成网络类型以外完全一致的倒地自启 PPO 配置。"""
     smoke_enabled = smoke or os.environ.get("SE3_SMOKE", "0") == "1"
     max_iterations = 5 if smoke_enabled else 5000
-    logger = "tensorboard" if smoke_enabled else os.environ.get("SE3_LOGGER", "tensorboard")
+    logger = "tensorboard" if smoke_enabled else os.environ.get("SE3_LOGGER", "wandb")
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
     init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "0.5"))
     entropy_coef = float(os.environ.get("SE3_RECOVERY_ENTROPY_COEF", "0.00516"))

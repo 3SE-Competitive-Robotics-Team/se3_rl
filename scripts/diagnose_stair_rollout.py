@@ -492,8 +492,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     stable_sum = 0.0
     force_sum = 0.0
     force_max = 0.0
-    raw_sat_sum = 0.0
-    unclipped_sat_sum = 0.0
     active_rod_clamp_sum = 0.0
     delta_abs_sum = 0.0
     delta_abs_peak = 0.0
@@ -588,10 +586,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             force_max = max(force_max, _max(force))
 
         raw_action = getattr(action_term, "raw_action", base_env.action_manager.action)
-        unclipped_action = getattr(action_term, "unclipped_action", raw_action)
         delta = getattr(action_term, "ctbc_action_delta", torch.zeros_like(raw_action))
-        raw_sat_sum += _mean((torch.abs(raw_action) >= 0.999).any(dim=-1).float())
-        unclipped_sat_sum += _mean((torch.abs(unclipped_action) >= 0.999).any(dim=-1).float())
         delta_abs = torch.abs(delta[:, :4]).amax(dim=-1)
         delta_abs_sum += _mean(delta_abs)
         delta_abs_peak = max(delta_abs_peak, _max(delta_abs))
@@ -887,8 +882,6 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         "ctbc_force_max_n": force_max,
         "ctbc_action_delta_abs_max_mean": delta_abs_sum / denom,
         "ctbc_action_delta_abs_peak": delta_abs_peak,
-        "raw_action_saturation_rate": raw_sat_sum / denom,
-        "unclipped_action_saturation_rate": unclipped_sat_sum / denom,
         "active_rod_clamp_rate": active_rod_clamp_sum / denom,
         "base_vx_mean_mps": vx_sum / denom,
         "base_vx_abs_max_mps": vx_abs_max,

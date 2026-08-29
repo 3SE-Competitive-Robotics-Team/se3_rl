@@ -1,5 +1,7 @@
 # 膝关节弹簧力矩建模方案
 
+> 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
+
 > 状态：Phase 1-3 已实现（MJCF 显式四连杆 + spatial tendon 弹簧）。Phase 4 观测扩展待实现。
 
 ## 动机
@@ -297,9 +299,9 @@ class SpringConfig:
 - reset 时重新采样 k（域随机化）
 - 弹簧力矩作为 critic 特权观测输入
 
-### Phase 3：sim2sim 集成
+### Phase 3：sim2x 集成
 
-在 `se3_sim2sim` 中实现 `SpringForceCalculator`：
+在 `se3-sim2x` 的平台 adapter 中实现 `SpringForceCalculator`：
 
 1. 纯 NumPy 单环境计算（sim2sim 为单机器人）
 2. 从 `se3_shared.SpringConfig` 读取参数

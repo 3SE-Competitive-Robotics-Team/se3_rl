@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,8 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
+    deployment_ranges: dict[str, tuple[float, float]] | None = None
+    """部署 command 包络；课程任务应显式填写最终最高难度范围。"""
     height_resample_on_reset_only: bool = False
     """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
     constrain_diff_drive_commands: bool = False
@@ -73,10 +76,100 @@ class VelocityHeightCommandTerm(CommandTerm):
         self._pre_resampled_for_reset = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.bool
         )
+        self._lin_vel_x_range_override: torch.Tensor | None = None
+        self._ang_vel_yaw_range_override: torch.Tensor | None = None
+        self._velocity_range_override_mask: torch.Tensor | None = None
 
     @property
     def command(self) -> torch.Tensor:
         return self._command
+
+    def set_velocity_ranges(
+        self,
+        env_ids: torch.Tensor,
+        *,
+        lin_vel_x_range: tuple[float, float],
+        ang_vel_yaw_range: tuple[float, float],
+    ) -> None:
+        """为指定环境设置运行时速度范围，不修改其他环境或静态配置。"""
+        ids = env_ids.to(device=self.device, dtype=torch.long).reshape(-1)
+        lin_low, lin_high = self._validate_velocity_range("lin_vel_x_range", lin_vel_x_range)
+        yaw_low, yaw_high = self._validate_velocity_range("ang_vel_yaw_range", ang_vel_yaw_range)
+
+        if self._lin_vel_x_range_override is None:
+            self._lin_vel_x_range_override = torch.empty(
+                (self.num_envs, 2),
+                device=self.device,
+                dtype=self._command.dtype,
+            )
+        if self._ang_vel_yaw_range_override is None:
+            self._ang_vel_yaw_range_override = torch.empty(
+                (self.num_envs, 2),
+                device=self.device,
+                dtype=self._command.dtype,
+            )
+        if self._velocity_range_override_mask is None:
+            self._velocity_range_override_mask = torch.zeros(
+                self.num_envs,
+                device=self.device,
+                dtype=torch.bool,
+            )
+
+        self._lin_vel_x_range_override[ids, 0] = lin_low
+        self._lin_vel_x_range_override[ids, 1] = lin_high
+        self._ang_vel_yaw_range_override[ids, 0] = yaw_low
+        self._ang_vel_yaw_range_override[ids, 1] = yaw_high
+        self._velocity_range_override_mask[ids] = True
+
+    @staticmethod
+    def _validate_velocity_range(
+        name: str,
+        value: tuple[float, float],
+    ) -> tuple[float, float]:
+        """校验运行时速度范围并返回浮点上下界。"""
+        low, high = float(value[0]), float(value[1])
+        if not math.isfinite(low) or not math.isfinite(high) or low > high:
+            raise ValueError(f"{name} 必须是有限且 low <= high 的范围，实际为 {value}。")
+        return low, high
+
+    def _velocity_ranges(
+        self,
+        env_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """返回逐环境的 vx/yaw 采样上下界。"""
+        count = len(env_ids)
+        lin_low = torch.full((count,), float(self.cfg.lin_vel_x_range[0]), device=self.device)
+        lin_high = torch.full((count,), float(self.cfg.lin_vel_x_range[1]), device=self.device)
+        yaw_low = torch.full((count,), float(self.cfg.ang_vel_yaw_range[0]), device=self.device)
+        yaw_high = torch.full((count,), float(self.cfg.ang_vel_yaw_range[1]), device=self.device)
+
+        if (
+            self._velocity_range_override_mask is not None
+            and self._lin_vel_x_range_override is not None
+            and self._ang_vel_yaw_range_override is not None
+        ):
+            overridden = self._velocity_range_override_mask[env_ids]
+            lin_low = torch.where(
+                overridden,
+                self._lin_vel_x_range_override[env_ids, 0],
+                lin_low,
+            )
+            lin_high = torch.where(
+                overridden,
+                self._lin_vel_x_range_override[env_ids, 1],
+                lin_high,
+            )
+            yaw_low = torch.where(
+                overridden,
+                self._ang_vel_yaw_range_override[env_ids, 0],
+                yaw_low,
+            )
+            yaw_high = torch.where(
+                overridden,
+                self._ang_vel_yaw_range_override[env_ids, 1],
+                yaw_high,
+            )
+        return lin_low, lin_high, yaw_low, yaw_high
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         """重置指令项，并保留 reset 事件阶段已预采样的指令。"""
@@ -201,17 +294,19 @@ class VelocityHeightCommandTerm(CommandTerm):
 
         # 运动环境:随机速度 + 随机姿态 + 随机高度。
         if len(moving_ids) > 0:
+            lin_low, lin_high, yaw_low, yaw_high = self._velocity_ranges(moving_ids)
             lin_vel = (
-                torch.rand(len(moving_ids), device=self.device)
-                * (self.cfg.lin_vel_x_range[1] - self.cfg.lin_vel_x_range[0])
-                + self.cfg.lin_vel_x_range[0]
+                torch.rand(len(moving_ids), device=self.device) * (lin_high - lin_low) + lin_low
             )
             yaw_vel = (
-                torch.rand(len(moving_ids), device=self.device)
-                * (self.cfg.ang_vel_yaw_range[1] - self.cfg.ang_vel_yaw_range[0])
-                + self.cfg.ang_vel_yaw_range[0]
+                torch.rand(len(moving_ids), device=self.device) * (yaw_high - yaw_low) + yaw_low
             )
-            lin_vel, yaw_vel = self._constrain_diff_drive_command(lin_vel, yaw_vel)
+            lin_vel, yaw_vel = self._constrain_diff_drive_command(
+                lin_vel,
+                yaw_vel,
+                yaw_low=yaw_low,
+                yaw_high=yaw_high,
+            )
             pitch = (
                 torch.rand(len(moving_ids), device=self.device)
                 * (self.cfg.pitch_range[1] - self.cfg.pitch_range[0])
@@ -329,7 +424,12 @@ class VelocityHeightCommandTerm(CommandTerm):
         return torch.maximum(base_min, required)
 
     def _constrain_diff_drive_command(
-        self, lin_vel: torch.Tensor, yaw_vel: torch.Tensor
+        self,
+        lin_vel: torch.Tensor,
+        yaw_vel: torch.Tensor,
+        *,
+        yaw_low: torch.Tensor | None = None,
+        yaw_high: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """按双轮差速轮速预算约束 vx/yaw，避免同时吃满直行和转向。"""
         if not self.cfg.constrain_diff_drive_commands:
@@ -344,17 +444,20 @@ class VelocityHeightCommandTerm(CommandTerm):
         )
 
         lin_vel = torch.clamp(lin_vel, min=-wheel_speed_budget, max=wheel_speed_budget)
-        yaw_low_cfg, yaw_high_cfg = self.cfg.ang_vel_yaw_range
+        if yaw_low is None:
+            yaw_low = torch.full_like(lin_vel, float(self.cfg.ang_vel_yaw_range[0]))
+        if yaw_high is None:
+            yaw_high = torch.full_like(lin_vel, float(self.cfg.ang_vel_yaw_range[1]))
         lower_from_left = (-wheel_speed_budget - lin_vel) / half_track
         upper_from_left = (wheel_speed_budget - lin_vel) / half_track
         lower_from_right = (lin_vel - wheel_speed_budget) / half_track
         upper_from_right = (lin_vel + wheel_speed_budget) / half_track
         yaw_low = torch.maximum(
-            torch.full_like(lin_vel, float(yaw_low_cfg)),
+            yaw_low,
             torch.maximum(lower_from_left, lower_from_right),
         )
         yaw_high = torch.minimum(
-            torch.full_like(lin_vel, float(yaw_high_cfg)),
+            yaw_high,
             torch.minimum(upper_from_left, upper_from_right),
         )
         yaw_span = torch.clamp(yaw_high - yaw_low, min=0.0)

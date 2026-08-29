@@ -1,5 +1,7 @@
 # Recovery V2 两阶段训练方案
 
+> 本文是设计记录，不是当前运行手册。命令和 runtime 路径以 [`../README.md`](../README.md) 为准。
+
 > 状态：历史方案，已被单一 Recovery-Discovery 任务取代。本文仅保留两阶段设计的历史背景和实验记录；新训练使用 `SE3-WheelLegged-Recovery-Discovery-GRU` 或 `SE3-WheelLegged-Recovery-Discovery-MLP`。
 
 ## 背景
@@ -20,7 +22,7 @@ Recovery V2 改为两阶段训练：
 3. 第二阶段不再依赖“随机欧拉角 + 高度修正”假装真实倒地，而是使用离线物理 settle 后的状态缓存。
 4. `pose_type`、`cache_split`、`reset_source` 只能用于 reset、日志和评估，不能进入 actor observation。
 5. 旧任务 `SE3-WheelLegged-Recovery-GRU` 保留为 baseline，不直接覆盖。
-6. 台阶远程训练按当前 machine profile 做 native Viser 值守；非台阶本地调试可用 `se3-play --viewer viser` 确认姿态、接触和奖励面板。
+6. 远程训练按当前 machine profile 同步 ONNX，统一用 `./scripts/run_sim2x.sh` 做 Viser 值守。
 
 ## 任务拆分
 
@@ -55,7 +57,7 @@ last_actions        6
 jump_commands       3
 ```
 
-当前实现中 `leg_joint_pos` 展开为 6 维 `[sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]`，因此 actor 总维度为 34。部署端 `se3-nx-recovery` 和 `se3-sim2sim` 不应因为本方案改变输入输出维度。
+当前实现中 `leg_joint_pos` 展开为 6 维 `[sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]`，因此 actor 总维度为 34。ONNX metadata 和 `se3-sim2x` runtime 不应因为本方案改变输入输出维度。
 
 ## 阶段一：Discovery
 
@@ -177,7 +179,6 @@ remote: /root/project/se3_wheel_leg/logs/rsl_rl/se3_wheel_leg/2026-06-12_23-30-0
 | `Recovery/diag_upright_30deg_rate` | `0.930-0.941` |
 | `Recovery/diag_height_error_abs_m` | `0.0048-0.0053 m` |
 | `Recovery/diag_height_ok_2cm_rate` | `0.956-0.965` |
-| `Recovery/diag_raw_action_saturation_rate` | `0.039-0.045` |
 | `Episode_Termination/catastrophic_state` | `0.000` |
 
 `model_1500.pt` 不是最终部署模型，只作为 Deploy 阶段 warm-start 的 Discovery 候选。后续进入 Deploy 前，需要先用固定标准姿态评估和 Viser 复核动作质量；如需更激进的高峰候选，可保留 `model_1400.pt` 作为对照。
@@ -359,7 +360,6 @@ Recovery/success_rate_by_pose_type/right_side
 Recovery/time_to_upright_s
 Recovery/upright_hold_rate
 Recovery/final_height_error_abs_m
-Recovery/action_saturation_rate
 Recovery/leg_contact_rate
 ```
 
@@ -460,7 +460,8 @@ uv run se3-train SE3-WheelLegged-Recovery-Deploy-GRU \
 
 ## 与旧方案关系
 
-`docs/plan/gru_recovery_training.md` 描述的是当前单任务全随机 recovery baseline。Recovery V2 不删除该 baseline，而是新增一条更接近 sim2real 的两阶段路线。
+Recovery V2 保留单任务全随机 recovery baseline 作为实验对照，但当前部署契约统一通过
+ONNX metadata 和 `se3-sim2x` 验证。
 
 短期对比方式：
 

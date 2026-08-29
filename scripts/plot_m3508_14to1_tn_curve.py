@@ -31,7 +31,7 @@ def main() -> None:
     ax.text(
         0.02,
         0.03,
-        "Digitized from the C620 current-loop load curve and converted from 19:1 to 14:1.",
+        "MJLab native linear DC-motor envelope; 19:1 ratings converted to 14:1.",
         transform=ax.transAxes,
         fontsize=9,
         color="0.35",

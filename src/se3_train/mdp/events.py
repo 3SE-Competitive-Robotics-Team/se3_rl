@@ -77,6 +77,16 @@ _GEOM_BOX = int(mujoco.mjtGeom.mjGEOM_BOX)
 _GEOM_MESH = int(mujoco.mjtGeom.mjGEOM_MESH)
 
 
+def _should_log_reset_diagnostics(
+    env: ManagerBasedRlEnv,
+    interval_steps: int = 64,
+) -> bool:
+    """按策略步限频 reset 诊断，避免小批 reset 反复同步 GPU。"""
+    step = int(getattr(env, "common_step_counter", 0))
+    interval = max(1, int(getattr(env, "_se3_reset_log_interval_steps", interval_steps)))
+    return step % interval == 0
+
+
 def _stage_value(stage: dict, key: str, default):
     """读取 recovery stage 字段，缺省时使用默认值。"""
     return stage.get(key, default)
@@ -639,6 +649,7 @@ def reset_root_state_recovery_standard_poses(
     use_iterations: bool = False,
     steps_per_policy_iter: int = 64,
     offset_iter: int = 0,
+    pose_weights_by_env: torch.Tensor | None = None,
 ) -> None:
     """按标准站立、侧躺、俯卧和仰卧姿态重置 root。"""
     if env_ids is None:
@@ -680,13 +691,27 @@ def reset_root_state_recovery_standard_poses(
     pos[:, 0] += _sample_range(pos_xy_range, (n,))
     pos[:, 1] += _sample_range(pos_xy_range, (n,))
 
-    weights = torch.tensor(tuple(float(v) for v in pose_weights), device=env.device)
-    if torch.any(weights < 0.0) or float(weights.sum().item()) <= 0.0:
-        raise ValueError(f"recovery 标准姿态权重非法: {pose_weights}")
-    pose_bins = torch.bucketize(
-        torch.rand(n, device=env.device),
-        torch.cumsum(weights / weights.sum(), dim=0)[:-1],
-    )
+    if pose_weights_by_env is None:
+        weight_values = tuple(float(value) for value in pose_weights)
+        weight_sum = sum(weight_values)
+        if any(value < 0.0 for value in weight_values) or weight_sum <= 0.0:
+            raise ValueError(f"recovery 标准姿态权重非法: {pose_weights}")
+        weights = torch.tensor(weight_values, device=env.device)
+        pose_bins = torch.bucketize(
+            torch.rand(n, device=env.device),
+            torch.cumsum(weights / weights.sum(), dim=0)[:-1],
+        )
+        fallen_pose_prob = 1.0 - weight_values[0] / weight_sum
+    else:
+        weights = pose_weights_by_env.to(device=env.device, dtype=torch.float32)
+        if weights.shape != (n, 5):
+            raise ValueError(f"pose_weights_by_env 必须为 ({n}, 5)，实际为 {weights.shape}")
+        row_sums = weights.sum(dim=1, keepdim=True)
+        pose_bins = torch.sum(
+            torch.rand((n, 1), device=env.device) > torch.cumsum(weights / row_sums, dim=1)[:, :-1],
+            dim=1,
+        )
+        fallen_pose_prob = None
 
     roll = torch.zeros(n, device=env.device)
     pitch = torch.zeros(n, device=env.device)
@@ -720,7 +745,10 @@ def reset_root_state_recovery_standard_poses(
     )
     env._recovery_stage_step = int(stage.get("iteration", stage.get("step", 0)))
     env._recovery_stage_prob = 1.0
-    env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[0].item() / weights.sum().item())
+    if fallen_pose_prob is not None:
+        env._recovery_stage_fallen_pose_prob = fallen_pose_prob
+    elif _should_log_reset_diagnostics(env):
+        env._recovery_stage_fallen_pose_prob = 1.0 - float(weights[:, 0].mean().item())
     env._recovery_stage_cache_prob = 0.0
     init_tilt = torch.acos(torch.clamp(z_row[:, 2], -1.0, 1.0))
     init_roll, init_pitch, init_yaw = euler_xyz_from_quat(new_quat)
@@ -754,7 +782,7 @@ def reset_root_state_recovery_standard_poses(
     env._jump_pose_ref_pos_w[env_ids] = pos
     env._jump_pose_ref_yaw[env_ids] = init_yaw
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         for idx, name in enumerate(("standing", "left_side", "right_side", "prone", "supine")):
             log[f"Reset/standard_pose_{name}_ratio"] = (pose_bins == idx).float().mean().item()
@@ -1205,6 +1233,8 @@ def reset_root_state_recovery_discovery_mixed(
     recovery_state_cache_path: str | None = None,
     recovery_state_cache_split: str = "train",
     recovery_grace_steps: int = 400,
+    pose_weights_by_group: dict[str, tuple[float, float, float, float, float]] | None = None,
+    source_curriculum_stages_by_group: dict[str, list[dict]] | None = None,
 ) -> None:
     """按课程混合标准姿态、历史 cache 状态和近直立姿态。"""
     if env_ids is None:
@@ -1217,27 +1247,80 @@ def reset_root_state_recovery_discovery_mixed(
         steps_per_policy_iter=steps_per_policy_iter,
         offset_iter=offset_iter,
     )
-    cache_ratio = max(0.0, float(_stage_value(source_stage, "cache_ratio", 0.0)))
-    near_upright_ratio = max(
-        0.0,
-        float(_stage_value(source_stage, "near_upright_ratio", 0.0)),
-    )
-    total_ratio = cache_ratio + near_upright_ratio
-    if total_ratio > 1.0:
-        cache_ratio /= total_ratio
-        near_upright_ratio /= total_ratio
-
     n = int(env_ids.numel())
+    cache_ratios = torch.full(
+        (n,),
+        max(0.0, float(_stage_value(source_stage, "cache_ratio", 0.0))),
+        device=env.device,
+    )
+    near_upright_ratios = torch.full(
+        (n,),
+        max(0.0, float(_stage_value(source_stage, "near_upright_ratio", 0.0))),
+        device=env.device,
+    )
+    per_env_pose_weights: torch.Tensor | None = None
+    if pose_weights_by_group is not None or source_curriculum_stages_by_group is not None:
+        group_ids = getattr(env, "env_group_ids", None)
+        name_to_id = getattr(env, "env_group_name_to_id", None)
+        if not isinstance(group_ids, torch.Tensor) or not isinstance(name_to_id, dict):
+            raise RuntimeError("按组 reset 需要先运行 AssignEnvGroups startup event。")
+        local_group_ids = group_ids[env_ids]
+
+        if pose_weights_by_group is not None:
+            default_weights = tuple(float(value) for value in pose_weights)
+            per_env_pose_weights = torch.tensor(
+                default_weights,
+                device=env.device,
+                dtype=torch.float32,
+            ).repeat(n, 1)
+            for group_name, group_weights in pose_weights_by_group.items():
+                if group_name not in name_to_id:
+                    raise ValueError(f"未知 reset 环境组: {group_name}")
+                values = tuple(float(value) for value in group_weights)
+                if len(values) != 5 or any(value < 0.0 for value in values) or sum(values) <= 0.0:
+                    raise ValueError(f"环境组 {group_name} 的姿态权重非法: {group_weights}")
+                per_env_pose_weights[local_group_ids == int(name_to_id[group_name])] = torch.tensor(
+                    values,
+                    device=env.device,
+                    dtype=torch.float32,
+                )
+
+        if source_curriculum_stages_by_group is not None:
+            for group_name, group_stages in source_curriculum_stages_by_group.items():
+                if group_name not in name_to_id:
+                    raise ValueError(f"未知 reset 环境组: {group_name}")
+                group_stage, _ = _active_curriculum_stage(
+                    env,
+                    group_stages,
+                    use_iterations=use_iterations,
+                    steps_per_policy_iter=steps_per_policy_iter,
+                    offset_iter=offset_iter,
+                )
+                group_mask = local_group_ids == int(name_to_id[group_name])
+                cache_ratios[group_mask] = max(
+                    0.0,
+                    float(_stage_value(group_stage, "cache_ratio", 0.0)),
+                )
+                near_upright_ratios[group_mask] = max(
+                    0.0,
+                    float(_stage_value(group_stage, "near_upright_ratio", 0.0)),
+                )
+
+    total_ratios = cache_ratios + near_upright_ratios
+    normalization = torch.clamp(total_ratios, min=1.0)
+    cache_ratios = cache_ratios / normalization
+    near_upright_ratios = near_upright_ratios / normalization
     source_sample = torch.rand(n, device=env.device)
-    cache_mask = source_sample < cache_ratio
-    near_upright_mask = (source_sample >= cache_ratio) & (
-        source_sample < cache_ratio + near_upright_ratio
+    cache_mask = source_sample < cache_ratios
+    near_upright_mask = (source_sample >= cache_ratios) & (
+        source_sample < cache_ratios + near_upright_ratios
     )
     standard_mask = ~(cache_mask | near_upright_mask)
 
     def _reset_standard_subset(
         local_mask: torch.Tensor,
         local_pose_weights: tuple[float, ...],
+        local_pose_weights_by_env: torch.Tensor | None = None,
     ) -> None:
         if not local_mask.any():
             return
@@ -1258,9 +1341,13 @@ def reset_root_state_recovery_discovery_mixed(
             use_iterations=use_iterations,
             steps_per_policy_iter=steps_per_policy_iter,
             offset_iter=offset_iter,
+            pose_weights_by_env=local_pose_weights_by_env,
         )
 
-    _reset_standard_subset(standard_mask, pose_weights)
+    standard_pose_weights = (
+        None if per_env_pose_weights is None else per_env_pose_weights[standard_mask]
+    )
+    _reset_standard_subset(standard_mask, pose_weights, standard_pose_weights)
     _reset_standard_subset(near_upright_mask, (1.0, 0.0, 0.0, 0.0, 0.0))
 
     if cache_mask.any():
@@ -1275,7 +1362,7 @@ def reset_root_state_recovery_discovery_mixed(
             recovery_grace_steps=recovery_grace_steps,
         )
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         log.update(
             {
@@ -1283,8 +1370,8 @@ def reset_root_state_recovery_discovery_mixed(
                 "Reset/source_standard_ratio": standard_mask.float().mean().item(),
                 "Reset/source_cache_ratio": cache_mask.float().mean().item(),
                 "Reset/source_near_upright_ratio": near_upright_mask.float().mean().item(),
-                "Reset/source_cache_target_ratio": float(cache_ratio),
-                "Reset/source_near_upright_target_ratio": float(near_upright_ratio),
+                "Reset/source_cache_target_ratio": cache_ratios.mean().item(),
+                "Reset/source_near_upright_target_ratio": near_upright_ratios.mean().item(),
             }
         )
 
@@ -1546,7 +1633,7 @@ def _lift_root_to_wheel_clearance(
         asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
         env.sim.forward()
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         after_wheel_bottom = before_wheel_bottom + adjustment
         log["Reset/wheel_clearance_before_min_m"] = float(before_wheel_bottom.min().item())
@@ -1799,11 +1886,10 @@ def snap_root_to_collision_clearance(
         asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
         env.sim.forward()
 
-    after_min_z, _ = _collision_geom_min_z(env, asset, active_env_ids)
-    before_clearance = before_min_z - env.scene.env_origins[active_env_ids, 2]
-    after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
-
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
+        after_min_z, _ = _collision_geom_min_z(env, asset, active_env_ids)
+        before_clearance = before_min_z - env.scene.env_origins[active_env_ids, 2]
+        after_clearance = after_min_z - env.scene.env_origins[active_env_ids, 2]
         log = env.extras.setdefault("log", {})
         log["Reset/collision_snap_geom_count"] = float(geom_count)
         log["Reset/collision_snap_target_clearance_mean_m"] = float(target_clearance.mean().item())
@@ -1863,6 +1949,7 @@ def reset_joints(
     terrain_height_sensor_names: tuple[str, ...] | None = None,
     allow_wheel_clearance_lowering: bool = False,
     max_wheel_clearance_adjustment: float = 0.3,
+    randomization_group_names: tuple[str, ...] | None = None,
 ) -> None:
     """重置关节位置到默认站立姿态(default_joint_pos)附近小范围随机。"""
     if env_ids is None:
@@ -1907,6 +1994,24 @@ def reset_joints(
 
     asset: Entity = env.scene[asset_cfg.name]
 
+    randomization_eligible = torch.ones(len(env_ids), device=env.device, dtype=torch.bool)
+    if randomization_group_names is not None:
+        group_ids = getattr(env, "env_group_ids", None)
+        name_to_id = getattr(env, "env_group_name_to_id", None)
+        if not isinstance(group_ids, torch.Tensor) or not isinstance(name_to_id, dict):
+            raise RuntimeError("按组关节随机化需要先运行 AssignEnvGroups startup event。")
+        unknown = [name for name in randomization_group_names if name not in name_to_id]
+        if unknown:
+            raise ValueError(f"未知关节随机化环境组: {unknown}")
+        local_group_ids = group_ids[env_ids]
+        randomization_eligible = torch.zeros(
+            len(env_ids),
+            device=env.device,
+            dtype=torch.bool,
+        )
+        for group_name in randomization_group_names:
+            randomization_eligible |= local_group_ids == int(name_to_id[group_name])
+
     joint_pos = asset.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
 
@@ -1918,7 +2023,7 @@ def reset_joints(
     if wheel_vel_randomization_enabled:
         wheel_randomize_mask = (
             torch.rand(len(env_ids), device=env.device) < wheel_joint_randomization_prob
-        )
+        ) & randomization_eligible
         if wheel_randomize_mask.any():
             wheel_rows = wheel_randomize_mask.nonzero().flatten()
             joint_vel[wheel_rows[:, None], wheel_ids] = sample_uniform(
@@ -1959,7 +2064,9 @@ def reset_joints(
         or joint_offset_range > 0.0
     )
     if randomization_enabled:
-        randomize_mask = torch.rand(len(env_ids), device=env.device) < joint_randomization_prob
+        randomize_mask = (
+            torch.rand(len(env_ids), device=env.device) < joint_randomization_prob
+        ) & randomization_eligible
     else:
         randomize_mask = torch.zeros(len(env_ids), device=env.device, dtype=torch.bool)
     if full_joint_randomization:
@@ -2044,7 +2151,7 @@ def reset_joints(
             rows=random_rows,
         )
 
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
         log["Reset/joint_curriculum_progress"] = float(curriculum_progress)
         log["Reset/joint_randomization_prob"] = float(joint_randomization_prob)
@@ -2203,7 +2310,7 @@ def reset_joints(
             policy_leg_vel[recompute_passive_rows],
             rows=recompute_passive_rows,
         )
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         lower, upper = _SHARED_ROBOT.active_rod_angle_limits
         active_angles = torch.stack(
             (

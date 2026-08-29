@@ -48,6 +48,8 @@ def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, to
 class BadOrientationDelayed:
     """倾斜超过阈值连续 max_steps 步才终止(给恢复机会)。"""
 
+    supports_active_mask = True
+
     def __init__(self) -> None:
         self._fail_count: torch.Tensor | None = None
 
@@ -58,6 +60,7 @@ class BadOrientationDelayed:
         max_steps: int = 100,
         recovery_grace_steps: int = 0,
         recovery_terminate: bool = True,
+        active_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if (
             self._fail_count is None
@@ -72,6 +75,12 @@ class BadOrientationDelayed:
         raw_bad = tilt_angle > limit_angle
         bad = raw_bad
         recovery_mask = _recovery_reset_mask(env)
+        if active_mask is not None:
+            if active_mask.shape != (env.num_envs,):
+                raise ValueError(
+                    f"active_mask 必须是 ({env.num_envs},)，实际为 {active_mask.shape}。"
+                )
+            active_mask = active_mask.to(device=env.device, dtype=torch.bool)
         in_recovery_grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
         if not recovery_terminate:
             bad = bad & ~recovery_mask
@@ -81,37 +90,51 @@ class BadOrientationDelayed:
             )
             bad = bad & ~in_recovery_grace
 
-        self._fail_count[bad] += 1
-        self._fail_count[~bad] = 0
-        self._fail_count[env.episode_length_buf <= 1] = 0
+        if active_mask is None:
+            self._fail_count[bad] += 1
+            self._fail_count[~bad] = 0
+            self._fail_count[env.episode_length_buf <= 1] = 0
+        else:
+            counted_bad = active_mask & bad
+            self._fail_count[counted_bad] += 1
+            self._fail_count[active_mask & ~bad] = 0
+            self._fail_count[active_mask & (env.episode_length_buf <= 1)] = 0
 
         terminated = self._fail_count > max_steps
+        if active_mask is not None:
+            bad = bad & active_mask
+            terminated = terminated & active_mask
         if hasattr(env, "extras"):
-
-            def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
-                if not mask.any():
-                    return 0.0
-                return values[mask].float().mean().item()
-
-            env.extras.setdefault("log", {}).update(
-                {
-                    "Recovery/bad_orientation_raw_rate": _masked_rate(raw_bad, recovery_mask),
-                    "Recovery/bad_orientation_counted_rate": _masked_rate(bad, recovery_mask),
-                    "Recovery/bad_orientation_grace_rate": _masked_rate(
-                        in_recovery_grace, recovery_mask
-                    ),
-                    "Recovery/bad_orientation_termination_rate": _masked_rate(
-                        terminated, recovery_mask
-                    ),
-                }
-            )
+            if _should_log_step(env):
+                mask_float = recovery_mask.float()
+                denominator = mask_float.sum().clamp_min(1.0)
+                rates = (
+                    torch.stack(
+                        (
+                            (raw_bad.float() * mask_float).sum(),
+                            (bad.float() * mask_float).sum(),
+                            (in_recovery_grace.float() * mask_float).sum(),
+                            (terminated.float() * mask_float).sum(),
+                        )
+                    )
+                    / denominator
+                )
+                raw_rate, counted_rate, grace_rate, termination_rate = rates.tolist()
+                env.extras.setdefault("log", {}).update(
+                    {
+                        "Recovery/bad_orientation_raw_rate": raw_rate,
+                        "Recovery/bad_orientation_counted_rate": counted_rate,
+                        "Recovery/bad_orientation_grace_rate": grace_rate,
+                        "Recovery/bad_orientation_termination_rate": termination_rate,
+                    }
+                )
             # reset 日志会被清空，所以先缓存逐环境诊断，由 command reset 阶段搬运到 log。
             env.extras["_bad_orientation_diag"] = {
-                "raw_bad": raw_bad.detach().clone(),
-                "counted_bad": bad.detach().clone(),
-                "terminated": terminated.detach().clone(),
+                "raw_bad": raw_bad.detach(),
+                "counted_bad": bad.detach(),
+                "terminated": terminated.detach(),
                 "recovery_mask": recovery_mask.detach().clone(),
-                "recovery_grace": in_recovery_grace.detach().clone(),
+                "recovery_grace": in_recovery_grace.detach(),
             }
 
         return terminated
@@ -127,6 +150,8 @@ bad_orientation_delayed = BadOrientationDelayed()
 class RecoveryStagnation:
     """恢复样本长时间没有变好时终止，避免躺平刷低惩罚。"""
 
+    supports_active_mask = True
+
     def __init__(self) -> None:
         self._best_score: torch.Tensor | None = None
         self._stagnation_count: torch.Tensor | None = None
@@ -136,8 +161,15 @@ class RecoveryStagnation:
         env: ManagerBasedRlEnv,
         max_steps: int = 256,
         min_delta: float = 0.02,
+        active_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         active = _recovery_reset_mask(env)
+        if active_mask is not None:
+            if active_mask.shape != (env.num_envs,):
+                raise ValueError(
+                    f"active_mask 必须是 ({env.num_envs},)，实际为 {active_mask.shape}。"
+                )
+            active = active & active_mask.to(device=env.device, dtype=torch.bool)
         robot = env.scene["robot"]
         pg_z = robot.data.projected_gravity_b[:, 2]
         score = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
@@ -152,28 +184,37 @@ class RecoveryStagnation:
 
         assert self._stagnation_count is not None
         first_step = env.episode_length_buf <= 1
-        reset_mask = first_step | ~active
+        reset_mask = first_step & active
         self._best_score[reset_mask] = score[reset_mask]
         self._stagnation_count[reset_mask] = 0
 
         improved = active & (score > self._best_score + float(min_delta))
-        self._best_score = torch.maximum(self._best_score, score.detach())
+        self._best_score = torch.where(
+            active,
+            torch.maximum(self._best_score, score.detach()),
+            self._best_score,
+        )
         self._stagnation_count[active & ~improved] += 1
         self._stagnation_count[improved] = 0
 
         terminated = active & (self._stagnation_count >= int(max_steps))
-        if hasattr(env, "extras"):
+        if hasattr(env, "extras") and _should_log_step(env):
+            active_float = active.float()
+            denominator = active_float.sum().clamp_min(1.0)
+            stagnation_mean, termination_rate = (
+                torch.stack(
+                    (
+                        (self._stagnation_count.float() * active_float).sum(),
+                        (terminated.float() * active_float).sum(),
+                    )
+                )
+                .div(denominator)
+                .tolist()
+            )
             env.extras.setdefault("log", {}).update(
                 {
-                    "Recovery/stagnation_steps": self._stagnation_count[active]
-                    .float()
-                    .mean()
-                    .item()
-                    if active.any()
-                    else 0.0,
-                    "Recovery/stagnation_termination_rate": terminated[active].float().mean().item()
-                    if active.any()
-                    else 0.0,
+                    "Recovery/stagnation_steps": stagnation_mean,
+                    "Recovery/stagnation_termination_rate": termination_rate,
                 }
             )
         return terminated
@@ -250,6 +291,21 @@ def catastrophic_state(
             }
         )
     return terminated
+
+
+def base_contact(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """机身接触地面时立即终止。"""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+
+    force_mag = finite_contact_force_norm(data.force)
+    return force_mag.max(dim=1).values > float(force_threshold)
 
 
 def leg_contact(

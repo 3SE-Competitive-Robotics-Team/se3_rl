@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
+from mjlab.managers import ManagerTermBase
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
@@ -36,6 +37,7 @@ from se3_train.mdp.joint_indices import (
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+    from mjlab.managers.manager_base import ManagerTermBaseCfg
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 _SHARED_ROBOT = SharedRobotConfig()
@@ -564,6 +566,7 @@ def tracking_lin_vel(
     idle = (torch.abs(cmd[:, 0]) < 0.08) & (torch.abs(cmd[:, 1]) < 0.08) & locomotion
 
     _accumulate_command_curriculum_metric(env, "lin_score", reward, moving)
+    _accumulate_command_curriculum_metric(env, "lin_score_all", reward, locomotion)
     _accumulate_command_curriculum_metric(env, "upright_score", gate, locomotion)
 
     wheel_vel = robot.data.joint_vel[:, wheel_joint_ids(robot)]
@@ -636,6 +639,7 @@ def tracking_ang_vel(
     )
     moving = (torch.abs(cmd[:, 1]) >= 0.2) & ~jump_flag
     _accumulate_command_curriculum_metric(env, "yaw_score", reward, moving)
+    _accumulate_command_curriculum_metric(env, "yaw_score_all", reward, ~jump_flag)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
@@ -1057,11 +1061,15 @@ def lin_vel_z(env: ManagerBasedRlEnv) -> torch.Tensor:
     return robot.data.root_link_lin_vel_b[:, 2] ** 2 * gate
 
 
-def ang_vel_xy(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """横滚/俯仰角速度平方和,直立门控。"""
+def ang_vel_xy(
+    env: ManagerBasedRlEnv,
+    *,
+    use_upright_gate: bool = True,
+) -> torch.Tensor:
+    """横滚/俯仰角速度平方和，可选直立门控。"""
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _upright_factor(pg_z) if use_upright_gate else torch.ones_like(pg_z)
     ang_vel = robot.data.root_link_ang_vel_b
     return (ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2) * gate
 
@@ -1079,6 +1087,101 @@ def angular_momentum(env: ManagerBasedRlEnv) -> torch.Tensor:
     root_body_id = robot.data.indexing.root_body_id
     angmom = env.sim.data.subtree_angmom[:, root_body_id]
     return torch.sum(angmom**2, dim=-1) * gate
+
+
+class NormalizedTnEnvelopeViolation(ManagerTermBase):
+    """惩罚一个 policy step 内各电机限幅前请求扭矩的 TN 包络峰值越界。"""
+
+    def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv) -> None:
+        super().__init__(env)
+        self._safe_tn_ratio = float(cfg.params["safe_tn_ratio"])
+        if not 0.0 < self._safe_tn_ratio <= 1.0:
+            raise ValueError(f"safe_tn_ratio 必须位于 (0, 1]，实际为 {self._safe_tn_ratio}")
+
+        asset_cfg: SceneEntityCfg = cfg.params["asset_cfg"]
+        self._asset = env.scene[asset_cfg.name]
+        num_joints = int(self._asset.data.joint_pos.shape[1])
+        if isinstance(asset_cfg.joint_ids, slice):
+            selected_joint_ids = torch.arange(num_joints, device=env.device, dtype=torch.long)[
+                asset_cfg.joint_ids
+            ]
+        else:
+            selected_joint_ids = torch.as_tensor(
+                asset_cfg.joint_ids,
+                device=env.device,
+                dtype=torch.long,
+            )
+        if selected_joint_ids.numel() == 0:
+            raise ValueError("TN 包络奖励至少需要选择一个关节")
+
+        selected_mask = torch.zeros(num_joints, device=env.device, dtype=torch.bool)
+        selected_mask[selected_joint_ids] = True
+        covered_mask = torch.zeros_like(selected_mask)
+        self._accumulator_key = id(self)
+        self._actuator_entries: list[tuple[Any, torch.Tensor]] = []
+
+        required_methods = (
+            "register_tn_violation_accumulator",
+            "consume_tn_violation_accumulator",
+            "reset_tn_violation_accumulator",
+        )
+        for actuator in self._asset.actuators:
+            if not all(callable(getattr(actuator, name, None)) for name in required_methods):
+                continue
+            target_ids = actuator.target_ids
+            selected_targets = selected_mask[target_ids]
+            if not torch.any(selected_targets):
+                continue
+
+            force_limit = getattr(actuator, "force_limit", None)
+            if not isinstance(force_limit, torch.Tensor):
+                raise RuntimeError("TN 包络奖励要求 actuator 提供已初始化的 force_limit")
+            selected_limits = force_limit[:, selected_targets]
+            if not torch.all(torch.isfinite(selected_limits)) or torch.any(selected_limits <= 0.0):
+                raise RuntimeError("TN 包络奖励要求所选电机具有有限且为正的额定扭矩")
+
+            actuator.register_tn_violation_accumulator(
+                self._accumulator_key,
+                self._safe_tn_ratio,
+            )
+            self._actuator_entries.append((actuator, selected_targets))
+            covered_mask[target_ids[selected_targets]] = True
+
+        uncovered_ids = selected_joint_ids[~covered_mask[selected_joint_ids]]
+        if uncovered_ids.numel() > 0:
+            uncovered_names = [
+                self._asset.joint_names[int(joint_id)] for joint_id in uncovered_ids.tolist()
+            ]
+            raise RuntimeError(
+                "TN 包络奖励所选关节必须全部使用支持 substep 统计的 actuator，"
+                f"未覆盖关节为 {uncovered_names}"
+            )
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        for actuator, _ in self._actuator_entries:
+            actuator.reset_tn_violation_accumulator(self._accumulator_key, env_ids)
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        safe_tn_ratio: float,
+        asset_cfg: SceneEntityCfg,
+    ) -> torch.Tensor:
+        del env, safe_tn_ratio, asset_cfg
+        penalty = torch.zeros(self.num_envs, device=self.device)
+        for actuator, selected_targets in self._actuator_entries:
+            peak_violation = actuator.consume_tn_violation_accumulator(self._accumulator_key)[
+                :, selected_targets
+            ]
+            force_limit = actuator.force_limit[:, selected_targets]
+            normalized_violation = torch.nan_to_num(
+                peak_violation / force_limit,
+                nan=1.0e6,
+                posinf=1.0e6,
+                neginf=1.0e6,
+            )
+            penalty += torch.sum(torch.square(normalized_violation), dim=1)
+        return penalty
 
 
 def leg_torques(
@@ -1147,26 +1250,11 @@ def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> 
         max_abs_action = torch.max(action_abs, dim=1).values
         max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
         max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
-        saturation_threshold = 0.95
         env.extras["log"].update(
             {
                 "Locomotion/max_abs_action": max_abs_action.mean().item(),
                 "Locomotion/max_abs_leg_action": max_abs_leg_action.mean().item(),
                 "Locomotion/max_abs_wheel_action": max_abs_wheel_action.mean().item(),
-                "Locomotion/raw_action_saturation_rate": (max_abs_action > saturation_threshold)
-                .float()
-                .mean()
-                .item(),
-                "Locomotion/leg_action_saturation_rate": (max_abs_leg_action > saturation_threshold)
-                .float()
-                .mean()
-                .item(),
-                "Locomotion/wheel_action_saturation_rate": (
-                    max_abs_wheel_action > saturation_threshold
-                )
-                .float()
-                .mean()
-                .item(),
             }
         )
     return penalty
@@ -1453,6 +1541,53 @@ def recovery_upright_zero_velocity_penalty(
     return result
 
 
+def _accumulate_recovery_curriculum_ready_score(
+    env: ManagerBasedRlEnv,
+    *,
+    command_name: str,
+    base_height_sensor_name: str,
+    wheel_sensor_name: str,
+    force_threshold: float,
+    asset_cfg: SceneEntityCfg,
+) -> None:
+    """逐步累计恢复就绪度，供 recover 速度课程读取。"""
+    if not _command_curriculum_metrics_enabled(env):
+        return
+
+    robot = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    upright_15 = -pg_z > math.cos(math.radians(15.0))
+
+    height_sensor: TerrainHeightSensor = env.scene[base_height_sensor_name]
+    base_height = torch.nan_to_num(
+        height_sensor.data.heights[:, 0],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    height_ok_2cm = torch.abs(base_height - cmd[:, 4]) < 0.02
+
+    wheel_sensor: ContactSensor = env.scene[wheel_sensor_name]
+    if wheel_sensor.data.force is None:
+        both_wheels_contact = torch.zeros(
+            env.num_envs,
+            device=env.device,
+            dtype=torch.bool,
+        )
+    else:
+        wheel_force = finite_contact_force_norm(wheel_sensor.data.force)
+        both_wheels_contact = (wheel_force > float(force_threshold)).all(dim=1)
+
+    active = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+    _accumulate_command_curriculum_metric(
+        env,
+        "ready_score",
+        (upright_15 & height_ok_2cm & both_wheels_contact).float(),
+        active,
+    )
+
+
 def recovery_diagnostics(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -1463,13 +1598,20 @@ def recovery_diagnostics(
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     force_threshold: float = 1.0,
     contact_force_threshold: float = 35.0,
-    action_saturation_threshold: float = 0.95,
     active_rod_margin_warning: float = 0.05,
     log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
     core_log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
 ) -> torch.Tensor:
     """记录 recovery one-policy 诊断量，返回 0 以避免改变奖励语义。"""
     zero = torch.zeros(env.num_envs, device=env.device)
+    _accumulate_recovery_curriculum_ready_score(
+        env,
+        command_name=command_name,
+        base_height_sensor_name=base_height_sensor_name,
+        wheel_sensor_name=wheel_sensor_name,
+        force_threshold=force_threshold,
+        asset_cfg=asset_cfg,
+    )
     if not hasattr(env, "extras"):
         return zero
 
@@ -1565,19 +1707,6 @@ def recovery_diagnostics(
     max_abs_unclipped_action = torch.max(unclipped_action_abs, dim=1).values
     max_abs_unclipped_leg_action = torch.max(unclipped_leg_action_abs, dim=1).values
     max_abs_unclipped_wheel_action = torch.max(unclipped_wheel_action_abs, dim=1).values
-    action_saturated = max_abs_action > float(action_saturation_threshold)
-    leg_action_saturated = max_abs_leg_action > float(action_saturation_threshold)
-    wheel_action_saturated = max_abs_wheel_action > float(action_saturation_threshold)
-    actor_action_saturated = max_abs_actor_action > float(action_saturation_threshold)
-    actor_leg_action_saturated = max_abs_actor_leg_action > float(action_saturation_threshold)
-    actor_wheel_action_saturated = max_abs_actor_wheel_action > float(action_saturation_threshold)
-    unclipped_action_saturated = max_abs_unclipped_action > float(action_saturation_threshold)
-    unclipped_leg_action_saturated = max_abs_unclipped_leg_action > float(
-        action_saturation_threshold
-    )
-    unclipped_wheel_action_saturated = max_abs_unclipped_wheel_action > float(
-        action_saturation_threshold
-    )
 
     active_rod_angle = _active_rod_angles(robot)
     active_target_clamp_rate = 0.0
@@ -1633,30 +1762,6 @@ def recovery_diagnostics(
                 "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean().item(),
                 "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean().item(),
                 "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean().item(),
-                "Recovery/diag_applied_action_saturation_rate": action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_raw_action_saturation_rate": actor_action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_actor_action_saturation_rate": actor_action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_unclipped_raw_action_saturation_rate": unclipped_action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_unclipped_leg_action_saturation_rate": unclipped_leg_action_saturated.float()
-                .mean()
-                .item(),
-                "Recovery/diag_unclipped_wheel_action_saturation_rate": unclipped_wheel_action_saturated.float()
-                .mean()
-                .item(),
                 "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
                 .mean()
                 .item(),
@@ -1785,35 +1890,6 @@ def recovery_diagnostics(
             "Recovery/diag_actor_wheel_action_abs_mean": actor_wheel_action_abs.mean().item(),
             "Recovery/diag_unclipped_leg_action_abs_mean": unclipped_leg_action_abs.mean().item(),
             "Recovery/diag_unclipped_wheel_action_abs_mean": unclipped_wheel_action_abs.mean().item(),
-            "Recovery/diag_applied_action_saturation_rate": action_saturated.float().mean().item(),
-            "Recovery/diag_raw_action_saturation_rate": actor_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_actor_action_saturation_rate": actor_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_leg_action_saturation_rate": leg_action_saturated.float().mean().item(),
-            "Recovery/diag_wheel_action_saturation_rate": wheel_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_actor_leg_action_saturation_rate": actor_leg_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_actor_wheel_action_saturation_rate": actor_wheel_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_unclipped_raw_action_saturation_rate": unclipped_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_unclipped_leg_action_saturation_rate": unclipped_leg_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_unclipped_wheel_action_saturation_rate": unclipped_wheel_action_saturated.float()
-            .mean()
-            .item(),
-            "Recovery/diag_upright_action_saturation_rate": _masked_mean(
-                action_saturated.float(), upright_15
-            ),
             "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean().item(),
             "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(action_delta, dim=1)
             .mean()
@@ -1885,11 +1961,7 @@ def recovery_diagnostics(
     ):
         if action_idx >= action_abs.shape[1]:
             continue
-        dim_saturated = action_abs[:, action_idx] > float(action_saturation_threshold)
         log[f"Recovery/diag_action_abs_{action_name}"] = action_abs[:, action_idx].mean().item()
-        log[f"Recovery/diag_action_saturation_rate_{action_name}"] = (
-            dim_saturated.float().mean().item()
-        )
 
     for joint_idx, joint_name in enumerate(("lf", "lb", "rf", "rb")):
         if joint_idx >= joint_error.shape[1]:
@@ -1910,12 +1982,6 @@ def recovery_diagnostics(
             )
             log[f"Recovery/diag_height_error_abs_m_by_reset_bin/{bin_name}"] = _masked_mean(
                 height_abs_error, bin_mask
-            )
-            log[f"Recovery/diag_action_saturation_rate_by_reset_bin/{bin_name}"] = _masked_mean(
-                action_saturated.float(), bin_mask
-            )
-            log[f"Recovery/diag_actor_action_saturation_rate_by_reset_bin/{bin_name}"] = (
-                _masked_mean(actor_action_saturated.float(), bin_mask)
             )
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_bin/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
@@ -1939,24 +2005,6 @@ def recovery_diagnostics(
             )
             log[f"Recovery/diag_height_error_abs_m_by_reset_pose/{bin_name}"] = _masked_mean(
                 height_abs_error, bin_mask
-            )
-            log[f"Recovery/diag_action_saturation_rate_by_reset_pose/{bin_name}"] = _masked_mean(
-                action_saturated.float(), bin_mask
-            )
-            log[f"Recovery/diag_actor_action_saturation_rate_by_reset_pose/{bin_name}"] = (
-                _masked_mean(actor_action_saturated.float(), bin_mask)
-            )
-            log[f"Recovery/diag_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
-                _masked_mean(leg_action_saturated.float(), bin_mask)
-            )
-            log[f"Recovery/diag_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
-                _masked_mean(wheel_action_saturated.float(), bin_mask)
-            )
-            log[f"Recovery/diag_actor_leg_action_saturation_rate_by_reset_pose/{bin_name}"] = (
-                _masked_mean(actor_leg_action_saturated.float(), bin_mask)
-            )
-            log[f"Recovery/diag_actor_wheel_action_saturation_rate_by_reset_pose/{bin_name}"] = (
-                _masked_mean(actor_wheel_action_saturated.float(), bin_mask)
             )
             log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_pose/{bin_name}"] = _masked_min(
                 min_margin, bin_mask
@@ -1998,30 +2046,6 @@ def recovery_diagnostics(
         log[f"Recovery/diag_height_error_signed_by_cmd_height/{height_name}"] = _masked_mean(
             height_error, height_mask
         )
-        log[f"Recovery/diag_applied_action_saturation_rate_by_cmd_height/{height_name}"] = (
-            _masked_mean(action_saturated.float(), height_mask)
-        )
-        log[f"Recovery/diag_raw_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            actor_action_saturated.float(), height_mask
-        )
-        log[f"Recovery/diag_actor_action_saturation_rate_by_cmd_height/{height_name}"] = (
-            _masked_mean(actor_action_saturated.float(), height_mask)
-        )
-        log[f"Recovery/diag_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            action_saturated.float(), height_mask
-        )
-        log[f"Recovery/diag_leg_action_saturation_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            leg_action_saturated.float(), height_mask
-        )
-        log[f"Recovery/diag_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
-            _masked_mean(wheel_action_saturated.float(), height_mask)
-        )
-        log[f"Recovery/diag_actor_leg_action_saturation_rate_by_cmd_height/{height_name}"] = (
-            _masked_mean(actor_leg_action_saturated.float(), height_mask)
-        )
-        log[f"Recovery/diag_actor_wheel_action_saturation_rate_by_cmd_height/{height_name}"] = (
-            _masked_mean(actor_wheel_action_saturated.float(), height_mask)
-        )
         log[f"Recovery/diag_active_rod_margin_min_by_cmd_height/{height_name}"] = _masked_min(
             min_margin, height_mask
         )
@@ -2060,8 +2084,6 @@ def flat_leg_contact_penalty(
 
     force_mag = finite_contact_force_norm(data.force)
     has_contact = (force_mag > float(force_threshold)).any(dim=1)
-    _accumulate_command_curriculum_metric(env, "leg_contact", has_contact.float(), active)
-
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Locomotion/flat_leg_contact_rate"] = _masked_mean(
             has_contact.float(), active
@@ -2247,7 +2269,6 @@ def leg_contact_penalty(
 
     force_mag = finite_contact_force_norm(data.force)
     has_contact = (force_mag > float(force_threshold)).any(dim=1)
-
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"]["Recovery/diag_leg_contact_penalty_rate"] = (
             has_contact.float().mean().item()
@@ -2775,7 +2796,6 @@ def collision(
 
     force_mag = finite_contact_force_norm(data.force)
     contact_count = (force_mag > 0.1).float().sum(dim=1)
-
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         has_contact = contact_count > 0.0
         active = gate > 0.0

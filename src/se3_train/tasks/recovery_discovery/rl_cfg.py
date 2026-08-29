@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 
-from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
+
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
 
 
 def _model_cfg(
@@ -35,16 +37,19 @@ def _model_cfg(
 def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
     """生成网络类型以外完全一致的 Discovery PPO 配置。"""
     smoke_enabled = smoke or os.environ.get("SE3_SMOKE", "0") == "1"
-    logger = "tensorboard" if smoke_enabled else os.environ.get("SE3_LOGGER", "tensorboard")
+    logger = "tensorboard" if smoke_enabled else os.environ.get("SE3_LOGGER", "wandb")
 
     learning_rate = float(os.environ.get("SE3_RECOVERY_LEARNING_RATE", "3.0e-4"))
-    init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "0.5"))
+    # 默认 2.0 来自 grouped History-MLP 的 init_std 阶梯实验（0.5/1.0/1.5/2.0，两个 seed）：
+    # 2.0 在 upright/tilt/height/平滑度与倒扣自起上均为最优，且样本效率约为 0.5 的三倍。
+    init_std = float(os.environ.get("SE3_RECOVERY_INIT_STD", "2.0"))
     entropy_coef = float(os.environ.get("SE3_RECOVERY_ENTROPY_COEF", "0.00516"))
     max_iterations = (
         5 if smoke_enabled else int(os.environ.get("SE3_RECOVERY_DISCOVERY_MAX_ITERATIONS", "5000"))
     )
 
     return RslRlOnPolicyRunnerCfg(
+        obs_groups={"actor": ("actor",), "critic": ("critic",)},
         actor=_model_cfg(
             recurrent=recurrent,
             distribution_cfg={
@@ -69,8 +74,8 @@ def _rl_cfg(*, smoke: bool, recurrent: bool) -> RslRlOnPolicyRunnerCfg:
             max_grad_norm=1.0,
         ),
         experiment_name="se3_wheel_leg",
-        save_interval=100,
-        num_steps_per_env=64,
+        save_interval=200,
+        num_steps_per_env=24,
         max_iterations=max_iterations,
         logger=logger,
         resume=False,
@@ -84,4 +89,10 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 
 def mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成除网络类型外与 GRU 版本一致的 MLP PPO 配置。"""
+    return _rl_cfg(smoke=smoke, recurrent=False)
+
+
+def ungrouped_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """生成不读取 env group 的公平基线 MLP PPO 配置。"""
+
     return _rl_cfg(smoke=smoke, recurrent=False)

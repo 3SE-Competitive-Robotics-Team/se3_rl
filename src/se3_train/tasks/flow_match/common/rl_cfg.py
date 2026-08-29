@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 
-from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
+
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
 
 
 def _gru_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
@@ -14,7 +16,7 @@ def _gru_ppo_runner_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
         logger = "tensorboard"
     else:
         max_iterations = 5000
-        logger = os.environ.get("SE3_LOGGER", "tensorboard")
+        logger = os.environ.get("SE3_LOGGER", "wandb")
 
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(

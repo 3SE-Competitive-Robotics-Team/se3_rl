@@ -1,116 +1,136 @@
-"""支持实测非线性 T-N 包络的 MJLab PD actuator。"""
+"""为 MJLab 原生 DC 电机包络补充训练期越界统计。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import pairwise
 from typing import TYPE_CHECKING
 
-import mujoco
-import mujoco_warp as mjwarp
 import torch
-from mjlab.actuator.actuator import ActuatorCmd
-from mjlab.actuator.pd_actuator import IdealPdActuator, IdealPdActuatorCfg
+from mjlab.actuator import DcMotorActuator, DcMotorActuatorCfg
 
 if TYPE_CHECKING:
     from mjlab.entity import Entity
 
 
+class _TnViolationAccumulatorMixin:
+    """在 actuator 限幅前累计每个 physics substep 的 TN 包络峰值越界。"""
+
+    def _initialize_tn_violation_accumulators(self) -> None:
+        self._tn_violation_accumulators: dict[int, tuple[float, torch.Tensor]] = {}
+
+    def register_tn_violation_accumulator(self, key: int, safe_tn_ratio: float) -> None:
+        """注册一个按关节保存峰值越界的独立缓冲区。"""
+        ratio = float(safe_tn_ratio)
+        if not 0.0 < ratio <= 1.0:
+            raise ValueError(f"safe_tn_ratio 必须位于 (0, 1]，实际为 {ratio}")
+        if key in self._tn_violation_accumulators:
+            raise KeyError(f"TN 越界累积器 key={key} 已注册")
+
+        force_limit = getattr(self, "force_limit", None)
+        if not isinstance(force_limit, torch.Tensor):
+            raise RuntimeError("actuator 尚未初始化 force_limit，无法注册 TN 越界累积器")
+        self._tn_violation_accumulators[key] = (ratio, torch.zeros_like(force_limit))
+
+    def consume_tn_violation_accumulator(self, key: int) -> torch.Tensor:
+        """返回并清空一个 policy step 内累计的逐关节峰值越界。"""
+        try:
+            _, peak_violation = self._tn_violation_accumulators[key]
+        except KeyError as exc:
+            raise KeyError(f"TN 越界累积器 key={key} 未注册") from exc
+        result = peak_violation.clone()
+        peak_violation.zero_()
+        return result
+
+    def reset_tn_violation_accumulator(
+        self,
+        key: int,
+        env_ids: torch.Tensor | slice | None = None,
+    ) -> None:
+        """清空指定环境的一个 TN 越界累积器。"""
+        try:
+            _, peak_violation = self._tn_violation_accumulators[key]
+        except KeyError as exc:
+            raise KeyError(f"TN 越界累积器 key={key} 未注册") from exc
+        peak_violation[slice(None) if env_ids is None else env_ids] = 0.0
+
+    def _reset_all_tn_violation_accumulators(
+        self,
+        env_ids: torch.Tensor | slice | None = None,
+    ) -> None:
+        selected = slice(None) if env_ids is None else env_ids
+        for _, peak_violation in self._tn_violation_accumulators.values():
+            peak_violation[selected] = 0.0
+
+    def _accumulate_tn_violation(
+        self,
+        effort: torch.Tensor,
+        lower_effort: torch.Tensor,
+        upper_effort: torch.Tensor,
+    ) -> None:
+        """按实际有符号上下界累计限幅前请求扭矩的越界量。"""
+        for safe_tn_ratio, peak_violation in self._tn_violation_accumulators.values():
+            # 包络跨过零点时，上下界按比例向零收缩；超速导致包络位于单侧时，
+            # 收缩后的安全区仍严格落在物理可实现区间内。
+            safe_lower = torch.maximum(lower_effort * safe_tn_ratio, lower_effort)
+            safe_upper = torch.minimum(upper_effort * safe_tn_ratio, upper_effort)
+            violation = torch.relu(effort - safe_upper) + torch.relu(safe_lower - effort)
+            peak_violation.copy_(torch.maximum(peak_violation, violation))
+
+
 @dataclass(kw_only=True)
-class TorqueSpeedCurveActuatorCfg(IdealPdActuatorCfg):
-    """使用分段线性 ``|速度| -> 最大扭矩`` 包络的 actuator 配置。"""
-
-    torque_speed_curve: tuple[tuple[float, float], ...]
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if len(self.torque_speed_curve) < 2:
-            raise ValueError("torque_speed_curve 至少需要两个点")
-        speeds = [float(point[0]) for point in self.torque_speed_curve]
-        torques = [float(point[1]) for point in self.torque_speed_curve]
-        if any(speed < 0.0 for speed in speeds):
-            raise ValueError("torque_speed_curve 速度必须非负")
-        if any(torque < 0.0 for torque in torques):
-            raise ValueError("torque_speed_curve 扭矩必须非负")
-        if any(next_speed <= speed for speed, next_speed in pairwise(speeds)):
-            raise ValueError("torque_speed_curve 速度必须严格递增")
-        if any(next_torque > torque for torque, next_torque in pairwise(torques)):
-            raise ValueError("torque_speed_curve 扭矩必须单调不增")
+class TnTrackedDcMotorActuatorCfg(DcMotorActuatorCfg):
+    """保持 MJLab DC 电机物理包络并暴露 TN 越界统计的配置。"""
 
     def build(
         self,
         entity: Entity,
         target_ids: list[int],
         target_names: list[str],
-    ) -> TorqueSpeedCurveActuator:
-        return TorqueSpeedCurveActuator(self, entity, target_ids, target_names)
+    ) -> TnTrackedDcMotorActuator:
+        return TnTrackedDcMotorActuator(self, entity, target_ids, target_names)
 
 
-class TorqueSpeedCurveActuator(IdealPdActuator[TorqueSpeedCurveActuatorCfg]):
-    """在 MJLab 中按实测 T-N 曲线限制 PD 输出扭矩。"""
+class TnTrackedDcMotorActuator(
+    DcMotorActuator[TnTrackedDcMotorActuatorCfg],
+    _TnViolationAccumulatorMixin,
+):
+    """带 physics-substep TN 越界统计的四象限线性 DC 电机。"""
 
     def __init__(
         self,
-        cfg: TorqueSpeedCurveActuatorCfg,
+        cfg: TnTrackedDcMotorActuatorCfg,
         entity: Entity,
         target_ids: list[int],
         target_names: list[str],
     ) -> None:
         super().__init__(cfg, entity, target_ids, target_names)
-        self._curve_speed: torch.Tensor | None = None
-        self._curve_torque: torch.Tensor | None = None
-        self._joint_vel: torch.Tensor | None = None
+        self._initialize_tn_violation_accumulators()
 
-    def initialize(
-        self,
-        mj_model: mujoco.MjModel,
-        model: mjwarp.Model,
-        data: mjwarp.Data,
-        device: str,
-    ) -> None:
-        super().initialize(mj_model, model, data, device)
-        curve = torch.tensor(self.cfg.torque_speed_curve, dtype=torch.float, device=device)
-        self._curve_speed = curve[:, 0].contiguous()
-        self._curve_torque = curve[:, 1].contiguous()
-        self._joint_vel = torch.zeros(
-            data.nworld,
-            len(self._target_names),
-            dtype=torch.float,
-            device=device,
+    def effort_bounds(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """返回与 MJLab DC actuator 一致的有符号瞬时扭矩上下界。"""
+        assert self.saturation_effort is not None
+        assert self.velocity_limit_motor is not None
+        assert self.force_limit is not None
+        assert self._vel_at_effort_lim is not None
+        assert self._joint_vel_clipped is not None
+
+        velocity = torch.clamp(
+            self._joint_vel_clipped,
+            min=-self._vel_at_effort_lim,
+            max=self._vel_at_effort_lim,
         )
-
-    def compute(self, cmd: ActuatorCmd) -> torch.Tensor:
-        assert self._joint_vel is not None
-        self._joint_vel[:] = cmd.vel
-        return super().compute(cmd)
+        upper = self.saturation_effort * (1.0 - velocity / self.velocity_limit_motor)
+        lower = self.saturation_effort * (-1.0 - velocity / self.velocity_limit_motor)
+        return (
+            torch.clamp(lower, min=-self.force_limit),
+            torch.clamp(upper, max=self.force_limit),
+        )
 
     def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
-        assert self._curve_speed is not None
-        assert self._curve_torque is not None
-        assert self._joint_vel is not None
-        assert self.force_limit is not None
+        lower_effort, upper_effort = self.effort_bounds()
+        self._accumulate_tn_violation(effort, lower_effort, upper_effort)
+        return super()._clip_effort(effort)
 
-        speed = torch.abs(self._joint_vel).contiguous()
-        upper = torch.searchsorted(self._curve_speed, speed).clamp(
-            min=1,
-            max=self._curve_speed.numel() - 1,
-        )
-        lower = upper - 1
-        speed_lower = self._curve_speed[lower]
-        speed_upper = self._curve_speed[upper]
-        torque_lower = self._curve_torque[lower]
-        torque_upper = self._curve_torque[upper]
-        ratio = (speed - speed_lower) / (speed_upper - speed_lower)
-        torque_limit = torque_lower + ratio * (torque_upper - torque_lower)
-        torque_limit = torch.where(
-            speed <= self._curve_speed[0],
-            self._curve_torque[0],
-            torque_limit,
-        )
-        torque_limit = torch.where(
-            speed >= self._curve_speed[-1],
-            self._curve_torque[-1],
-            torque_limit,
-        )
-        torque_limit = torch.minimum(torque_limit, self.force_limit)
-        return torch.clamp(effort, min=-torque_limit, max=torque_limit)
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        super().reset(env_ids)
+        self._reset_all_tn_violation_accumulators(env_ids)
