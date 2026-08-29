@@ -20,6 +20,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # se3-sim2x 是私有子模块，公开仓 CI 的默认 GITHUB_TOKEN 无权拉取；而
+      # pyproject 把它声明为 uv workspace 成员，缺失会让 `uv sync` 解析直接失败。
+      # CI 只跑 ruff 与 CPU smoke（不 import se3_runtime），因此用同名空包占位
+      # 满足 workspace 解析即可。将来若配置了跨仓 PAT secret，改为
+      # `checkout with: submodules: recursive` 后本步骤自动跳过。
+      - name: 私有子模块占位（仅满足 uv workspace 解析）
+        run: |
+          if [ ! -f submodules/se3-sim2x/pyproject.toml ]; then
+            mkdir -p submodules/se3-sim2x/src/se3_sim2x_ci_stub
+            touch submodules/se3-sim2x/src/se3_sim2x_ci_stub/__init__.py
+            cat > submodules/se3-sim2x/pyproject.toml <<'EOF'
+          [project]
+          name = "se3-sim2x"
+          version = "0.1.0"
+          description = "CI stub：占位私有子模块，仅满足 uv workspace 解析"
+          requires-python = ">=3.11,<3.12"
+
+          [build-system]
+          requires = ["hatchling"]
+          build-backend = "hatchling.build"
+
+          [tool.hatch.build.targets.wheel]
+          packages = ["src/se3_sim2x_ci_stub"]
+          EOF
+          fi
+
       - name: 安装 MuJoCo headless 系统依赖
         run: |
           sudo apt-get update -qq
