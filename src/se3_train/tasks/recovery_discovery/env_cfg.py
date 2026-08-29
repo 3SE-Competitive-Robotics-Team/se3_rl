@@ -26,6 +26,17 @@ _RECOVERY_STATE_CACHE_PATH = (
 )
 _DISCOVERY_MAX_LIN_VEL_X = 1.89
 _DISCOVERY_MAX_ANG_VEL_YAW = 9.41
+_DISCOVERY_FINAL_HEIGHT_RANGE = (0.195, 0.390)
+_DISCOVERY_DEPLOYMENT_RANGES = {
+    "lin_vel_x": (-_DISCOVERY_MAX_LIN_VEL_X, _DISCOVERY_MAX_LIN_VEL_X),
+    "ang_vel_yaw": (-_DISCOVERY_MAX_ANG_VEL_YAW, _DISCOVERY_MAX_ANG_VEL_YAW),
+    "pitch": (0.0, 0.0),
+    "roll": (0.0, 0.0),
+    "height": _DISCOVERY_FINAL_HEIGHT_RANGE,
+    "jump_flag": (0.0, 0.0),
+    "jump_target_height": (0.0, 0.0),
+    "jump_phase": (0.0, 0.0),
+}
 _STEPS_PER_POLICY_ITER = 24
 _TRAIN_ENV_GROUPS = {"loco": 0.5, "recover": 0.5}
 _PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
@@ -417,6 +428,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.ang_vel_yaw_range = (0.0, 0.0)
     command_cfg.height_range = (0.24, 0.30)
     command_cfg.standing_height_range = (0.24, 0.30)
+    command_cfg.deployment_ranges = dict(_DISCOVERY_DEPLOYMENT_RANGES)
 
     cfg.curriculum = {}
     inherited_events = dict(cfg.events)
@@ -655,7 +667,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                         },
                         {
                             "iteration": 1500,
-                            "height_range": (0.195, 0.390),
+                            "height_range": _DISCOVERY_FINAL_HEIGHT_RANGE,
                         },
                     ],
                 },

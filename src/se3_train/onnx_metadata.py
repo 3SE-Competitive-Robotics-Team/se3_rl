@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,16 @@ _TERM_WIDTHS = {
     "last_actions": 6,
     "jump_commands": 3,
 }
+_COMMAND_FIELD_NAMES = (
+    "lin_vel_x",
+    "ang_vel_yaw",
+    "pitch",
+    "roll",
+    "height",
+    "jump_flag",
+    "jump_target_height",
+    "jump_phase",
+)
 
 
 def build_deployment_onnx_metadata(
@@ -79,8 +90,10 @@ def build_deployment_onnx_metadata(
             "KP": actuator_metadata["KP"],
             "KD": actuator_metadata["KD"],
             "armature": actuator_metadata["armature"],
+            "saturation_effort": actuator_metadata["saturation_effort"],
             "effort_limit": actuator_metadata["effort_limit"],
             "velocity_limit": actuator_metadata["velocity_limit"],
+            "torque_speed_curve": actuator_metadata["torque_speed_curve"],
             "init_state": _build_initial_state(runtime_env, robot),
             "root_link": "base_link",
             "imu_link": "base_link",
@@ -197,27 +210,38 @@ def _build_initial_state(runtime_env: Any, robot: RobotConfig) -> dict[str, list
 
 def _build_actuator_metadata(runtime_env: Any) -> dict[str, Any]:
     try:
-        live_actuators = runtime_env.scene["robot"].actuators
+        robot_entity = runtime_env.scene["robot"]
+        live_actuators = robot_entity.actuators
     except (AttributeError, KeyError, TypeError) as error:
         raise TypeError("live env 缺少 scene['robot'].actuators") from error
+    compiled_armature = _build_compiled_policy_armature(runtime_env, robot_entity)
 
-    by_joint: dict[str, dict[str, float]] = {}
+    by_joint: dict[str, dict[str, Any]] = {}
+    armature_config_overridden = False
     policy_joint_names = set(JointGroup.POLICY_JOINT_NAMES)
     for actuator in live_actuators:
         cfg = actuator.cfg
+        armature_config_overridden |= getattr(cfg, "armature", None) is not None
         for joint_name in actuator.target_names:
             if joint_name not in policy_joint_names:
                 continue
             if joint_name in by_joint:
                 raise ValueError(f"policy joint {joint_name!r} 被多个 actuator 控制")
-            curve = getattr(cfg, "torque_speed_curve", None)
+            raw_curve = getattr(cfg, "torque_speed_curve", None)
+            curve = (
+                [[float(speed), float(effort)] for speed, effort in raw_curve]
+                if raw_curve
+                else None
+            )
             velocity_limit = float(curve[-1][0]) if curve else float(cfg.velocity_limit)
             by_joint[joint_name] = {
                 "KP": float(getattr(cfg, "stiffness", 0.0)),
                 "KD": float(getattr(cfg, "damping", 0.0)),
-                "armature": float(getattr(cfg, "armature", 0.0) or 0.0),
+                "armature": compiled_armature[joint_name],
+                "saturation_effort": float(cfg.saturation_effort),
                 "effort_limit": float(cfg.effort_limit),
                 "velocity_limit": velocity_limit,
+                "torque_speed_curve": curve,
             }
 
     missing = [name for name in JointGroup.POLICY_JOINT_NAMES if name not in by_joint]
@@ -225,20 +249,73 @@ def _build_actuator_metadata(runtime_env: Any) -> dict[str, Any]:
         raise ValueError(f"live robot actuator 未覆盖全部 policy joints：{missing}")
     metadata = {
         key: [by_joint[name][key] for name in JointGroup.POLICY_JOINT_NAMES]
-        for key in ("KP", "KD", "armature", "effort_limit", "velocity_limit")
+        for key in (
+            "KP",
+            "KD",
+            "armature",
+            "saturation_effort",
+            "effort_limit",
+            "velocity_limit",
+            "torque_speed_curve",
+        )
     }
     robot = RobotConfig()
+    leg_curve = [list(point) for point in DM8009P.torque_speed_curve] or None
+    wheel_curve = [list(point) for point in M3508_C620_14.torque_speed_curve] or None
     expected = {
         "KP": [robot.leg_kp] * 4 + [0.0, 0.0],
         "KD": [robot.leg_kd] * 4 + [robot.wheel_kd] * 2,
-        "armature": [0.0] * 6,
+        "saturation_effort": [DM8009P.stall_torque] * 4 + [M3508_C620_14.stall_torque] * 2,
         "effort_limit": [DM8009P.rated_torque] * 4 + [M3508_C620_14.rated_torque] * 2,
         "velocity_limit": [DM8009P.no_load_speed] * 4 + [M3508_C620_14.no_load_speed] * 2,
+        "torque_speed_curve": [leg_curve] * 4 + [wheel_curve] * 2,
     }
-    metadata["robot_config_overridden"] = any(
+    metadata["robot_config_overridden"] = armature_config_overridden or any(
         metadata[key] != values for key, values in expected.items()
     )
     return metadata
+
+
+def _build_compiled_policy_armature(
+    runtime_env: Any,
+    robot_entity: Any,
+) -> dict[str, float]:
+    """读取最终编译模型中的 policy joint armature。"""
+    try:
+        joint_names = list(robot_entity.joint_names)
+        joint_v_addresses = robot_entity.indexing.joint_v_adr
+        dof_armature = runtime_env.sim.mj_model.dof_armature
+    except (AttributeError, TypeError) as error:
+        raise TypeError("live env 缺少编译后的 robot joint armature") from error
+    if len(joint_names) != len(joint_v_addresses):
+        raise ValueError(
+            "robot joint name 与 velocity address 数量不一致："
+            f"names={len(joint_names)}, addresses={len(joint_v_addresses)}"
+        )
+
+    joint_name_to_address = {
+        name: int(address.item() if hasattr(address, "item") else address)
+        for name, address in zip(joint_names, joint_v_addresses, strict=True)
+    }
+    missing = [name for name in JointGroup.POLICY_JOINT_NAMES if name not in joint_name_to_address]
+    if missing:
+        raise ValueError(f"编译模型缺少 policy joint velocity address：{missing}")
+
+    armature: dict[str, float] = {}
+    for joint_name in JointGroup.POLICY_JOINT_NAMES:
+        dof_address = joint_name_to_address[joint_name]
+        try:
+            value = float(dof_armature[dof_address])
+        except (IndexError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"policy joint {joint_name!r} 的 armature 地址无效：{dof_address}"
+            ) from error
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"policy joint {joint_name!r} 的 armature 必须为有限非负数，实际为 {value}"
+            )
+        armature[joint_name] = value
+    return armature
 
 
 def _build_command_metadata(command_manager: Any) -> dict[str, Any]:
@@ -251,7 +328,48 @@ def _build_command_metadata(command_manager: Any) -> dict[str, Any]:
     command_dim = int(term.command.shape[-1])
     if command_dim not in {5, 8}:
         raise ValueError(f"velocity_height command 仅支持 5D/8D，实际为 {command_dim}D")
-    return {"velocity_height": {"dimension": command_dim}}
+    command_metadata: dict[str, Any] = {"dimension": command_dim}
+    deployment_ranges = getattr(term.cfg, "deployment_ranges", None)
+    if deployment_ranges is not None:
+        command_metadata["ranges"] = _normalize_deployment_command_ranges(
+            deployment_ranges,
+            command_dim=command_dim,
+        )
+    return {"velocity_height": command_metadata}
+
+
+def _normalize_deployment_command_ranges(
+    value: Any,
+    *,
+    command_dim: int,
+) -> dict[str, list[float]]:
+    """校验并序列化任务显式声明的最终课程 command 包络。"""
+    if not isinstance(value, Mapping):
+        raise TypeError("deployment_ranges 必须为 mapping")
+    expected = set(_COMMAND_FIELD_NAMES[:command_dim])
+    actual = set(value)
+    if actual != expected:
+        raise ValueError(
+            "deployment_ranges 字段不匹配："
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+
+    normalized: dict[str, list[float]] = {}
+    for field_name in _COMMAND_FIELD_NAMES[:command_dim]:
+        field_range = value[field_name]
+        if not isinstance(field_range, (list, tuple)) or len(field_range) != 2:
+            raise TypeError(f"deployment_ranges.{field_name} 必须为二元数组")
+        if any(
+            isinstance(item, bool) or not isinstance(item, (int, float)) for item in field_range
+        ):
+            raise TypeError(f"deployment_ranges.{field_name} 必须包含数值")
+        lower, upper = (float(item) for item in field_range)
+        if not math.isfinite(lower) or not math.isfinite(upper):
+            raise ValueError(f"deployment_ranges.{field_name} 必须为有限数值")
+        if lower > upper:
+            raise ValueError(f"deployment_ranges.{field_name} 下界不得大于上界")
+        normalized[field_name] = [lower, upper]
+    return normalized
 
 
 def _resolve_observation_groups(
@@ -366,11 +484,17 @@ def _build_action_metadata(runtime_env: Any) -> dict[str, Any]:
     cfg = term.cfg
     scale = [float(value) for value in cfg.leg_scales] + [float(cfg.wheel_scale)] * 2
     clip = getattr(cfg, "action_clip", None)
+    height_conditioned = getattr(cfg, "height_conditioned_action_default", None)
+    if height_conditioned is None:
+        raise ValueError("delayed_action cfg 缺少 height_conditioned_action_default")
     return {
         "name": type(term).__name__,
         "scale": scale,
         "offset": list(RobotConfig().default_dof_pos),
         "clip": None if clip is None else [abs(float(clip))] * 6,
+        # B18：动作零点语义。True = 高度条件默认姿态（随 height 指令变化），
+        # False = 固定 entity 默认姿态。部署端必须按此选择 decode 策略。
+        "height_conditioned_action_default": bool(height_conditioned),
     }
 
 

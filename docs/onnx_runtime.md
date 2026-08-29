@@ -29,10 +29,13 @@ meta
 robot
 ├── policy_joint_names
 ├── KP / KD / armature
-├── effort_limit / velocity_limit
+├── saturation_effort / effort_limit / velocity_limit
+├── torque_speed_curve     # 可选逐关节分段 T-N 曲线
 └── init_state / links
 commands
-└── velocity_height.dimension
+└── velocity_height
+    ├── dimension
+    └── ranges             # 可选；最终课程的部署包络
 policy_io
 ├── groups.*.terms      # name / scale / history_length / clip / params
 ├── references          # joint_pos_ref / joint_vel_ref
@@ -61,7 +64,7 @@ policy_io
 
 - inference 时序；
 - actor observation term 顺序、scale、clip 和 history length；
-- command 名称和维度；
+- command 名称、维度和任务显式声明的最终课程部署包络；
 - policy-order 关节、PD、armature、effort/velocity limit；
 - action scale、offset 和 clip。
 
@@ -79,8 +82,9 @@ runtime 版本固定：
 - History-MLP 使用 per-term buffer、`oldest_to_newest`、`term_major`；
 - action 使用闭链主动杆 decoder 和高度条件默认姿态；
 - action delay 使用共享默认的 4–6 ms，并按 physics tick 推进；
-- command 默认值为 `height=0.22`，其余字段为 `0`；
-- command 交互控件边界由 runtime 固定，只用于输入校验和 Viser，不代表训练范围；
+- command 默认值为 `height=0.22`，其余字段为 `0`；新 artifact 的输入校验与 Viser
+  控件边界来自 `commands.velocity_height.ranges`；
+- 未携带 `ranges` 的旧 v2 artifact 继续使用 runtime 兼容边界，该边界不代表训练范围；
 - 未导出的 MuJoCo solver 字段使用 MJLab 默认配置。
 
 v2 不含资产 hash。单模型加载通过固定 `asset_name` 选取 MJCF；Viser 热切换要求候选
@@ -113,6 +117,10 @@ logs/rsl_rl/<experiment>/<run_id>/onnx/*.onnx
 ```bash
 uv run se3-sim2x-mujoco --onnx /path/to/model.onnx --viewer viser --steps 0
 ```
+
+Viser 的 `Reset Episode` 恢复 standing keyframe；`Recover Reset` 可按训练最终课程的侧躺、
+俯卧和仰卧姿态分布倒地重置。两种入口都会同步清空 observation history、GRU hidden、
+previous action、动作延迟 FIFO 和 control-loop 计数。
 
 完整 runtime 状态、动作延迟和 adapter 边界见
 [`submodules/se3-sim2x/docs/runtime-contract.md`](../submodules/se3-sim2x/docs/runtime-contract.md)。

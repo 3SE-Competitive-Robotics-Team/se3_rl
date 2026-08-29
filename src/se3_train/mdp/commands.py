@@ -32,6 +32,8 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     yaw_deadband: float = 0.1
     standing_ratio: float = 0.1
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
+    deployment_ranges: dict[str, tuple[float, float]] | None = None
+    """部署 command 包络；课程任务应显式填写最终最高难度范围。"""
     height_resample_on_reset_only: bool = False
     """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
     constrain_diff_drive_commands: bool = False

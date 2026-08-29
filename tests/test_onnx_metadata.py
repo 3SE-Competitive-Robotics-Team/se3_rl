@@ -152,6 +152,15 @@ class _FakeActionManager:
 
 def _fake_env(history_length: int = 1) -> SimpleNamespace:
     robot = RobotConfig()
+    policy_joint_names = (
+        "lf0_Joint",
+        "l_drive_bar_Joint",
+        "rf0_Joint",
+        "r_drive_bar_Joint",
+        "l_wheel_Joint",
+        "r_wheel_Joint",
+    )
+    compiled_armature = np.asarray([0.01] * 4 + [0.005] * 2, dtype=np.float64)
     leg_actuator = SimpleNamespace(
         target_names=[
             "lf0_Joint",
@@ -177,6 +186,11 @@ def _fake_env(history_length: int = 1) -> SimpleNamespace:
             velocity_limit=M3508_C620_14.no_load_speed,
         ),
     )
+    robot_entity = SimpleNamespace(
+        actuators=[leg_actuator, wheel_actuator],
+        joint_names=policy_joint_names,
+        indexing=SimpleNamespace(joint_v_adr=np.arange(6, dtype=np.int64)),
+    )
     return SimpleNamespace(
         physics_dt=0.005,
         step_dt=0.02,
@@ -185,7 +199,10 @@ def _fake_env(history_length: int = 1) -> SimpleNamespace:
             decimation=4,
             sim=SimpleNamespace(mujoco=MujocoCfg(timestep=0.005)),
         ),
-        scene={"robot": SimpleNamespace(actuators=[leg_actuator, wheel_actuator])},
+        sim=SimpleNamespace(
+            mj_model=SimpleNamespace(dof_armature=compiled_armature),
+        ),
+        scene={"robot": robot_entity},
         observation_manager=_FakeObservationManager(history_length),
         command_manager=_FakeCommandManager(),
         action_manager=_FakeActionManager(),
@@ -352,8 +369,14 @@ class OnnxMetadataTests(unittest.TestCase):
         )
         self.assertNotIn("ranges", metadata["commands"]["velocity_height"])
         self.assertEqual(metadata["robot"]["KD"][4:6], [0.08, 0.08])
-        self.assertEqual(metadata["robot"]["armature"], [0.0] * 6)
+        self.assertEqual(metadata["robot"]["armature"], [0.01] * 4 + [0.005] * 2)
+        self.assertEqual(metadata["robot"]["saturation_effort"][:4], [40.0] * 4)
+        self.assertEqual(
+            metadata["robot"]["saturation_effort"][4:6],
+            [M3508_C620_14.stall_torque] * 2,
+        )
         self.assertEqual(metadata["robot"]["effort_limit"][:4], [20.0] * 4)
+        self.assertEqual(metadata["robot"]["torque_speed_curve"], [None] * 6)
         self.assertAlmostEqual(
             metadata["robot"]["velocity_limit"][4],
             482.0 * 19.0 / 14.0 * 2.0 * np.pi / 60.0,
@@ -383,6 +406,118 @@ class OnnxMetadataTests(unittest.TestCase):
             170,
         )
         self.assertTrue(all(term["history_length"] == 5 for term in group["terms"]))
+
+    def test_explicit_final_curriculum_ranges_reach_runtime_contract(self) -> None:
+        env = _fake_env()
+        expected_ranges = {
+            "lin_vel_x": (-1.89, 1.89),
+            "ang_vel_yaw": (-9.41, 9.41),
+            "pitch": (0.0, 0.0),
+            "roll": (0.0, 0.0),
+            "height": (0.195, 0.390),
+            "jump_flag": (0.0, 0.0),
+            "jump_target_height": (0.0, 0.0),
+            "jump_phase": (0.0, 0.0),
+        }
+        env.command_manager.cfg.deployment_ranges = expected_ranges
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "command_ranges.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+
+            command = PolicyBundle.load(model_path).contract.command("velocity_height")
+
+        self.assertEqual(
+            {field.name: field.value_range for field in command.fields},
+            expected_ranges,
+        )
+
+    def test_action_default_semantics_reach_runtime_contract(self) -> None:
+        """B18：hcad 必须写入 metadata 并驱动 runtime 的 default strategy。"""
+        for flag, expected_mode in (
+            (True, "serialleg_height_conditioned_policy_default.v1"),
+            (False, "entity_default_joint_position"),
+        ):
+            env = _fake_env()
+            env.action_manager.cfg.height_conditioned_action_default = flag
+            metadata = build_deployment_onnx_metadata(
+                env,
+                observation_group_names=("actor",),
+            )
+            self.assertIs(
+                metadata["policy_io"]["action"]["height_conditioned_action_default"],
+                flag,
+            )
+            with TemporaryDirectory() as temp_dir:
+                model_path = Path(temp_dir) / f"hcad_{flag}.onnx"
+                _write_test_model(model_path, 34, recurrent=False)
+                embed_onnx_metadata(
+                    model_path,
+                    metadata,
+                    policy_iteration=4999,
+                    is_rnn=False,
+                )
+                strategy = PolicyBundle.load(model_path).contract.action.default_strategy
+
+            self.assertEqual(strategy.mode, expected_mode)
+            if not flag:
+                self.assertEqual(
+                    list(strategy.policy_leg_position),
+                    metadata["policy_io"]["action"]["offset"][:4],
+                )
+
+    def test_legacy_v2_without_action_default_flag_keeps_height_conditioned(self) -> None:
+        """旧 v2 artifact 不带 hcad 字段时，runtime 必须保持高度条件语义。"""
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        del metadata["policy_io"]["action"]["height_conditioned_action_default"]
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_no_flag.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+            strategy = PolicyBundle.load(model_path).contract.action.default_strategy
+
+        self.assertEqual(strategy.mode, "serialleg_height_conditioned_policy_default.v1")
+
+    def test_legacy_v2_without_command_ranges_uses_compat_bounds(self) -> None:
+        """旧 v2 artifact 不带 ranges 时，runtime 继续使用兼容边界。"""
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        metadata["commands"]["velocity_height"].pop("ranges", None)
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_no_ranges.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+            command = PolicyBundle.load(model_path).contract.command("velocity_height")
+
+        by_name = {field.name: field for field in command.fields}
+        self.assertEqual(by_name["height"].value_range, (0.20, 0.32))
+        self.assertEqual(by_name["height"].default_value, 0.22)
 
     def test_embed_mlp_preserves_properties_and_does_not_mutate_builder_output(self) -> None:
         metadata = build_deployment_onnx_metadata(
@@ -479,11 +614,44 @@ class PolicyBundleTests(unittest.TestCase):
         self.assertEqual(bundle.contract.action.dimension, 6)
         self.assertEqual(bundle.contract.schema_version, 2)
         self.assertIsNone(bundle.contract.robot.asset.sha256)
+        self.assertEqual(
+            bundle.contract.robot.actuators.peak_effort_limit,
+            (DM8009P.stall_torque,) * 4 + (M3508_C620_14.stall_torque,) * 2,
+        )
+        self.assertEqual(
+            bundle.contract.robot.actuators.rated_effort_limit,
+            (DM8009P.rated_torque,) * 4 + (M3508_C620_14.rated_torque,) * 2,
+        )
         self.assertEqual(actions.shape, (1, 6))
         with self.assertRaises(FrozenInstanceError):
             bundle.contract.input_dim = 1
         with self.assertRaises(TypeError):
             bundle.contract.metadata["meta"]["schema_name"] = "changed"
+
+    def test_legacy_v2_uses_canonical_tn_limits_when_actuator_is_not_overridden(self) -> None:
+        metadata = build_deployment_onnx_metadata(
+            _fake_env(),
+            observation_group_names=("actor",),
+        )
+        metadata["robot"].pop("saturation_effort")
+        metadata["robot"].pop("torque_speed_curve")
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_v2.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=3,
+                is_rnn=False,
+            )
+
+            actuators = PolicyBundle.load(model_path).contract.robot.actuators
+
+        self.assertEqual(
+            actuators.peak_effort_limit,
+            (DM8009P.stall_torque,) * 4 + (M3508_C620_14.stall_torque,) * 2,
+        )
+        self.assertEqual(actuators.torque_speed_curve, (None,) * 6)
 
     def test_loads_170d_history_mlp_contract(self) -> None:
         metadata = build_deployment_onnx_metadata(
