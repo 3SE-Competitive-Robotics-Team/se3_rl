@@ -60,9 +60,7 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "joint_pos_penalty": -1.0,
     "leg_action_rate": -0.001,
     "wheel_action_rate": -0.001,
-    # -0.03 时罚仅占回报 1%，压不过熵奖励（job 51/54 σ 膨胀实录）；×4 使噪声代价进入
-    # advantage 量级，配合全姿态生效（门控已禁用）恢复 σ 退火。
-    "action_smoothness": -0.12,
+    "action_smoothness": -0.03,
     "leg_torques": -2.0e-4,
     "leg_dof_acc": -2.5e-7,
     "leg_power": -1.0e-4,
@@ -270,9 +268,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     # S1 生效的 action_smoothness 权威定义（会覆盖 recovery 基类里 weight=0 的同名项）。
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
-        # -0.03 时罚仅占回报 1%，压不过熵奖励（job 51 σ 膨胀到 3.4 实录）；×4 使噪声
-        # 代价进入 advantage 量级。
-        weight=-0.12,
+        weight=-0.03,
         params={
             "command_name": "velocity_height",
             # 姿态门控已禁用（181/180 → gate 恒 1），平滑罚全姿态生效。
