@@ -60,7 +60,9 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "joint_pos_penalty": -1.0,
     "leg_action_rate": -0.001,
     "wheel_action_rate": -0.001,
-    "action_smoothness": -0.03,
+    # -0.03 时罚仅占回报 1%，压不过熵奖励（job 51/54 σ 膨胀实录）；×4 使噪声代价进入
+    # advantage 量级，配合全姿态生效（门控已禁用）恢复 σ 退火。
+    "action_smoothness": -0.12,
     "leg_torques": -2.0e-4,
     "leg_dof_acc": -2.5e-7,
     "leg_power": -1.0e-4,
@@ -265,14 +267,20 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
         func=rewards.wheel_action_rate,
         weight=-0.001,
     )
+    # S1 生效的 action_smoothness 权威定义（会覆盖 recovery 基类里 weight=0 的同名项）。
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
-        weight=-0.03,
+        # -0.03 时罚仅占回报 1%，压不过熵奖励（job 51 σ 膨胀到 3.4 实录）；×4 使噪声
+        # 代价进入 advantage 量级。
+        weight=-0.12,
         params={
             "command_name": "velocity_height",
+            # 姿态门控已禁用（181/180 → gate 恒 1），平滑罚全姿态生效。
             "gate_start_deg": 181.0,
             "gate_full_deg": 180.0,
-            "max_penalty": 80.0,
+            # 弹簧 plant 上 σ≈2 的噪声二阶差分期望 ≈288，cap=80 使罚项饱和、对噪声
+            # 零梯度（σ 膨胀根源之一）；提到 320 保证 σ≤4 全程有梯度。
+            "max_penalty": 320.0,
             "leg_scale": 1.0,
             "wheel_scale": 2.0,
         },

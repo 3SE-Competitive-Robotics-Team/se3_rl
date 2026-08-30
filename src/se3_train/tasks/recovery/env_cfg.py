@@ -378,14 +378,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
         weight=0.0,
+        # 注意：此处 weight=0 为惰性占位，S1 实际生效的定义在
+        # recovery_discovery/env_cfg.py（weight/-gate/cap 以那份为准）。
         params={
             "command_name": "velocity_height",
             "gate_start_deg": 90.0,
             "gate_full_deg": 30.0,
-            # 弹簧 plant 上 σ≈2 的探索噪声二阶差分期望 ≈288，80 的封顶让罚项饱和、
-            # 对噪声大小零梯度，叠加熵奖励后 σ 单调膨胀（job 51 实测涨到 3.39）。
-            # 提到 320 保证 σ≤4 全程有梯度，配合调小 entropy_coef 恢复噪声退火。
-            "max_penalty": 320.0,
+            "max_penalty": 80.0,
             "leg_scale": 1.0,
             "wheel_scale": 2.0,
         },
