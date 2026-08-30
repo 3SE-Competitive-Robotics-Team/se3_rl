@@ -2443,6 +2443,28 @@ def randomize_restitution(
             env.sim.model.geom_margin[env_ids, gid] = 0.0
 
 
+def _asset_root_body_id(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> int:
+    """按实体根 body 名解析全局 body id，按 env 缓存。
+
+    历史 bug：旧实现硬编码 body 0，而编译后 body 0 是 world（质量 0），
+    base_link 的 DR 写入自 mjlab 移植起全部无效。名称带 'robot/' 前缀，按后缀匹配。
+    """
+    attr = f"_root_body_id_{asset_cfg.name}"
+    cached = getattr(env, attr, None)
+    if isinstance(cached, int):
+        return cached
+
+    asset: Entity = env.scene[asset_cfg.name]
+    root_name = str(asset.root_body.name).split("/")[-1]
+    mj_model = env.sim.mj_model
+    for bid in range(mj_model.nbody):
+        full = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, bid)
+        if full and full.split("/")[-1] == root_name:
+            setattr(env, attr, bid)
+            return bid
+    raise ValueError(f"模型缺少实体 {asset_cfg.name} 的根 body {root_name}")
+
+
 @requires_model_fields("body_mass", recompute=RecomputeLevel.set_const)
 def randomize_base_mass(
     env: ManagerBasedRlEnv,
@@ -2454,11 +2476,10 @@ def randomize_base_mass(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _ = env.scene[asset_cfg.name]
     n = len(env_ids)
 
     default_mass = env.sim.get_default_field("body_mass")
-    base_body_idx = 0  # base_link 是第 0 个 body。
+    base_body_idx = _asset_root_body_id(env, asset_cfg)
 
     added_mass = sample_uniform(
         torch.tensor(mass_range[0], device=env.device),
@@ -2483,7 +2504,7 @@ def randomize_inertia(
 
     n = len(env_ids)
     default_inertia = env.sim.get_default_field("body_inertia")
-    base_body_idx = 0
+    base_body_idx = _asset_root_body_id(env, asset_cfg)
 
     scale = sample_uniform(
         torch.tensor(inertia_range[0], device=env.device),
@@ -2508,7 +2529,7 @@ def randomize_com(
 
     n = len(env_ids)
     default_ipos = env.sim.get_default_field("body_ipos")
-    base_body_idx = 0
+    base_body_idx = _asset_root_body_id(env, asset_cfg)
 
     offset = sample_uniform(
         torch.tensor(-com_range, device=env.device),

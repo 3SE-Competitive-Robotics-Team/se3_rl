@@ -175,6 +175,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "knee_gas_spring_force": ObservationTermCfg(
             func=observations.knee_gas_spring_force_obs,
         ),
+        # ---- critic 特权包 v2（CTS RA-L 2024 特权集合 + 本仓库 DR 参数回读）----
+        "motor_torques": ObservationTermCfg(func=observations.motor_torque_obs),
+        "joint_acc": ObservationTermCfg(func=observations.joint_acc_obs),
+        "leg_contact_forces": ObservationTermCfg(
+            func=observations.contact_force_norm_obs,
+            params={"sensor_name": "leg_contact_sensor"},
+        ),
+        "base_collision_force": ObservationTermCfg(
+            func=observations.contact_force_norm_obs,
+            params={"sensor_name": "collision_sensor"},
+        ),
+        "dr_model_params": ObservationTermCfg(func=observations.dr_model_params_obs),
     }
 
     cfg.observations = {
@@ -513,20 +525,24 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 mode="startup",
                 params={"restitution_range": (0.0, 0.5), "asset_cfg": SceneEntityCfg("robot")},
             ),
+            # 2026-08-31 发现：这三个事件因 body id 硬编码 0（world）自 mjlab 移植起
+            # 从未生效，全部历史 run 的 plant 均无 base 质量/惯量/质心 DR。id 解析已修复；
+            # 为与历史 plant 保持单变量对照，范围暂设恒等占位，启用作为独立实验
+            # （原配置：mass (-0.5, 1.5)、inertia (0.8, 1.2)、com 0.05）。
             "base_mass": EventTermCfg(
                 func=events.randomize_base_mass,
                 mode="startup",
-                params={"mass_range": (-0.5, 1.5), "asset_cfg": SceneEntityCfg("robot")},
+                params={"mass_range": (0.0, 0.0), "asset_cfg": SceneEntityCfg("robot")},
             ),
             "inertia": EventTermCfg(
                 func=events.randomize_inertia,
                 mode="startup",
-                params={"inertia_range": (0.8, 1.2), "asset_cfg": SceneEntityCfg("robot")},
+                params={"inertia_range": (1.0, 1.0), "asset_cfg": SceneEntityCfg("robot")},
             ),
             "com": EventTermCfg(
                 func=events.randomize_com,
                 mode="startup",
-                params={"com_range": 0.05, "asset_cfg": SceneEntityCfg("robot")},
+                params={"com_range": 0.0, "asset_cfg": SceneEntityCfg("robot")},
             ),
             "pd_gains": EventTermCfg(
                 func=events.randomize_pd_gains,

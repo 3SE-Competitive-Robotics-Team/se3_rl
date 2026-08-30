@@ -239,7 +239,11 @@ se3_jump_to/
                         jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
 
-critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和 base height 特权观测。
+critic 在 actor 观测基础上额外包含特权信息（actor 34 维部署契约不受影响）：base 线速度、
+轮子接触力、base height、膝气弹簧采样力，以及特权包 v2（CTS RA-L 2024 特权集合 +
+本仓库 DR 参数回读）——六电机实测力矩、六关节角加速度、腿部/机身接触力、
+28 维域随机化模型参数回读（摩擦/质量/质心/惯量/PD 缩放/电机被动参数比值），
+定义见 `se3_train/mdp/observations.py` 各 `*_obs` 的 docstring。
 
 ### 动作空间（6 维）
 ```
