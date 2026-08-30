@@ -60,7 +60,8 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "joint_pos_penalty": -1.0,
     "leg_action_rate": -0.001,
     "wheel_action_rate": -0.001,
-    "action_smoothness": -0.03,
+    # -0.12 + cap 320 = 4gs3te0p 验证有效的组合（σ 退火至 0.24、reward 272），沿用为基线。
+    "action_smoothness": -0.12,
     "leg_torques": -2.0e-4,
     "leg_dof_acc": -2.5e-7,
     "leg_power": -1.0e-4,
@@ -268,7 +269,7 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
     # S1 生效的 action_smoothness 权威定义（会覆盖 recovery 基类里 weight=0 的同名项）。
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
-        weight=-0.03,
+        weight=-0.12,
         params={
             "command_name": "velocity_height",
             # 姿态门控已禁用（181/180 → gate 恒 1），平滑罚全姿态生效。

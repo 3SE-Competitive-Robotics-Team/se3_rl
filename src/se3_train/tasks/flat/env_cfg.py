@@ -525,24 +525,23 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 mode="startup",
                 params={"restitution_range": (0.0, 0.5), "asset_cfg": SceneEntityCfg("robot")},
             ),
-            # 2026-08-31 发现：这三个事件因 body id 硬编码 0（world）自 mjlab 移植起
-            # 从未生效，全部历史 run 的 plant 均无 base 质量/惯量/质心 DR。id 解析已修复；
-            # 为与历史 plant 保持单变量对照，范围暂设恒等占位，启用作为独立实验
-            # （原配置：mass (-0.5, 1.5)、inertia (0.8, 1.2)、com 0.05）。
+            # 2026-08-30 发现并修复：这三个事件曾因 body id 硬编码 0（world）自 mjlab
+            # 移植起从未生效（4gs3te0p 及更早 run 的 plant 均无这三项 DR）。id 解析修复后
+            # 按用户决定恢复原范围启用（2026-08-31 critic v2 实验起生效）。
             "base_mass": EventTermCfg(
                 func=events.randomize_base_mass,
                 mode="startup",
-                params={"mass_range": (0.0, 0.0), "asset_cfg": SceneEntityCfg("robot")},
+                params={"mass_range": (-0.5, 1.5), "asset_cfg": SceneEntityCfg("robot")},
             ),
             "inertia": EventTermCfg(
                 func=events.randomize_inertia,
                 mode="startup",
-                params={"inertia_range": (1.0, 1.0), "asset_cfg": SceneEntityCfg("robot")},
+                params={"inertia_range": (0.8, 1.2), "asset_cfg": SceneEntityCfg("robot")},
             ),
             "com": EventTermCfg(
                 func=events.randomize_com,
                 mode="startup",
-                params={"com_range": 0.0, "asset_cfg": SceneEntityCfg("robot")},
+                params={"com_range": 0.05, "asset_cfg": SceneEntityCfg("robot")},
             ),
             "pd_gains": EventTermCfg(
                 func=events.randomize_pd_gains,
