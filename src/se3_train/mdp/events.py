@@ -2624,6 +2624,63 @@ def randomize_knee_spring_force(
         )
 
 
+@requires_model_fields(
+    "dof_armature", "dof_damping", "dof_frictionloss", recompute=RecomputeLevel.set_const_0
+)
+def randomize_motor_passive_params(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    armature_scale_range: tuple[float, float] = (0.6, 1.5),
+    damping_scale_range: tuple[float, float] = (0.5, 2.5),
+    frictionloss_scale_range: tuple[float, float] = (0.5, 2.0),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """随机化 6 个电机关节的被动参数（armature/damping/frictionloss），逐关节独立采样。
+
+    名义值以 MJCF 为单一来源（armature=反射转子惯量、damping=粘性损耗、
+    frictionloss=库仑摩擦），量级依据与待辨识项见 docs/plan/motor_passive_params.md。
+    DR 相对名义值缩放，覆盖个体差异与辨识误差；名义值为 0 的项缩放后仍为 0。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    _ = env.scene[asset_cfg.name]
+    mj_model = env.sim.mj_model
+    dof_adr = []
+    for name in (*JointGroup.POLICY_LEG_NAMES, *JointGroup.WHEEL_NAMES):
+        joint_id = None
+        for jid in range(mj_model.njnt):
+            joint_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+            if joint_name and joint_name.split("/")[-1] == name:
+                joint_id = jid
+                break
+        if joint_id is None:
+            raise ValueError(f"模型缺少电机关节 {name}")
+        dof_adr.append(int(mj_model.jnt_dofadr[joint_id]))
+
+    n = len(env_ids)
+
+    def _scale(value_range: tuple[float, float]) -> torch.Tensor:
+        return sample_uniform(
+            torch.tensor(float(value_range[0]), device=env.device),
+            torch.tensor(float(value_range[1]), device=env.device),
+            (n,),
+            env.device,
+        )
+
+    default_armature = env.sim.get_default_field("dof_armature")
+    default_damping = env.sim.get_default_field("dof_damping")
+    default_frictionloss = env.sim.get_default_field("dof_frictionloss")
+    for adr in dof_adr:
+        env.sim.model.dof_armature[env_ids, adr] = default_armature[adr] * _scale(
+            armature_scale_range
+        )
+        env.sim.model.dof_damping[env_ids, adr] = default_damping[adr] * _scale(damping_scale_range)
+        env.sim.model.dof_frictionloss[env_ids, adr] = default_frictionloss[adr] * _scale(
+            frictionloss_scale_range
+        )
+
+
 def randomize_default_dof_pos(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,

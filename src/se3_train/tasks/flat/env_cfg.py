@@ -546,6 +546,18 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),
+            "motor_passive_params": EventTermCfg(
+                func=events.randomize_motor_passive_params,
+                mode="startup",
+                params={
+                    # 名义值待真机辨识回填，先用宽 DR 覆盖估计区间
+                    # （来源见 docs/plan/motor_passive_params.md）
+                    "armature_scale_range": (0.6, 1.5),
+                    "damping_scale_range": (0.5, 2.5),
+                    "frictionloss_scale_range": (0.5, 2.0),
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+            ),
             "default_dof_pos": EventTermCfg(
                 func=events.randomize_default_dof_pos,
                 mode="startup",
