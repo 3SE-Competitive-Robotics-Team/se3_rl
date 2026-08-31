@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from se3_train.mdp.rewards import (
     action_smoothness,
+    angular_momentum_excess,
+    impact_forces,
     leg_action_rate,
     leg_contact_penalty,
+    leg_dof_vel,
     recovery_diagnostics,
     recovery_progress,
     recovery_upright_orientation_l2,
@@ -31,8 +34,11 @@ globals().pop("same_feet_x_position", None)
 __all__ = [
     *_RECOVERY_FLAT_REWARD_ALL,
     "action_smoothness",
+    "angular_momentum_excess",
+    "impact_forces",
     "leg_action_rate",
     "leg_contact_penalty",
+    "leg_dof_vel",
     "recovery_diagnostics",
     "recovery_progress",
     "recovery_upward",

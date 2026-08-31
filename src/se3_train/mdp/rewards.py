@@ -848,6 +848,9 @@ def tracking_height(
     min_upright_gate: float = 0.0,
     use_pose_end_gate: bool = False,
     use_inverted_free_upright_height_gate: bool = False,
+    use_near_upright_gate: bool = False,
+    near_upright_gate_start_deg: float = 30.0,
+    near_upright_gate_full_deg: float = 15.0,
     use_hard_inverted_height_gate: bool = False,
     hard_inverted_release_deg: float = 130.0,
     hard_inverted_full_deg: float = 170.0,
@@ -878,6 +881,7 @@ def tracking_height(
         use_upright_gate
         or use_pose_end_gate
         or use_inverted_free_upright_height_gate
+        or use_near_upright_gate
         or use_hard_inverted_height_gate
     ):
         robot = env.scene["robot"]
@@ -932,6 +936,20 @@ def tracking_height(
                     "Locomotion/height_recovery_pose_gate": gate.mean().item(),
                 }
             )
+    if use_near_upright_gate and robot is not None:
+        # 恢复期休眠门：高度是 loco 目标，倒地/翻起途中不收高度税（时间税改革 A1）。
+        gate = _near_upright_gate(
+            robot.data.projected_gravity_b[:, 2],
+            gate_start_deg=float(near_upright_gate_start_deg),
+            gate_full_deg=float(near_upright_gate_full_deg),
+        )
+        reward = reward * gate
+        if (
+            hasattr(env, "extras")
+            and isinstance(env.extras.get("log"), dict)
+            and _should_log_step(env)
+        ):
+            env.extras["log"]["Locomotion/height_near_upright_gate"] = gate.mean().item()
     if use_hard_inverted_height_gate and robot is not None:
         pg_z = robot.data.projected_gravity_b[:, 2]
         tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
@@ -1089,6 +1107,32 @@ def angular_momentum(env: ManagerBasedRlEnv) -> torch.Tensor:
     return torch.sum(angmom**2, dim=-1) * gate
 
 
+def angular_momentum_excess(
+    env: ManagerBasedRlEnv,
+    threshold: float,
+) -> torch.Tensor:
+    """roll/pitch 平面角动量范数超阈部分的平方——为整身翻滚动量定价。
+
+    只取世界系 xy 分量，放行指令内 yaw 旋转；阈值内（温柔翻身）免罚，
+    无直立门控——弹道翻滚恰好发生在大倾角窗口。
+    """
+    robot = env.scene["robot"]
+    root_body_id = robot.data.indexing.root_body_id
+    angmom = env.sim.data.subtree_angmom[:, root_body_id]
+    l_xy = torch.linalg.norm(angmom[:, :2], dim=-1)
+    excess = torch.clamp(l_xy - float(threshold), min=0.0)
+    penalty = excess**2
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Recovery/diag_angmom_xy": l_xy.mean().item(),
+                "Recovery/diag_angmom_excess_rate": (excess > 0.0).float().mean().item(),
+            }
+        )
+    return penalty
+
+
 class NormalizedTnEnvelopeViolation(ManagerTermBase):
     """惩罚一个 policy step 内各电机限幅前请求扭矩的 TN 包络峰值越界。"""
 
@@ -1220,6 +1264,31 @@ def leg_dof_acc(
     robot = env.scene[asset_cfg.name]
     acc = _policy_leg_acc(env, robot)
     return torch.sum(acc**2, dim=1)
+
+
+def leg_dof_vel(
+    env: ManagerBasedRlEnv,
+    max_vel: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """腿部主动杆速度超出运行带宽的平方和(排除轮子)。
+
+    max_vel: 正常运行带宽上限 (rad/s)，带内免罚——只为弹道式快扫定价，
+    覆盖 action_smoothness（二阶差分）对光滑大幅快扫的结构盲区。
+    """
+    robot = env.scene[asset_cfg.name]
+    vel = _policy_leg_vel(robot)
+    excess = torch.clamp(torch.abs(vel) - float(max_vel), min=0.0)
+    penalty = torch.sum(excess**2, dim=1)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        env.extras["log"].update(
+            {
+                "Recovery/diag_leg_dof_vel_max": torch.abs(vel).max(dim=1).values.mean().item(),
+                "Recovery/diag_leg_dof_vel_excess_rate": (penalty > 0.0).float().mean().item(),
+            }
+        )
+    return penalty
 
 
 def leg_power(
@@ -2803,6 +2872,42 @@ def contact_forces(
     force_mag = finite_contact_force_norm(data.force)
     excess = torch.clamp(force_mag - threshold, min=0.0) / 100.0
     return torch.sum(excess, dim=1) * gate
+
+
+def impact_forces(
+    env: ManagerBasedRlEnv,
+    sensor_names: tuple[str, ...],
+    threshold: float,
+    max_excess: float = 3000.0,
+    startup_grace_steps: int = 3,
+) -> torch.Tensor:
+    """全身（轮/腿/机身）接触力超阈部分之和(N)——为落地砸击定价。
+
+    正常载荷（静载、温柔推撑、常规步态力）在阈值内免罚；
+    reset 沉降的前几步不计费，避免 cache 倒地开局的不可控触地污染优势估计。
+    """
+    total = torch.zeros(env.num_envs, device=env.device)
+    for sensor_name in sensor_names:
+        sensor: ContactSensor = env.scene[sensor_name]
+        data = sensor.data
+        if data.force is None:
+            continue
+        force_mag = finite_contact_force_norm(data.force)
+        excess = torch.clamp(force_mag - float(threshold), min=0.0)
+        total = total + torch.sum(excess, dim=1)
+    total = torch.clamp(total, max=float(max_excess))
+    startup = env.episode_length_buf < int(startup_grace_steps)
+    total = torch.where(startup, torch.zeros_like(total), total)
+
+    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
+        active = total > 0.0
+        env.extras["log"].update(
+            {
+                "Recovery/diag_impact_excess_n": _masked_mean(total, active),
+                "Recovery/diag_impact_rate": active.float().mean().item(),
+            }
+        )
+    return total
 
 
 def feet_contact_without_cmd(

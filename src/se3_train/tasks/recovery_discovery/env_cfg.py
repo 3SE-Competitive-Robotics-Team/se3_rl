@@ -71,7 +71,13 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "joint_mirror": -0.05,
     "dof_pos_limits": -5.0,
     "collision": -1.0,
-    "contact_forces": -1.5e-4,
+    # --- 记账改革 A2-A4：暴力的世界侧定价（超运行带 hinge 形式，带内免罚）---
+    # 定标见 docs/plan/reward_accounting_v2.md：目标是弹道起身总账 ≈ 2× 其时间收益，
+    # 温柔起身近零账单。旧 contact_forces(-1.5e-4, 仅轮, /100) 对 724N 冲击计价
+    # 0.00002/步，为装饰品，由 impact_forces 取代。
+    "leg_dof_vel": -0.5,
+    "impact_forces": -0.15,
+    "angular_momentum": -8.0,
     "wheel_air_velocity": -1.0e-3,
     "leg_contact": -1.0,
     "wheel_contact_without_cmd": 0.1,
@@ -202,9 +208,12 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "use_upright_gate": False,
             "min_upright_gate": 0.0,
             "use_pose_end_gate": False,
-            "use_inverted_free_upright_height_gate": True,
-            "upright_gate_angle_deg": 30.0,
-            "inverted_gate_angle_deg": 150.0,
+            # 记账改革 A1：高度是 loco 目标，倒地/翻起途中休眠（旧倒置全额门
+            # 在俯卧/仰躺收 ~27-38/s，是全表最重的时间税，也是起身求快的主推力）。
+            "use_inverted_free_upright_height_gate": False,
+            "use_near_upright_gate": True,
+            "near_upright_gate_start_deg": 30.0,
+            "near_upright_gate_full_deg": 15.0,
         },
     )
     cfg.rewards["upright_orientation_l2"] = RewardTermCfg(
@@ -331,15 +340,30 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "use_recovery_gate": False,
         },
     )
-    cfg.rewards["contact_forces"] = RewardTermCfg(
-        func=rewards.contact_forces,
-        weight=-1.5e-4,
+    # --- 记账改革 A2-A4：hinge 式暴力定价，阈值取运行带上限，带内免罚 ---
+    cfg.rewards["leg_dof_vel"] = RewardTermCfg(
+        func=rewards.leg_dof_vel,
+        weight=-0.5,
+        # 温柔起身腿速 ~3-5 rad/s，弹道快扫 ~9-11 rad/s（0.14s 起身实测反推）。
+        params={"max_vel": 6.0, "asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["impact_forces"] = RewardTermCfg(
+        func=rewards.impact_forces,
+        weight=-0.15,
+        # 阈值 200N ≈ 2.5× 单轮静载：静载/温柔推撑/常规步态免罚，724N 落地砸击计价。
         params={
-            "threshold": 20.0,
-            "sensor_name": "wheel_sensor",
-            "asset_cfg": SceneEntityCfg("robot"),
-            "use_recovery_gate": False,
+            "sensor_names": ("wheel_sensor", "leg_contact_sensor", "collision_sensor"),
+            "threshold": 200.0,
+            "max_excess": 3000.0,
         },
+    )
+    cfg.rewards["angular_momentum"] = RewardTermCfg(
+        func=rewards.angular_momentum_excess,
+        weight=-8.0,
+        # 世界系 xy 角动量（放行指令内 yaw 旋转）；阈值 1.0 N·m·s ≈ 温柔翻身峰值 ~2×。
+        # flat 线的 angular_momentum(-5e-5) 在 recovery 化时被删（阻碍起身发现），
+        # 此处以 hinge 形式回表：带内梯度为零，不再阻碍发现，只价弹道翻滚。
+        params={"threshold": 1.0},
     )
     cfg.rewards["wheel_air_velocity"] = RewardTermCfg(
         func=rewards.wheel_air_velocity_penalty,
