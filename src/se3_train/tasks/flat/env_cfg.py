@@ -541,7 +541,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "com": EventTermCfg(
                 func=events.randomize_com,
                 mode="startup",
-                params={"com_range": 0.05, "asset_cfg": SceneEntityCfg("robot")},
+                # ±5cm 对 7kg/40cm 级机身占比过大，7lxhzb64 学出原地摆腿探测质心的
+                # 习惯（zero_hold 前杆摆动 7 倍于基线）；收到 ±2cm 保留鲁棒性、压掉探测摆。
+                params={"com_range": 0.02, "asset_cfg": SceneEntityCfg("robot")},
             ),
             "pd_gains": EventTermCfg(
                 func=events.randomize_pd_gains,
