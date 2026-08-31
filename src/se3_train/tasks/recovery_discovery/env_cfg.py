@@ -735,10 +735,15 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     return cfg
 
 
-def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def ungrouped_env_cfg(
+    play: bool = False,
+    arrival_accounting: bool = False,
+) -> ManagerBasedRlEnvCfg:
     """生成与分组实验同超参数、但使用旧混合 reset 的公平基线。
 
     actor 观测与分组任务一致，同样使用五帧展平历史，使唯一差异是 env 分组本身。
+    arrival_accounting: 记账改革 Phase B——upward 绝对值记账换成 upward_arrival
+    到达式记账（正向速率封顶、回落全额回吐），其余契约不变。
     """
 
     cfg = env_cfg(play=play)
@@ -844,6 +849,33 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         )
         cfg.curriculum["commands_vel"] = _ungrouped_velocity_curriculum_cfg()
+
+    if arrival_accounting:
+        # Phase B：到达式记账。总酬只取决于到达的直立度（慢起满酬 10，弹道
+        # ~1.75 反而少），起身求快的时间压力归零；权重 12.5 × rate_cap 0.1
+        # 使温柔全程收益与旧 upward 起身段积分（~10）对齐。
+        cfg.rewards.pop("upward")
+        cfg.rewards["upward_arrival"] = RewardTermCfg(
+            func=rewards.upward_arrival,
+            weight=12.5,
+            params={"rate_cap": 0.1},
+        )
+        expected = {
+            k
+            for k in _DISCOVERY_REWARD_WEIGHTS
+            if k
+            not in (
+                "upward",
+                "tn_envelope_violation_loco",
+                "tn_envelope_violation_recover",
+            )
+        } | {"upward_arrival", "tn_envelope_violation"}
+        if set(cfg.rewards) != expected:
+            raise RuntimeError(
+                "Arrival 记账契约漂移: "
+                f"missing={sorted(expected - set(cfg.rewards))} "
+                f"extra={sorted(set(cfg.rewards) - expected)}"
+            )
     return _apply_actor_history(cfg)
 
 

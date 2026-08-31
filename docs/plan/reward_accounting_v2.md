@@ -73,4 +73,19 @@ sides 3-5 ≈ 1× —— 不等式翻转为「适度慢 + 软着陆」的内点�
    - 起身猛烈度：起身用时分布（目标从 0.14s → 0.4-0.9s）、落地峰值力（<300N）、
      腿速峰值（<7 rad/s）
    - 红线不回退：起身成功率、upright_gate 稳定期、loco 追踪
-3. 若仍猛 → Phase B：`upward` 绝对记账 → `upward_progress` 增量记账（库存函数）。
+3. Phase B（已实现，独立任务同批对照）：见下节。
+
+## Phase B：到达式记账（SE3-WheelLegged-Recovery-Discovery-Ungrouped-Arrival-MLP）
+
+`upward`(3.0, 绝对值/步积分) → `upward_arrival`(12.5, rate_cap 0.1)：
+正向进度每步按 0.1 score 封顶计酬（全程 4.0 需 ≥0.8s 才满酬），
+快于封顶的上行弃收不补；回落**无封顶全额回吐**。
+
+- 库存 `upward_progress` 的对称 clamp 有「慢起快摔」刷分洞（快摔回吐被
+  封顶在 -max/步，循环净赚），故新写 `upward_arrival`，不动库存函数。
+- 回放实测（旧弹道策略）：supine 实收 +7.7（慢起满酬 ~10，快段弃收 23%）；
+  站立后流水归零（旧 upward 站立 +12/s）。
+- **口径警告**：B 相对 A 少了站立 upward 流水，两任务 mean_reward
+  不可直接比较；对照一律看评测端力度指标与成功率。
+- 若 B 起身发现变慢：tracking 流水（站立 ~4-5/s）+ graced_fall 剪枝仍
+  提供温和的直立偏好；观察 SelfRight/upward_arrival_capped_rate。

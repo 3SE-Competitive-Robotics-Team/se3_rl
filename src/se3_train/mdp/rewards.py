@@ -533,6 +533,52 @@ def upward_progress(
     return reward
 
 
+def upward_arrival(
+    env: ManagerBasedRlEnv,
+    rate_cap: float = 0.1,
+) -> torch.Tensor:
+    """到达式向上记账（记账改革 Phase B）：总收益只取决于到达的直立度。
+
+    正向进度按 rate_cap 每步封顶计酬——快于封顶速率的上行弃收不补，
+    快起身与慢起身总酬相同甚至更少，消除「越快越赚」的时间压力；
+    回落无封顶全额回吐，杜绝库存 upward_progress 对称 clamp 的
+    「慢起快摔」刷分循环（快摔回吐被封顶，循环净赚）。
+    rate_cap=0.1：score 全程 4.0 需 ≥40 步（0.8s）才能满额收酬。
+    """
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    score = _upward_score(pg_z)
+
+    prev_score = getattr(env, "_prev_upward_arrival_score", None)
+    if not isinstance(prev_score, torch.Tensor) or prev_score.shape[0] != env.num_envs:
+        prev_score = score.detach().clone()
+        env._prev_upward_arrival_score = prev_score
+
+    first_step = env.episode_length_buf <= 1
+    cap = max(float(rate_cap), 1.0e-6)
+    delta = score - prev_score
+    reward = torch.clamp(delta, max=cap) / cap
+    reward = torch.where(first_step, torch.zeros_like(reward), reward)
+    prev_score[:] = score.detach()
+
+    if hasattr(env, "extras") and _should_log_step(env):
+        tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
+        upright_15 = tilt < torch.deg2rad(torch.as_tensor(15.0, device=env.device))
+        log = env.extras.setdefault("log", {})
+        log.update(
+            {
+                "SelfRight/upward_arrival": reward.mean(),
+                "SelfRight/upward_arrival_capped_rate": (delta > cap).float().mean(),
+                "SelfRight/tilt_deg": torch.rad2deg(tilt).mean(),
+                "SelfRight/upright_15deg_rate": upright_15.float().mean(),
+                "Locomotion/upright_gate": _upright_factor(pg_z).mean(),
+            }
+        )
+        _log_cached_reset_diagnostics(env)
+
+    return reward
+
+
 def tracking_lin_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
