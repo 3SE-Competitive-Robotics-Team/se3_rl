@@ -1107,27 +1107,27 @@ def angular_momentum(env: ManagerBasedRlEnv) -> torch.Tensor:
     return torch.sum(angmom**2, dim=-1) * gate
 
 
-def angular_momentum_excess(
+def base_ang_vel_xy_excess(
     env: ManagerBasedRlEnv,
     threshold: float,
 ) -> torch.Tensor:
-    """roll/pitch 平面角动量范数超阈部分的平方——为整身翻滚动量定价。
+    """机身 roll/pitch 角速度范数超阈部分的平方——为弹道翻滚速率定价。
 
-    只取世界系 xy 分量，放行指令内 yaw 旋转；阈值内（温柔翻身）免罚，
-    无直立门控——弹道翻滚恰好发生在大倾角窗口。
+    subtree_angmom 在 mjwarp 管线中恒为零（未启用计算，flat 线同名罚项
+    实为死项），改用机身角速度等价刻画整身翻滚；只取 roll/pitch 分量，
+    放行指令内 yaw 旋转；阈值内（温柔翻身）免罚，无直立门控——弹道翻滚
+    恰好发生在大倾角窗口。
     """
-    robot = env.scene["robot"]
-    root_body_id = robot.data.indexing.root_body_id
-    angmom = env.sim.data.subtree_angmom[:, root_body_id]
-    l_xy = torch.linalg.norm(angmom[:, :2], dim=-1)
-    excess = torch.clamp(l_xy - float(threshold), min=0.0)
+    ang_vel = env.scene["robot"].data.root_link_ang_vel_b
+    rate = torch.linalg.norm(ang_vel[:, :2], dim=-1)
+    excess = torch.clamp(rate - float(threshold), min=0.0)
     penalty = excess**2
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
             {
-                "Recovery/diag_angmom_xy": l_xy.mean().item(),
-                "Recovery/diag_angmom_excess_rate": (excess > 0.0).float().mean().item(),
+                "Recovery/diag_flip_rate": rate.mean().item(),
+                "Recovery/diag_flip_rate_excess_rate": (excess > 0.0).float().mean().item(),
             }
         )
     return penalty
