@@ -736,7 +736,10 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     source_stages_by_group = root_params.pop("source_curriculum_stages_by_group", {})
     root_params.update(
         {
-            "pose_weights": (0.08, 0.17, 0.17, 0.29, 0.29),
+            # 站立份额 0.08 -> 0.25（倒地四类按原比例缩到 0.75）：分组唯一被证实的贡献是
+            # 50% 保底站立练习；0.08 时两条 Ungrouped run（yzau6pg5/ayre2wda）的站立平衡
+            # 都拖到 iter 2400-2800 才学会（upright_gate 0.90->0.97 的爬升段）。
+            "pose_weights": (0.25, 0.14, 0.14, 0.235, 0.235),
             "source_curriculum_stages": source_stages_by_group.get("recover"),
         }
     )
