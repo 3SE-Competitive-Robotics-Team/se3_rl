@@ -9,6 +9,7 @@ import torch
 from mjlab.rl import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
 
+from se3_shared import JointGroup
 from se3_train.async_logging import (
     Se3AsyncHostLogger,
     Se3RolloutMetricsLogger,
@@ -70,12 +71,46 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             "SE3_CHECK_NAN",
             os.environ.get("SE3_SMOKE", "0") == "1",
         )
+        self._se3_apply_group_init_std()
         if not self.is_distributed or self.gpu_global_rank == 0:
             print(format_runtime_summary(self._se3_runtime_info), flush=True)
             if self._se3_async_host_logger_enabled:
                 print("[SE3 Runtime] async_host_logger=enabled", flush=True)
             print(
                 f"[SE3 Runtime] check_nan={'enabled' if self._se3_check_nan_enabled else 'disabled'}",
+                flush=True,
+            )
+
+    def _se3_apply_group_init_std(self) -> None:
+        """按动作组覆写 σ 初值（SE3_RECOVERY_WHEEL_INIT_STD / SE3_RECOVERY_LEG_INIT_STD）。
+
+        动机（2026-08-31 任务 3/4/5 诊断）：轮 action_scale=45 下，全局 σ 的物理轮噪
+        为 ±σ×45 rad/s，冷启动期机械性挡死平衡学习——四条 run 的平衡开窍都与 σ
+        离开 0.4+ 平台严格同步（≈2700-2900 迭代）。分组初值解开「高 σ 挡平衡、
+        低 σ 挡起身探索」的死结；σ 仍为逐维可学参数，后续演化交给梯度。
+        """
+        wheel_raw = os.environ.get("SE3_RECOVERY_WHEEL_INIT_STD")
+        leg_raw = os.environ.get("SE3_RECOVERY_LEG_INIT_STD")
+        if wheel_raw is None and leg_raw is None:
+            return
+        distribution = getattr(self.alg.actor, "distribution", None)
+        std_param = getattr(distribution, "std_param", None)
+        if not isinstance(std_param, torch.nn.Parameter):
+            raise RuntimeError("分组 σ 初值只支持 scalar 型 GaussianDistribution（std_param）")
+        num_actions = int(std_param.shape[-1])
+        expected = len(JointGroup.LEG_ACTUATORS) + len(JointGroup.WHEEL_ACTUATORS)
+        if num_actions != expected:
+            raise RuntimeError(f"动作维度 {num_actions} 与执行器分组总数 {expected} 不符")
+        with torch.no_grad():
+            if leg_raw is not None:
+                std_param.data[list(JointGroup.LEG_ACTUATORS)] = float(leg_raw)
+            if wheel_raw is not None:
+                std_param.data[list(JointGroup.WHEEL_ACTUATORS)] = float(wheel_raw)
+        if not self.is_distributed or self.gpu_global_rank == 0:
+            print(
+                "[SE3 GroupStd] init std overridden: "
+                f"leg={leg_raw if leg_raw is not None else 'default'} "
+                f"wheel={wheel_raw if wheel_raw is not None else 'default'}",
                 flush=True,
             )
 
@@ -251,6 +286,20 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             return
         for key, value in timing.as_log_dict().items():
             writer.add_scalar(key, value, iteration)
+        output_std = getattr(self.alg.get_policy(), "output_std", None)
+        if isinstance(output_std, torch.Tensor):
+            std_flat = output_std.detach().flatten()
+            if std_flat.numel() > max(JointGroup.WHEEL_ACTUATORS):
+                writer.add_scalar(
+                    "Policy/leg_std",
+                    std_flat[list(JointGroup.LEG_ACTUATORS)].mean().item(),
+                    iteration,
+                )
+                writer.add_scalar(
+                    "Policy/wheel_std",
+                    std_flat[list(JointGroup.WHEEL_ACTUATORS)].mean().item(),
+                    iteration,
+                )
         writer.add_scalar("Perf/update_s", timing.learn_s, iteration)
         writer.add_scalar(
             "Perf/async_host_logger_flush_s", self._se3_last_async_logger_flush_s, iteration
