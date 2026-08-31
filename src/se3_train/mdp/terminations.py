@@ -63,11 +63,9 @@ class BadOrientationDelayed:
         recovery_terminate: bool = True,
         active_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if (
-            self._fail_count is None
-            or self._fail_count.shape[0] != env.num_envs
-            or self._fail_count.device != env.device
-        ):
+        # 注意：env.device 是字符串，torch.device != str 恒为 True——device 入谓词
+        # 会导致状态每步重建、持续计数永远归零（graced_fall 冒烟实测），不得加回。
+        if self._fail_count is None or self._fail_count.shape[0] != env.num_envs:
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         robot = env.scene["robot"]
@@ -176,11 +174,7 @@ class RecoveryStagnation:
         pg_z = robot.data.projected_gravity_b[:, 2]
         score = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
 
-        if (
-            self._best_score is None
-            or self._best_score.shape[0] != env.num_envs
-            or self._best_score.device != env.device
-        ):
+        if self._best_score is None or self._best_score.shape[0] != env.num_envs:
             self._best_score = score.detach().clone()
             self._stagnation_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
@@ -229,7 +223,10 @@ class GracedFallTermination:
     """武装式宽限翻倒终止：站稳过的 episode 翻倒后给宽限窗自救，救不回才剪枝。
 
     三段语义（参数由 2026-08-31 yzau6pg5@4999 探测定标，见提交说明）：
-    - 武装：episode 内倾角 < arm_angle 持续 arm_sustain_steps 后激活，倒地开局不受影响；
+    - 武装：站立位姿 reset（首步倾角 < arm_angle）出生即武装；episode 内倾角
+      < arm_angle 持续 arm_sustain_steps 亦武装。倒地开局不受影响。
+      （出生武装修复冷启动死锁：任务 5 实测 armed_rate 全程 0.000——未训练策略
+      的站立 reset 撑不过持续 0.5s 的武装门槛，剪枝从未发生。）
     - 触发：武装后倾角 > trigger_angle 开始宽限计时；
     - 宽限：计时内回到 < arm_angle 持续 recover_sustain_steps 即清零继续（翻倒自救
       留在数据里），计满 grace_steps 仍未恢复则终止。
@@ -248,17 +245,14 @@ class GracedFallTermination:
         trigger_angle_deg: float = 60.0,
         grace_steps: int = 200,
         recover_sustain_steps: int = 10,
+        arm_at_reset: bool = True,
     ) -> torch.Tensor:
         robot = env.scene["robot"]
         neg_pg_z = -robot.data.projected_gravity_b[:, 2]
         up = neg_pg_z > math.cos(math.radians(float(arm_angle_deg)))
         down = neg_pg_z < math.cos(math.radians(float(trigger_angle_deg)))
 
-        if (
-            self._armed is None
-            or self._armed.shape[0] != env.num_envs
-            or self._armed.device != env.device
-        ):
+        if self._armed is None or self._armed.shape[0] != env.num_envs:
             self._armed = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
             self._up_run = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
             self._grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
@@ -268,6 +262,8 @@ class GracedFallTermination:
         self._armed[first_step] = False
         self._up_run[first_step] = 0
         self._grace[first_step] = 0
+        if arm_at_reset:
+            self._armed = self._armed | (first_step & up)
 
         self._up_run = torch.where(up, self._up_run + 1, torch.zeros_like(self._up_run))
         self._armed = self._armed | (self._up_run >= int(arm_sustain_steps))
@@ -522,11 +518,7 @@ class LegContactDelayed:
         recovery_grace_steps: int = 0,
         recovery_terminate: bool = True,
     ) -> torch.Tensor:
-        if (
-            self._fail_count is None
-            or self._fail_count.shape[0] != env.num_envs
-            or self._fail_count.device != env.device
-        ):
+        if self._fail_count is None or self._fail_count.shape[0] != env.num_envs:
             self._fail_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
 
         sensor: ContactSensor = env.scene[sensor_name]

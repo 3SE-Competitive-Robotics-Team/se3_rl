@@ -846,6 +846,10 @@ def ungrouped_env_cfg(
                 "trigger_angle_deg": 60.0,
                 "grace_steps": 200,
                 "recover_sustain_steps": 10,
+                # 站立位姿 reset 出生即武装：修复冷启动死锁（任务 5 实测 armed_rate
+                # 全程 0.000，站立开局 ~1s 内翻倒、撑不过 0.5s 武装门槛），使站立
+                # 练习以 ~5s 而非 20s 周期回收。
+                "arm_at_reset": True,
             },
         )
         cfg.curriculum["commands_vel"] = _ungrouped_velocity_curriculum_cfg()
