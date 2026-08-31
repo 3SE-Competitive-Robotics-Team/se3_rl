@@ -72,6 +72,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             os.environ.get("SE3_SMOKE", "0") == "1",
         )
         self._se3_apply_group_init_std()
+        self._se3_reward_contract_info = self._se3_read_reward_contract_info()
         if not self.is_distributed or self.gpu_global_rank == 0:
             print(format_runtime_summary(self._se3_runtime_info), flush=True)
             if self._se3_async_host_logger_enabled:
@@ -80,6 +81,26 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 f"[SE3 Runtime] check_nan={'enabled' if self._se3_check_nan_enabled else 'disabled'}",
                 flush=True,
             )
+            if self._se3_reward_contract_info is not None:
+                profile, contract_hash = self._se3_reward_contract_info
+                print(
+                    f"[SE3 Reward Contract] profile={profile} sha256={contract_hash}",
+                    flush=True,
+                )
+
+    def _se3_read_reward_contract_info(self) -> tuple[str, str] | None:
+        """从运行时最终奖励表识别已校验的 profile 与稳定指纹。"""
+
+        env_cfg = getattr(self.env, "cfg", None)
+        if env_cfg is None:
+            env_cfg = getattr(getattr(self.env, "unwrapped", None), "cfg", None)
+        if env_cfg is None:
+            return None
+        from se3_train.tasks.recovery_discovery.env_cfg import (
+            detect_discovery_reward_contract,
+        )
+
+        return detect_discovery_reward_contract(env_cfg)
 
     def _se3_apply_group_init_std(self) -> None:
         """按动作组覆写 σ 初值（SE3_RECOVERY_WHEEL_INIT_STD / SE3_RECOVERY_LEG_INIT_STD）。
@@ -107,10 +128,10 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             if wheel_raw is not None:
                 std_param.data[list(JointGroup.WHEEL_ACTUATORS)] = float(wheel_raw)
         if not self.is_distributed or self.gpu_global_rank == 0:
+            leg_std = float(std_param.data[list(JointGroup.LEG_ACTUATORS)].mean())
+            wheel_std = float(std_param.data[list(JointGroup.WHEEL_ACTUATORS)].mean())
             print(
-                "[SE3 GroupStd] init std overridden: "
-                f"leg={leg_raw if leg_raw is not None else 'default'} "
-                f"wheel={wheel_raw if wheel_raw is not None else 'default'}",
+                f"[SE3 GroupStd] effective init std: leg={leg_std:g} wheel={wheel_std:g}",
                 flush=True,
             )
 

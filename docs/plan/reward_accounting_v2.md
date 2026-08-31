@@ -1,12 +1,19 @@
 # 记账改革 v2：起身暴力的结构性定价（Phase A）
 
+> **2026-08-31 契约隔离修正：**任务 8-11 证明把本页改革直接写入共享
+> `_configure_discovery_reward_contract` 会污染标准 Ungrouped 对照，并在冷启动时把探索 σ
+> 压至约 0.12。标准 `...Ungrouped-MLP` 现固定为 `baseline`（恢复 `3bf891c` 奖励语义）；
+> Phase A 只由 `...Ungrouped-ReformA-MLP` 的 `reform-a` profile 启用，原 Arrival 任务显式
+> 使用 `reform-ab`。三种 profile 均校验名称、权重、关键参数与函数，并在训练 console 中
+> 打印稳定 contract hash。任务 8-11 永久排除出分组 σ 与记账改革的证据集。
+
 > 背景诊断（2026-08-31）：起身太猛不是训练病，是价目表最优解。
 > 时间税（躺着/过渡中每步扣 ~40-50/s，其中高度 L2 独占 27-38/s）对
 > 暴力总价（一次弹道起身 ~2-5，724N 落地账单 0.00002）约 10-15:1，
 > 策略只是精确执行了这张表。本改革改「什么被计价、怎么记账」，
 > 不做权重迭代：每个权重由下面的轨迹算术一次定标，评测端验收。
 
-## 改动清单（Phase A，全部落在 `_configure_discovery_reward_contract` 生效层）
+## 改动清单（Phase A，仅由 `reform-a` / `reform-ab` profile 叠加）
 
 | # | 项 | 改法 | 形式 |
 |---|---|---|---|

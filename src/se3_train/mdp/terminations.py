@@ -227,7 +227,7 @@ class GracedFallTermination:
       < arm_angle 持续 arm_sustain_steps 亦武装。倒地开局不受影响。
       （出生武装修复冷启动死锁：任务 5 实测 armed_rate 全程 0.000——未训练策略
       的站立 reset 撑不过持续 0.5s 的武装门槛，剪枝从未发生。）
-    - 触发：武装后倾角 > trigger_angle 开始宽限计时；
+    - 触发：武装后倾角离开 leave_angle 直立带即开始宽限计时；
     - 宽限：计时内回到 < arm_angle 持续 recover_sustain_steps 即清零继续（翻倒自救
       留在数据里），计满 grace_steps 仍未恢复则终止。
     """
@@ -242,15 +242,17 @@ class GracedFallTermination:
         env: ManagerBasedRlEnv,
         arm_angle_deg: float = 30.0,
         arm_sustain_steps: int = 25,
-        trigger_angle_deg: float = 60.0,
+        leave_angle_deg: float = 30.0,
         grace_steps: int = 200,
         recover_sustain_steps: int = 10,
         arm_at_reset: bool = True,
     ) -> torch.Tensor:
+        if float(leave_angle_deg) < float(arm_angle_deg):
+            raise ValueError("graced_fall 的 leave_angle_deg 不得小于 arm_angle_deg")
         robot = env.scene["robot"]
         neg_pg_z = -robot.data.projected_gravity_b[:, 2]
         up = neg_pg_z > math.cos(math.radians(float(arm_angle_deg)))
-        down = neg_pg_z < math.cos(math.radians(float(trigger_angle_deg)))
+        outside = neg_pg_z < math.cos(math.radians(float(leave_angle_deg)))
 
         if self._armed is None or self._armed.shape[0] != env.num_envs:
             self._armed = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
@@ -272,7 +274,7 @@ class GracedFallTermination:
         ticking = (self._grace > 0) & ~recovered
         self._grace = torch.where(recovered, torch.zeros_like(self._grace), self._grace)
         self._grace = torch.where(ticking, self._grace + 1, self._grace)
-        start = self._armed & down & (self._grace == 0)
+        start = self._armed & outside & (self._grace == 0)
         self._grace = torch.where(start, torch.ones_like(self._grace), self._grace)
 
         terminated = self._grace > int(grace_steps)
@@ -282,6 +284,7 @@ class GracedFallTermination:
                 torch.stack(
                     (
                         self._armed.float().sum(),
+                        (self._armed & outside).float().sum(),
                         (self._grace > 0).float().sum(),
                         terminated.float().sum(),
                     )
@@ -291,8 +294,9 @@ class GracedFallTermination:
             env.extras.setdefault("log", {}).update(
                 {
                     "Recovery/graced_fall_armed_rate": values[0],
-                    "Recovery/graced_fall_grace_rate": values[1],
-                    "Recovery/graced_fall_termination_rate": values[2],
+                    "Recovery/graced_fall_outside_rate": values[1],
+                    "Recovery/graced_fall_grace_rate": values[2],
+                    "Recovery/graced_fall_termination_rate": values[3],
                 }
             )
         return terminated

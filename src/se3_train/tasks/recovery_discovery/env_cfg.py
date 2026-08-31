@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import replace
+from enum import StrEnum
 from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -47,6 +50,15 @@ _RECOVER_TN_SAFE_RATIO = 0.80
 _LOCO_TN_REWARD_WEIGHT = -0.50
 _RECOVER_TN_REWARD_WEIGHT = -0.50
 
+
+class DiscoveryRewardProfile(StrEnum):
+    """Recovery-Discovery 奖励记账配置，标准任务必须显式保持 baseline。"""
+
+    BASELINE = "baseline"
+    REFORM_A = "reform-a"
+    REFORM_AB = "reform-ab"
+
+
 _DISCOVERY_REWARD_WEIGHTS = {
     "tracking_lin_vel": 3.0,
     "tracking_ang_vel": 1.5,
@@ -71,18 +83,35 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "joint_mirror": -0.05,
     "dof_pos_limits": -5.0,
     "collision": -1.0,
-    # --- 记账改革 A2-A4：暴力的世界侧定价（超运行带 hinge 形式，带内免罚）---
-    # 定标见 docs/plan/reward_accounting_v2.md：目标是弹道起身总账 ≈ 1.5-2× 其时间收益，
-    # 温柔起身近零账单。权重经 yzau6pg5@4999 回放审计校准（弹道腿速实测 19.6 rad/s，
-    # 落地 p95 达 1475N）。旧 contact_forces(-1.5e-4, 仅轮, /100) 对 724N 冲击计价
-    # 0.00002/步，为装饰品，由 impact_forces 取代。
-    "leg_dof_vel": -0.08,
-    "impact_forces": -0.15,
-    "ang_vel_xy_excess": -0.5,
+    "contact_forces": -1.5e-4,
     "wheel_air_velocity": -1.0e-3,
     "leg_contact": -1.0,
     "wheel_contact_without_cmd": 0.1,
     "diagnostics": 1.0,
+}
+
+_DISCOVERY_REFORM_A_REWARD_WEIGHTS = {
+    **{
+        name: weight
+        for name, weight in _DISCOVERY_REWARD_WEIGHTS.items()
+        if name != "contact_forces"
+    },
+    "leg_dof_vel": -0.08,
+    "impact_forces": -0.15,
+    "ang_vel_xy_excess": -0.5,
+}
+_DISCOVERY_REFORM_AB_REWARD_WEIGHTS = {
+    **{
+        name: weight
+        for name, weight in _DISCOVERY_REFORM_A_REWARD_WEIGHTS.items()
+        if name != "upward"
+    },
+    "upward_arrival": 12.5,
+}
+_DISCOVERY_REWARD_WEIGHTS_BY_PROFILE = {
+    DiscoveryRewardProfile.BASELINE: _DISCOVERY_REWARD_WEIGHTS,
+    DiscoveryRewardProfile.REFORM_A: _DISCOVERY_REFORM_A_REWARD_WEIGHTS,
+    DiscoveryRewardProfile.REFORM_AB: _DISCOVERY_REFORM_AB_REWARD_WEIGHTS,
 }
 
 
@@ -163,8 +192,11 @@ def _ungrouped_velocity_curriculum_cfg() -> CurriculumTermCfg:
     )
 
 
-def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
-    """显式装配 Discovery 奖励表，并在配置漂移时直接失败。"""
+def _configure_discovery_reward_contract(
+    cfg: ManagerBasedRlEnvCfg,
+    reward_profile: DiscoveryRewardProfile,
+) -> None:
+    """先装配冻结的 baseline，再按显式 profile 叠加实验性记账。"""
 
     cfg.rewards.clear()
     cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
@@ -209,12 +241,9 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "use_upright_gate": False,
             "min_upright_gate": 0.0,
             "use_pose_end_gate": False,
-            # 记账改革 A1：高度是 loco 目标，倒地/翻起途中休眠（旧倒置全额门
-            # 在俯卧/仰躺收 ~27-38/s，是全表最重的时间税，也是起身求快的主推力）。
-            "use_inverted_free_upright_height_gate": False,
-            "use_near_upright_gate": True,
-            "near_upright_gate_start_deg": 30.0,
-            "near_upright_gate_full_deg": 15.0,
+            "use_inverted_free_upright_height_gate": True,
+            "upright_gate_angle_deg": 30.0,
+            "inverted_gate_angle_deg": 150.0,
         },
     )
     cfg.rewards["upright_orientation_l2"] = RewardTermCfg(
@@ -341,32 +370,15 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "use_recovery_gate": False,
         },
     )
-    # --- 记账改革 A2-A4：hinge 式暴力定价，阈值取运行带上限，带内免罚 ---
-    cfg.rewards["leg_dof_vel"] = RewardTermCfg(
-        func=rewards.leg_dof_vel,
-        weight=-0.08,
-        # 温柔起身腿速 ~3-5 rad/s；旧策略弹道快扫实测 p50 19.6 rad/s（回放审计），
-        # -0.08 使弹道账单 ≈ -6~-7.5（初版 -0.5 时 -46，会压死起身发现）。
-        params={"max_vel": 6.0, "asset_cfg": SceneEntityCfg("robot")},
-    )
-    cfg.rewards["impact_forces"] = RewardTermCfg(
-        func=rewards.impact_forces,
-        weight=-0.15,
-        # 阈值 200N ≈ 2.5× 单轮静载：静载/温柔推撑/常规步态免罚；回放审计弹道
-        # 落地 p50 423-790N/p95 1475N，账单 -1.4~-5.4 正中目标区。
+    cfg.rewards["contact_forces"] = RewardTermCfg(
+        func=rewards.contact_forces,
+        weight=-1.5e-4,
         params={
-            "sensor_names": ("wheel_sensor", "leg_contact_sensor", "collision_sensor"),
-            "threshold": 200.0,
-            "max_excess": 3000.0,
+            "threshold": 20.0,
+            "sensor_name": "wheel_sensor",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "use_recovery_gate": False,
         },
-    )
-    cfg.rewards["ang_vel_xy_excess"] = RewardTermCfg(
-        func=rewards.base_ang_vel_xy_excess,
-        weight=-0.5,
-        # 整身翻滚速率 hinge（roll/pitch，放行 yaw 指令旋转）：温柔翻身 ~2-3 rad/s
-        # 带内免罚，弹道翻滚 ~7-15 rad/s 计价。原方案 subtree_angmom 在 mjwarp
-        # 管线恒为零（flat 线同名罚项实为死项），改用机身角速度等价刻画。
-        params={"threshold": 4.0},
     )
     cfg.rewards["wheel_air_velocity"] = RewardTermCfg(
         func=rewards.wheel_air_velocity_penalty,
@@ -417,24 +429,276 @@ def _configure_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
             "core_log_interval_steps": 64,
         },
     )
-    _assert_discovery_reward_contract(cfg)
+    _apply_discovery_reward_profile(cfg, reward_profile)
+    _assert_discovery_reward_contract(cfg, reward_profile)
 
 
-def _assert_discovery_reward_contract(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_discovery_reward_profile(
+    cfg: ManagerBasedRlEnvCfg,
+    reward_profile: DiscoveryRewardProfile,
+) -> None:
+    """只在显式改革 profile 上叠加 A1-A4 与可选的到达式记账。"""
+
+    if reward_profile is DiscoveryRewardProfile.BASELINE:
+        return
+
+    height_params = dict(cfg.rewards["tracking_height"].params or {})
+    for name in (
+        "use_inverted_free_upright_height_gate",
+        "upright_gate_angle_deg",
+        "inverted_gate_angle_deg",
+    ):
+        height_params.pop(name, None)
+    height_params.update(
+        {
+            "use_inverted_free_upright_height_gate": False,
+            "use_near_upright_gate": True,
+            "near_upright_gate_start_deg": 30.0,
+            "near_upright_gate_full_deg": 15.0,
+        }
+    )
+    cfg.rewards["tracking_height"] = replace(
+        cfg.rewards["tracking_height"],
+        params=height_params,
+    )
+
+    cfg.rewards.pop("contact_forces")
+    cfg.rewards["leg_dof_vel"] = RewardTermCfg(
+        func=rewards.leg_dof_vel,
+        weight=-0.08,
+        params={"max_vel": 6.0, "asset_cfg": SceneEntityCfg("robot")},
+    )
+    cfg.rewards["impact_forces"] = RewardTermCfg(
+        func=rewards.impact_forces,
+        weight=-0.15,
+        params={
+            "sensor_names": ("wheel_sensor", "leg_contact_sensor", "collision_sensor"),
+            "threshold": 200.0,
+            "max_excess": 3000.0,
+        },
+    )
+    cfg.rewards["ang_vel_xy_excess"] = RewardTermCfg(
+        func=rewards.base_ang_vel_xy_excess,
+        weight=-0.5,
+        params={"threshold": 4.0},
+    )
+
+    if reward_profile is DiscoveryRewardProfile.REFORM_AB:
+        cfg.rewards.pop("upward")
+        cfg.rewards["upward_arrival"] = RewardTermCfg(
+            func=rewards.upward_arrival,
+            weight=12.5,
+            params={"rate_cap": 0.1},
+        )
+
+
+def _critical_reward_params(
+    reward_profile: DiscoveryRewardProfile,
+) -> dict[str, dict[str, object]]:
+    """返回足以区分三种记账语义的关键参数。"""
+
+    if reward_profile is DiscoveryRewardProfile.BASELINE:
+        return {
+            "tracking_height": {
+                "use_inverted_free_upright_height_gate": True,
+                "upright_gate_angle_deg": 30.0,
+                "inverted_gate_angle_deg": 150.0,
+            },
+            "contact_forces": {
+                "threshold": 20.0,
+                "sensor_name": "wheel_sensor",
+                "use_recovery_gate": False,
+            },
+        }
+
+    result: dict[str, dict[str, object]] = {
+        "tracking_height": {
+            "use_inverted_free_upright_height_gate": False,
+            "use_near_upright_gate": True,
+            "near_upright_gate_start_deg": 30.0,
+            "near_upright_gate_full_deg": 15.0,
+        },
+        "leg_dof_vel": {"max_vel": 6.0},
+        "impact_forces": {
+            "sensor_names": ("wheel_sensor", "leg_contact_sensor", "collision_sensor"),
+            "threshold": 200.0,
+            "max_excess": 3000.0,
+        },
+        "ang_vel_xy_excess": {"threshold": 4.0},
+    }
+    if reward_profile is DiscoveryRewardProfile.REFORM_AB:
+        result["upward_arrival"] = {"rate_cap": 0.1}
+    return result
+
+
+def _critical_reward_functions(
+    reward_profile: DiscoveryRewardProfile,
+) -> dict[str, object]:
+    """返回 profile 关键奖励项应绑定的实现。"""
+
+    result: dict[str, object] = {"tracking_height": rewards.tracking_height}
+    if reward_profile is DiscoveryRewardProfile.BASELINE:
+        result["contact_forces"] = rewards.contact_forces
+        return result
+    result.update(
+        {
+            "leg_dof_vel": rewards.leg_dof_vel,
+            "impact_forces": rewards.impact_forces,
+            "ang_vel_xy_excess": rewards.base_ang_vel_xy_excess,
+        }
+    )
+    if reward_profile is DiscoveryRewardProfile.REFORM_AB:
+        result["upward_arrival"] = rewards.upward_arrival
+    return result
+
+
+def _forbidden_reward_params(
+    reward_profile: DiscoveryRewardProfile,
+) -> dict[str, tuple[str, ...]]:
+    """返回会把当前 profile 偷偷改成另一种门控语义的禁用参数。"""
+
+    if reward_profile is DiscoveryRewardProfile.BASELINE:
+        return {
+            "tracking_height": (
+                "use_near_upright_gate",
+                "near_upright_gate_start_deg",
+                "near_upright_gate_full_deg",
+            )
+        }
+    return {
+        "tracking_height": (
+            "upright_gate_angle_deg",
+            "inverted_gate_angle_deg",
+        )
+    }
+
+
+def _expected_discovery_reward_weights(
+    reward_profile: DiscoveryRewardProfile,
+    *,
+    ungrouped: bool,
+) -> dict[str, float]:
+    """返回指定 profile 与环境布局的精确奖励权重表。"""
+
+    expected = dict(_DISCOVERY_REWARD_WEIGHTS_BY_PROFILE[reward_profile])
+    if ungrouped:
+        expected.pop("tn_envelope_violation_loco")
+        expected.pop("tn_envelope_violation_recover")
+        expected["tn_envelope_violation"] = _LOCO_TN_REWARD_WEIGHT
+    return expected
+
+
+def _assert_discovery_reward_contract(
+    cfg: ManagerBasedRlEnvCfg,
+    reward_profile: DiscoveryRewardProfile,
+    *,
+    ungrouped: bool = False,
+) -> None:
+    """校验奖励名称、权重、关键参数与关键实现，阻止 profile 静默漂移。"""
+
+    expected_weights = _expected_discovery_reward_weights(
+        reward_profile,
+        ungrouped=ungrouped,
+    )
     actual = set(cfg.rewards)
-    expected = set(_DISCOVERY_REWARD_WEIGHTS)
+    expected = set(expected_weights)
     if actual != expected:
         raise RuntimeError(
-            "Recovery-Discovery reward contract drifted: "
+            f"Recovery-Discovery {reward_profile.value} reward contract drifted: "
             f"missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
         )
     bad_weights = {
         name: float(cfg.rewards[name].weight)
-        for name, expected_weight in _DISCOVERY_REWARD_WEIGHTS.items()
+        for name, expected_weight in expected_weights.items()
         if abs(float(cfg.rewards[name].weight) - float(expected_weight)) > 1.0e-12
     }
     if bad_weights:
-        raise RuntimeError(f"Recovery-Discovery reward weight drifted: {bad_weights}")
+        raise RuntimeError(
+            f"Recovery-Discovery {reward_profile.value} reward weight drifted: {bad_weights}"
+        )
+
+    bad_params: dict[str, object] = {}
+    critical_params = _critical_reward_params(reward_profile)
+    for reward_name, expected_params in critical_params.items():
+        actual_params = cfg.rewards[reward_name].params or {}
+        for param_name, expected_value in expected_params.items():
+            actual_value = actual_params.get(param_name)
+            if actual_value != expected_value:
+                bad_params[f"{reward_name}.{param_name}"] = actual_value
+    if bad_params:
+        raise RuntimeError(
+            f"Recovery-Discovery {reward_profile.value} reward params drifted: {bad_params}"
+        )
+
+    forbidden_params = {
+        f"{reward_name}.{param_name}": (cfg.rewards[reward_name].params or {})[param_name]
+        for reward_name, param_names in _forbidden_reward_params(reward_profile).items()
+        for param_name in param_names
+        if param_name in (cfg.rewards[reward_name].params or {})
+    }
+    if forbidden_params:
+        raise RuntimeError(
+            f"Recovery-Discovery {reward_profile.value} reward params conflict: {forbidden_params}"
+        )
+
+    bad_functions = {
+        name: getattr(cfg.rewards[name].func, "__qualname__", repr(cfg.rewards[name].func))
+        for name, expected_func in _critical_reward_functions(reward_profile).items()
+        if cfg.rewards[name].func is not expected_func
+    }
+    if bad_functions:
+        raise RuntimeError(
+            f"Recovery-Discovery {reward_profile.value} reward functions drifted: {bad_functions}"
+        )
+
+
+def _reward_contract_hash(
+    cfg: ManagerBasedRlEnvCfg,
+    reward_profile: DiscoveryRewardProfile,
+) -> str:
+    """根据运行时最终奖励表生成稳定指纹。"""
+
+    critical_params = _critical_reward_params(reward_profile)
+    critical_functions = _critical_reward_functions(reward_profile)
+    payload = {
+        "profile": reward_profile.value,
+        "terms": {name: float(term.weight) for name, term in sorted(cfg.rewards.items())},
+        "critical_params": critical_params,
+        "critical_functions": {
+            name: f"{func.__module__}.{func.__qualname__}"
+            for name, func in sorted(critical_functions.items())
+        },
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def detect_discovery_reward_contract(
+    cfg: ManagerBasedRlEnvCfg,
+) -> tuple[str, str] | None:
+    """从运行时最终奖励表识别 profile，并返回已复核的稳定指纹。"""
+
+    has_ungrouped_tn = "tn_envelope_violation" in cfg.rewards
+    matches: list[DiscoveryRewardProfile] = []
+    for reward_profile in DiscoveryRewardProfile:
+        try:
+            _assert_discovery_reward_contract(
+                cfg,
+                reward_profile,
+                ungrouped=has_ungrouped_tn,
+            )
+        except RuntimeError:
+            continue
+        matches.append(reward_profile)
+    if len(matches) != 1:
+        return None
+    reward_profile = matches[0]
+    return reward_profile.value, _reward_contract_hash(cfg, reward_profile)
 
 
 def _apply_actor_history(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
@@ -449,8 +713,11 @@ def _apply_actor_history(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
     return cfg
 
 
-def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """标准姿态 Discovery 环境配置。"""
+def env_cfg(
+    play: bool = False,
+    reward_profile: DiscoveryRewardProfile = DiscoveryRewardProfile.BASELINE,
+) -> ManagerBasedRlEnvCfg:
+    """标准姿态 Discovery 环境配置，奖励改革必须通过显式 profile 选择。"""
     cfg = recovery_env_cfg(play=play)
     if not play:
         cfg.scene.num_envs = _TRAIN_NUM_ENVS_PER_RANK
@@ -731,22 +998,21 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             ),
         }
 
-    _configure_discovery_reward_contract(cfg)
+    _configure_discovery_reward_contract(cfg, reward_profile)
     return cfg
 
 
 def ungrouped_env_cfg(
     play: bool = False,
-    arrival_accounting: bool = False,
+    reward_profile: DiscoveryRewardProfile = DiscoveryRewardProfile.BASELINE,
 ) -> ManagerBasedRlEnvCfg:
     """生成与分组实验同超参数、但使用旧混合 reset 的公平基线。
 
     actor 观测与分组任务一致，同样使用五帧展平历史，使唯一差异是 env 分组本身。
-    arrival_accounting: 记账改革 Phase B——upward 绝对值记账换成 upward_arrival
-    到达式记账（正向速率封顶、回落全额回吐），其余契约不变。
+    标准任务固定使用 baseline；实验性记账只能由独立任务传入非默认 profile。
     """
 
-    cfg = env_cfg(play=play)
+    cfg = env_cfg(play=play, reward_profile=reward_profile)
     cfg.rewards.pop("tn_envelope_violation_loco")
     cfg.rewards.pop("tn_envelope_violation_recover")
     cfg.rewards["tn_envelope_violation"] = RewardTermCfg(
@@ -834,16 +1100,16 @@ def ungrouped_env_cfg(
     cfg.terminations.pop("recover_stagnation", None)
     if not play:
         # 武装式宽限翻倒终止：只约束「站稳过又翻倒且宽限内救不回」的 episode，
-        # 倒地开局与自救成功均不受影响。参数由 yzau6pg5@4999 名义 plant 探测定标
-        # （起身 p99=1.34s/max=1.46s -> 宽限 4s；直立带 max 3.0° -> 触发 60°；
-        # 起身瞬态 0/384 过冲 -> 武装 0.5s 为训练早期保险），DR 余量已含。
+        # 倒地开局与自救成功均不受影响。参数由 yzau6pg5@4999 名义 plant 探测定标：
+        # 起身 p99=1.34s/max=1.46s -> 宽限 4s；直立带 max 3.0° -> 30° 留足 DR 余量。
+        # armed 后离开直立带立即计时，避免任务 8-11 的 33° 斜靠停车绕过 60° 旧触发角。
         cfg.terminations["graced_fall"] = TerminationTermCfg(
             func=terminations.graced_fall,
             time_out=False,
             params={
                 "arm_angle_deg": 30.0,
                 "arm_sustain_steps": 25,
-                "trigger_angle_deg": 60.0,
+                "leave_angle_deg": 30.0,
                 "grace_steps": 200,
                 "recover_sustain_steps": 10,
                 # 站立位姿 reset 出生即武装：修复冷启动死锁（任务 5 实测 armed_rate
@@ -854,36 +1120,14 @@ def ungrouped_env_cfg(
         )
         cfg.curriculum["commands_vel"] = _ungrouped_velocity_curriculum_cfg()
 
-    if arrival_accounting:
-        # Phase B：到达式记账。总酬只取决于到达的直立度（慢起满酬 10，弹道
-        # ~1.75 反而少），起身求快的时间压力归零；权重 12.5 × rate_cap 0.1
-        # 使温柔全程收益与旧 upward 起身段积分（~10）对齐。
-        cfg.rewards.pop("upward")
-        cfg.rewards["upward_arrival"] = RewardTermCfg(
-            func=rewards.upward_arrival,
-            weight=12.5,
-            params={"rate_cap": 0.1},
-        )
-        expected = {
-            k
-            for k in _DISCOVERY_REWARD_WEIGHTS
-            if k
-            not in (
-                "upward",
-                "tn_envelope_violation_loco",
-                "tn_envelope_violation_recover",
-            )
-        } | {"upward_arrival", "tn_envelope_violation"}
-        if set(cfg.rewards) != expected:
-            raise RuntimeError(
-                "Arrival 记账契约漂移: "
-                f"missing={sorted(expected - set(cfg.rewards))} "
-                f"extra={sorted(set(cfg.rewards) - expected)}"
-            )
+    _assert_discovery_reward_contract(cfg, reward_profile, ungrouped=True)
     return _apply_actor_history(cfg)
 
 
-def history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def history_env_cfg(
+    play: bool = False,
+    reward_profile: DiscoveryRewardProfile = DiscoveryRewardProfile.BASELINE,
+) -> ManagerBasedRlEnvCfg:
     """生成五帧 actor 历史观测版本，critic 与其余训练契约保持不变。"""
 
-    return _apply_actor_history(env_cfg(play=play))
+    return _apply_actor_history(env_cfg(play=play, reward_profile=reward_profile))
