@@ -273,7 +273,9 @@ profile 中。Agent 必须先确定精确 profile，再只读取该文件；通�
 - 询问 tmux 会话管理
 
 各机器特定参数（IP、用户名、SSH 别名、GPU 型号）在 `.agents/skills/remote-dev-se3/machines/` 下对应文件。每次只读取身份匹配且与当前任务相关的一个 profile。
-当前已注册：`wuyingyun`（无影云 RTX 5880）。
+当前已注册 profile 以 `.agents/skills/remote-dev-se3/machines/*.md` 为准；不要在本文件
+维护容易过期的机器清单。根据用户明确给出的 profile 名或唯一机器别名，只读取对应的
+一个 machine profile。
 
 ## 环境限制
 

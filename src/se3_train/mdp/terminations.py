@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -222,6 +223,92 @@ class RecoveryStagnation:
 
 
 recovery_stagnation = RecoveryStagnation()
+
+
+class GracedFallTermination:
+    """武装式宽限翻倒终止：站稳过的 episode 翻倒后给宽限窗自救，救不回才剪枝。
+
+    三段语义（参数由 2026-08-31 yzau6pg5@4999 探测定标，见提交说明）：
+    - 武装：episode 内倾角 < arm_angle 持续 arm_sustain_steps 后激活，倒地开局不受影响；
+    - 触发：武装后倾角 > trigger_angle 开始宽限计时；
+    - 宽限：计时内回到 < arm_angle 持续 recover_sustain_steps 即清零继续（翻倒自救
+      留在数据里），计满 grace_steps 仍未恢复则终止。
+    """
+
+    def __init__(self) -> None:
+        self._armed: torch.Tensor | None = None
+        self._up_run: torch.Tensor | None = None
+        self._grace: torch.Tensor | None = None
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        arm_angle_deg: float = 30.0,
+        arm_sustain_steps: int = 25,
+        trigger_angle_deg: float = 60.0,
+        grace_steps: int = 200,
+        recover_sustain_steps: int = 10,
+    ) -> torch.Tensor:
+        robot = env.scene["robot"]
+        neg_pg_z = -robot.data.projected_gravity_b[:, 2]
+        up = neg_pg_z > math.cos(math.radians(float(arm_angle_deg)))
+        down = neg_pg_z < math.cos(math.radians(float(trigger_angle_deg)))
+
+        if (
+            self._armed is None
+            or self._armed.shape[0] != env.num_envs
+            or self._armed.device != env.device
+        ):
+            self._armed = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+            self._up_run = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+            self._grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        assert self._up_run is not None and self._grace is not None
+
+        first_step = env.episode_length_buf <= 1
+        self._armed[first_step] = False
+        self._up_run[first_step] = 0
+        self._grace[first_step] = 0
+
+        self._up_run = torch.where(up, self._up_run + 1, torch.zeros_like(self._up_run))
+        self._armed = self._armed | (self._up_run >= int(arm_sustain_steps))
+
+        recovered = self._up_run >= int(recover_sustain_steps)
+        ticking = (self._grace > 0) & ~recovered
+        self._grace = torch.where(recovered, torch.zeros_like(self._grace), self._grace)
+        self._grace = torch.where(ticking, self._grace + 1, self._grace)
+        start = self._armed & down & (self._grace == 0)
+        self._grace = torch.where(start, torch.ones_like(self._grace), self._grace)
+
+        terminated = self._grace > int(grace_steps)
+        if hasattr(env, "extras") and _should_log_step(env):
+            n = float(env.num_envs)
+            values = (
+                torch.stack(
+                    (
+                        self._armed.float().sum(),
+                        (self._grace > 0).float().sum(),
+                        terminated.float().sum(),
+                    )
+                )
+                / n
+            )
+            env.extras.setdefault("log", {}).update(
+                {
+                    "Recovery/graced_fall_armed_rate": values[0],
+                    "Recovery/graced_fall_grace_rate": values[1],
+                    "Recovery/graced_fall_termination_rate": values[2],
+                }
+            )
+        return terminated
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        if self._armed is not None and env_ids is not None:
+            self._armed[env_ids] = False
+            self._up_run[env_ids] = 0
+            self._grace[env_ids] = 0
+
+
+graced_fall = GracedFallTermination()
 
 
 def catastrophic_state(

@@ -801,6 +801,21 @@ def ungrouped_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.terminations.pop("loco_base_contact", None)
     cfg.terminations.pop("recover_stagnation", None)
     if not play:
+        # 武装式宽限翻倒终止：只约束「站稳过又翻倒且宽限内救不回」的 episode，
+        # 倒地开局与自救成功均不受影响。参数由 yzau6pg5@4999 名义 plant 探测定标
+        # （起身 p99=1.34s/max=1.46s -> 宽限 4s；直立带 max 3.0° -> 触发 60°；
+        # 起身瞬态 0/384 过冲 -> 武装 0.5s 为训练早期保险），DR 余量已含。
+        cfg.terminations["graced_fall"] = TerminationTermCfg(
+            func=terminations.graced_fall,
+            time_out=False,
+            params={
+                "arm_angle_deg": 30.0,
+                "arm_sustain_steps": 25,
+                "trigger_angle_deg": 60.0,
+                "grace_steps": 200,
+                "recover_sustain_steps": 10,
+            },
+        )
         cfg.curriculum["commands_vel"] = _ungrouped_velocity_curriculum_cfg()
     return _apply_actor_history(cfg)
 
