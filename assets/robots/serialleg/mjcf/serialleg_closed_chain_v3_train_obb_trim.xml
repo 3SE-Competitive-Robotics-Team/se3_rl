@@ -150,7 +150,7 @@
         <geom name="lf0_Link_stair_col_00" mesh="staircol_lf0_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
         <geom name="lf0_Link_stair_col_01" mesh="staircol_lf0_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="lf1_Link" pos="-0.12990117 0.0215 0.04639203">
-          <joint name="lf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 1 0" damping="1" armature="0.02" />
+          <joint name="lf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 1 0" range="-1.45 0" damping="0.005" armature="0.005" />
           <inertial pos="-0.04177153 -0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 0.00000296 -0.00076497 0.00001136" />
           <geom name="lf1_Link_visual" type="mesh" mesh="visual_l_calf" contype="0" conaffinity="0" group="1" />
           <site name="lf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
@@ -174,7 +174,7 @@
         <geom name="l_drive_bar_Link_coacd_col_02" mesh="legcoacd_l_drive_bar_Link_02" type="mesh" group="0" contype="1" conaffinity="2" />
         <geom name="l_drive_bar_Link_coacd_col_03" mesh="legcoacd_l_drive_bar_Link_03" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="l_coupler_Link" pos="0.04009536 0.00690000 0.04530576">
-          <joint name="l_coupler_Joint" type="hinge" axis="0 1 0" damping="1" armature="0.02" />
+          <joint name="l_coupler_Joint" type="hinge" axis="0 1 0" range="0 1.67" damping="0.005" armature="0.005" />
           <inertial pos="-0.08300337 0.00146519 0.01330427" mass="0.02321892" fullinertia="0.00000249 0.00007107 0.00006893 0.00000032 -0.00000125 -0.00000007" />
           <geom name="l_coupler_Link_visual" type="mesh" mesh="visual_l_coupler" contype="0" conaffinity="0" group="1" />
           <site name="l_coupler_end" pos="-0.16999653 0.0146 0.00108627" size="0.008" rgba="1 0.5 0 1" />
@@ -193,7 +193,7 @@
         <geom name="rf0_Link_stair_col_00" mesh="staircol_rf0_Link_00" type="mesh" group="0" contype="1" conaffinity="2" />
         <geom name="rf0_Link_stair_col_01" mesh="staircol_rf0_Link_01" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="rf1_Link" pos="-0.12990153 -0.0200 0.04639227">
-          <joint name="rf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 -1 0" damping="1" armature="0.02" />
+          <joint name="rf1_Joint" type="hinge" pos="-0.05003347 0 -0.04149627" axis="0 -1 0" range="0 1.45" damping="0.005" armature="0.005" />
           <inertial pos="-0.04177153 0.00094144 -0.06569666" mass="0.32184046" fullinertia="0.00126318 0.00185755 0.00061944 -0.00000296 -0.00076497 -0.00001136" />
           <geom name="rf1_Link_visual" type="mesh" mesh="visual_r_calf" contype="0" conaffinity="0" group="1" />
           <site name="rf_calf_closure" pos="-0.05003347 0 -0.04149627" size="0.008" rgba="0 1 0 1" />
@@ -217,7 +217,7 @@
         <geom name="r_drive_bar_Link_coacd_col_02" mesh="legcoacd_r_drive_bar_Link_02" type="mesh" group="0" contype="1" conaffinity="2" />
         <geom name="r_drive_bar_Link_coacd_col_03" mesh="legcoacd_r_drive_bar_Link_03" type="mesh" group="0" contype="1" conaffinity="2" />
         <body name="r_coupler_Link" pos="0.040095 -0.0069 0.045306">
-          <joint name="r_coupler_Joint" type="hinge" axis="0 -1 0" damping="1" armature="0.02" />
+          <joint name="r_coupler_Joint" type="hinge" axis="0 -1 0" range="-1.67 0" damping="0.005" armature="0.005" />
           <inertial pos="-0.08300337 -0.00146519 0.01330427" mass="0.02321892" fullinertia="0.00000249 0.00007107 0.00006893 -0.00000032 -0.00000125 0.00000007" />
           <geom name="r_coupler_Link_visual" type="mesh" mesh="visual_r_coupler" contype="0" conaffinity="0" group="1" />
           <site name="r_coupler_end" pos="-0.16999653 -0.0131 0.00108627" size="0.008" rgba="1 0.5 0 1" />

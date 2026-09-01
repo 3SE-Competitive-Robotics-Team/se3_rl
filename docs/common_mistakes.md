@@ -64,3 +64,15 @@ env 的采样值"，所有 env 共享。MJLab 1.4 + MJWarp 3.8 时代字段天�
 `recompute` 等级在事件触发后自动重算派生常量（`body_mass` 用 `set_const`、
 `body_inertia` 用 `set_const_0`）。自检方法：训练日志若出现上述 deprecation 警告，
 说明有字段漏申报。
+
+---
+
+## 4. connect 闭合不代表四连杆装配分支正确
+
+**错误表象**：MuJoCo 的 connect residual 很小、模型没有 NaN，但跌落或 recovery
+零力矩沉降后轮心翻到髋轴上方，解析四连杆校验出现约 1–2 rad 的被动角误差。**根因**：
+connect equality 只约束两个端点重合，不能区分四杆机构的正常解和镜像装配解；若被动
+关节没有范围，软约束可在冲击下穿过共线奇异位形。**正确做法**：按正常几何全工作区
+限制被动轴符号和外侧范围：左 `lf1/coupler=[-1.45,0]/[0,1.67]`，右侧镜像；不可用高
+damping 或大 armature 掩盖分支穿越。修改范围后必须用跌落沉降批次统计分支错误率，
+再重新生成带当前 MJCF 哈希的 recovery cache。
