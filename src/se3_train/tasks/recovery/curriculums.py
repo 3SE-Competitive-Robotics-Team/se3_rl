@@ -98,11 +98,11 @@ class _GroupState:
 
 
 class GroupedRewardVelocityCurriculum(ManagerTermBase):
-    """按 loco/recover 奖励分别推进速度包络。
+    """按 loco 奖励推进速度包络，recover 等级完全跟随 loco。
 
-    loco 使用真实移动命令的线速度与角速度跟踪分数；recover 使用包含起身阶段的
-    整段 episode 跟踪分数和 ready 比例。两组分别连续达标后升级，课程只升不降，
-    且 recover 永不超过 loco。
+    loco 使用真实移动命令的线速度与角速度跟踪分数，连续达标后升级，课程只升不降。
+    recover 组不再独立评估升级：初始等级与 loco 相同，loco 每次升级时同步升级。
+    recover 的窗口统计仍照常收集并写入日志，仅作诊断用途。
     """
 
     def __init__(self, cfg: ManagerTermBaseCfg, env: ManagerBasedRlEnv) -> None:
@@ -124,9 +124,14 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
         self._yaw_score_threshold = float(params.get("yaw_score_threshold", 0.70))
         self._recover_ready_threshold = float(params.get("recover_ready_threshold", 0.60))
 
+        if "recover_init_level" in params:
+            raise ValueError(
+                "recover 等级已改为完全跟随 loco，不再接受独立的 recover_init_level；"
+                "请从课程参数中删除该项。"
+            )
         loco_level = float(params.get("loco_init_level", 0.15))
-        recover_level = float(params.get("recover_init_level", 0.10))
-        self._validate_config(loco_level=loco_level, recover_level=recover_level)
+        recover_level = loco_level
+        self._validate_config(loco_level=loco_level)
 
         name_to_id = getattr(env, "env_group_name_to_id", None)
         group_ids = getattr(env, "env_group_ids", None)
@@ -180,13 +185,10 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
         self._apply_all_group_ranges()
         cfg.params = {}
 
-    def _validate_config(self, *, loco_level: float, recover_level: float) -> None:
+    def _validate_config(self, *, loco_level: float) -> None:
         """在训练启动时拒绝会破坏课程单调性的配置。"""
-        if not (0.0 < recover_level <= loco_level <= 1.0):
-            raise ValueError(
-                "初始课程级别必须满足 0 < recover_init_level <= "
-                f"loco_init_level <= 1，实际为 {recover_level}/{loco_level}。"
-            )
+        if not (0.0 < loco_level <= 1.0):
+            raise ValueError(f"loco_init_level 必须位于 (0, 1]，实际为 {loco_level}。")
         if self._max_lin_vel_x <= 0.0 or self._max_ang_vel_yaw <= 0.0:
             raise ValueError("完整速度包络上限必须为正数。")
         if not (0.0 < self._level_step <= 1.0):
@@ -249,22 +251,20 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
 
             evaluation_events[group_name] = True
             passed = self._evaluate_group(group_name)
-            if passed:
-                state.pass_streak = min(state.pass_streak + 1, self._required_passes)
-            else:
-                state.pass_streak = 0
 
-            if state.pass_streak >= self._required_passes:
-                upper_level = (
-                    1.0
-                    if group_name == self._loco_group_name
-                    else self._states[self._loco_group_name].level
-                )
-                next_level = min(state.level + self._level_step, upper_level, 1.0)
-                if next_level > state.level + 1.0e-9:
-                    state.level = next_level
+            # recover 组只刷新诊断指标，等级完全跟随 loco，不参与升级判定。
+            if group_name == self._loco_group_name:
+                if passed:
+                    state.pass_streak = min(state.pass_streak + 1, self._required_passes)
+                else:
                     state.pass_streak = 0
-                    upgrade_events[group_name] = True
+
+                if state.pass_streak >= self._required_passes:
+                    next_level = min(state.level + self._level_step, 1.0)
+                    if next_level > state.level + 1.0e-9:
+                        state.level = next_level
+                        state.pass_streak = 0
+                        upgrade_events[group_name] = True
 
             state.window = _GroupWindow.create(self.device)
             while state.next_evaluation_step <= step:
@@ -272,7 +272,9 @@ class GroupedRewardVelocityCurriculum(ManagerTermBase):
 
         recover_state = self._states[self._recover_group_name]
         loco_state = self._states[self._loco_group_name]
-        recover_state.level = min(recover_state.level, loco_state.level)
+        if abs(recover_state.level - loco_state.level) > 1.0e-9:
+            recover_state.level = loco_state.level
+            upgrade_events[self._recover_group_name] = True
         if any(upgrade_events.values()):
             self._apply_all_group_ranges()
 

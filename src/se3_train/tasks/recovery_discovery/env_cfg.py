@@ -101,6 +101,13 @@ _DISCOVERY_GENTLE_REWARD_WEIGHTS = {
     **_DISCOVERY_REWARD_WEIGHTS,
     "ang_vel_xy": -0.25,
     "contact_forces": -15.0,
+    # 静止定价修正 Z1/Z2（2026-09-01）。实测依据 = d9m1mi7p@3936：upward 11.7/s 占
+    # episode 回报 88%，静止抖动总代价 ~1.4/s 仅为站立收入的 10%，recover_lin_score
+    # 0.613 = exp(-0.1²/0.02) 反推静止漂移 RMS ≈ 0.1 m/s 且全程无改善。
+    # Z1 upward 3.0 → 1.0：直立常驻收入 12/s → 4/s，跟踪与静止定价的相对权重 ×3。
+    "upward": 1.0,
+    # Z2 静止漂移罚 -0.20 → -0.5：cap 后上限 1.6/s → 4/s，与降档后的 upward 同量级。
+    "upright_zero_velocity": -0.5,
     # 起身动作整形 S2-S4（2026-09-01）。实测依据 = job21@3000-4999 收敛期贡献：
     # upward +11.38/s 一家独大，而甩轮子 1:245、抽搐 1:27、不对称 1:10200。
     # S2 对称性：解开直立门后按 ×40 提价，目标量级 ~1% of upward。
@@ -456,10 +463,25 @@ def _apply_discovery_reward_profile(
         # S1 起身梯度：upward = (1-pg_z)^2 在完全倒置（pg_z=+1）处导数恰为 0，而 60%
         # 的 recover reset 正是 pitch≈180°，策略在最难的起点上拿不到局部梯度，只能靠
         # 爆发式甩轮跳出零梯度区。recovery_upward = 2u+2u^4 在倒置处保留导数 2，
-        # 直立/倒置端点值（4 / 0）不变。
+        # 直立/倒置端点值（4 / 0）不变。Z1 同时把权重降到 1.0（见权重表注释）。
         cfg.rewards["upward"] = replace(
             cfg.rewards["upward"],
             func=rewards.recovery_upward,
+            weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS["upward"],
+        )
+        # Z2 静止漂移罚提价（参数不变，仅权重，见权重表注释）。
+        cfg.rewards["upright_zero_velocity"] = replace(
+            cfg.rewards["upright_zero_velocity"],
+            weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS["upright_zero_velocity"],
+        )
+        # Z3 sigma_stand 0.02 → 0.08：0.02 在实测 0.1-0.35 m/s 的静止误差区间是零梯度
+        # 悬崖（exp(-0.35²/0.02)≈0.002），0.08 使 0.1 m/s 处得分 0.88、0.3 m/s 处 0.32，
+        # 整个工作区间恢复梯度。
+        lin_params = dict(cfg.rewards["tracking_lin_vel"].params or {})
+        lin_params["sigma_stand"] = 0.08
+        cfg.rewards["tracking_lin_vel"] = replace(
+            cfg.rewards["tracking_lin_vel"],
+            params=lin_params,
         )
         # S2 对称性：_upright_factor 在倾角 >= 90° 恒为 0，把起身全程的 joint_mirror
         # 乘成零。解门与提价必须同时做，只做一个都等于没做。
@@ -576,6 +598,8 @@ def _critical_reward_params(
             "wheel_air_velocity": {"recovery_active_only": True},
             "leg_action_rate": {"recovery_scale": 10.0},
             "wheel_action_rate": {"recovery_scale": 10.0},
+            # 静止定价修正 Z3：sigma_stand 改回 0.02 会让静止精度回到零梯度悬崖。
+            "tracking_lin_vel": {"sigma_stand": 0.08},
         }
 
     result: dict[str, dict[str, object]] = {
@@ -809,6 +833,11 @@ def env_cfg(
     command_cfg.height_range = (0.24, 0.30)
     command_cfg.standing_height_range = (0.24, 0.30)
     command_cfg.deployment_ranges = dict(_DISCOVERY_DEPLOYMENT_RANGES)
+    if reward_profile is DiscoveryRewardProfile.GENTLE:
+        # 静止定价修正 Z4（2026-09-01）：双零静站命令份额 0.05 → 0.15。d9m1mi7p 实测
+        # 静止漂移全程无改善，0.05 的静站预算过小；ungrouped 侧已有份额提升加速
+        # 站立平衡学习的先例（reset 姿态份额 0.08 → 0.25）。
+        command_cfg.standing_ratio = 0.15
 
     cfg.curriculum = {}
     inherited_events = dict(cfg.events)
@@ -1004,7 +1033,6 @@ def env_cfg(
                     "loco_group_name": "loco",
                     "recover_group_name": "recover",
                     "loco_init_level": 0.15,
-                    "recover_init_level": 0.10,
                     "level_step": 0.05,
                     "max_lin_vel_x": _DISCOVERY_MAX_LIN_VEL_X,
                     "max_ang_vel_yaw": _DISCOVERY_MAX_ANG_VEL_YAW,
