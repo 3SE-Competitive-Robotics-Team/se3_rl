@@ -15,6 +15,23 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 
+# `env._reset_pose_bin` 被两个 reset 函数共用，姿态分类法不同：
+# reset_root_state_recovery_standard_poses 写 0-4（五种标准跌倒姿态），
+# reset_root_state_full 写 10-12（全随机三档）。两段编码分开，避免一方的档位
+# 被按另一方的名字读出去——诊断按值查名，查不到的档位不上报。
+FULL_RANDOM_POSE_BIN_OFFSET = 10
+RESET_POSE_BIN_NAMES = {
+    0: "standing",
+    1: "left_side",
+    2: "right_side",
+    3: "prone",
+    4: "supine",
+    FULL_RANDOM_POSE_BIN_OFFSET + 0: "random_mixed",
+    FULL_RANDOM_POSE_BIN_OFFSET + 1: "random_pitch_inverted",
+    FULL_RANDOM_POSE_BIN_OFFSET + 2: "random_roll_side",
+}
+
+
 def ensure_bool_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
     """创建或读取 bool 缓存。"""
     values = getattr(env, name, None)

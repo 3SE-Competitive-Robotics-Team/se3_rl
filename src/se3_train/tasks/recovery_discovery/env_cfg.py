@@ -49,8 +49,9 @@ _PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
 _TRAIN_NUM_ENVS_PER_RANK = 8192
 RECOVERY_DISCOVERY_HISTORY_LENGTH = 5
 _LOCO_TN_SAFE_RATIO = 0.80
-_RECOVER_TN_SAFE_RATIO = 0.80
 _LOCO_TN_REWARD_WEIGHT = -0.50
+# Grouped 的分组 TN 项已删（5000 轮实测恒零），这两个常量仅供 recovery_expert 引用。
+_RECOVER_TN_SAFE_RATIO = 0.80
 _RECOVER_TN_REWARD_WEIGHT = -0.50
 
 
@@ -83,9 +84,6 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "leg_torques": -2.0e-4,
     "leg_dof_acc": -2.5e-7,
     "leg_power": -1.0e-4,
-    "wheel_torques": -1.0e-4,
-    "tn_envelope_violation_loco": _LOCO_TN_REWARD_WEIGHT,
-    "tn_envelope_violation_recover": _RECOVER_TN_REWARD_WEIGHT,
     "joint_mirror": -0.05,
     "dof_pos_limits": -5.0,
     "collision": -1.0,
@@ -103,6 +101,15 @@ _DISCOVERY_GENTLE_REWARD_WEIGHTS = {
     **_DISCOVERY_REWARD_WEIGHTS,
     "ang_vel_xy": -0.25,
     "contact_forces": -15.0,
+    # 起身动作整形 S2-S4（2026-09-01）。实测依据 = job21@3000-4999 收敛期贡献：
+    # upward +11.38/s 一家独大，而甩轮子 1:245、抽搐 1:27、不对称 1:10200。
+    # S2 对称性：解开直立门后按 ×40 提价，目标量级 ~1% of upward。
+    "joint_mirror": -2.0,
+    # S3 轮子空转：改为只在起身段计价（recovery_active_only），基数缩小故 ×30 提价。
+    "wheel_air_velocity": -3.0e-2,
+    # S4 抖动：全局 ×50 + 起身段再 ×10（recovery_scale），起身段等效 ×500。
+    "leg_action_rate": -0.05,
+    "wheel_action_rate": -5.5e-3,
 }
 
 _DISCOVERY_REFORM_A_REWARD_WEIGHTS = {
@@ -129,33 +136,6 @@ _DISCOVERY_REWARD_WEIGHTS_BY_PROFILE = {
     DiscoveryRewardProfile.REFORM_A: _DISCOVERY_REFORM_A_REWARD_WEIGHTS,
     DiscoveryRewardProfile.REFORM_AB: _DISCOVERY_REFORM_AB_REWARD_WEIGHTS,
 }
-
-
-def _group_tn_reward_cfg(
-    *,
-    group_name: str,
-    safe_tn_ratio: float,
-    weight: float,
-) -> RewardTermCfg:
-    """构造只作用于一个环境组的 substep TN 包络越界奖励。"""
-    return RewardTermCfg(
-        func=env_groups.FilteredRewardWrapper,
-        weight=weight,
-        params={
-            "group_names": (group_name,),
-            "wrapped_term": {
-                "func": rewards.NormalizedTnEnvelopeViolation,
-                "params": {
-                    "safe_tn_ratio": safe_tn_ratio,
-                    "asset_cfg": SceneEntityCfg(
-                        "robot",
-                        joint_names=JointGroup.POLICY_JOINT_NAMES,
-                        preserve_order=True,
-                    ),
-                },
-            },
-        },
-    )
 
 
 def _ungrouped_velocity_curriculum_cfg() -> CurriculumTermCfg:
@@ -233,8 +213,6 @@ def _configure_discovery_reward_contract(
         params={
             "command_name": "velocity_height",
             "sigma": 0.25,
-            "sigma_cmd_scale": 0.0,
-            "ratio_blend": 0.0,
             "use_upright_gate": True,
             "tracking_upright_full_cos": math.cos(math.radians(15.0)),
         },
@@ -356,21 +334,6 @@ def _configure_discovery_reward_contract(
         weight=-1.0e-4,
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
-    cfg.rewards["wheel_torques"] = RewardTermCfg(
-        func=rewards.wheel_torques,
-        weight=-1.0e-4,
-        params={"max_torque": 3.0, "asset_cfg": SceneEntityCfg("robot")},
-    )
-    cfg.rewards["tn_envelope_violation_loco"] = _group_tn_reward_cfg(
-        group_name="loco",
-        safe_tn_ratio=_LOCO_TN_SAFE_RATIO,
-        weight=_LOCO_TN_REWARD_WEIGHT,
-    )
-    cfg.rewards["tn_envelope_violation_recover"] = _group_tn_reward_cfg(
-        group_name="recover",
-        safe_tn_ratio=_RECOVER_TN_SAFE_RATIO,
-        weight=_RECOVER_TN_REWARD_WEIGHT,
-    )
     cfg.rewards["joint_mirror"] = RewardTermCfg(
         func=rewards.joint_mirror,
         weight=-0.05,
@@ -406,9 +369,7 @@ def _configure_discovery_reward_contract(
         params={
             "sensor_name": "wheel_sensor",
             "force_threshold": 1.0,
-            "velocity_scale": 1.0,
             "max_penalty": 10000.0,
-            "recovery_active_only": False,
             "asset_cfg": SceneEntityCfg("robot"),
             "log_prefix": "Recovery",
         },
@@ -492,6 +453,41 @@ def _apply_discovery_reward_profile(
             cfg.rewards["tracking_height"],
             params=height_params,
         )
+        # S1 起身梯度：upward = (1-pg_z)^2 在完全倒置（pg_z=+1）处导数恰为 0，而 60%
+        # 的 recover reset 正是 pitch≈180°，策略在最难的起点上拿不到局部梯度，只能靠
+        # 爆发式甩轮跳出零梯度区。recovery_upward = 2u+2u^4 在倒置处保留导数 2，
+        # 直立/倒置端点值（4 / 0）不变。
+        cfg.rewards["upward"] = replace(
+            cfg.rewards["upward"],
+            func=rewards.recovery_upward,
+        )
+        # S2 对称性：_upright_factor 在倾角 >= 90° 恒为 0，把起身全程的 joint_mirror
+        # 乘成零。解门与提价必须同时做，只做一个都等于没做。
+        mirror_params = dict(cfg.rewards["joint_mirror"].params or {})
+        mirror_params["use_upright_gate"] = False
+        cfg.rewards["joint_mirror"] = replace(
+            cfg.rewards["joint_mirror"],
+            weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS["joint_mirror"],
+            params=mirror_params,
+        )
+        # S3 轮子空转只在起身段计价，行走段完全不受影响。
+        air_params = dict(cfg.rewards["wheel_air_velocity"].params or {})
+        air_params["recovery_active_only"] = True
+        cfg.rewards["wheel_air_velocity"] = replace(
+            cfg.rewards["wheel_air_velocity"],
+            weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS["wheel_air_velocity"],
+            params=air_params,
+        )
+        # S4 抖动：action_smoothness 没有 recovery 钩子，只能用这两项的 recovery_scale
+        # 在起身段额外加价；行走段仍按全局权重计，量级仍低于 leg_torques。
+        for name in ("leg_action_rate", "wheel_action_rate"):
+            rate_params = dict(cfg.rewards[name].params or {})
+            rate_params["recovery_scale"] = 10.0
+            cfg.rewards[name] = replace(
+                cfg.rewards[name],
+                weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS[name],
+                params=rate_params,
+            )
         return
 
     height_params = dict(cfg.rewards["tracking_height"].params or {})
@@ -575,6 +571,11 @@ def _critical_reward_params(
                 "sensor_name": "wheel_sensor",
                 "use_recovery_gate": False,
             },
+            # 起身动作整形 S2-S4：这三处一旦被改回默认值，对应的定价会静默失效。
+            "joint_mirror": {"use_upright_gate": False},
+            "wheel_air_velocity": {"recovery_active_only": True},
+            "leg_action_rate": {"recovery_scale": 10.0},
+            "wheel_action_rate": {"recovery_scale": 10.0},
         }
 
     result: dict[str, dict[str, object]] = {
@@ -603,11 +604,14 @@ def _critical_reward_functions(
     """返回 profile 关键奖励项应绑定的实现。"""
 
     result: dict[str, object] = {"tracking_height": rewards.tracking_height}
-    if reward_profile in (
-        DiscoveryRewardProfile.BASELINE,
-        DiscoveryRewardProfile.GENTLE,
-    ):
+    if reward_profile is DiscoveryRewardProfile.BASELINE:
         result["contact_forces"] = rewards.contact_forces
+        return result
+    if reward_profile is DiscoveryRewardProfile.GENTLE:
+        result["contact_forces"] = rewards.contact_forces
+        # S1：GENTLE 的 upward 必须绑定倒置处保留梯度的实现，绑回 rewards.upward
+        # 会静默恢复 (1-pg_z)^2 的零梯度起点。
+        result["upward"] = rewards.recovery_upward
         return result
     result.update(
         {
@@ -661,8 +665,6 @@ def _expected_discovery_reward_weights(
 
     expected = dict(_DISCOVERY_REWARD_WEIGHTS_BY_PROFILE[reward_profile])
     if ungrouped:
-        expected.pop("tn_envelope_violation_loco")
-        expected.pop("tn_envelope_violation_recover")
         expected["tn_envelope_violation"] = _LOCO_TN_REWARD_WEIGHT
     return expected
 
@@ -1083,8 +1085,6 @@ def ungrouped_env_cfg(
     """
 
     cfg = env_cfg(play=play, reward_profile=reward_profile)
-    cfg.rewards.pop("tn_envelope_violation_loco")
-    cfg.rewards.pop("tn_envelope_violation_recover")
     cfg.rewards["tn_envelope_violation"] = RewardTermCfg(
         func=rewards.NormalizedTnEnvelopeViolation,
         weight=_LOCO_TN_REWARD_WEIGHT,
@@ -1244,11 +1244,14 @@ def teacher_history_env_cfg(
 
 
 def torque_assist_history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """生成按当前姿态施加阶梯外部扭矩的 GENTLE 任务。
+    """生成按当前姿态施加满幅外部扭矩的 GENTLE 任务。
 
-    所有样本只要倾角超过 30° 就施力，进入直立带立即撤力；再次跌出直立带时
-    重新介入。iter 0-99 使用 20 N·m，从 iter 100 起每 100 轮降低 5 N·m，
-    iter 400 起完全撤力。play/eval 默认关闭辅助。
+    被采样到的 episode 只要倾角超过 30° 就施加 20 N·m，进入直立带立即撤力并
+    清零本次辅助计时；再次跌出直立带重新获得完整 3 s 预算，而不是整个 episode
+    只有一次 3 s 累计额度。退火只降 episode 采样概率（iter 0-199 全采样、
+    200-499 线性降到 0），不降力矩幅值——原生扫频实测 <=18 N·m 完全翻不起来，
+    阶梯降幅方案在首次降到 15 N·m 时即失效。critic 额外获得 3D 辅助状态观测，
+    actor 的 34D 部署契约不变。play/eval 默认关闭辅助。
     """
 
     cfg = history_env_cfg(play=play, reward_profile=DiscoveryRewardProfile.GENTLE)
@@ -1258,14 +1261,28 @@ def torque_assist_history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         recovery_torque_assist=RecoveryTorqueAssistCfg(
             enabled=not play,
             torque_nm=20.0,
+            min_effective_torque_nm=19.0,
             body_name="base_link",
             body_axis=(0.0, 1.0, 0.0),
             exit_upright_angle_deg=30.0,
             max_assist_time_s=3.0,
-            decay_start_iter=100,
-            decay_interval_iters=100,
-            decay_step_nm=5.0,
+            probability_start=1.0,
+            hold_iters=200,
+            end_iter=500,
+            probability_end=0.0,
             steps_per_policy_iter=_STEPS_PER_POLICY_ITER,
         ),
+    )
+
+    critic_cfg = cfg.observations["critic"]
+    cfg.observations["critic"] = replace(
+        critic_cfg,
+        terms={
+            **critic_cfg.terms,
+            "torque_assist_state": ObservationTermCfg(
+                func=mdp_observations.recovery_torque_assist_state_obs,
+                params={"action_name": "delayed_action"},
+            ),
+        },
     )
     return cfg

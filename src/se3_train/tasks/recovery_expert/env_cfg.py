@@ -65,9 +65,10 @@ def expert_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """纯 recover 专家环境：五帧历史 actor + critic v2，episode 全部从倒地开始。"""
     cfg = history_env_cfg(play=play)
 
-    # --- 奖励：双组 TN 合并为无过滤单项（群体即全部 env）---
-    cfg.rewards.pop("tn_envelope_violation_loco")
-    cfg.rewards.pop("tn_envelope_violation_recover")
+    # --- 奖励：TN 包络越界作为无过滤单项（群体即全部 env）---
+    # 组版的双组 TN 项已删（5000 轮实测恒零），这里保留容错 pop 以兼容旧配置。
+    cfg.rewards.pop("tn_envelope_violation_loco", None)
+    cfg.rewards.pop("tn_envelope_violation_recover", None)
     cfg.rewards["tn_envelope_violation"] = RewardTermCfg(
         func=rewards.NormalizedTnEnvelopeViolation,
         weight=_RECOVER_TN_REWARD_WEIGHT,

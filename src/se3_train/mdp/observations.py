@@ -31,6 +31,7 @@ from se3_train.mdp.joint_indices import (
     wheel_actuator_ids,
     wheel_joint_ids,
 )
+from se3_train.mdp.recovery_torque_assist import RECOVERY_TORQUE_ASSIST_STATE_DIM
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -128,6 +129,28 @@ def processed_last_actions_obs(
 
 
 # --- Critic 特权观测 ---
+
+
+def recovery_torque_assist_state_obs(
+    env: ManagerBasedRlEnv,
+    action_name: str = "delayed_action",
+) -> torch.Tensor:
+    """外部扭矩引导状态，3D（特权信息，actor 不可见）。
+
+    依次为本 episode 是否被采样为辅助样本、当前是否在施力、本次跌倒剩余辅助
+    预算比例。辅助同时改变动力学与回报，critic 看不见它就只能对「有外力」和
+    「无外力」两套动力学拟合同一个 value 目标，撤力时 value 目标整体错位。
+    引导关闭（play/eval）时该项恒为零，不影响部署侧 34D actor 观测契约。
+    """
+
+    action_term = env.action_manager.get_term(action_name)
+    state = getattr(action_term, "recovery_torque_assist_state", None)
+    expected_shape = (env.num_envs, RECOVERY_TORQUE_ASSIST_STATE_DIM)
+    if not isinstance(state, torch.Tensor) or state.shape != expected_shape:
+        raise RuntimeError(
+            f"动作项 {action_name} 未提供形状 {expected_shape} 的 recovery_torque_assist_state"
+        )
+    return _finite_clamp(state)
 
 
 def base_lin_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

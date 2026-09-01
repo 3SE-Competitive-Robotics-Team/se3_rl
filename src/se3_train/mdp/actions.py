@@ -27,6 +27,7 @@ from se3_train.mdp.joint_indices import (
 )
 from se3_train.mdp.recovery_teacher import RecoveryTeacherCfg, RecoveryTeacherController
 from se3_train.mdp.recovery_torque_assist import (
+    RECOVERY_TORQUE_ASSIST_STATE_DIM,
     RecoveryTorqueAssistCfg,
     RecoveryTorqueAssistController,
 )
@@ -219,6 +220,18 @@ class SerialLegDelayedAction(ActionTerm):
         if self._recovery_torque_assist is None:
             return torch.zeros(self.num_envs, device=self.device)
         return self._recovery_torque_assist.applied_torque_nm
+
+    @property
+    def recovery_torque_assist_state(self) -> torch.Tensor:
+        """返回外部扭矩引导的 critic 特权状态，未启用时恒为零。"""
+
+        if self._recovery_torque_assist is None:
+            return torch.zeros(
+                self.num_envs,
+                RECOVERY_TORQUE_ASSIST_STATE_DIM,
+                device=self.device,
+            )
+        return self._recovery_torque_assist.critic_state
 
     @property
     def ctbc_output_bias(self) -> torch.Tensor:

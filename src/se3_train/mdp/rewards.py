@@ -1717,7 +1717,21 @@ def recovery_diagnostics(
     log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
     core_log_interval_steps: int = _DEFAULT_REWARD_LOG_INTERVAL_STEPS,
 ) -> torch.Tensor:
-    """记录 recovery one-policy 诊断量，返回 0 以避免改变奖励语义。"""
+    """累计 recover 课程 ready_score 并记录常驻起身诊断，返回 0 不改变奖励语义。
+
+    2026-09-01 精简：原实现按 heavy/core 两档写出 240 余个 ``Recovery/`` 键，其中
+    115 个是同一指标按命令高度/reset 档位的分箱展开，全仓库没有任何脚本消费；
+    分箱名还固定按三档姿态法命名，而本任务的 reset 走的是五档标准姿态法，
+    导致 ``pitch_inverted`` 实际报的是左侧卧、占多数的 prone/supine 完全不进统计。
+    现只保留判读起身所需的一组量，并按 ``RESET_POSE_BIN_NAMES`` 查名分箱。
+
+    ``collision_sensor_name`` 等参数精简后不再使用，保留在签名里是为了不动三处
+    任务配置的调用；确认无用后可与配置一起删除。
+    """
+
+    del collision_sensor_name, contact_force_threshold
+    del active_rod_margin_warning, core_log_interval_steps
+
     zero = torch.zeros(env.num_envs, device=env.device)
     _accumulate_recovery_curriculum_ready_score(
         env,
@@ -1729,34 +1743,17 @@ def recovery_diagnostics(
     )
     if not hasattr(env, "extras"):
         return zero
-
-    heavy_due = _should_log_step(env, log_interval_steps)
-    core_due = _should_log_step(env, core_log_interval_steps)
-    if not heavy_due and not core_due:
+    if not _should_log_step(env, log_interval_steps):
         return zero
 
     log = env.extras.setdefault("log", {})
     robot = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)
 
-    pg = robot.data.projected_gravity_b
-    pg_z = pg[:, 2]
+    pg_z = robot.data.projected_gravity_b[:, 2]
     tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
-    roll_deg = torch.rad2deg(torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0)))
-    pitch_deg = torch.rad2deg(torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0)))
-    upright_gate = _upright_factor(pg_z)
     upright_15 = tilt_deg < 15.0
     upright_30 = tilt_deg < 30.0
-    side_region = (tilt_deg >= 60.0) & (tilt_deg <= 120.0)
-    inverted_130 = tilt_deg > 130.0
-    inverted_150 = tilt_deg > 150.0
-
-    base_lin_vel = robot.data.root_link_lin_vel_b
-    base_ang_vel = robot.data.root_link_ang_vel_b
-    base_vxy = torch.linalg.norm(base_lin_vel[:, :2], dim=1)
-    base_vz_abs = torch.abs(base_lin_vel[:, 2])
-    base_ang_xy = torch.linalg.norm(base_ang_vel[:, :2], dim=1)
-    base_ang_norm = torch.linalg.norm(base_ang_vel, dim=1)
 
     height_sensor: TerrainHeightSensor = env.scene[base_height_sensor_name]
     base_height = torch.nan_to_num(
@@ -1770,21 +1767,7 @@ def recovery_diagnostics(
         if cmd.shape[1] > 4
         else torch.full_like(base_height, _SHARED_ROBOT.default_base_height)
     )
-    height_error = base_height - target_height
-    height_abs_error = torch.abs(height_error)
-    height_low_1cm = base_height < (target_height - 0.01)
-    height_low_2cm = base_height < (target_height - 0.02)
-    height_low_4cm = base_height < (target_height - 0.04)
-    height_ok_1cm = height_abs_error < 0.01
-    height_ok_2cm = height_abs_error < 0.02
-    height_ok_5cm = height_abs_error < 0.05
-
-    cmd_vx = cmd[:, 0]
-    cmd_yaw = cmd[:, 1]
-    cmd_speed = torch.linalg.norm(cmd[:, :2], dim=1)
-    moving = torch.abs(cmd_vx) >= 0.2
-    turning = torch.abs(cmd_yaw) >= 0.2
-    standing = cmd_speed < 0.1
+    height_abs_error = torch.abs(base_height - target_height)
 
     actor_action = env.action_manager.action
     prev_actor_action = env.action_manager.prev_action
@@ -1792,364 +1775,49 @@ def recovery_diagnostics(
     action = _select_action_tensor(
         action_term, actor_action.shape, actor_action, "policy_action", "raw_action"
     )
-    term_cfg = getattr(action_term, "cfg", None)
-    term_clip = getattr(term_cfg, "action_clip", None)
+    term_clip = getattr(getattr(action_term, "cfg", None), "action_clip", None)
     prev_action = (
         torch.clamp(prev_actor_action, -float(term_clip), float(term_clip))
         if term_clip is not None
         else prev_actor_action
     )
-    unclipped_action = _select_action_tensor(
-        action_term, actor_action.shape, actor_action, "unclipped_action"
-    )
-    actor_action_abs = torch.abs(actor_action)
-    action_abs = torch.abs(action)
-    unclipped_action_abs = torch.abs(unclipped_action)
-    action_delta = action - prev_action
-    actor_action_delta = actor_action - prev_actor_action
-    max_abs_action = torch.max(action_abs, dim=1).values
-    leg_action_abs = action_abs[:, :4]
-    wheel_action_abs = action_abs[:, 4:6]
-    actor_leg_action_abs = actor_action_abs[:, :4]
-    actor_wheel_action_abs = actor_action_abs[:, 4:6]
-    unclipped_leg_action_abs = unclipped_action_abs[:, :4]
-    unclipped_wheel_action_abs = unclipped_action_abs[:, 4:6]
-    max_abs_leg_action = torch.max(leg_action_abs, dim=1).values
-    max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
-    max_abs_actor_action = torch.max(actor_action_abs, dim=1).values
-    max_abs_actor_leg_action = torch.max(actor_leg_action_abs, dim=1).values
-    max_abs_actor_wheel_action = torch.max(actor_wheel_action_abs, dim=1).values
-    max_abs_unclipped_action = torch.max(unclipped_action_abs, dim=1).values
-    max_abs_unclipped_leg_action = torch.max(unclipped_leg_action_abs, dim=1).values
-    max_abs_unclipped_wheel_action = torch.max(unclipped_wheel_action_abs, dim=1).values
+    action_delta_norm = torch.linalg.norm(action - prev_action, dim=1).mean()
 
-    active_rod_angle = _active_rod_angles(robot)
     active_target_clamp_rate = 0.0
-    active_target_clamp_env = torch.zeros(env.num_envs, device=env.device)
-    active_target_mean = 0.0
-    active_target_error_env = torch.zeros(env.num_envs, device=env.device)
-    active_target_error_mean = 0.0
-    front_target_abs_mean = 0.0
     if action_term is not None:
-        active_target = getattr(action_term, "active_rod_angle_target", None)
         active_clamped = getattr(action_term, "active_rod_angle_target_clamped", None)
-        policy_target = getattr(action_term, "policy_leg_target", None)
-        if isinstance(active_target, torch.Tensor):
-            active_target_mean = active_target.float().mean().item()
-            active_target_error_env = torch.abs(active_target - active_rod_angle).mean(dim=1)
-            active_target_error_mean = active_target_error_env.mean().item()
         if isinstance(active_clamped, torch.Tensor):
             active_target_clamp_rate = active_clamped.float().mean().item()
-            active_target_clamp_env = active_clamped.float().mean(dim=1).to(device=env.device)
-        if isinstance(policy_target, torch.Tensor) and policy_target.shape[-1] >= 3:
-            front_target_abs_mean = torch.abs(policy_target[:, (0, 2)]).mean().item()
 
-    if core_due and not heavy_due:
-        log.update(
-            {
-                "Recovery/diag_cmd_vx_mean": cmd_vx.mean(),
-                "Recovery/diag_cmd_vx_abs_mean": torch.abs(cmd_vx).mean(),
-                "Recovery/diag_cmd_yaw_rate_mean": cmd_yaw.mean(),
-                "Recovery/diag_cmd_yaw_rate_abs_mean": torch.abs(cmd_yaw).mean(),
-                "Recovery/diag_cmd_speed_mean": cmd_speed.mean(),
-                "Recovery/diag_cmd_moving_ratio": moving.float().mean(),
-                "Recovery/diag_cmd_turning_ratio": turning.float().mean(),
-                "Recovery/diag_cmd_standing_ratio": standing.float().mean(),
-                "Recovery/diag_cmd_height_m": target_height.mean(),
-                "Recovery/diag_command_height_mean_m": target_height.mean(),
-                "Recovery/diag_command_height_min_m": target_height.min(),
-                "Recovery/diag_command_height_max_m": target_height.max(),
-                "Recovery/diag_tilt_deg_mean": tilt_deg.mean(),
-                "Recovery/diag_tilt_deg_max": tilt_deg.max(),
-                "Recovery/diag_upright_15deg_rate": upright_15.float().mean(),
-                "Recovery/diag_upright_30deg_rate": upright_30.float().mean(),
-                "Recovery/diag_base_height_m": base_height.mean(),
-                "Recovery/diag_height_error_signed_m": height_error.mean(),
-                "Recovery/diag_height_error_abs_m": height_abs_error.mean(),
-                "Recovery/diag_height_ok_2cm_rate": height_ok_2cm.float().mean(),
-                "Recovery/diag_height_low_2cm_rate": height_low_2cm.float().mean(),
-                "Recovery/diag_max_abs_action": max_abs_action.mean(),
-                "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean(),
-                "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean(),
-                "Recovery/diag_applied_max_abs_action": max_abs_action.mean(),
-                "Recovery/diag_applied_max_abs_leg_action": max_abs_leg_action.mean(),
-                "Recovery/diag_applied_max_abs_wheel_action": max_abs_wheel_action.mean(),
-                "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean(),
-                "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean(),
-                "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean(),
-                "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean(),
-                "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(
-                    action_delta, dim=1
-                ).mean(),
-                "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
-                    actor_action_delta, dim=1
-                ).mean(),
-                "Recovery/diag_active_target_mean_rad": active_target_mean,
-                "Recovery/diag_active_target_error_abs_rad": active_target_error_mean,
-                "Recovery/diag_active_target_clamp_rate": active_target_clamp_rate,
-            }
-        )
-
-    if not heavy_due:
-        return zero
-
-    joint_pos, fixed_default_pos = _policy_leg_pos_and_default(robot)
-    _, default_pos = _policy_leg_pos_and_height_default(env, robot, command_name)
-    fixed_joint_error_norm = torch.linalg.norm(
-        _policy_leg_position_delta(robot, joint_pos, fixed_default_pos),
-        dim=1,
-    )
-    joint_error = _policy_leg_position_delta(robot, joint_pos, default_pos)
-    joint_error_norm = torch.linalg.norm(joint_error, dim=1)
-    default_active_angles = []
-    for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
-        front_coef, back_coef = _SHARED_ROBOT.active_rod_angle_coeffs[side_idx]
-        default_active_angles.append(
-            front_coef * default_pos[:, front_idx] + back_coef * default_pos[:, back_idx]
-        )
-    default_active_angle = torch.stack(default_active_angles, dim=1)
-    joint_vel_norm = torch.linalg.norm(_policy_leg_vel(robot), dim=1)
-    min_margin, lower_margin, upper_margin = _active_rod_angle_margins(robot)
-    near_active_rod_limit = min_margin < float(active_rod_margin_warning)
-    lower_limit_close = lower_margin < float(active_rod_margin_warning)
-    upper_limit_close = upper_margin < float(active_rod_margin_warning)
-    limit_penalty = dof_pos_limits(env, asset_cfg=asset_cfg)
-    wheel_clearance_min, wheel_clearance_mean = _wheel_clearance_stats(env, robot, asset_cfg)
-
-    wheel_contact_ratio, wheel_max_force, wheel_mean_force = _contact_diagnostic_stats(
-        env, wheel_sensor_name, force_threshold
-    )
-    leg_contact_ratio, leg_max_force, _ = _contact_diagnostic_stats(
+    leg_contact_ratio, _, _ = _contact_diagnostic_stats(
         env, leg_contact_sensor_name, force_threshold
     )
-    collision_ratio, collision_max_force, _ = _contact_diagnostic_stats(
-        env, collision_sensor_name, force_threshold
-    )
-    wheel_force_excess = torch.clamp(wheel_max_force - float(contact_force_threshold), min=0.0)
 
     log.update(
         {
-            "Recovery/diag_cmd_vx_mean": cmd_vx.mean(),
-            "Recovery/diag_cmd_vx_abs_mean": torch.abs(cmd_vx).mean(),
-            "Recovery/diag_cmd_vx_std": cmd_vx.float().std(unbiased=False),
-            "Recovery/diag_cmd_yaw_rate_mean": cmd_yaw.mean(),
-            "Recovery/diag_cmd_yaw_rate_abs_mean": torch.abs(cmd_yaw).mean(),
-            "Recovery/diag_cmd_yaw_rate_std": cmd_yaw.float().std(unbiased=False),
-            "Recovery/diag_cmd_speed_mean": cmd_speed.mean(),
-            "Recovery/diag_cmd_moving_ratio": moving.float().mean(),
-            "Recovery/diag_cmd_turning_ratio": turning.float().mean(),
-            "Recovery/diag_cmd_standing_ratio": standing.float().mean(),
-            "Recovery/diag_cmd_height_m": target_height.mean(),
-            "Recovery/diag_command_height_mean_m": target_height.mean(),
-            "Recovery/diag_command_height_std_m": target_height.float().std(unbiased=False),
-            "Recovery/diag_command_height_min_m": target_height.min(),
-            "Recovery/diag_command_height_max_m": target_height.max(),
             "Recovery/diag_tilt_deg_mean": tilt_deg.mean(),
-            "Recovery/diag_tilt_deg_max": tilt_deg.max(),
-            "Recovery/diag_abs_roll_deg": torch.abs(roll_deg).mean(),
-            "Recovery/diag_abs_pitch_deg": torch.abs(pitch_deg).mean(),
-            "Recovery/diag_roll_deg_mean": roll_deg.mean(),
-            "Recovery/diag_pitch_deg_mean": pitch_deg.mean(),
-            "Recovery/diag_upright_gate": upright_gate.mean(),
             "Recovery/diag_upright_15deg_rate": upright_15.float().mean(),
             "Recovery/diag_upright_30deg_rate": upright_30.float().mean(),
-            "Recovery/diag_side_region_rate": side_region.float().mean(),
-            "Recovery/diag_inverted_130deg_rate": inverted_130.float().mean(),
-            "Recovery/diag_inverted_150deg_rate": inverted_150.float().mean(),
-            "Recovery/diag_base_height_m": base_height.mean(),
-            "Recovery/diag_base_height_min_m": base_height.min(),
-            "Recovery/diag_base_height_max_m": base_height.max(),
-            "Recovery/diag_height_error_signed_m": height_error.mean(),
             "Recovery/diag_height_error_abs_m": height_abs_error.mean(),
-            "Recovery/diag_height_ok_1cm_rate": height_ok_1cm.float().mean(),
-            "Recovery/diag_height_ok_2cm_rate": height_ok_2cm.float().mean(),
-            "Recovery/diag_height_ok_5cm_rate": height_ok_5cm.float().mean(),
-            "Recovery/diag_height_low_1cm_rate": height_low_1cm.float().mean(),
-            "Recovery/diag_height_low_2cm_rate": height_low_2cm.float().mean(),
-            "Recovery/diag_height_low_4cm_rate": height_low_4cm.float().mean(),
-            "Recovery/diag_upright_low_height_rate": (upright_15 & height_low_2cm).float().mean(),
-            "Recovery/diag_near_upright_height_error_abs_m": _masked_mean(
-                height_abs_error, upright_30
-            ),
-            "Recovery/diag_inverted_height_error_abs_m": _masked_mean(
-                height_abs_error, inverted_130
-            ),
-            "Recovery/diag_base_vxy_speed": base_vxy.mean(),
-            "Recovery/diag_base_vz_abs": base_vz_abs.mean(),
-            "Recovery/diag_base_ang_vel_xy_norm": base_ang_xy.mean(),
-            "Recovery/diag_base_ang_vel_norm": base_ang_norm.mean(),
-            "Recovery/diag_near_upright_ang_vel_xy_norm": _masked_mean(base_ang_xy, upright_30),
-            "Recovery/diag_near_upright_vxy_speed": _masked_mean(base_vxy, upright_30),
-            "Recovery/diag_max_abs_action": max_abs_action.mean(),
-            "Recovery/diag_max_abs_leg_action": max_abs_leg_action.mean(),
-            "Recovery/diag_max_abs_wheel_action": max_abs_wheel_action.mean(),
-            "Recovery/diag_applied_max_abs_action": max_abs_action.mean(),
-            "Recovery/diag_applied_max_abs_leg_action": max_abs_leg_action.mean(),
-            "Recovery/diag_applied_max_abs_wheel_action": max_abs_wheel_action.mean(),
-            "Recovery/diag_actor_max_abs_action": max_abs_actor_action.mean(),
-            "Recovery/diag_actor_max_abs_leg_action": max_abs_actor_leg_action.mean(),
-            "Recovery/diag_actor_max_abs_wheel_action": max_abs_actor_wheel_action.mean(),
-            "Recovery/diag_unclipped_max_abs_action": max_abs_unclipped_action.mean(),
-            "Recovery/diag_unclipped_max_abs_leg_action": max_abs_unclipped_leg_action.mean(),
-            "Recovery/diag_unclipped_max_abs_wheel_action": max_abs_unclipped_wheel_action.mean(),
-            "Recovery/diag_leg_action_abs_mean": leg_action_abs.mean(),
-            "Recovery/diag_wheel_action_abs_mean": wheel_action_abs.mean(),
-            "Recovery/diag_actor_leg_action_abs_mean": actor_leg_action_abs.mean(),
-            "Recovery/diag_actor_wheel_action_abs_mean": actor_wheel_action_abs.mean(),
-            "Recovery/diag_unclipped_leg_action_abs_mean": unclipped_leg_action_abs.mean(),
-            "Recovery/diag_unclipped_wheel_action_abs_mean": unclipped_wheel_action_abs.mean(),
-            "Recovery/diag_action_delta_norm": torch.linalg.norm(action_delta, dim=1).mean(),
-            "Recovery/diag_applied_action_delta_norm": torch.linalg.norm(
-                action_delta, dim=1
-            ).mean(),
-            "Recovery/diag_actor_action_delta_norm": torch.linalg.norm(
-                actor_action_delta, dim=1
-            ).mean(),
-            "Recovery/diag_joint_error_norm_rad": joint_error_norm.mean(),
-            "Recovery/diag_fixed_default_joint_error_norm_rad": fixed_joint_error_norm.mean(),
-            "Recovery/diag_dynamic_default_joint_error_rad": joint_error_norm.mean(),
-            "Recovery/diag_default_active_angle_mean_rad": default_active_angle.mean(),
-            "Recovery/diag_default_lf0_mean_rad": default_pos[:, 0].mean(),
-            "Recovery/diag_active_target_mean_rad": active_target_mean,
-            "Recovery/diag_active_target_error_abs_rad": active_target_error_mean,
+            "Recovery/diag_action_delta_norm": action_delta_norm,
             "Recovery/diag_active_target_clamp_rate": active_target_clamp_rate,
-            "Recovery/diag_front_target_abs_mean_rad": front_target_abs_mean,
-            "Recovery/diag_near_upright_joint_error_norm_rad": _masked_mean(
-                joint_error_norm, upright_30
-            ),
-            "Recovery/diag_joint_vel_norm": joint_vel_norm.mean(),
-            "Recovery/diag_active_rod_angle_mean_rad": active_rod_angle.mean(),
-            "Recovery/diag_active_rod_angle_std_rad": active_rod_angle.float().std(unbiased=False),
-            "Recovery/diag_active_rod_margin_rad": min_margin.mean(),
-            "Recovery/diag_active_rod_margin_min_rad": min_margin.min(),
-            "Recovery/diag_active_rod_lower_margin_rad": lower_margin.mean(),
-            "Recovery/diag_active_rod_upper_margin_rad": upper_margin.mean(),
-            "Recovery/diag_active_rod_near_limit_rate": near_active_rod_limit.float().mean(),
-            "Recovery/diag_active_rod_near_lower_rate": lower_limit_close.float().mean(),
-            "Recovery/diag_active_rod_near_upper_rate": upper_limit_close.float().mean(),
-            "Recovery/diag_dof_pos_limits_raw": limit_penalty.mean(),
-            "Recovery/diag_dof_pos_limits_active_rate": (limit_penalty > 0.0).float().mean(),
-            "Recovery/diag_wheel_clearance_min_m": wheel_clearance_min.min(),
-            "Recovery/diag_wheel_clearance_mean_m": wheel_clearance_mean.mean(),
-            "Recovery/diag_wheel_penetration_rate": (wheel_clearance_min < -0.001).float().mean(),
-            "Recovery/diag_wheel_contact_ratio": wheel_contact_ratio.mean(),
-            "Recovery/diag_wheel_full_contact_rate": (wheel_contact_ratio >= 1.0).float().mean(),
-            "Recovery/diag_wheel_any_contact_rate": (wheel_contact_ratio > 0.0).float().mean(),
-            "Recovery/diag_wheel_max_force_n": wheel_max_force.mean(),
-            "Recovery/diag_wheel_mean_force_n": wheel_mean_force.mean(),
-            "Recovery/diag_wheel_force_excess_n": wheel_force_excess.mean(),
             "Recovery/diag_leg_contact_rate": (leg_contact_ratio > 0.0).float().mean(),
-            "Recovery/diag_leg_contact_ratio": leg_contact_ratio.mean(),
-            "Recovery/diag_leg_max_force_n": leg_max_force.mean(),
-            "Recovery/diag_collision_contact_rate": (collision_ratio > 0.0).float().mean(),
-            "Recovery/diag_collision_contact_ratio": collision_ratio.mean(),
-            "Recovery/diag_collision_max_force_n": collision_max_force.mean(),
-            "Recovery/diag_onepolicy_ready_2cm_rate": (
-                upright_15 & height_ok_2cm & (wheel_contact_ratio >= 1.0)
-            )
-            .float()
-            .mean(),
         }
     )
 
-    for action_idx, action_name in enumerate(
-        ("lf0", "left_active", "rf0", "right_active", "left_wheel", "right_wheel")
-    ):
-        if action_idx >= action_abs.shape[1]:
-            continue
-        log[f"Recovery/diag_action_abs_{action_name}"] = action_abs[:, action_idx].mean()
-
-    for joint_idx, joint_name in enumerate(("lf", "lb", "rf", "rb")):
-        if joint_idx >= joint_error.shape[1]:
-            continue
-        log[f"Recovery/diag_joint_error_abs_{joint_name}_rad"] = torch.abs(
-            joint_error[:, joint_idx]
-        ).mean()
-
-    reset_bins = getattr(env, "_reset_init_tilt_bin", None)
-    if isinstance(reset_bins, torch.Tensor) and reset_bins.shape[0] == env.num_envs:
-        for bin_idx, bin_name in enumerate(("upright_noise", "near_fall", "hard_tilt", "inverted")):
-            bin_mask = reset_bins == bin_idx
-            log[f"Recovery/diag_tilt_deg_by_reset_bin/{bin_name}"] = _masked_mean(
-                tilt_deg, bin_mask
-            )
-            log[f"Recovery/diag_upright_15deg_rate_by_reset_bin/{bin_name}"] = _masked_mean(
-                upright_15.float(), bin_mask
-            )
-            log[f"Recovery/diag_height_error_abs_m_by_reset_bin/{bin_name}"] = _masked_mean(
-                height_abs_error, bin_mask
-            )
-            log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_bin/{bin_name}"] = _masked_min(
-                min_margin, bin_mask
-            )
-
     reset_pose_bins = getattr(env, "_reset_pose_bin", None)
     if isinstance(reset_pose_bins, torch.Tensor) and reset_pose_bins.shape[0] == env.num_envs:
-        for bin_idx, bin_name in enumerate(("mixed_full", "pitch_inverted", "roll_side")):
-            bin_mask = reset_pose_bins == bin_idx
+        for bin_value, bin_name in recovery_state.RESET_POSE_BIN_NAMES.items():
+            bin_mask = reset_pose_bins == bin_value
+            if not bool(bin_mask.any()):
+                continue
             log[f"Recovery/diag_sample_rate_by_reset_pose/{bin_name}"] = bin_mask.float().mean()
-            log[f"Recovery/diag_tilt_deg_by_reset_pose/{bin_name}"] = _masked_mean(
-                tilt_deg, bin_mask
-            )
             log[f"Recovery/diag_upright_15deg_rate_by_reset_pose/{bin_name}"] = _masked_mean(
                 upright_15.float(), bin_mask
             )
             log[f"Recovery/diag_upright_30deg_rate_by_reset_pose/{bin_name}"] = _masked_mean(
                 upright_30.float(), bin_mask
             )
-            log[f"Recovery/diag_height_error_abs_m_by_reset_pose/{bin_name}"] = _masked_mean(
-                height_abs_error, bin_mask
-            )
-            log[f"Recovery/diag_active_rod_margin_min_rad_by_reset_pose/{bin_name}"] = _masked_min(
-                min_margin, bin_mask
-            )
-
-    for height_name, height_lo, height_hi in (
-        ("cmd_20_22cm", 0.20, 0.22),
-        ("cmd_22_24cm", 0.22, 0.24),
-        ("cmd_24_28cm", 0.24, 0.28),
-        ("cmd_28_32cm", 0.28, 0.32),
-        ("cmd_32_36cm", 0.32, 0.36),
-        ("cmd_36_38cm", 0.36, 0.38),
-    ):
-        height_mask = (target_height >= float(height_lo)) & (target_height < float(height_hi))
-        log[f"Recovery/diag_sample_rate_by_cmd_height/{height_name}"] = height_mask.float().mean()
-        log[f"Recovery/diag_upright_15deg_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            upright_15.float(), height_mask
-        )
-        log[f"Recovery/diag_upright_30deg_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            upright_30.float(), height_mask
-        )
-        log[f"Recovery/diag_joint_error_norm_by_cmd_height/{height_name}"] = _masked_mean(
-            joint_error_norm, height_mask
-        )
-        log[f"Recovery/diag_fixed_joint_error_norm_by_cmd_height/{height_name}"] = _masked_mean(
-            fixed_joint_error_norm, height_mask
-        )
-        log[f"Recovery/diag_active_target_error_abs_by_cmd_height/{height_name}"] = _masked_mean(
-            active_target_error_env, height_mask
-        )
-        log[f"Recovery/diag_active_target_clamp_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            active_target_clamp_env, height_mask
-        )
-        log[f"Recovery/diag_height_error_abs_by_cmd_height/{height_name}"] = _masked_mean(
-            height_abs_error, height_mask
-        )
-        log[f"Recovery/diag_height_error_signed_by_cmd_height/{height_name}"] = _masked_mean(
-            height_error, height_mask
-        )
-        log[f"Recovery/diag_active_rod_margin_min_by_cmd_height/{height_name}"] = _masked_min(
-            min_margin, height_mask
-        )
-        log[f"Recovery/diag_wheel_contact_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            (wheel_contact_ratio >= 1.0).float(), height_mask
-        )
-        log[f"Recovery/diag_leg_contact_rate_by_cmd_height/{height_name}"] = _masked_mean(
-            (leg_contact_ratio > 0.0).float(), height_mask
-        )
-        log[f"Recovery/diag_wheel_clearance_min_by_cmd_height/{height_name}"] = _masked_min(
-            wheel_clearance_min, height_mask
-        )
 
     return zero
 
@@ -2847,11 +2515,17 @@ def recovery_wheel_contact(
 def joint_mirror(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    use_upright_gate: bool = True,
 ) -> torch.Tensor:
-    """左右关节位置差的平均平方,直立门控。"""
+    """左右关节位置差的平均平方，可选直立门控。
+
+    ``_upright_factor`` 在倾角 >= 90° 时恒为 0，会把整个起身过程的对称性定价乘成
+    零——此时无论权重多大都不产生梯度。需要约束起身姿态左右对称时传
+    ``use_upright_gate=False``，让门恒为 1。
+    """
     robot = env.scene[asset_cfg.name]
     pg_z = robot.data.projected_gravity_b[:, 2]
-    gate = _upright_factor(pg_z)
+    gate = _upright_factor(pg_z) if use_upright_gate else torch.ones_like(pg_z)
 
     hip_diff, knee_diff = _policy_leg_mirror_diffs(robot)
     diff = torch.stack((hip_diff, knee_diff), dim=1)

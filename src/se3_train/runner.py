@@ -16,6 +16,10 @@ from se3_train.async_logging import (
     async_host_logger_enabled,
     expand_episode_log_buffers,
 )
+from se3_train.log_filter import (
+    VERBOSE_DIAGNOSTICS_ENV,
+    filter_extras_log,
+)
 from se3_train.onnx_metadata import (
     build_deployment_onnx_metadata,
     embed_onnx_metadata,
@@ -94,6 +98,18 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                     f"[SE3 Action Contract] profile={profile} sha256={contract_hash}",
                     flush=True,
                 )
+
+    def _se3_filter_extras_log(self, extras: object) -> None:
+        """裁掉非常驻诊断键，只影响写出的日志，不影响训练。"""
+
+        _, dropped = filter_extras_log(extras)
+        if dropped and not getattr(self, "_se3_log_filter_reported", False):
+            self._se3_log_filter_reported = True
+            print(
+                "[SE3 Log Filter] 非常驻诊断键已折叠，奖励/终止/课程命名空间保持完整"
+                f"（设 {VERBOSE_DIAGNOSTICS_ENV}=1 恢复全量诊断）",
+                flush=True,
+            )
 
     def _se3_read_reward_contract_info(self) -> tuple[str, str] | None:
         """从运行时最终奖励表识别已校验的 profile 与稳定指纹。"""
@@ -260,6 +276,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 for _ in range(num_steps_per_env):
                     actions = self.alg.act(obs)
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                    self._se3_filter_extras_log(extras)
                     if self._se3_check_nan_enabled and self.cfg.get("check_for_nan", True):
                         check_nan(obs, rewards, dones)
                     obs, rewards, dones = (

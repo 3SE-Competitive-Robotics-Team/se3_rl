@@ -579,7 +579,8 @@ def reset_root_state_robotlab_full_random(
     if not isinstance(pose_bins, torch.Tensor) or pose_bins.shape[0] != env.num_envs:
         pose_bins = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
         env._reset_pose_bin = pose_bins
-    pose_bins[env_ids] = reset_pose_bins
+    # 写入共享缓冲区时平移到全随机段，避免与 standard_poses 的 0-4 编码撞号。
+    pose_bins[env_ids] = reset_pose_bins + recovery_state.FULL_RANDOM_POSE_BIN_OFFSET
 
     log_values = {
         "Reset/robotlab_full_random_ratio": 1.0,
