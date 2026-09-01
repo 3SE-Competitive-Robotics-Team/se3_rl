@@ -71,7 +71,9 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "stand_still": -2.0,
     "joint_pos_penalty": -1.0,
     "leg_action_rate": -0.001,
-    "wheel_action_rate": -0.001,
+    # 轮 scale 45→15 补偿（2026-09-01）：同一物理轮速轨迹动作幅值 ×3、差分平方 ×9，
+    # 权重 ÷9 保持物理定价不变。
+    "wheel_action_rate": -1.1e-4,
     # -0.12 + cap 320 = 4gs3te0p 验证有效的组合（σ 退火至 0.24、reward 272），沿用为基线。
     "action_smoothness": -0.12,
     "leg_torques": -2.0e-4,
@@ -303,7 +305,8 @@ def _configure_discovery_reward_contract(
     )
     cfg.rewards["wheel_action_rate"] = RewardTermCfg(
         func=rewards.wheel_action_rate,
-        weight=-0.001,
+        # 轮 scale 45→15 的 ×9 补偿，见 _DISCOVERY_REWARD_WEIGHTS 注释。
+        weight=-1.1e-4,
     )
     # S1 生效的 action_smoothness 权威定义（会覆盖 recovery 基类里 weight=0 的同名项）。
     cfg.rewards["action_smoothness"] = RewardTermCfg(
@@ -318,7 +321,10 @@ def _configure_discovery_reward_contract(
             # 零梯度（σ 膨胀根源之一）；提到 320 保证 σ≤4 全程有梯度。
             "max_penalty": 320.0,
             "leg_scale": 1.0,
-            "wheel_scale": 2.0,
+            # 轮 scale 45→15 补偿（2026-09-01）：2.0/9≈0.22，保持蓄意轮运动的平滑税
+            # 物理价位不变（噪声地板 6σ² 是动作单位量、与 scale 无关，cap 320 定标仍成立）。
+            # 不补偿会让轮加速的平滑税 ×9、压垮平衡校正——与改 scale 的目的相反。
+            "wheel_scale": 0.22,
         },
     )
     cfg.rewards["leg_torques"] = RewardTermCfg(

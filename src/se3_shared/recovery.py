@@ -16,8 +16,22 @@ RECOVERY_COMMAND_LIN_VEL_X_LIMIT_MPS = 1.50
 RECOVERY_COMMAND_YAW_RATE_LIMIT_RAD_S = 1.00
 """Recovery FineTune 最终课程覆盖的 yaw 角速度上限，单位 rad/s。"""
 
-RECOVERY_WHEEL_ACTION_SCALE = 45.0
-"""Recovery 策略训练时使用的左右轮 raw action -> 轮速 scale。"""
+RECOVERY_WHEEL_ACTION_SCALE = 15.0
+"""Recovery 策略训练时使用的左右轮 raw action -> 轮速 scale。
+
+2026-09-01 45→15（σ-gate 诊断）：scale=45 时探索噪声的物理轮噪 ±σ×45 rad/s
+冷启动期机械性挡死平衡学习，平衡校正 ±5 rad/s 只占 0.11 个动作单位、被 σ 淹没；
+15 使校正信号 ≈0.33 a.u.、部署极速 ~56 rad/s 对应 |a|≈3.7（clip 100 无饱和）。
+动作空间罚项（action_smoothness wheel_scale、wheel_action_rate）已按 ×9 同步补偿，
+见 recovery_discovery/env_cfg.py；指令可行域预算另行解耦（见下一常量）。
+"""
+
+RECOVERY_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S = 45.0
+"""双轮差速指令可行域预算（物理 rad/s，M3508 能力量级），与动作 scale 解耦。
+
+历史上与 RECOVERY_WHEEL_ACTION_SCALE 恰好同值同源；scale 改 15 后此预算保持 45，
+否则 vx/yaw 指令组合会被错误压缩到 1/3。
+"""
 
 RECOVERY_LEG_ACTION_SCALE = 0.25
 """Recovery 对比实验使用的四个腿部 raw action -> joint target scale。"""

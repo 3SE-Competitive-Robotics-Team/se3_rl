@@ -12,6 +12,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_shared import (
     RECOVERY_ACTION_CLIP,
+    RECOVERY_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S,
     RECOVERY_LEG_ACTION_SCALE,
     RECOVERY_WHEEL_ACTION_SCALE,
     JointGroup,
@@ -75,7 +76,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     command_cfg.constrain_diff_drive_commands = True
     command_cfg.diff_drive_wheel_radius = _RECOVERY_COMMAND_WHEEL_RADIUS
     command_cfg.diff_drive_half_track = _RECOVERY_COMMAND_HALF_TRACK
-    command_cfg.diff_drive_max_wheel_speed = _RECOVERY_WHEEL_ACTION_SCALE
+    # 指令可行域预算是物理量（rad/s），与动作 scale 解耦：scale 45→15 后预算保持 45。
+    command_cfg.diff_drive_max_wheel_speed = RECOVERY_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S
     command_cfg.diff_drive_wheel_speed_fraction = _RECOVERY_COMMAND_WHEEL_SPEED_FRACTION
     command_cfg.jump_prob = 0.0
     command_cfg.enable_jump_lifecycle = False
