@@ -46,6 +46,12 @@ JOINT_AXES = {
     "r_drive_bar_Joint": np.array([0.0, -1.0, 0.0], dtype=np.float64),
     "r_coupler_Joint": np.array([0.0, -1.0, 0.0], dtype=np.float64),
 }
+PASSIVE_JOINT_RANGES = {
+    "lf1_Joint": np.array([-1.45, 0.0], dtype=np.float64),
+    "l_coupler_Joint": np.array([0.0, 1.67], dtype=np.float64),
+    "rf1_Joint": np.array([0.0, 1.45], dtype=np.float64),
+    "r_coupler_Joint": np.array([-1.67, 0.0], dtype=np.float64),
+}
 ZERO_POSE_SITE_PAIRS = (
     ("lf_thigh_end", "lf_calf_closure"),
     ("rf_thigh_end", "rf_calf_closure"),
@@ -194,6 +200,21 @@ def _check_joint_axes(model: mujoco.MjModel) -> None:
             )
 
 
+def _check_passive_joint_ranges(model: mujoco.MjModel) -> None:
+    """检查被动关节限位能锁定正常四连杆装配分支。"""
+    for joint_name, expected_range in PASSIVE_JOINT_RANGES.items():
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if joint_id < 0:
+            continue
+        if not bool(model.jnt_limited[joint_id]):
+            raise SystemExit(f"{joint_name} 必须启用限位以阻止闭链装配分支穿越")
+        actual_range = np.asarray(model.jnt_range[joint_id], dtype=np.float64)
+        if not np.allclose(actual_range, expected_range, atol=1.0e-8):
+            raise SystemExit(
+                f"{joint_name} 限位应为 {expected_range.tolist()}，实际 {actual_range.tolist()}"
+            )
+
+
 def _check_zero_pose_geometry(model: mujoco.MjModel) -> None:
     """校验 q=0 时闭链闭合，且气弹簧挂点固连在正确连杆。"""
     data = mujoco.MjData(model)
@@ -271,6 +292,7 @@ def main() -> None:
     _print_tendon_state(model, data)
     _check_gas_springs(model, float(args.spring_force))
     _check_joint_axes(model)
+    _check_passive_joint_ranges(model)
     _check_active_rod_angle_tendons(model, data)
     _check_zero_pose_geometry(model)
 
