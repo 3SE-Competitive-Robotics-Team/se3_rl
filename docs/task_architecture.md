@@ -20,8 +20,8 @@
 `tasks/recovery/` 仅保留 Recovery-Discovery 使用的环境基配置、奖励、事件和课程实现，
 不注册独立 task；所有倒地自启训练必须从 `recovery_discovery/` 的三个正式入口启动。
 
-TorqueAssist 默认在 iter 200-500 线性降低完整 20 N·m 辅助的 episode 采样比例；
-退火终点消融通过 `SE3_RECOVERY_TORQUE_ASSIST_END_ITER` 设置，不复制新的 task id。
+TorqueAssist 对所有倾角超过 30° 的样本施力：iter 0-99 为 20 N·m，从 iter 100 起
+每 100 轮降低 5 N·m，iter 400 起完全撤力；play/eval 始终关闭辅助。
 
 ## 台阶任务
 

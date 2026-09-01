@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 
-_TORQUE_ASSIST_CONTRACT_VERSION = "se3.recovery-torque-assist.v1"
+_TORQUE_ASSIST_CONTRACT_VERSION = "se3.recovery-torque-assist.v2"
 
 
 @dataclass(kw_only=True)
@@ -29,10 +29,9 @@ class RecoveryTorqueAssistCfg:
     body_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
     exit_upright_angle_deg: float = 30.0
     max_assist_time_s: float = 3.0
-    probability_start: float = 1.0
-    hold_iters: int = 200
-    end_iter: int = 500
-    probability_end: float = 0.0
+    decay_start_iter: int = 100
+    decay_interval_iters: int = 100
+    decay_step_nm: float = 5.0
     steps_per_policy_iter: int = 24
     fixed_iteration: int | None = None
 
@@ -50,32 +49,30 @@ class RecoveryTorqueAssistCfg:
             raise ValueError("Recovery torque assist 的撤力角必须在 (0, 90) 度内")
         if self.max_assist_time_s <= 0.0:
             raise ValueError("Recovery torque assist 的最长辅助时间必须为正数")
-        if not 0.0 <= self.probability_end <= self.probability_start <= 1.0:
-            raise ValueError(
-                "Recovery torque assist 概率必须满足 0 <= probability_end <= probability_start <= 1"
-            )
-        if self.hold_iters < 0 or self.end_iter <= self.hold_iters:
-            raise ValueError("Recovery torque assist 退火区间必须满足 0 <= hold_iters < end_iter")
+        if self.decay_start_iter < 0:
+            raise ValueError("Recovery torque assist 首次降力矩轮次必须非负")
+        if self.decay_interval_iters <= 0:
+            raise ValueError("Recovery torque assist 降力矩间隔必须为正数")
+        if self.decay_step_nm <= 0.0:
+            raise ValueError("Recovery torque assist 每档降幅必须为正数")
         if self.steps_per_policy_iter <= 0:
             raise ValueError("Recovery torque assist steps_per_policy_iter 必须为正数")
         if self.fixed_iteration is not None and self.fixed_iteration < 0:
             raise ValueError("Recovery torque assist fixed_iteration 必须非负或为 None")
 
 
-def recovery_torque_assist_probability(
+def recovery_torque_assist_nm(
     current_iter: int,
     cfg: RecoveryTorqueAssistCfg,
 ) -> float:
-    """计算 episode 获得完整 20 N·m 姿态引导的采样概率。"""
+    """计算当前 PPO iteration 对所有样本施加的阶梯辅助力矩。"""
 
     if not cfg.enabled:
         return 0.0
-    if current_iter < cfg.hold_iters:
-        return float(cfg.probability_start)
-    if current_iter >= cfg.end_iter:
-        return float(cfg.probability_end)
-    progress = (current_iter - cfg.hold_iters) / max(cfg.end_iter - cfg.hold_iters, 1)
-    return float(cfg.probability_start + progress * (cfg.probability_end - cfg.probability_start))
+    if current_iter < cfg.decay_start_iter:
+        return float(cfg.torque_nm)
+    decay_count = 1 + (current_iter - cfg.decay_start_iter) // cfg.decay_interval_iters
+    return max(0.0, float(cfg.torque_nm) - decay_count * float(cfg.decay_step_nm))
 
 
 def recovery_torque_assist_contract_info(env_cfg: object) -> tuple[str, str] | None:
@@ -103,7 +100,7 @@ def recovery_torque_assist_contract_info(env_cfg: object) -> tuple[str, str] | N
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    return f"recovery-torque-assist-v1-{mode}", hashlib.sha256(encoded).hexdigest()
+    return f"recovery-torque-assist-v2-{mode}", hashlib.sha256(encoded).hexdigest()
 
 
 class RecoveryTorqueAssistController:
@@ -133,11 +130,10 @@ class RecoveryTorqueAssistController:
         self._axis_b_batch = self._axis_b.repeat(env.num_envs, 1)
         self._torques_w = torch.zeros(env.num_envs, 1, 3, device=env.device)
 
-        self._selected = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-        self._active = torch.zeros_like(self._selected)
-        self._near_upright = torch.zeros_like(self._selected)
-        self._timed_out = torch.zeros_like(self._selected)
-        self._invalid_orientation = torch.zeros_like(self._selected)
+        self._active = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        self._near_upright = torch.zeros_like(self._active)
+        self._timed_out = torch.zeros_like(self._active)
+        self._invalid_orientation = torch.zeros_like(self._active)
         self._elapsed_substeps = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
         self._applied_torque_nm = torch.zeros(env.num_envs, device=env.device)
 
@@ -146,12 +142,6 @@ class RecoveryTorqueAssistController:
             1,
             math.ceil(float(cfg.max_assist_time_s) / float(env.physics_dt)),
         )
-
-    @property
-    def selected(self) -> torch.Tensor:
-        """本 episode 是否被课程采样为完整扭矩辅助样本。"""
-
-        return self._selected
 
     @property
     def active(self) -> torch.Tensor:
@@ -172,13 +162,9 @@ class RecoveryTorqueAssistController:
         return self._torques_w[:, 0, :]
 
     def reset(self, env_ids: torch.Tensor) -> None:
-        """按当前课程概率采样 episode，姿态门在 physics substep 实时计算。"""
+        """重置 episode 累计状态，姿态门与当前力矩档位在 substep 实时计算。"""
 
         env_ids = env_ids.to(device=self._env.device, dtype=torch.long)
-        probability = self._current_probability()
-        selected = torch.rand(env_ids.numel(), device=self._env.device) < float(probability)
-
-        self._selected[env_ids] = selected
         self._active[env_ids] = False
         self._near_upright[env_ids] = False
         self._timed_out[env_ids] = False
@@ -196,16 +182,17 @@ class RecoveryTorqueAssistController:
     def apply(self) -> None:
         """在 sim.step 前刷新 body-local 扭矩方向并写入 xfrc_applied。"""
 
-        curriculum_enabled = self._current_probability() > 0.0
+        scheduled_torque_nm = self._current_torque_nm()
+        curriculum_enabled = scheduled_torque_nm > 0.0
         projected_gravity = self._entity.data.projected_gravity_b
         pg_z = projected_gravity[:, 2]
         orientation_finite = torch.isfinite(pg_z) & torch.isfinite(
             self._entity.data.root_link_quat_w
         ).all(dim=1)
         self._near_upright[:] = orientation_finite & (pg_z <= self._exit_pg_z)
-        wants_assist = self._selected & ~self._near_upright & curriculum_enabled
+        wants_assist = ~self._near_upright & curriculum_enabled
         timed_out = wants_assist & (self._elapsed_substeps >= self._max_substeps)
-        invalid_orientation = self._selected & ~orientation_finite
+        invalid_orientation = ~orientation_finite & curriculum_enabled
 
         self._timed_out |= timed_out
         self._invalid_orientation |= invalid_orientation
@@ -215,7 +202,7 @@ class RecoveryTorqueAssistController:
 
         axis_w = quat_apply(self._entity.data.root_link_quat_w, self._axis_b_batch)
         axis_w = torch.nan_to_num(axis_w, nan=0.0, posinf=0.0, neginf=0.0)
-        torque_w = axis_w * float(self.cfg.torque_nm)
+        torque_w = axis_w * scheduled_torque_nm
         self._torques_w[:, 0, :] = torch.where(
             self._active.unsqueeze(1),
             torque_w,
@@ -242,26 +229,22 @@ class RecoveryTorqueAssistController:
         if not isinstance(log, dict):
             return
 
-        selected_count = self._selected.float().sum()
         active_count = self._active.float().sum()
-        selected_denominator = torch.clamp(selected_count, min=1.0)
         active_denominator = torch.clamp(active_count, min=1.0)
-        active_torque_nm = self._active.float() * float(self.cfg.torque_nm)
+        scheduled_torque_nm = self._current_torque_nm()
+        curriculum_enabled = scheduled_torque_nm > 0.0
+        active_torque_nm = self._active.float() * scheduled_torque_nm
         upright_leakage = self._active & self._near_upright
-        selected_non_upright = self._selected & ~self._near_upright
-        non_upright_unassisted = selected_non_upright & ~self._active
+        non_upright_unassisted = ~self._near_upright & ~self._active
 
         log.update(
             {
-                "Recovery/diag_torque_assist_probability": self._current_probability(),
-                "Recovery/diag_torque_assist_selected_rate": self._selected.float().mean(),
+                "Recovery/diag_torque_assist_scheduled_nm": scheduled_torque_nm,
+                "Recovery/diag_torque_assist_curriculum_enabled": float(curriculum_enabled),
                 "Recovery/diag_torque_assist_near_upright_rate": (
                     self._near_upright.float().mean()
                 ),
                 "Recovery/diag_torque_assist_active_rate": self._active.float().mean(),
-                "Recovery/diag_torque_assist_active_selected_ratio": (
-                    active_count / selected_denominator
-                ),
                 "Recovery/diag_torque_assist_mean_nm": (
                     active_torque_nm.sum() / active_denominator
                 ),
@@ -272,7 +255,7 @@ class RecoveryTorqueAssistController:
                     / active_denominator
                 ),
                 "Recovery/diag_torque_assist_withdrawn_upright_rate": (
-                    (self._selected & self._near_upright).float().mean()
+                    self._near_upright.float().mean() * float(curriculum_enabled)
                 ),
                 "Recovery/diag_torque_assist_non_upright_unassisted_rate": (
                     non_upright_unassisted.float().mean()
@@ -295,15 +278,15 @@ class RecoveryTorqueAssistController:
         step = int(getattr(self._env, "common_step_counter", 0))
         return step // int(self.cfg.steps_per_policy_iter)
 
-    def _current_probability(self) -> float:
-        """返回当前 episode 的完整扭矩辅助采样概率。"""
+    def _current_torque_nm(self) -> float:
+        """返回当前 PPO iteration 的阶梯辅助力矩。"""
 
-        return recovery_torque_assist_probability(self._current_iteration(), self.cfg)
+        return recovery_torque_assist_nm(self._current_iteration(), self.cfg)
 
 
 __all__ = [
     "RecoveryTorqueAssistCfg",
     "RecoveryTorqueAssistController",
     "recovery_torque_assist_contract_info",
-    "recovery_torque_assist_probability",
+    "recovery_torque_assist_nm",
 ]
