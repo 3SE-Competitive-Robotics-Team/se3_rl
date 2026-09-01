@@ -20,6 +20,9 @@
 `tasks/recovery/` 仅保留 Recovery-Discovery 使用的环境基配置、奖励、事件和课程实现，
 不注册独立 task；所有倒地自启训练必须从 `recovery_discovery/` 的三个正式入口启动。
 
+TorqueAssist 默认在 iter 200-500 线性降低完整 20 N·m 辅助的 episode 采样比例；
+退火终点消融通过 `SE3_RECOVERY_TORQUE_ASSIST_END_ITER` 设置，不复制新的 task id。
+
 ## 台阶任务
 
 `stair/` 是当前台阶训练入口，注册 `SE3-WheelLegged-Stair-GRU`，并保留 `SE3-WheelLegged-Stair-GRU-TrainView` 作为历史 watch/play 别名。正式远程训练和本地值守脚本默认使用原始 task id；只有需要兼容旧 watch 流程时才显式使用 `*-TrainView`。

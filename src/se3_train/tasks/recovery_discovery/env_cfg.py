@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
@@ -44,6 +45,7 @@ _DISCOVERY_DEPLOYMENT_RANGES = {
     "jump_phase": (0.0, 0.0),
 }
 _STEPS_PER_POLICY_ITER = 24
+_TORQUE_ASSIST_END_ITER_ENV = "SE3_RECOVERY_TORQUE_ASSIST_END_ITER"
 _TRAIN_ENV_GROUPS = {"loco": 0.5, "recover": 0.5}
 _PLAY_ENV_GROUPS = {"loco": 0.0, "recover": 1.0}
 _TRAIN_NUM_ENVS_PER_RANK = 8192
@@ -792,6 +794,19 @@ def _apply_actor_history(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
     return cfg
 
 
+def _torque_assist_end_iter() -> int:
+    """读取 TorqueAssist 退火终点，并在构造任务时拒绝非法实验配置。"""
+
+    raw = os.environ.get(_TORQUE_ASSIST_END_ITER_ENV, "500")
+    try:
+        end_iter = int(raw)
+    except ValueError as error:
+        raise ValueError(f"{_TORQUE_ASSIST_END_ITER_ENV} 必须为整数，实际为 {raw!r}") from error
+    if end_iter <= 200:
+        raise ValueError(f"{_TORQUE_ASSIST_END_ITER_ENV} 必须大于 hold_iters=200")
+    return end_iter
+
+
 def env_cfg(
     play: bool = False,
     reward_profile: DiscoveryRewardProfile = DiscoveryRewardProfile.BASELINE,
@@ -1247,8 +1262,9 @@ def torque_assist_history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """生成按当前姿态施加 +20 N·m 外部扭矩的 GENTLE 任务。
 
     被课程选中的 episode 只要倾角超过 30° 就施力，进入直立带立即撤力；再次
-    跌出直立带时重新介入。iter 0-199 全选，iter 200-500 线性降低 episode
-    采样比例；单个被选中的 episode 始终保持 20 N·m。play/eval 默认关闭辅助。
+    跌出直立带时重新介入。iter 0-199 全选，iter 200 到可配置终点线性降低
+    episode 采样比例；单个被选中的 episode 始终保持 20 N·m。默认终点为 500，
+    正式消融可通过 SE3_RECOVERY_TORQUE_ASSIST_END_ITER 覆写。play/eval 默认关闭辅助。
     """
 
     cfg = history_env_cfg(play=play, reward_profile=DiscoveryRewardProfile.GENTLE)
@@ -1264,7 +1280,7 @@ def torque_assist_history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             max_assist_time_s=3.0,
             probability_start=1.0,
             hold_iters=200,
-            end_iter=500,
+            end_iter=_torque_assist_end_iter(),
             probability_end=0.0,
             steps_per_policy_iter=_STEPS_PER_POLICY_ITER,
         ),
