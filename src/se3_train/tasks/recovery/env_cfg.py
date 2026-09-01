@@ -191,7 +191,6 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # 自起训练不再区分 normal/fallen/recovery episode，所有样本只受超时等硬错误终止约束。
     cfg.terminations.pop("bad_orientation", None)
     cfg.terminations.pop("leg_contact", None)
-    cfg.terminations.pop("recovery_stagnation", None)
     if "catastrophic_state" in cfg.terminations:
         cfg.terminations["catastrophic_state"].params["max_leg_pos_error"] = None
     cfg.curriculum = {}

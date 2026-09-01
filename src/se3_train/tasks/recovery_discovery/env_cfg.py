@@ -472,7 +472,7 @@ def _apply_discovery_reward_profile(
             params=contact_params,
         )
         # R3 躺地时间税降档：倒置 34/s -> ~7/s（_upright_factor 门 + 0.2 下限，无免税区，
-        # 反躺平三重保险 = 下限 + upward + 复活的 recover_stagnation）；<45° 站立带 ≈1，
+        # 反躺平双保险 = 下限 + upward）；<45° 站立带 ≈1，
         # 45-90° cos/0.7 斜靠税略强于 baseline（反停车加固）。经济学：倒置 urgency 18/s，
         # 快 0.9s 赚 ~16 < R1+R2 弹道账单 7-24 -> 「越快越赚」不等式翻转。
         height_params = dict(cfg.rewards["tracking_height"].params or {})
@@ -973,17 +973,8 @@ def env_cfg(
             },
         },
     )
-    cfg.terminations["recover_stagnation"] = TerminationTermCfg(
-        func=env_groups.FilteredTerminationWrapper,
-        time_out=False,
-        params={
-            "group_names": ("recover",),
-            "wrapped_term": {
-                "func": terminations.recovery_stagnation,
-                "params": {"max_steps": 300, "min_delta": 0.02},
-            },
-        },
-    )
+    # recover_stagnation 已删除（2026-09-01）：任务 16-19 实证其复活后把 recover episode
+    # 一律截到 ~6-7s、起身学习死亡；4gs/7lx 学会起身的生态里它因自毁 bug 等效不存在。
     if not play:
         cfg.events["push_robots_loco"] = EventTermCfg(
             func=env_groups.FilteredEventWrapper,
@@ -1173,7 +1164,6 @@ def ungrouped_env_cfg(
     )
     cfg.terminations.pop("loco_bad_orientation", None)
     cfg.terminations.pop("loco_base_contact", None)
-    cfg.terminations.pop("recover_stagnation", None)
     if not play:
         # 武装式宽限翻倒终止：只约束「站稳过又翻倒且宽限内救不回」的 episode，
         # 倒地开局与自救成功均不受影响。参数由 yzau6pg5@4999 名义 plant 探测定标：

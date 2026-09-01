@@ -19,11 +19,9 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.managers.termination_manager import TerminationTermCfg
 
 from se3_shared import JointGroup
 from se3_train.mdp import events as mdp_events
-from se3_train.mdp import terminations
 from se3_train.tasks.recovery import rewards
 from se3_train.tasks.recovery_discovery.env_cfg import (
     _DISCOVERY_REWARD_WEIGHTS,
@@ -115,14 +113,9 @@ def expert_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         terms={name: term for name, term in critic_cfg.terms.items() if name != "group_id"},
     )
 
-    # --- 终止：去 loco 项；恢复停滞判定解除组过滤后全量生效 ---
+    # --- 终止：去 loco 项（recover_stagnation 已于 2026-09-01 全局删除，见任务 16-19 尸检）---
     cfg.terminations.pop("loco_bad_orientation")
     cfg.terminations.pop("loco_base_contact")
-    cfg.terminations["recover_stagnation"] = TerminationTermCfg(
-        func=terminations.recovery_stagnation,
-        time_out=False,
-        params={"max_steps": 300, "min_delta": 0.02},
-    )
 
     # --- 课程：只保留高度课程（速度恒零无课程可言，push 与组版 recover 对齐为无）---
     if not play:
