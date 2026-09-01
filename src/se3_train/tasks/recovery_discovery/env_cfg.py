@@ -55,6 +55,7 @@ class DiscoveryRewardProfile(StrEnum):
     """Recovery-Discovery 奖励记账配置，标准任务必须显式保持 baseline。"""
 
     BASELINE = "baseline"
+    GENTLE = "gentle"
     REFORM_A = "reform-a"
     REFORM_AB = "reform-ab"
 
@@ -92,6 +93,15 @@ _DISCOVERY_REWARD_WEIGHTS = {
     "diagnostics": 1.0,
 }
 
+# GENTLE（起身温柔化，零新增项）：R1 翻滚速率 ×5、R2 落地冲击生效化、R3 躺地税降档
+# （门参数见 _apply_discovery_reward_profile）。定标依据 = yzau6pg5@4999 回放实测
+# （弹道 ω 7.4-11.3 rad/s、落地 p50 420-980N/p95 1475N）。
+_DISCOVERY_GENTLE_REWARD_WEIGHTS = {
+    **_DISCOVERY_REWARD_WEIGHTS,
+    "ang_vel_xy": -0.25,
+    "contact_forces": -15.0,
+}
+
 _DISCOVERY_REFORM_A_REWARD_WEIGHTS = {
     **{
         name: weight
@@ -112,6 +122,7 @@ _DISCOVERY_REFORM_AB_REWARD_WEIGHTS = {
 }
 _DISCOVERY_REWARD_WEIGHTS_BY_PROFILE = {
     DiscoveryRewardProfile.BASELINE: _DISCOVERY_REWARD_WEIGHTS,
+    DiscoveryRewardProfile.GENTLE: _DISCOVERY_GENTLE_REWARD_WEIGHTS,
     DiscoveryRewardProfile.REFORM_A: _DISCOVERY_REFORM_A_REWARD_WEIGHTS,
     DiscoveryRewardProfile.REFORM_AB: _DISCOVERY_REFORM_AB_REWARD_WEIGHTS,
 }
@@ -448,6 +459,38 @@ def _apply_discovery_reward_profile(
     if reward_profile is DiscoveryRewardProfile.BASELINE:
         return
 
+    if reward_profile is DiscoveryRewardProfile.GENTLE:
+        # R1 翻滚速率定价：弹道翻滚 ω 实测 7.4-11.3 rad/s -> 14-32/s，温柔 2-3 -> 1-2/s。
+        cfg.rewards["ang_vel_xy"] = replace(cfg.rewards["ang_vel_xy"], weight=-0.25)
+        # R2 落地冲击生效化：阈 250N ≈ 2x 动载（常规行驶/接推免税），-15 配合函数内 /100
+        # 等效每牛 0.15 -> 724N 一次 ~4、p95 1475N ~9（baseline 的 -1.5e-4 为装饰品）。
+        contact_params = dict(cfg.rewards["contact_forces"].params or {})
+        contact_params["threshold"] = 250.0
+        cfg.rewards["contact_forces"] = replace(
+            cfg.rewards["contact_forces"],
+            weight=-15.0,
+            params=contact_params,
+        )
+        # R3 躺地时间税降档：倒置 34/s -> ~7/s（_upright_factor 门 + 0.2 下限，无免税区，
+        # 反躺平三重保险 = 下限 + upward + 复活的 recover_stagnation）；<45° 站立带 ≈1，
+        # 45-90° cos/0.7 斜靠税略强于 baseline（反停车加固）。经济学：倒置 urgency 18/s，
+        # 快 0.9s 赚 ~16 < R1+R2 弹道账单 7-24 -> 「越快越赚」不等式翻转。
+        height_params = dict(cfg.rewards["tracking_height"].params or {})
+        for name in ("upright_gate_angle_deg", "inverted_gate_angle_deg"):
+            height_params.pop(name, None)
+        height_params.update(
+            {
+                "use_inverted_free_upright_height_gate": False,
+                "use_upright_gate": True,
+                "min_upright_gate": 0.2,
+            }
+        )
+        cfg.rewards["tracking_height"] = replace(
+            cfg.rewards["tracking_height"],
+            params=height_params,
+        )
+        return
+
     height_params = dict(cfg.rewards["tracking_height"].params or {})
     for name in (
         "use_inverted_free_upright_height_gate",
@@ -517,6 +560,20 @@ def _critical_reward_params(
             },
         }
 
+    if reward_profile is DiscoveryRewardProfile.GENTLE:
+        return {
+            "tracking_height": {
+                "use_inverted_free_upright_height_gate": False,
+                "use_upright_gate": True,
+                "min_upright_gate": 0.2,
+            },
+            "contact_forces": {
+                "threshold": 250.0,
+                "sensor_name": "wheel_sensor",
+                "use_recovery_gate": False,
+            },
+        }
+
     result: dict[str, dict[str, object]] = {
         "tracking_height": {
             "use_inverted_free_upright_height_gate": False,
@@ -543,7 +600,10 @@ def _critical_reward_functions(
     """返回 profile 关键奖励项应绑定的实现。"""
 
     result: dict[str, object] = {"tracking_height": rewards.tracking_height}
-    if reward_profile is DiscoveryRewardProfile.BASELINE:
+    if reward_profile in (
+        DiscoveryRewardProfile.BASELINE,
+        DiscoveryRewardProfile.GENTLE,
+    ):
         result["contact_forces"] = rewards.contact_forces
         return result
     result.update(
@@ -569,6 +629,16 @@ def _forbidden_reward_params(
                 "use_near_upright_gate",
                 "near_upright_gate_start_deg",
                 "near_upright_gate_full_deg",
+            )
+        }
+    if reward_profile is DiscoveryRewardProfile.GENTLE:
+        return {
+            "tracking_height": (
+                "use_near_upright_gate",
+                "near_upright_gate_start_deg",
+                "near_upright_gate_full_deg",
+                "upright_gate_angle_deg",
+                "inverted_gate_angle_deg",
             )
         }
     return {
