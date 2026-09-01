@@ -92,6 +92,14 @@ def mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     return _rl_cfg(smoke=smoke, recurrent=False)
 
 
+def teacher_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """生成 Teacher MLP 配置，并保留 200/350/500 轮 teacher-off 验收点。"""
+
+    cfg = _rl_cfg(smoke=smoke, recurrent=False)
+    cfg.save_interval = 50
+    return cfg
+
+
 def ungrouped_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成不读取 env group 的公平基线 MLP PPO 配置。"""
 

@@ -25,6 +25,7 @@ from se3_train.mdp.height_default_cache import get_policy_default_from_height_ca
 from se3_train.mdp.joint_indices import (
     leg_actuator_ids,
 )
+from se3_train.mdp.recovery_teacher import RecoveryTeacherCfg, RecoveryTeacherController
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -56,6 +57,7 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     active_rod_lower_target_overdrive: float = _SHARED_ROBOT.active_rod_lower_target_overdrive
     knee_gas_spring_force: float = _SHARED_ROBOT.knee_gas_spring_force
     knee_gas_spring_compensation_enabled: bool = _SHARED_ROBOT.knee_gas_spring_compensation_enabled
+    recovery_teacher: RecoveryTeacherCfg | None = None
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -118,6 +120,13 @@ class SerialLegDelayedAction(ActionTerm):
         self._unclipped_actions = torch.zeros_like(self._raw_actions)
         self._policy_actions = torch.zeros_like(self._raw_actions)
         self._delayed_actions = torch.zeros_like(self._raw_actions)
+        self._recovery_teacher_action = torch.zeros_like(self._raw_actions)
+        self._recovery_teacher_active = torch.zeros(
+            self.num_envs,
+            device=self.device,
+            dtype=torch.bool,
+        )
+        self._recovery_teacher_alpha = 0.0
         self._ctbc_output_bias = torch.zeros_like(self._raw_actions)
         self._ctbc_action_delta = torch.zeros_like(self._raw_actions)
         self._ctbc_wheel_delta_xz = torch.zeros(self.num_envs, 2, 2, device=self.device)
@@ -140,6 +149,13 @@ class SerialLegDelayedAction(ActionTerm):
             self.action_dim,
             device=self.device,
         )
+        self._recovery_teacher = None
+        if cfg.recovery_teacher is not None and cfg.recovery_teacher.enabled:
+            self._recovery_teacher = RecoveryTeacherController(
+                env,
+                cfg.recovery_teacher,
+                self._leg_action_scales,
+            )
         self._resample_delay(self._env_indices)
 
     @property
@@ -161,6 +177,18 @@ class SerialLegDelayedAction(ActionTerm):
     @property
     def delayed_action(self) -> torch.Tensor:
         return self._delayed_actions
+
+    @property
+    def recovery_teacher_action(self) -> torch.Tensor:
+        return self._recovery_teacher_action
+
+    @property
+    def recovery_teacher_active(self) -> torch.Tensor:
+        return self._recovery_teacher_active
+
+    @property
+    def recovery_teacher_alpha(self) -> float:
+        return self._recovery_teacher_alpha
 
     @property
     def ctbc_output_bias(self) -> torch.Tensor:
@@ -221,6 +249,21 @@ class SerialLegDelayedAction(ActionTerm):
             clip = float(self.cfg.action_clip)
             self._raw_actions[:] = torch.clamp(incoming_actions, -clip, clip)
         self._policy_actions[:] = self._raw_actions
+        self._recovery_teacher_action.zero_()
+        self._recovery_teacher_active.zero_()
+        self._recovery_teacher_alpha = 0.0
+        if self._recovery_teacher is not None:
+            transformed, teacher_action, teacher_active, alpha = self._recovery_teacher.transform(
+                self._policy_actions
+            )
+            if self.cfg.action_clip is None:
+                self._raw_actions[:] = transformed
+            else:
+                clip = float(self.cfg.action_clip)
+                self._raw_actions[:] = torch.clamp(transformed, -clip, clip)
+            self._recovery_teacher_action[:] = teacher_action
+            self._recovery_teacher_active[:] = teacher_active
+            self._recovery_teacher_alpha = float(alpha)
         self._ctbc_output_bias.zero_()
         self._ctbc_action_delta.zero_()
         self._ctbc_wheel_delta_xz.zero_()
@@ -525,6 +568,11 @@ class SerialLegDelayedAction(ActionTerm):
         self._unclipped_actions[resolved_env_ids] = 0.0
         self._policy_actions[resolved_env_ids] = 0.0
         self._delayed_actions[resolved_env_ids] = 0.0
+        self._recovery_teacher_action[resolved_env_ids] = 0.0
+        self._recovery_teacher_active[resolved_env_ids] = False
+        self._recovery_teacher_alpha = 0.0
+        if self._recovery_teacher is not None:
+            self._recovery_teacher.reset(resolved_env_ids)
         self._ctbc_output_bias[resolved_env_ids] = 0.0
         self._ctbc_action_delta[resolved_env_ids] = 0.0
         self._ctbc_wheel_delta_xz[resolved_env_ids] = 0.0

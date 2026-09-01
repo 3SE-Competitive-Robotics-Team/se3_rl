@@ -20,6 +20,8 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from se3_shared import JointGroup
 from se3_train.mdp import env_groups, terminations
 from se3_train.mdp import events as mdp_events
+from se3_train.mdp import observations as mdp_observations
+from se3_train.mdp.recovery_teacher import RecoveryTeacherCfg
 from se3_train.tasks.recovery import curriculums, rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 
@@ -1197,3 +1199,44 @@ def history_env_cfg(
     """生成五帧 actor 历史观测版本，critic 与其余训练契约保持不变。"""
 
     return _apply_actor_history(env_cfg(play=play, reward_profile=reward_profile))
+
+
+def teacher_history_env_cfg(
+    play: bool = False,
+    reward_profile: DiscoveryRewardProfile = DiscoveryRewardProfile.BASELINE,
+) -> ManagerBasedRlEnvCfg:
+    """生成倒置起身 scripted teacher 的独立 History-MLP 任务。
+
+    teacher 只在训练配置启用；play/eval 默认关闭，用于直接检验策略是否完成接棒。
+    奖励、reset 与课程继承指定的 grouped profile，唯一额外行为是 opt-in 动作变换
+    及其配套的 processed last-action 观测。
+    """
+
+    cfg = history_env_cfg(play=play, reward_profile=reward_profile)
+    action_cfg = cfg.actions["delayed_action"]
+    cfg.actions["delayed_action"] = replace(
+        action_cfg,
+        recovery_teacher=RecoveryTeacherCfg(
+            enabled=not play,
+            alpha_start=0.85,
+            hold_iters=200,
+            end_iter=500,
+            alpha_end=0.0,
+            steps_per_policy_iter=_STEPS_PER_POLICY_ITER,
+            sweep_action_indices=(0, 2),
+            hard_zero_wheel_indices=(4, 5),
+        ),
+    )
+
+    for group_name in ("actor", "critic"):
+        group_cfg = cfg.observations[group_name]
+        terms = dict(group_cfg.terms)
+        if "last_actions" not in terms:
+            raise RuntimeError(f"Recovery teacher 的 {group_name} 观测缺少 last_actions")
+        terms["last_actions"] = replace(
+            terms["last_actions"],
+            func=mdp_observations.processed_last_actions_obs,
+            params={"action_name": "delayed_action"},
+        )
+        cfg.observations[group_name] = replace(group_cfg, terms=terms)
+    return cfg

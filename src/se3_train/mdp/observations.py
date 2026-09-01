@@ -109,6 +109,24 @@ def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     return _finite_clamp(env.action_manager.action)
 
 
+def processed_last_actions_obs(
+    env: ManagerBasedRlEnv,
+    action_name: str = "delayed_action",
+) -> torch.Tensor:
+    """返回动作项处理后、FIFO 延迟前的上一条 6D command。
+
+    scripted teacher 训练必须让 actor 看见实际送入延迟队列的动作，否则 teacher
+    相位与方向会变成隐藏状态。teacher 关闭时该值退化为普通 clipped policy action，
+    因而不改变部署时的 34D 单帧观测契约。
+    """
+
+    action_term = env.action_manager.get_term(action_name)
+    action = getattr(action_term, "raw_action", None)
+    if not isinstance(action, torch.Tensor) or action.shape != env.action_manager.action.shape:
+        raise RuntimeError(f"动作项 {action_name} 未提供匹配的 raw_action")
+    return _finite_clamp(action)
+
+
 # --- Critic 特权观测 ---
 
 

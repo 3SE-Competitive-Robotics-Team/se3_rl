@@ -73,6 +73,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         )
         self._se3_apply_group_init_std()
         self._se3_reward_contract_info = self._se3_read_reward_contract_info()
+        self._se3_action_contract_info = self._se3_read_action_contract_info()
         if not self.is_distributed or self.gpu_global_rank == 0:
             print(format_runtime_summary(self._se3_runtime_info), flush=True)
             if self._se3_async_host_logger_enabled:
@@ -85,6 +86,12 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 profile, contract_hash = self._se3_reward_contract_info
                 print(
                     f"[SE3 Reward Contract] profile={profile} sha256={contract_hash}",
+                    flush=True,
+                )
+            if self._se3_action_contract_info is not None:
+                profile, contract_hash = self._se3_action_contract_info
+                print(
+                    f"[SE3 Action Contract] profile={profile} sha256={contract_hash}",
                     flush=True,
                 )
 
@@ -101,6 +108,18 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         )
 
         return detect_discovery_reward_contract(env_cfg)
+
+    def _se3_read_action_contract_info(self) -> tuple[str, str] | None:
+        """读取 opt-in Recovery teacher 的动作与观测契约指纹。"""
+
+        env_cfg = getattr(self.env, "cfg", None)
+        if env_cfg is None:
+            env_cfg = getattr(getattr(self.env, "unwrapped", None), "cfg", None)
+        if env_cfg is None:
+            return None
+        from se3_train.mdp.recovery_teacher import recovery_teacher_contract_info
+
+        return recovery_teacher_contract_info(env_cfg)
 
     def _se3_apply_group_init_std(self) -> None:
         """按动作组覆写 σ 初值（SE3_RECOVERY_WHEEL_INIT_STD / SE3_RECOVERY_LEG_INIT_STD）。
