@@ -22,6 +22,7 @@ from se3_train.mdp import env_groups, terminations
 from se3_train.mdp import events as mdp_events
 from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp.recovery_teacher import RecoveryTeacherCfg
+from se3_train.mdp.recovery_torque_assist import RecoveryTorqueAssistCfg
 from se3_train.tasks.recovery import curriculums, rewards
 from se3_train.tasks.recovery.env_cfg import env_cfg as recovery_env_cfg
 
@@ -1239,4 +1240,33 @@ def teacher_history_env_cfg(
             params={"action_name": "delayed_action"},
         )
         cfg.observations[group_name] = replace(group_cfg, terms=terms)
+    return cfg
+
+
+def torque_assist_history_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """生成按当前姿态施加 +20 N·m 外部扭矩的 GENTLE 任务。
+
+    被课程选中的 episode 只要倾角超过 30° 就施力，进入直立带立即撤力；再次
+    跌出直立带时重新介入。iter 0-199 全选，iter 200-500 线性降低 episode
+    采样比例；单个被选中的 episode 始终保持 20 N·m。play/eval 默认关闭辅助。
+    """
+
+    cfg = history_env_cfg(play=play, reward_profile=DiscoveryRewardProfile.GENTLE)
+    action_cfg = cfg.actions["delayed_action"]
+    cfg.actions["delayed_action"] = replace(
+        action_cfg,
+        recovery_torque_assist=RecoveryTorqueAssistCfg(
+            enabled=not play,
+            torque_nm=20.0,
+            body_name="base_link",
+            body_axis=(0.0, 1.0, 0.0),
+            exit_upright_angle_deg=30.0,
+            max_assist_time_s=3.0,
+            probability_start=1.0,
+            hold_iters=200,
+            end_iter=500,
+            probability_end=0.0,
+            steps_per_policy_iter=_STEPS_PER_POLICY_ITER,
+        ),
+    )
     return cfg

@@ -110,7 +110,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         return detect_discovery_reward_contract(env_cfg)
 
     def _se3_read_action_contract_info(self) -> tuple[str, str] | None:
-        """读取 opt-in Recovery teacher 的动作与观测契约指纹。"""
+        """读取 opt-in Recovery 动作 teacher 或物理引导契约指纹。"""
 
         env_cfg = getattr(self.env, "cfg", None)
         if env_cfg is None:
@@ -118,8 +118,14 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
         if env_cfg is None:
             return None
         from se3_train.mdp.recovery_teacher import recovery_teacher_contract_info
+        from se3_train.mdp.recovery_torque_assist import (
+            recovery_torque_assist_contract_info,
+        )
 
-        return recovery_teacher_contract_info(env_cfg)
+        teacher_info = recovery_teacher_contract_info(env_cfg)
+        if teacher_info is not None:
+            return teacher_info
+        return recovery_torque_assist_contract_info(env_cfg)
 
     def _se3_apply_group_init_std(self) -> None:
         """按动作组覆写 σ 初值（SE3_RECOVERY_WHEEL_INIT_STD / SE3_RECOVERY_LEG_INIT_STD）。

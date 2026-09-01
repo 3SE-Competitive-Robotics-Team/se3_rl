@@ -26,6 +26,10 @@ from se3_train.mdp.joint_indices import (
     leg_actuator_ids,
 )
 from se3_train.mdp.recovery_teacher import RecoveryTeacherCfg, RecoveryTeacherController
+from se3_train.mdp.recovery_torque_assist import (
+    RecoveryTorqueAssistCfg,
+    RecoveryTorqueAssistController,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -58,6 +62,7 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     knee_gas_spring_force: float = _SHARED_ROBOT.knee_gas_spring_force
     knee_gas_spring_compensation_enabled: bool = _SHARED_ROBOT.knee_gas_spring_compensation_enabled
     recovery_teacher: RecoveryTeacherCfg | None = None
+    recovery_torque_assist: RecoveryTorqueAssistCfg | None = None
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -156,6 +161,15 @@ class SerialLegDelayedAction(ActionTerm):
                 cfg.recovery_teacher,
                 self._leg_action_scales,
             )
+        self._recovery_torque_assist = None
+        if cfg.recovery_torque_assist is not None and cfg.recovery_torque_assist.enabled:
+            if self._recovery_teacher is not None:
+                raise ValueError("Recovery 动作 teacher 与外部扭矩引导不能同时启用")
+            self._recovery_torque_assist = RecoveryTorqueAssistController(
+                env,
+                cfg.recovery_torque_assist,
+                self._entity,
+            )
         self._resample_delay(self._env_indices)
 
     @property
@@ -189,6 +203,22 @@ class SerialLegDelayedAction(ActionTerm):
     @property
     def recovery_teacher_alpha(self) -> float:
         return self._recovery_teacher_alpha
+
+    @property
+    def recovery_torque_assist_active(self) -> torch.Tensor:
+        """返回外部扭矩引导 active mask，未启用时恒为 false。"""
+
+        if self._recovery_torque_assist is None:
+            return torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        return self._recovery_torque_assist.active
+
+    @property
+    def recovery_torque_assist_nm(self) -> torch.Tensor:
+        """返回每个环境当前写入的外部扭矩模长。"""
+
+        if self._recovery_torque_assist is None:
+            return torch.zeros(self.num_envs, device=self.device)
+        return self._recovery_torque_assist.applied_torque_nm
 
     @property
     def ctbc_output_bias(self) -> torch.Tensor:
@@ -264,6 +294,8 @@ class SerialLegDelayedAction(ActionTerm):
             self._recovery_teacher_action[:] = teacher_action
             self._recovery_teacher_active[:] = teacher_active
             self._recovery_teacher_alpha = float(alpha)
+        if self._recovery_torque_assist is not None:
+            self._recovery_torque_assist.log_diagnostics()
         self._ctbc_output_bias.zero_()
         self._ctbc_action_delta.zero_()
         self._ctbc_wheel_delta_xz.zero_()
@@ -360,6 +392,8 @@ class SerialLegDelayedAction(ActionTerm):
         )
 
         self._entity.set_joint_velocity_target(wheel_target, joint_ids=self._wheel_joint_ids)
+        if self._recovery_torque_assist is not None:
+            self._recovery_torque_assist.apply()
 
     def _current_leg_action_defaults(self) -> torch.Tensor:
         """返回当前 leg action 零点姿态。"""
@@ -573,6 +607,8 @@ class SerialLegDelayedAction(ActionTerm):
         self._recovery_teacher_alpha = 0.0
         if self._recovery_teacher is not None:
             self._recovery_teacher.reset(resolved_env_ids)
+        if self._recovery_torque_assist is not None:
+            self._recovery_torque_assist.reset(resolved_env_ids)
         self._ctbc_output_bias[resolved_env_ids] = 0.0
         self._ctbc_action_delta[resolved_env_ids] = 0.0
         self._ctbc_wheel_delta_xz[resolved_env_ids] = 0.0

@@ -16,6 +16,7 @@ from . import jump_terminations as jump_terminations
 from . import leg_alignment as leg_alignment
 from . import observations as observations
 from . import recovery_state as recovery_state
+from . import recovery_torque_assist as recovery_torque_assist
 from . import rewards as rewards
 from . import terminations as terminations
 
@@ -32,6 +33,7 @@ __all__ = [
     "leg_alignment",
     "observations",
     "recovery_state",
+    "recovery_torque_assist",
     "rewards",
     "terminations",
 ]

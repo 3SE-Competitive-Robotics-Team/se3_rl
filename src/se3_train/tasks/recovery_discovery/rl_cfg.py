@@ -100,6 +100,14 @@ def teacher_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
+def torque_assist_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """生成扭矩引导 MLP 配置，并保留 200/350/500 轮撤力验收点。"""
+
+    cfg = _rl_cfg(smoke=smoke, recurrent=False)
+    cfg.save_interval = 50
+    return cfg
+
+
 def ungrouped_mlp_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成不读取 env group 的公平基线 MLP PPO 配置。"""
 
