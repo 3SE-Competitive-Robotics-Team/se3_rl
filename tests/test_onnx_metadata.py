@@ -370,7 +370,7 @@ class OnnxMetadataTests(unittest.TestCase):
             {"velocity_height": {"dimension": 8}},
         )
         self.assertNotIn("ranges", metadata["commands"]["velocity_height"])
-        self.assertEqual(metadata["robot"]["KD"][4:6], [0.08, 0.08])
+        self.assertEqual(metadata["robot"]["KD"][4:6], [RobotConfig().wheel_kd] * 2)
         self.assertEqual(metadata["robot"]["armature"], [0.01] * 4 + [0.005] * 2)
         self.assertEqual(metadata["robot"]["saturation_effort"][:4], [40.0] * 4)
         self.assertEqual(
