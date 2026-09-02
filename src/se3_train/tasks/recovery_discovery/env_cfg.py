@@ -116,7 +116,10 @@ _DISCOVERY_GENTLE_REWARD_WEIGHTS = {
     "wheel_air_velocity": -3.0e-2,
     # S4 抖动：全局 ×50 + 起身段再 ×10（recovery_scale），起身段等效 ×500。
     "leg_action_rate": -0.05,
-    "wheel_action_rate": -5.5e-3,
+    # Z5 轮抖动提价（2026-09-02）：σ_eq ∝ 1/√w，q21vt9zi 实测 wheel σ 在 0.40 平台
+    # 9000 iter 不动（噪声成本 ~0.2/s 与熵红利均衡）。×4 目标 σ 0.40 -> ~0.20；
+    # 起身段由 recovery_scale 10 -> 2.5 抵消，绝对价位 -5.5e-2 不变，只动行走段。
+    "wheel_action_rate": -2.2e-2,
 }
 
 _DISCOVERY_REFORM_A_REWARD_WEIGHTS = {
@@ -502,14 +505,25 @@ def _apply_discovery_reward_profile(
         )
         # S4 抖动：action_smoothness 没有 recovery 钩子，只能用这两项的 recovery_scale
         # 在起身段额外加价；行走段仍按全局权重计，量级仍低于 leg_torques。
-        for name in ("leg_action_rate", "wheel_action_rate"):
+        # Z5：wheel 的 recovery_scale 降为 2.5 抵消全局 ×4，起身段绝对价位不变。
+        for name, recovery_scale in (("leg_action_rate", 10.0), ("wheel_action_rate", 2.5)):
             rate_params = dict(cfg.rewards[name].params or {})
-            rate_params["recovery_scale"] = 10.0
+            rate_params["recovery_scale"] = recovery_scale
             cfg.rewards[name] = replace(
                 cfg.rewards[name],
                 weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS[name],
                 params=rate_params,
             )
+        # Z6 静止漂移罚去饱和（2026-09-02）：q21vt9zi 评测端实测零指令下 ~0.19 m/s
+        # 匀速漂移，此处 base(0.19/0.1)²+wheel(0.19/0.08)²≈9.2 已越过 cap=8 的
+        # 零梯度区。cap 8 -> 32 恢复 ≤0.35 m/s 区间的梯度；保留上界，防止零指令
+        # 站立被 push 时的瞬态速度（>0.5 m/s）产生无界爆罚污染 return。
+        zero_vel_params = dict(cfg.rewards["upright_zero_velocity"].params or {})
+        zero_vel_params["max_penalty"] = 32.0
+        cfg.rewards["upright_zero_velocity"] = replace(
+            cfg.rewards["upright_zero_velocity"],
+            params=zero_vel_params,
+        )
         return
 
     height_params = dict(cfg.rewards["tracking_height"].params or {})
@@ -597,9 +611,12 @@ def _critical_reward_params(
             "joint_mirror": {"use_upright_gate": False},
             "wheel_air_velocity": {"recovery_active_only": True},
             "leg_action_rate": {"recovery_scale": 10.0},
-            "wheel_action_rate": {"recovery_scale": 10.0},
+            # Z5：全局 ×4 由 recovery_scale 2.5 抵消，改回 10.0 会让起身段隐式 ×4。
+            "wheel_action_rate": {"recovery_scale": 2.5},
             # 静止定价修正 Z3：sigma_stand 改回 0.02 会让静止精度回到零梯度悬崖。
             "tracking_lin_vel": {"sigma_stand": 0.08},
+            # Z6：cap 改回 8 会在 >=0.17 m/s 漂移区间重新制造零梯度饱和。
+            "upright_zero_velocity": {"max_penalty": 32.0},
         }
 
     result: dict[str, dict[str, object]] = {
