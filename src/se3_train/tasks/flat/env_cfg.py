@@ -1,4 +1,3 @@
-# ruff: noqa: F401
 from __future__ import annotations
 
 from dataclasses import replace
@@ -53,6 +52,8 @@ _FLAT_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S = 45.0
 # 动作空间罚项在 scale 45 时代定标的权重；轮分量按 wheel_pricing 折算。
 _FLAT_ACTION_RATE_WEIGHT = -0.48
 _FLAT_ACTION_SMOOTHNESS_WEIGHT = -0.01
+# History-MLP 变体的 actor 历史帧数（34 维 × 5 = 170 维展平），与 recovery_discovery 一致。
+FLAT_HISTORY_LENGTH = 5
 # 自适应课程从零起步，commands_vel_adaptive() 首次调用即覆写为 (0,0)
 _FLAT_INITIAL_LIN_VEL_X_RANGE = (0.0, 0.0)
 _FLAT_INITIAL_ANG_VEL_YAW_RANGE = (0.0, 0.0)
@@ -645,4 +646,24 @@ def env_cfg(
     )
     cfg.viewer = ViewerConfig()
 
+    return cfg
+
+
+def history_env_cfg(
+    play: bool = False,
+    *,
+    wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
+    history_length: int = FLAT_HISTORY_LENGTH,
+) -> ManagerBasedRlEnvCfg:
+    """把 actor 观测换成多帧展平历史的平地环境配置；critic 与其余契约保持不变。
+
+    与 recovery_discovery 的 History-MLP 做法一致：仅改 actor 观测组的 history_length /
+    flatten_history_dim，各 term 的噪声、缩放与 critic 特权观测都不动。
+    """
+    cfg = env_cfg(play=play, wheel_action_scale=wheel_action_scale)
+    cfg.observations["actor"] = replace(
+        cfg.observations["actor"],
+        history_length=int(history_length),
+        flatten_history_dim=True,
+    )
     return cfg

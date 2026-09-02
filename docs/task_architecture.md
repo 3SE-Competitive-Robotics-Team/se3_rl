@@ -9,7 +9,7 @@
 | 目录 | task id | 用途 |
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
-| `flat/` | `SE3-WheelLegged-Flat-GRU` | 平地行走 GRU 基模 |
+| `flat/` | `SE3-WheelLegged-Flat-GRU` / `SE3-WheelLegged-Flat-MLP` / `SE3-WheelLegged-Flat-History-MLP` | 平地行走基模：GRU、单帧 MLP、五帧展平历史 MLP 三个入口共享环境（轮 scale 15 + (15/45)² 罚项补偿）与 PPO 配置，仅网络/观测历史不同 |
 | `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-Gentle-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-Teacher-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-Gentle-Teacher-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-Gentle-TorqueAssist-MLP` / `SE3-WheelLegged-Recovery-Discovery-Ungrouped-MLP` | 唯一倒地自启任务；各入口共享奖励、课程和 PPO 配置，Grouped 使用 loco/recover 分组与五帧历史观测；Teacher 入口变换动作，TorqueAssist 入口保持策略动作原样并按当前机身倾角施加外部扭矩；两种引导均在 play/eval 关闭 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
