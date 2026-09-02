@@ -121,7 +121,12 @@ class RobotConfig(BaseModel):
 
     leg_kp: float = 60.0
     leg_kd: float = 3.0
-    wheel_kd: float = 0.08
+    # 轮子速度环增益（N·m·s/rad，输出轴级）：力矩 = wheel_kd × (目标轮速 − 实际轮速)。
+    # 2026-09-02 0.08 → 0.2：按 M3508 Kt 0.3 N·m/A（19.2:1）折算 14:1 输出轴 0.219 N·m/A，
+    # C620 ±16384 ↔ ±20 A，kd_sim ≈ 0.0357 × 固件速度环 Kp[count/rpm]，0.2 ↔ Kp≈5.6。
+    # 0.2 使满幅动作（scale 15 rad/s）≈ 堵转力矩 3.3 N·m，库仑死区 0.15 N·m 对应 0.75 rad/s。
+    # 再高需同时降轮 scale，否则探索噪声力矩顶到额定限幅。
+    wheel_kd: float = 0.2
     knee_gas_spring_force: float = 300.0
     # 关闭前馈，让策略直接面对带弹簧的 plant 并学会利用这份抗重力力矩；
     # 开启则电机自己抵消弹簧，等于放弃硬件收益还多占 10-18 N·m 包络。
