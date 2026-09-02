@@ -5,6 +5,7 @@ from __future__ import annotations
 from se3_train.mdp.rewards import (
     action_smoothness,
     base_ang_vel_xy_excess,
+    flat_orientation_l2,
     impact_forces,
     leg_action_rate,
     leg_contact_penalty,
@@ -36,6 +37,7 @@ __all__ = [
     *_RECOVERY_FLAT_REWARD_ALL,
     "action_smoothness",
     "base_ang_vel_xy_excess",
+    "flat_orientation_l2",
     "impact_forces",
     "leg_action_rate",
     "leg_contact_penalty",

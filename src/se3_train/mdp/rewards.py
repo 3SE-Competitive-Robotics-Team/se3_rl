@@ -817,6 +817,26 @@ def tracking_orientation_l2(
     return penalty
 
 
+def flat_orientation_l2(
+    env: ManagerBasedRlEnv,
+    gate_start_deg: float = 30.0,
+    gate_full_deg: float = 15.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """重力门控的机身水平惩罚：pg_xy 的 L2，仅在近直立带计价。
+
+    门控在 ``gate_start_deg`` 以外恒为 0，倒地与起身全程免罚；
+    ``gate_full_deg`` 以内全额计价，between 线性渐入。"""
+    robot = env.scene[asset_cfg.name]
+    pg = robot.data.projected_gravity_b
+    gate = _near_upright_gate(
+        pg[:, 2],
+        gate_start_deg=float(gate_start_deg),
+        gate_full_deg=float(gate_full_deg),
+    )
+    return (torch.square(pg[:, 0]) + torch.square(pg[:, 1])) * gate
+
+
 def recovery_upright_orientation_l2(
     env: ManagerBasedRlEnv,
     command_name: str,

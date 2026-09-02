@@ -120,6 +120,11 @@ _DISCOVERY_GENTLE_REWARD_WEIGHTS = {
     # 9000 iter 不动（噪声成本 ~0.2/s 与熵红利均衡）。×4 目标 σ 0.40 -> ~0.20；
     # 起身段由 recovery_scale 10 -> 2.5 抵消，绝对价位 -5.5e-2 不变，只动行走段。
     "wheel_action_rate": -2.2e-2,
+    # Z7 重力门控水平罚（2026-09-02）：训练端实测站立倾斜 7.6°，而
+    # upright_orientation_l2 的转弯横滚尺度（pitch_scale 0.20）只给它定价 -0.22/s。
+    # pg_xy L2 × 近直立门（30°->15° 渐入，起身/倒地免罚），-30 使 7.6° 计 -0.53/s、
+    # 常规行驶 5° 倾计 -0.23/s、2° 站姿 -0.04/s——只压歪斜站立，不打加减速倾斜。
+    "flat_orientation": -30.0,
 }
 
 _DISCOVERY_REFORM_A_REWARD_WEIGHTS = {
@@ -514,6 +519,16 @@ def _apply_discovery_reward_profile(
                 weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS[name],
                 params=rate_params,
             )
+        # Z7 重力门控水平罚（定标见权重表注释）。
+        cfg.rewards["flat_orientation"] = RewardTermCfg(
+            func=rewards.flat_orientation_l2,
+            weight=_DISCOVERY_GENTLE_REWARD_WEIGHTS["flat_orientation"],
+            params={
+                "gate_start_deg": 30.0,
+                "gate_full_deg": 15.0,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
         # Z6 静止漂移罚去饱和（2026-09-02）：q21vt9zi 评测端实测零指令下 ~0.19 m/s
         # 匀速漂移，此处 base(0.19/0.1)²+wheel(0.19/0.08)²≈9.2 已越过 cap=8 的
         # 零梯度区。cap 8 -> 32 恢复 ≤0.35 m/s 区间的梯度；保留上界，防止零指令
@@ -617,6 +632,8 @@ def _critical_reward_params(
             "tracking_lin_vel": {"sigma_stand": 0.08},
             # Z6：cap 改回 8 会在 >=0.17 m/s 漂移区间重新制造零梯度饱和。
             "upright_zero_velocity": {"max_penalty": 32.0},
+            # Z7：门若放宽到起身带（>30°），水平罚会重新惩罚起身翻滚。
+            "flat_orientation": {"gate_start_deg": 30.0, "gate_full_deg": 15.0},
         }
 
     result: dict[str, dict[str, object]] = {
@@ -653,6 +670,8 @@ def _critical_reward_functions(
         # S1：GENTLE 的 upward 必须绑定倒置处保留梯度的实现，绑回 rewards.upward
         # 会静默恢复 (1-pg_z)^2 的零梯度起点。
         result["upward"] = rewards.recovery_upward
+        # Z7：必须是重力门控实现；换成无门控 flat_orientation 会罚穿起身过程。
+        result["flat_orientation"] = rewards.flat_orientation_l2
         return result
     result.update(
         {
