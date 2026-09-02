@@ -43,6 +43,16 @@ _LEG_JOINT_VEL_NOISE = _LEG_JOINT_VEL_NOISE_RAD_S * _OBS_DEFAULTS.leg_vel_scale
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
 _FLAT_LEG_ACTION_SCALE = 0.25
+# 轮 action scale：基类默认沿用 RobotConfig 的 45（rough/stair/jump/flow_match 继承线契约不变）；
+# Flat 任务本身（flat/__init__.py 注册）显式使用 15，与 recovery 族一致（σ-gate 诊断：scale 45 时
+# 探索噪声物理轮噪 ±σ×45 rad/s 挡死平衡校正）。改 scale 必须同步按 (scale/45)² 补偿动作空间罚项，
+# 见 env_cfg() 内 wheel_pricing；指令可行域预算是物理量，与 scale 解耦（见下）。
+_FLAT_LEGACY_WHEEL_ACTION_SCALE = float(_ROBOT_DEFAULTS.action_scale[JointGroup.WHEEL_ACTUATORS[0]])
+FLAT_WHEEL_ACTION_SCALE = 15.0
+_FLAT_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S = 45.0
+# 动作空间罚项在 scale 45 时代定标的权重；轮分量按 wheel_pricing 折算。
+_FLAT_ACTION_RATE_WEIGHT = -0.48
+_FLAT_ACTION_SMOOTHNESS_WEIGHT = -0.01
 # 自适应课程从零起步，commands_vel_adaptive() 首次调用即覆写为 (0,0)
 _FLAT_INITIAL_LIN_VEL_X_RANGE = (0.0, 0.0)
 _FLAT_INITIAL_ANG_VEL_YAW_RANGE = (0.0, 0.0)
@@ -51,8 +61,19 @@ _FLAT_COMMAND_HALF_TRACK = 0.20
 _FLAT_COMMAND_WHEEL_SPEED_FRACTION = 0.9
 
 
-def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """SerialLeg 轮腿机器人的平地环境配置。"""
+def env_cfg(
+    play: bool = False,
+    *,
+    wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
+) -> ManagerBasedRlEnvCfg:
+    """SerialLeg 轮腿机器人的平地环境配置。
+
+    wheel_action_scale：轮 raw action → 轮速目标（rad/s）的 scale。默认 45 供继承线沿用旧契约；
+    Flat 任务注册时传 FLAT_WHEEL_ACTION_SCALE=15。动作空间罚项（action_rate / action_smoothness）
+    的轮分量按 (wheel_action_scale/45)² 折算，保证同一物理轮速轨迹的罚款与 scale 无关。
+    """
+    # 同一物理轮速轨迹：动作幅值 ×(45/scale)、差分平方 ×(45/scale)²，权重乘以其倒数保持定价。
+    wheel_pricing = (float(wheel_action_scale) / _FLAT_LEGACY_WHEEL_ACTION_SCALE) ** 2
 
     scene = SceneCfg(
         terrain=TerrainEntityCfg(terrain_type="plane"),
@@ -215,6 +236,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "delayed_action": SerialLegDelayedActionCfg(
             entity_name="robot",
             leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
+            wheel_scale=float(wheel_action_scale),
             action_clip=_ROBOT_DEFAULTS.action_clip,
         ),
     }
@@ -230,7 +252,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             constrain_diff_drive_commands=True,
             diff_drive_wheel_radius=_FLAT_COMMAND_WHEEL_RADIUS,
             diff_drive_half_track=_FLAT_COMMAND_HALF_TRACK,
-            diff_drive_max_wheel_speed=_ROBOT_DEFAULTS.action_scale[JointGroup.WHEEL_ACTUATORS[0]],
+            # 指令可行域预算是物理量（M3508 能力量级 rad/s），与动作 scale 解耦；
+            # 若跟随 scale 改成 15 会把 vx/yaw 指令域错误压缩到 1/3。
+            diff_drive_max_wheel_speed=_FLAT_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S,
             diff_drive_wheel_speed_fraction=_FLAT_COMMAND_WHEEL_SPEED_FRACTION,
         ),
     }
@@ -339,11 +363,20 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             weight=-1.03e-4,
             params={"asset_cfg": SceneEntityCfg("robot")},
         ),
-        "action_rate": RewardTermCfg(func=rewards.action_rate, weight=-0.48),
+        "action_rate": RewardTermCfg(
+            func=rewards.action_rate,
+            weight=_FLAT_ACTION_RATE_WEIGHT,
+            # 轮分量按 wheel_pricing 折算（scale 15 → 1/9），腿分量不变。
+            params={"leg_scale": 1.0, "wheel_scale": wheel_pricing},
+        ),
         "action_smoothness": RewardTermCfg(
             func=rewards.action_smoothness,
-            weight=-0.01,
-            params={"command_name": "velocity_height"},
+            weight=_FLAT_ACTION_SMOOTHNESS_WEIGHT,
+            params={
+                "command_name": "velocity_height",
+                "leg_scale": 1.0,
+                "wheel_scale": wheel_pricing,
+            },
         ),
         "joint_mirror": RewardTermCfg(
             func=rewards.joint_mirror,

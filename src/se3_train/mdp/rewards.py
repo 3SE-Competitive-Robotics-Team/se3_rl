@@ -1371,11 +1371,24 @@ def leg_power(
     return penalty
 
 
-def action_rate(env: ManagerBasedRlEnv, recovery_scale: float | None = None) -> torch.Tensor:
-    """当前动作与上一动作差值的平方和。"""
+def action_rate(
+    env: ManagerBasedRlEnv,
+    recovery_scale: float | None = None,
+    leg_scale: float = 1.0,
+    wheel_scale: float = 1.0,
+) -> torch.Tensor:
+    """当前动作与上一动作差值的平方和。
+
+    leg_scale / wheel_scale 分别缩放腿（dim 0-3）与轮（dim 4-5）分量，默认 1.0 等价于
+    原始 6 维合计。用途：轮 action scale 改变时按 (scale_new/scale_old)² 补偿轮分量的
+    定价，保持同一物理轮速轨迹的罚款不变（与 action_smoothness 的同名参数语义一致）。
+    """
     action = env.action_manager.action
     action_delta = action - env.action_manager.prev_action
-    penalty = torch.sum(action_delta**2, dim=1)
+    delta_sq = action_delta**2
+    penalty = float(leg_scale) * torch.sum(delta_sq[:, :4], dim=1) + float(wheel_scale) * torch.sum(
+        delta_sq[:, 4:6], dim=1
+    )
     if recovery_scale is not None:
         penalty = torch.where(_recovery_reset_mask(env), penalty * float(recovery_scale), penalty)
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
