@@ -23,7 +23,7 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
-from se3_shared import JointGroup
+from se3_shared import JointGroup, ObservationConfig
 from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
@@ -31,6 +31,15 @@ from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from . import commands, curriculums, events, observations, rewards, terminations
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
+_OBS_DEFAULTS = ObservationConfig()
+# 观测噪声按原始物理单位定义，再乘以观测函数内部使用的缩放系数。mjlab 流水线是
+# compute → noise → clip → scale，而本仓库在 obs func 内部完成缩放（term.scale 为 None），
+# 所以 noise 必须与 func 输出同量纲，等价于 legged_gym 的 noise_scales × obs_scales。
+# 2026-09-02 前直接写 0.2 / 1.5，等效原始噪声被放大到 ±0.8 rad/s 与 ±6 rad/s。
+_ANG_VEL_NOISE_RAD_S = 0.2
+_LEG_JOINT_VEL_NOISE_RAD_S = 1.5
+_ANG_VEL_NOISE = _ANG_VEL_NOISE_RAD_S * _OBS_DEFAULTS.ang_vel_scale
+_LEG_JOINT_VEL_NOISE = _LEG_JOINT_VEL_NOISE_RAD_S * _OBS_DEFAULTS.leg_vel_scale
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 _STANDING_HEIGHT_RANGE = (0.20, 0.32)
 _FLAT_LEG_ACTION_SCALE = 0.25
@@ -140,7 +149,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     actor_terms = {
         "base_ang_vel": ObservationTermCfg(
             func=observations.base_ang_vel_obs,
-            noise=Unoise(n_min=-0.2, n_max=0.2),
+            noise=Unoise(n_min=-_ANG_VEL_NOISE, n_max=_ANG_VEL_NOISE),
         ),
         "projected_gravity": ObservationTermCfg(
             func=observations.projected_gravity_obs,
@@ -153,7 +162,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "leg_joint_vel": ObservationTermCfg(
             func=observations.leg_joint_vel_obs,
-            noise=Unoise(n_min=-1.5, n_max=1.5),
+            noise=Unoise(n_min=-_LEG_JOINT_VEL_NOISE, n_max=_LEG_JOINT_VEL_NOISE),
         ),
         "wheel_pos_zero": ObservationTermCfg(func=observations.wheel_pos_obs),
         "wheel_vel": ObservationTermCfg(func=observations.wheel_vel_obs),

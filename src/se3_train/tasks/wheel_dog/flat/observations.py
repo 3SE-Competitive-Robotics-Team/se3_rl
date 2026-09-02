@@ -13,10 +13,14 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 
+ANG_VEL_SCALE = 0.25
+JOINT_VEL_SCALE = 0.05
+
+
 def base_ang_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """基座坐标系角速度，缩放 0.25。"""
     robot = env.scene["robot"]
-    return robot.data.root_link_ang_vel_b * 0.25
+    return robot.data.root_link_ang_vel_b * ANG_VEL_SCALE
 
 
 def projected_gravity_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -42,13 +46,13 @@ def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """16 个受控关节速度，缩放 0.05。"""
     robot = env.scene["robot"]
-    return robot.data.joint_vel * 0.05
+    return robot.data.joint_vel * JOINT_VEL_SCALE
 
 
 def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """4 个轮子关节速度，缩放 0.05。"""
     robot = env.scene["robot"]
-    return robot.data.joint_vel[:, list(DOG_WHEEL_JOINT_IDS)] * 0.05
+    return robot.data.joint_vel[:, list(DOG_WHEEL_JOINT_IDS)] * JOINT_VEL_SCALE
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

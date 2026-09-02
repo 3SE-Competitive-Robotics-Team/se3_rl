@@ -37,6 +37,10 @@ from se3_train.tasks.wheel_dog.robot_cfg import (
 from . import commands, curriculums, events, observations, rewards, terminations
 
 _COMMAND_NAME = "base_velocity"
+# 观测噪声按原始物理单位定义，再乘以 obs func 内部的缩放系数（mjlab 先加噪后缩放，
+# 而缩放在 func 内部完成，term.scale 为 None）。
+_ANG_VEL_NOISE = 0.2 * observations.ANG_VEL_SCALE
+_JOINT_VEL_NOISE = 1.5 * observations.JOINT_VEL_SCALE
 _MAX_LIN_VEL_X = 4.0
 _MAX_LIN_VEL_Y = 1.5
 
@@ -97,7 +101,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     actor_terms = {
         "base_ang_vel": ObservationTermCfg(
             func=observations.base_ang_vel_obs,
-            noise=Unoise(n_min=-0.2, n_max=0.2),
+            noise=Unoise(n_min=-_ANG_VEL_NOISE, n_max=_ANG_VEL_NOISE),
         ),
         "projected_gravity": ObservationTermCfg(
             func=observations.projected_gravity_obs,
@@ -110,7 +114,7 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "joint_vel": ObservationTermCfg(
             func=observations.joint_vel_obs,
-            noise=Unoise(n_min=-1.5, n_max=1.5),
+            noise=Unoise(n_min=-_JOINT_VEL_NOISE, n_max=_JOINT_VEL_NOISE),
         ),
         "last_actions": ObservationTermCfg(func=observations.last_actions_obs),
     }
