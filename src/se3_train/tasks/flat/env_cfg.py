@@ -51,7 +51,15 @@ FLAT_WHEEL_ACTION_SCALE = 15.0
 _FLAT_DIFF_DRIVE_MAX_WHEEL_SPEED_RAD_S = 45.0
 # 动作空间罚项在 scale 45 时代定标的权重；轮分量按 wheel_pricing 折算。
 _FLAT_ACTION_RATE_WEIGHT = -0.48
-_FLAT_ACTION_SMOOTHNESS_WEIGHT = -0.01
+# action_smoothness 重定价（2026-09-02）：Flat 线停在 job 51 之前的 -0.01/cap 80，弹簧 plant 上噪声失去隐式
+# 代价后 cap 早饱和、对噪声零梯度，wheel σ 在 2000 轮内膨胀到 0.67-1.2（recovery 线以 -0.12/cap 320
+# 在 4gs3te0p 把 σ 退火到 0.24）。这里对齐 recovery 线的物理定价：weight -0.12、cap 320、轮分量按腿的
+# 2 倍计价再乘 wheel_pricing（scale 15 → 2.0/9≈0.222）。噪声地板 6σ² 为动作单位量，σ_leg 0.3 / σ_wheel 1.0
+# 时合计约 5，远低于 cap，梯度不截断。
+# (weight, max_penalty, wheel_base)；wheel_base 再乘 wheel_pricing 得到轮分量。基类默认 LEGACY 供
+# rough/jump/flow_match 继承线保持旧契约，Flat 三个任务注册时显式传 SPRING。
+FLAT_ACTION_SMOOTHNESS_LEGACY = (-0.01, 80.0, 1.0)
+FLAT_ACTION_SMOOTHNESS_SPRING = (-0.12, 320.0, 2.0)
 # History-MLP 变体的 actor 历史帧数（34 维 × 5 = 170 维展平），与 recovery_discovery 一致。
 FLAT_HISTORY_LENGTH = 5
 # 自适应课程从零起步，commands_vel_adaptive() 首次调用即覆写为 (0,0)
@@ -66,13 +74,16 @@ def env_cfg(
     play: bool = False,
     *,
     wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
+    action_smoothness: tuple[float, float, float] = FLAT_ACTION_SMOOTHNESS_LEGACY,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
     wheel_action_scale：轮 raw action → 轮速目标（rad/s）的 scale。默认 45 供继承线沿用旧契约；
     Flat 任务注册时传 FLAT_WHEEL_ACTION_SCALE=15。动作空间罚项（action_rate / action_smoothness）
     的轮分量按 (wheel_action_scale/45)² 折算，保证同一物理轮速轨迹的罚款与 scale 无关。
+    action_smoothness：(weight, max_penalty, wheel_base)，见 FLAT_ACTION_SMOOTHNESS_* 注释。
     """
+    smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     # 同一物理轮速轨迹：动作幅值 ×(45/scale)、差分平方 ×(45/scale)²，权重乘以其倒数保持定价。
     wheel_pricing = (float(wheel_action_scale) / _FLAT_LEGACY_WHEEL_ACTION_SCALE) ** 2
 
@@ -372,11 +383,13 @@ def env_cfg(
         ),
         "action_smoothness": RewardTermCfg(
             func=rewards.action_smoothness,
-            weight=_FLAT_ACTION_SMOOTHNESS_WEIGHT,
+            weight=float(smooth_weight),
             params={
                 "command_name": "velocity_height",
+                "max_penalty": float(smooth_cap),
                 "leg_scale": 1.0,
-                "wheel_scale": wheel_pricing,
+                # 轮分量 = wheel_base × wheel_pricing（SPRING @ scale 15 → 2.0/9 ≈ 0.222，与 recovery 线同价）。
+                "wheel_scale": float(smooth_wheel_base) * wheel_pricing,
             },
         ),
         "joint_mirror": RewardTermCfg(
@@ -654,13 +667,18 @@ def history_env_cfg(
     *,
     wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
     history_length: int = FLAT_HISTORY_LENGTH,
+    action_smoothness: tuple[float, float, float] = FLAT_ACTION_SMOOTHNESS_LEGACY,
 ) -> ManagerBasedRlEnvCfg:
     """把 actor 观测换成多帧展平历史的平地环境配置；critic 与其余契约保持不变。
 
     与 recovery_discovery 的 History-MLP 做法一致：仅改 actor 观测组的 history_length /
     flatten_history_dim，各 term 的噪声、缩放与 critic 特权观测都不动。
     """
-    cfg = env_cfg(play=play, wheel_action_scale=wheel_action_scale)
+    cfg = env_cfg(
+        play=play,
+        wheel_action_scale=wheel_action_scale,
+        action_smoothness=action_smoothness,
+    )
     cfg.observations["actor"] = replace(
         cfg.observations["actor"],
         history_length=int(history_length),
