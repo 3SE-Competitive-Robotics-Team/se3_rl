@@ -68,6 +68,42 @@ _FLAT_INITIAL_ANG_VEL_YAW_RANGE = (0.0, 0.0)
 _FLAT_COMMAND_WHEEL_RADIUS = 0.06
 _FLAT_COMMAND_HALF_TRACK = 0.20
 _FLAT_COMMAND_WHEEL_SPEED_FRACTION = 0.9
+# 2026-09-03 抖动对照实验的单变量旋钮。默认值 = 实验前基线（commit 9dbfe11），
+# 只有 flat/__init__.py 里显式注册的 SE3-WheelLegged-Flat-Exp-* 任务传非默认值，
+# Flat-GRU / Flat-MLP / Flat-History-MLP 与 rough/stair/jump/flow_match 继承线契约不变。
+# 诊断依据：日志逐项预算里 command_velocity_error 是最大单项罚（占总罚 38%）且 2k 后不再下降，
+# flat_wheel_contact 是唯一越训越差的项（轮离地率 3%→6.6%），bad_tilt soft 10° 起价太晚
+# （实测平均倾角已在 12° 附近），action delay 只有 4-6 ms 不到一个控制步，yaw 课程顶到 12 rad/s。
+# (lin m/s, yaw rad/s) command_velocity_error 死区
+FLAT_CMD_VEL_DEADBAND = (0.05, 0.10)
+FLAT_CMD_VEL_DEADBAND_WIDE = (0.15, 0.30)
+FLAT_WHEEL_CONTACT_WEIGHT = -10.0
+FLAT_WHEEL_CONTACT_WEIGHT_HEAVY = -30.0
+# (soft_limit_deg, hard_limit_deg) bad_tilt barrier
+FLAT_BAD_TILT_LIMITS_DEG = (10.0, 30.0)
+FLAT_BAD_TILT_LIMITS_TIGHT_DEG = (6.0, 25.0)
+# None = 沿用 ActionDelayConfig 默认（4-6 ms）；元组为 (min_s, max_s)，delay_s 取中点。
+FLAT_ACTION_DELAY_RANGE_S: tuple[float, float] | None = None
+# 1-3 个控制步 @50 Hz，对齐 scutrobotlab/wheeled-legged_RL 的动作延迟量级。
+FLAT_ACTION_DELAY_RANGE_ONE_TO_THREE_STEPS_S = (0.020, 0.060)
+FLAT_MAX_ANG_VEL_YAW = 12.0
+FLAT_MAX_ANG_VEL_YAW_LOW = 6.0
+
+
+def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
+    """把 (min_s, max_s) 展开成 SerialLegDelayedActionCfg 的延迟字段；None 表示沿用默认。"""
+    if action_delay_range_s is None:
+        return {}
+    min_s, max_s = (float(action_delay_range_s[0]), float(action_delay_range_s[1]))
+    if min_s > max_s:
+        raise ValueError(f"action_delay_range_s 需满足 min <= max，收到 {action_delay_range_s}")
+    return {
+        "action_delay_enabled": True,
+        "action_delay_randomize": True,
+        "action_delay_min_s": min_s,
+        "action_delay_max_s": max_s,
+        "action_delay_s": 0.5 * (min_s + max_s),
+    }
 
 
 def env_cfg(
@@ -75,6 +111,11 @@ def env_cfg(
     *,
     wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
     action_smoothness: tuple[float, float, float] = FLAT_ACTION_SMOOTHNESS_LEGACY,
+    command_velocity_deadband: tuple[float, float] = FLAT_CMD_VEL_DEADBAND,
+    flat_wheel_contact_weight: float = FLAT_WHEEL_CONTACT_WEIGHT,
+    bad_tilt_limits_deg: tuple[float, float] = FLAT_BAD_TILT_LIMITS_DEG,
+    action_delay_range_s: tuple[float, float] | None = FLAT_ACTION_DELAY_RANGE_S,
+    max_ang_vel_yaw: float = FLAT_MAX_ANG_VEL_YAW,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -82,8 +123,13 @@ def env_cfg(
     Flat 任务注册时传 FLAT_WHEEL_ACTION_SCALE=15。动作空间罚项（action_rate / action_smoothness）
     的轮分量按 (wheel_action_scale/45)² 折算，保证同一物理轮速轨迹的罚款与 scale 无关。
     action_smoothness：(weight, max_penalty, wheel_base)，见 FLAT_ACTION_SMOOTHNESS_* 注释。
+    command_velocity_deadband / flat_wheel_contact_weight / bad_tilt_limits_deg /
+    action_delay_range_s / max_ang_vel_yaw：抖动对照实验的单变量旋钮，默认即基线，
+    见 FLAT_CMD_VEL_DEADBAND 等常量的注释。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
+    cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
+    bad_tilt_soft_deg, bad_tilt_hard_deg = bad_tilt_limits_deg
     # 同一物理轮速轨迹：动作幅值 ×(45/scale)、差分平方 ×(45/scale)²，权重乘以其倒数保持定价。
     wheel_pricing = (float(wheel_action_scale) / _FLAT_LEGACY_WHEEL_ACTION_SCALE) ** 2
 
@@ -250,6 +296,7 @@ def env_cfg(
             leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
             wheel_scale=float(wheel_action_scale),
             action_clip=_ROBOT_DEFAULTS.action_clip,
+            **_action_delay_kwargs(action_delay_range_s),
         ),
     }
 
@@ -314,8 +361,8 @@ def env_cfg(
                 "command_name": "velocity_height",
                 "lin_vel_scale": 0.5,
                 "yaw_vel_scale": 1.0,
-                "lin_deadband": 0.05,
-                "yaw_deadband": 0.10,
+                "lin_deadband": float(cmd_lin_deadband),
+                "yaw_deadband": float(cmd_yaw_deadband),
                 "max_penalty": 9.0,
             },
         ),
@@ -337,7 +384,11 @@ def env_cfg(
         "bad_tilt": RewardTermCfg(
             func=rewards.bad_tilt,
             weight=-6.0,
-            params={"soft_limit_deg": 10.0, "hard_limit_deg": 30.0, "max_penalty": 4.0},
+            params={
+                "soft_limit_deg": float(bad_tilt_soft_deg),
+                "hard_limit_deg": float(bad_tilt_hard_deg),
+                "max_penalty": 4.0,
+            },
         ),
         "ang_vel_xy": RewardTermCfg(func=rewards.ang_vel_xy, weight=-0.146),
         "angular_momentum": RewardTermCfg(
@@ -418,7 +469,7 @@ def env_cfg(
         ),
         "flat_wheel_contact": RewardTermCfg(
             func=rewards.flat_wheel_contact_penalty,
-            weight=-10.0,
+            weight=float(flat_wheel_contact_weight),
             params={
                 "command_name": "velocity_height",
                 "sensor_name": "wheel_sensor",
@@ -480,7 +531,7 @@ def env_cfg(
                     "lin_vel_x_step": 0.2,
                     "ang_vel_yaw_step": 1.0,
                     "max_lin_vel_x": 2.4,
-                    "max_ang_vel_yaw": 12.0,
+                    "max_ang_vel_yaw": float(max_ang_vel_yaw),
                     "init_lin_vel_x": 0.0,
                     "init_ang_vel_yaw": 0.0,
                     "advance_threshold": 0.5,
