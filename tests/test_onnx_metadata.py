@@ -139,6 +139,7 @@ class _FakeActionManager:
             action_delay_min_s=0.004,
             action_delay_max_s=0.006,
             height_conditioned_action_default=True,
+            leg_action_semantics="active_rod",
             action_default_command_name="velocity_height",
             active_rod_lower_target_overdrive=0.2,
             knee_gas_spring_force=300.0,
@@ -964,6 +965,100 @@ class PolicyRuntimeTests(unittest.TestCase):
             expected.wheel_vel_target,
             atol=1.0e-12,
         )
+
+    def test_leg_action_semantics_reaches_runtime_contract(self) -> None:
+        """腿部 action 语义必须写入 metadata 并选出对应的 runtime decoder。"""
+        for semantics, expected_decoder in (
+            ("active_rod", "serialleg_active_rod.v1"),
+            ("joint", "serialleg_joint.v1"),
+        ):
+            env = _fake_env()
+            env.action_manager.cfg.leg_action_semantics = semantics
+            metadata = build_deployment_onnx_metadata(
+                env,
+                observation_group_names=("actor",),
+            )
+            self.assertEqual(
+                metadata["policy_io"]["action"]["leg_action_semantics"],
+                semantics,
+            )
+            with TemporaryDirectory() as temp_dir:
+                model_path = Path(temp_dir) / f"semantics_{semantics}.onnx"
+                _write_test_model(model_path, 34, recurrent=False)
+                embed_onnx_metadata(
+                    model_path,
+                    metadata,
+                    policy_iteration=4999,
+                    is_rnn=False,
+                )
+                action_contract = PolicyBundle.load(model_path).contract.action
+
+            self.assertEqual(action_contract.decoder, expected_decoder)
+            self.assertEqual(action_contract.leg_action_semantics, semantics)
+            # 通道名与 decoder 的对应关系由 _validate_action 强制：descriptor 若发错
+            # 通道表，上面的 PolicyBundle.load 会直接抛 PolicyContractError。
+
+    def test_legacy_artifact_without_semantics_keeps_active_rod(self) -> None:
+        """旧 artifact 不带 leg_action_semantics 时必须回落到 active_rod。"""
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        del metadata["policy_io"]["action"]["leg_action_semantics"]
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_no_semantics.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+            action_contract = PolicyBundle.load(model_path).contract.action
+        self.assertEqual(action_contract.decoder, "serialleg_active_rod.v1")
+        self.assertEqual(action_contract.leg_action_semantics, "active_rod")
+
+    def test_joint_semantics_decoders_agree_and_are_invertible(self) -> None:
+        """joint 语义下 sim2x 与共享解码器必须逐元素一致，且 action<->target 互逆。"""
+        env = _fake_env()
+        env.action_manager.cfg.leg_action_semantics = "joint"
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "joint_decoder.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=13,
+                is_rnn=False,
+            )
+            contract = PolicyBundle.load(model_path).contract
+
+        action = np.asarray((0.4, -0.8, -0.3, 0.7, 0.25, -0.35))
+        commands = _policy_input().commands
+        actual = PolicyActionDecoder(contract).decode(action, commands=commands)
+        shared = SharedPolicyActionDecoder(
+            action_scale=np.asarray(contract.action.scale),
+            height_conditioned_action_default=True,
+            leg_action_semantics="joint",
+            active_rod_target_lower_preload_margin=contract.action.lower_target_overdrive,
+        ).decode(
+            action,
+            command_height=float(np.asarray(commands["velocity_height"])[4]),
+        )
+        np.testing.assert_allclose(
+            actual.leg_position_target,
+            shared.leg_target,
+            atol=1.0e-12,
+        )
+        # joint 语义就是 default + action * scale，因此可以精确反解
+        leg_scale = np.asarray(contract.action.scale)[:4]
+        recovered = (actual.leg_position_target - actual.policy_leg_default) / leg_scale
+        np.testing.assert_allclose(recovered, action[:4], atol=1.0e-12)
 
     def test_gru_hidden_state_advances_and_resets_to_zero(self) -> None:
         metadata = build_deployment_onnx_metadata(

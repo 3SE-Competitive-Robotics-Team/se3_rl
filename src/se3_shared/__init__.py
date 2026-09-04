@@ -46,7 +46,9 @@ from .leg_policy import (
 from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
 from .observation import ObservationConfig
 from .policy_io import (
+    LEG_ACTION_SEMANTICS,
     DecodedPolicyAction,
+    LegActionSemantics,
     PolicyActionDecoder,
     PolicyObservationResult,
     build_policy_observation_np,
@@ -72,6 +74,7 @@ __all__ = [
     "FRONT_ACTION_INDICES",
     "FRONT_ACTION_PERIOD",
     "FRONT_PHYSICAL_PERIOD",
+    "LEG_ACTION_SEMANTICS",
     "M3508_C620_14",
     "M3508_HEXROLL",
     "RECOVERY_ACTION_CLIP",
@@ -88,6 +91,7 @@ __all__ = [
     "DecodedPolicyAction",
     "Joint",
     "JointGroup",
+    "LegActionSemantics",
     "MotorSpec",
     "ObservationConfig",
     "PolicyActionDecoder",

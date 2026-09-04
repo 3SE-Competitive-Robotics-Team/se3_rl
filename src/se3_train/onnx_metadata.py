@@ -512,6 +512,8 @@ def _build_action_metadata(runtime_env: Any) -> dict[str, Any]:
         # B18：动作零点语义。True = 高度条件默认姿态（随 height 指令变化），
         # False = 固定 entity 默认姿态。部署端必须按此选择 decode 策略。
         "height_conditioned_action_default": bool(height_conditioned),
+        # 腿部 action 语义。缺省视为 active_rod（2026-09-04 之前的 artifact 全是这个）。
+        "leg_action_semantics": str(getattr(cfg, "leg_action_semantics", "active_rod")),
     }
 
 

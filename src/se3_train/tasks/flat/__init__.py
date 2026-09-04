@@ -42,6 +42,10 @@ EXP_YAW_STEP_TASK_ID = "SE3-WheelLegged-Flat-Exp-YawStep"
 EXP_ADVANCE_THRESHOLD_TASK_ID = "SE3-WheelLegged-Flat-Exp-AdvanceThreshold"
 EXP_DEADBAND_TILT_TASK_ID = "SE3-WheelLegged-Flat-Exp-DeadbandTilt"
 
+# 2026-09-04 动作语义改动：四维 action 直接是四根主动杆的绝对目标角。
+# 契约变了（decoder serialleg_joint.v1），必须从头重训，旧 checkpoint 不可混用。
+EXP_JOINT_ACTION_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointAction"
+
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
     "wheel_action_scale": FLAT_WHEEL_ACTION_SCALE,
@@ -156,6 +160,8 @@ def register() -> None:
         command_velocity_deadband=FLAT_CMD_VEL_DEADBAND_WIDE,
         bad_tilt_limits_deg=FLAT_BAD_TILT_LIMITS_TIGHT_DEG,
     )
+    # 动作语义：四维直接是四根主动杆的绝对目标角，去掉夹角中间量与解码器夹紧。
+    _register_flat_mlp_variant(EXP_JOINT_ACTION_TASK_ID, leg_action_semantics="joint")
 
 
 __all__ = [
@@ -164,6 +170,7 @@ __all__ = [
     "EXP_CMD_DEADBAND_TASK_ID",
     "EXP_CURRICULUM_RETREAT_TASK_ID",
     "EXP_DEADBAND_TILT_TASK_ID",
+    "EXP_JOINT_ACTION_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
     "EXP_WHEEL_CONTACT_TASK_ID",
     "EXP_YAW_CURRICULUM_TASK_ID",

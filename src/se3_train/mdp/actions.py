@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
@@ -58,6 +58,10 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     action_delay_max_s: float = _DEFAULT_DELAY.max_delay_s
     action_clip: float | None = _SHARED_ROBOT.action_clip
     height_conditioned_action_default: bool = False
+    # 腿部 action 语义，随 ONNX 元数据导出；训练 / 部署 / sim2x 三边必须一致。
+    #   "active_rod" —— [左前杆角, 左夹角, 右前杆角, 右夹角]，夹角按机械行程夹紧后反解后杆
+    #   "joint"      —— 四维直接是四根主动杆的绝对目标角，不夹紧、不反解
+    leg_action_semantics: Literal["active_rod", "joint"] = "active_rod"
     action_default_command_name: str = "velocity_height"
     active_rod_lower_target_overdrive: float = _SHARED_ROBOT.active_rod_lower_target_overdrive
     knee_gas_spring_force: float = _SHARED_ROBOT.knee_gas_spring_force
@@ -426,8 +430,41 @@ class SerialLegDelayedAction(ActionTerm):
         *,
         update_active_targets: bool = True,
     ) -> torch.Tensor:
-        """把腿部 action 解释为前杆角和主动杆夹角目标。"""
+        """把腿部 action 解释为腿部关节目标。
+
+        两种语义由 cfg.leg_action_semantics 选择，随 ONNX 元数据导出成契约：
+
+        - "active_rod"（旧契约）：4 维依次是 [左前杆角, 左夹角, 右前杆角, 右夹角]。
+          夹角先按机械行程夹紧再反解出后杆目标，后杆目标因此永远落在可行域内，
+          代价是夹角这一维在夹紧区 d(target)/d(action) = 0，没有梯度。
+        - "joint"：4 维直接是四根主动杆的绝对目标角，target = default + action * scale。
+          没有反解、没有夹紧，隐含夹角可能越出机械行程，越界后由 MJCF 里的
+          active_rod fixed tendon 限位承接。此时 _active_rod_angle_target_clamped
+          不再表示"被夹紧"，而是"隐含夹角越界"，仅作诊断。
+
+        两种语义都不影响 PD 误差怎么算：apply_actions 里仍然走
+        policy_leg_position_error_torch，在 (前杆走最短角, 夹角不 wrap) 这组坐标里算。
+        那是构型空间 S^1 x R 的拓扑决定的，与 action 如何定义无关。
+        """
         lower, upper = self._active_rod_angle_limits
+
+        if self.cfg.leg_action_semantics == "joint":
+            target = policy_default + leg_action * self._leg_action_scales
+            if update_active_targets:
+                active_target = torch.stack(
+                    [
+                        self._active_rod_angle_coeffs[side_idx][0] * target[:, front_idx]
+                        + self._active_rod_angle_coeffs[side_idx][1] * target[:, back_idx]
+                        for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3)))
+                    ],
+                    dim=1,
+                )
+                self._active_rod_angle_target[:] = active_target
+                self._active_rod_angle_target_clamped[:] = (active_target < lower) | (
+                    active_target > upper
+                )
+            return target
+
         target_lower = float(lower) - float(self.cfg.active_rod_lower_target_overdrive)
         target = torch.empty_like(policy_default)
         active_targets: list[torch.Tensor] = []
@@ -527,6 +564,13 @@ class SerialLegDelayedAction(ActionTerm):
         active_joint = active_side.repeat_interleave(2, dim=1)
         desired_output = torch.where(active_joint, cartesian_desired_output, current_output)
         desired_policy = output_to_policy_pos_torch(desired_output)
+
+        if self.cfg.leg_action_semantics == "joint":
+            # 正向是 target = default + action * scale，逆映射直接取差再除以 scale。
+            desired_action = (desired_policy - policy_default) / self._leg_action_scales
+            action_delta = torch.zeros_like(leg_action)
+            action_delta[active_env_ids] = desired_action - active_leg_action
+            return torch.nan_to_num(action_delta, nan=0.0, posinf=0.0, neginf=0.0)
 
         desired_action = torch.zeros_like(active_leg_action)
         for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Literal
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -99,6 +100,10 @@ FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT = 0.75
 FLAT_CURRICULUM_YAW_GATE = False
 # EMA 跌破 retreat_threshold 时回退一步（滞回），治的是冲过头之后无法退回。
 FLAT_CURRICULUM_RETREAT = False
+# 腿部 action 语义。默认沿用旧契约；joint 语义下四维直接是四根主动杆的绝对目标角，
+# 没有夹角这个中间量，也没有解码器夹紧（隐含夹角越界交给 MJCF 的 tendon 限位承接）。
+# 改这个会改变 ONNX 契约，必须重训，旧 checkpoint 与新 sim2x 不可混用。
+FLAT_LEG_ACTION_SEMANTICS: Literal["active_rod", "joint"] = "active_rod"
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
@@ -131,6 +136,7 @@ def env_cfg(
     curriculum_advance_threshold: float = FLAT_CURRICULUM_ADVANCE_THRESHOLD,
     curriculum_yaw_gate: bool = FLAT_CURRICULUM_YAW_GATE,
     curriculum_retreat: bool = FLAT_CURRICULUM_RETREAT,
+    leg_action_semantics: Literal["active_rod", "joint"] = FLAT_LEG_ACTION_SEMANTICS,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -142,6 +148,7 @@ def env_cfg(
     action_delay_range_s / max_ang_vel_yaw：抖动对照实验的单变量旋钮，默认即基线，
     见 FLAT_CMD_VEL_DEADBAND 等常量的注释。
     curriculum_*：速度课程爬升方式的单变量旋钮，默认即基线，见 FLAT_CURRICULUM_* 常量。
+    leg_action_semantics：腿部 action 语义，见 FLAT_LEG_ACTION_SEMANTICS 注释。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
@@ -312,6 +319,7 @@ def env_cfg(
             leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
             wheel_scale=float(wheel_action_scale),
             action_clip=_ROBOT_DEFAULTS.action_clip,
+            leg_action_semantics=leg_action_semantics,
             **_action_delay_kwargs(action_delay_range_s),
         ),
     }
