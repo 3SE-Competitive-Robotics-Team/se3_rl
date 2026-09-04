@@ -694,6 +694,9 @@ def tracking_ang_vel(
                 "Locomotion/base_yaw_rate_mean": _masked_mean(ang_vel_z, moving),
                 "Locomotion/base_yaw_error_abs": _masked_mean(torch.abs(error), moving),
                 "Locomotion/tracking_ang_vel_reward": _masked_mean(reward, moving),
+                # 不按 moving 过滤的版本，供 commands_vel_adaptive 的 yaw 独立门控读取；
+                # 与 tracking_lin_vel_reward_all 同语义（cmd=0 阶段也给出连续非零信号）。
+                "Locomotion/tracking_ang_vel_reward_all": _masked_mean(reward, ~jump_flag),
                 "Locomotion/tracking_ang_vel_exp_reward": _masked_mean(exp_reward, moving),
                 "Locomotion/tracking_ang_vel_sigma": _masked_mean(effective_sigma, moving),
                 "Locomotion/tracking_upright_gate": _masked_mean(gate, ~jump_flag),

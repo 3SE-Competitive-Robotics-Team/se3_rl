@@ -12,6 +12,8 @@ from .env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_BAD_TILT_LIMITS_TIGHT_DEG,
     FLAT_CMD_VEL_DEADBAND_WIDE,
+    FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
+    FLAT_CURRICULUM_ANG_VEL_YAW_STEP_FINE,
     FLAT_MAX_ANG_VEL_YAW_LOW,
     FLAT_WHEEL_ACTION_SCALE,
     FLAT_WHEEL_CONTACT_WEIGHT_HEAVY,
@@ -31,6 +33,14 @@ EXP_WHEEL_CONTACT_TASK_ID = "SE3-WheelLegged-Flat-Exp-WheelContact"
 EXP_TILT_BARRIER_TASK_ID = "SE3-WheelLegged-Flat-Exp-TiltBarrier"
 EXP_ACTION_DELAY_TASK_ID = "SE3-WheelLegged-Flat-Exp-ActionDelay"
 EXP_YAW_CURRICULUM_TASK_ID = "SE3-WheelLegged-Flat-Exp-YawCurriculum"
+
+# 2026-09-04 C 批：yaw 上限一律保持 12（真实需求），只改课程的爬升方式；
+# 外加一个把 A1 与 B1 两个已确证效果合并的入口。
+EXP_YAW_GATE_TASK_ID = "SE3-WheelLegged-Flat-Exp-YawGate"
+EXP_CURRICULUM_RETREAT_TASK_ID = "SE3-WheelLegged-Flat-Exp-CurriculumRetreat"
+EXP_YAW_STEP_TASK_ID = "SE3-WheelLegged-Flat-Exp-YawStep"
+EXP_ADVANCE_THRESHOLD_TASK_ID = "SE3-WheelLegged-Flat-Exp-AdvanceThreshold"
+EXP_DEADBAND_TILT_TASK_ID = "SE3-WheelLegged-Flat-Exp-DeadbandTilt"
 
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
@@ -126,14 +136,39 @@ def register() -> None:
         EXP_YAW_CURRICULUM_TASK_ID,
         max_ang_vel_yaw=FLAT_MAX_ANG_VEL_YAW_LOW,
     )
+    # C1 yaw 上限改由 yaw 跟踪 EMA 独立驱动；此前由线速度跟踪分推进，与 yaw 能力无关。
+    _register_flat_mlp_variant(EXP_YAW_GATE_TASK_ID, curriculum_yaw_gate=True)
+    # C2 课程可回退（滞回）；此前只扩不缩，冲过头后锁死在 yaw 9。
+    _register_flat_mlp_variant(EXP_CURRICULUM_RETREAT_TASK_ID, curriculum_retreat=True)
+    # C3 yaw 步长 1.0 → 0.25，到顶需 48 次推进而非 12 次。
+    _register_flat_mlp_variant(
+        EXP_YAW_STEP_TASK_ID,
+        curriculum_ang_vel_yaw_step=FLAT_CURRICULUM_ANG_VEL_YAW_STEP_FINE,
+    )
+    # C4 推进阈值 0.5 → 0.75；cmd=0 阶段该分数反映站立稳定度，0.5 太容易过。
+    _register_flat_mlp_variant(
+        EXP_ADVANCE_THRESHOLD_TASK_ID,
+        curriculum_advance_threshold=FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
+    )
+    # C5 合并 A1 与 B1：两者各自把 action_rate raw 降 23-25%，机制不同，测叠加。
+    _register_flat_mlp_variant(
+        EXP_DEADBAND_TILT_TASK_ID,
+        command_velocity_deadband=FLAT_CMD_VEL_DEADBAND_WIDE,
+        bad_tilt_limits_deg=FLAT_BAD_TILT_LIMITS_TIGHT_DEG,
+    )
 
 
 __all__ = [
     "EXP_ACTION_DELAY_TASK_ID",
+    "EXP_ADVANCE_THRESHOLD_TASK_ID",
     "EXP_CMD_DEADBAND_TASK_ID",
+    "EXP_CURRICULUM_RETREAT_TASK_ID",
+    "EXP_DEADBAND_TILT_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
     "EXP_WHEEL_CONTACT_TASK_ID",
     "EXP_YAW_CURRICULUM_TASK_ID",
+    "EXP_YAW_GATE_TASK_ID",
+    "EXP_YAW_STEP_TASK_ID",
     "FLAT_ACTION_SMOOTHNESS_SPRING",
     "FLAT_WHEEL_ACTION_SCALE",
     "HISTORY_MLP_TASK_ID",

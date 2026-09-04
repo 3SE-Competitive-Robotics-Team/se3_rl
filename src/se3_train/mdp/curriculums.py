@@ -355,6 +355,7 @@ def _terrain_type_mask(
 _VEL_ADAPTIVE_LIN_X_MAX_ATTR = "_vel_adaptive_lin_x_max"
 _VEL_ADAPTIVE_YAW_MAX_ATTR = "_vel_adaptive_yaw_max"
 _VEL_ADAPTIVE_EMA_ATTR = "_vel_adaptive_ema"
+_VEL_ADAPTIVE_YAW_EMA_ATTR = "_vel_adaptive_yaw_ema"
 
 
 def commands_vel_adaptive(
@@ -370,12 +371,25 @@ def commands_vel_adaptive(
     init_ang_vel_yaw: float = 0.0,
     advance_threshold: float = 0.5,
     ema_alpha: float = 0.05,
+    yaw_gate_enabled: bool = False,
+    yaw_advance_threshold: float = 0.5,
+    retreat_enabled: bool = False,
+    retreat_threshold: float = 0.35,
 ) -> dict[str, torch.Tensor]:
     """ETH 风格的自适应速度指令课程：用小步长丝滑推进速度范围。
 
     从 vx=0（纯静站）起步，用 Locomotion/tracking_lin_vel_reward_all 的 EMA
-    评估策略是否适应了当前速度。EMA > advance_threshold 时小步扩大速度范围，
-    只扩不缩。
+    评估策略是否适应了当前速度。EMA > advance_threshold 时小步扩大速度范围。
+
+    2026-09-04 新增两个默认关闭的开关，关闭时行为与此前逐位一致：
+
+    - yaw_gate_enabled：yaw 上限改由 Locomotion/tracking_ang_vel_reward_all 的独立 EMA 驱动
+      （阈值 yaw_advance_threshold），vx 仍由线速度 EMA 驱动。此前两个上限共用同一个线速度
+      触发，等价于直线走得好就放开旋转指令上限，与 yaw 跟踪能力无关；recovery 线
+      （tasks/recovery/curriculums.py）本来就是 lin_score + yaw_score 双阈值，flat 线漏了一半。
+    - retreat_enabled：EMA 跌破 retreat_threshold 时回退一步，形成滞回。原实现只扩不缩，
+      2026-09-03 六并发实验里五个 run 都因课程在前 200 轮冲到 yaw 9 而摔到 alive 0.12-0.18，
+      课程却锁死在 9.0 无法回退，只能靠策略自己爬两三千轮：A2 爬了 2700 轮，B2 始终没爬出来。
 
     Locomotion/tracking_lin_vel_reward_all 是未乘权重的 exp 核均值，值域 (0, 1]，
     按 locomotion mask（排除跳跃）取全体均值，不按 moving（|cmd_x|>=0.2）过滤。
@@ -415,10 +429,12 @@ def commands_vel_adaptive(
         setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, float(init_lin_vel_x))
         setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, float(init_ang_vel_yaw))
         setattr(env, _VEL_ADAPTIVE_EMA_ATTR, 0.0)
+        setattr(env, _VEL_ADAPTIVE_YAW_EMA_ATTR, 0.0)
 
     lin_x_max = float(getattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR))
     yaw_max = float(getattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR))
     ema = float(getattr(env, _VEL_ADAPTIVE_EMA_ATTR))
+    yaw_ema = float(getattr(env, _VEL_ADAPTIVE_YAW_EMA_ATTR, 0.0))
 
     # 从 step 级日志读取跟踪奖励（Episode_Reward 在 curriculum 之后才写入）。
     # log 每 step 清空，tracking_lin_vel 每 _should_log_step 个 step 才写一次，
@@ -443,8 +459,25 @@ def commands_vel_adaptive(
 
         if ema > float(advance_threshold):
             lin_x_max = min(lin_x_max + float(lin_vel_x_step), float(max_lin_vel_x))
-            yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
-            setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, lin_x_max)
+            if not yaw_gate_enabled:
+                yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
+        elif retreat_enabled and ema < float(retreat_threshold):
+            lin_x_max = max(lin_x_max - float(lin_vel_x_step), float(init_lin_vel_x))
+            if not yaw_gate_enabled:
+                yaw_max = max(yaw_max - float(ang_vel_yaw_step), float(init_ang_vel_yaw))
+        setattr(env, _VEL_ADAPTIVE_LIN_X_MAX_ATTR, lin_x_max)
+        setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, yaw_max)
+
+    # yaw 独立门控。与线速度同样绑定到本次是否刷新了新样本，避免刷新窗口内重复推进。
+    if yaw_gate_enabled:
+        tracking_ang_vel = log.get("Locomotion/tracking_ang_vel_reward_all", None)
+        if tracking_ang_vel is not None:
+            yaw_ema = (1.0 - ema_alpha) * yaw_ema + ema_alpha * float(tracking_ang_vel)
+            setattr(env, _VEL_ADAPTIVE_YAW_EMA_ATTR, yaw_ema)
+            if yaw_ema > float(yaw_advance_threshold):
+                yaw_max = min(yaw_max + float(ang_vel_yaw_step), float(max_ang_vel_yaw))
+            elif retreat_enabled and yaw_ema < float(retreat_threshold):
+                yaw_max = max(yaw_max - float(ang_vel_yaw_step), float(init_ang_vel_yaw))
             setattr(env, _VEL_ADAPTIVE_YAW_MAX_ATTR, yaw_max)
 
     cfg.lin_vel_x_range = (-lin_x_max, lin_x_max)
@@ -454,6 +487,7 @@ def commands_vel_adaptive(
         "lin_vel_x_max": torch.tensor(lin_x_max),
         "ang_vel_yaw_max": torch.tensor(yaw_max),
         "vel_ema": torch.tensor(ema),
+        "vel_yaw_ema": torch.tensor(yaw_ema),
         "vel_tracking_lin_vel": torch.tensor(
             float(tracking_lin_vel) if tracking_lin_vel is not None else float("nan")
         ),

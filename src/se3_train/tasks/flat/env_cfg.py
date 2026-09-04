@@ -88,6 +88,17 @@ FLAT_ACTION_DELAY_RANGE_S: tuple[float, float] | None = None
 FLAT_ACTION_DELAY_RANGE_ONE_TO_THREE_STEPS_S = (0.020, 0.060)
 FLAT_MAX_ANG_VEL_YAW = 12.0
 FLAT_MAX_ANG_VEL_YAW_LOW = 6.0
+# 2026-09-04 C 批：yaw 上限保持 12（真实需求），改修课程的爬升方式。
+# 诊断：自适应课程在前 200 轮就把 yaw 顶到 9，五个 run 的存活率随即从 0.70 崩到 0.12-0.18，
+# 而课程只扩不缩、锁死在 9.0。三处缺陷分别对应下面三组常量。
+FLAT_CURRICULUM_ANG_VEL_YAW_STEP = 1.0
+FLAT_CURRICULUM_ANG_VEL_YAW_STEP_FINE = 0.25
+FLAT_CURRICULUM_ADVANCE_THRESHOLD = 0.5
+FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT = 0.75
+# yaw 上限改由 yaw 跟踪 EMA 独立驱动；此前它由线速度跟踪分推进，与 yaw 能力无关。
+FLAT_CURRICULUM_YAW_GATE = False
+# EMA 跌破 retreat_threshold 时回退一步（滞回），治的是冲过头之后无法退回。
+FLAT_CURRICULUM_RETREAT = False
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
@@ -116,6 +127,10 @@ def env_cfg(
     bad_tilt_limits_deg: tuple[float, float] = FLAT_BAD_TILT_LIMITS_DEG,
     action_delay_range_s: tuple[float, float] | None = FLAT_ACTION_DELAY_RANGE_S,
     max_ang_vel_yaw: float = FLAT_MAX_ANG_VEL_YAW,
+    curriculum_ang_vel_yaw_step: float = FLAT_CURRICULUM_ANG_VEL_YAW_STEP,
+    curriculum_advance_threshold: float = FLAT_CURRICULUM_ADVANCE_THRESHOLD,
+    curriculum_yaw_gate: bool = FLAT_CURRICULUM_YAW_GATE,
+    curriculum_retreat: bool = FLAT_CURRICULUM_RETREAT,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -126,6 +141,7 @@ def env_cfg(
     command_velocity_deadband / flat_wheel_contact_weight / bad_tilt_limits_deg /
     action_delay_range_s / max_ang_vel_yaw：抖动对照实验的单变量旋钮，默认即基线，
     见 FLAT_CMD_VEL_DEADBAND 等常量的注释。
+    curriculum_*：速度课程爬升方式的单变量旋钮，默认即基线，见 FLAT_CURRICULUM_* 常量。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
@@ -529,13 +545,16 @@ def env_cfg(
                 params={
                     "command_name": "velocity_height",
                     "lin_vel_x_step": 0.2,
-                    "ang_vel_yaw_step": 1.0,
+                    "ang_vel_yaw_step": float(curriculum_ang_vel_yaw_step),
                     "max_lin_vel_x": 2.4,
                     "max_ang_vel_yaw": float(max_ang_vel_yaw),
                     "init_lin_vel_x": 0.0,
                     "init_ang_vel_yaw": 0.0,
-                    "advance_threshold": 0.5,
+                    "advance_threshold": float(curriculum_advance_threshold),
                     "ema_alpha": 0.05,
+                    "yaw_gate_enabled": bool(curriculum_yaw_gate),
+                    "yaw_advance_threshold": float(curriculum_advance_threshold),
+                    "retreat_enabled": bool(curriculum_retreat),
                 },
             ),
             "push_disturbance": CurriculumTermCfg(
