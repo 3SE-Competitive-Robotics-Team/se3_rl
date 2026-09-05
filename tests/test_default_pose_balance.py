@@ -7,6 +7,7 @@ se3_shared.height_default（训练侧）与 se3_runtime._serialleg_v1（部署�
 
 from __future__ import annotations
 
+import math
 import unittest
 
 import mujoco
@@ -26,9 +27,15 @@ from se3_shared import (
 )
 from se3_shared.fourbar import policy_to_closedchain_passive_pos_np
 from se3_shared.grounded_pose import _MJCF_PATH, GroundedPoseSolver
+from se3_shared.height_default import _BALANCED_WHEEL_X, _WHEEL_RADIUS, _height_default_lut_np
+from se3_train.tasks.flat.env_cfg import _STANDING_HEIGHT_RANGE
+from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-# Flat 线 height command 范围 0.20–0.32 m（se3_train.mdp.commands 默认 height_range）。
-_HEIGHTS = np.round(np.arange(0.20, 0.3201, 0.01), 4)
+# 覆盖 Flat 线的 height command 全范围（2026-09-05 起 0.20–0.38 m，无课程）。
+_HEIGHTS = np.round(
+    np.arange(_STANDING_HEIGHT_RANGE[0], _STANDING_HEIGHT_RANGE[1] + 1.0e-6, 0.01),
+    4,
+)
 # 2026-09-05 之前部署端 v1 在 0.22 m 的结果；v1 供旧 artifact 回放，不得随 v2 改动。
 _LEGACY_V1_DEFAULT_AT_022 = (-0.237981949227, -1.550423887933, 0.237981949227, 1.550423887933)
 
@@ -103,8 +110,26 @@ class DefaultPoseBalanceTests(unittest.TestCase):
             self.assertAlmostEqual(
                 wheel_z, self.solver.wheel_radius, delta=1.0e-4, msg=f"h={height}"
             )
-            # 常量轮心 x 目标在 0.32 m 处残差约 2.4 mm（俯仰约 0.6°），远小于旧默认的 11–17 mm。
-            self.assertLess(abs(com_x - wheel_x), 3.0e-3, msg=f"h={height}")
+            # 常量轮心 x 目标的残差随高度增大：0.32 m 约 2.4 mm、0.38 m 约 5.2 mm（俯仰约 1.1°），
+            # 仍远小于旧默认的 11–17 mm。
+            self.assertLess(abs(com_x - wheel_x), 6.0e-3, msg=f"h={height}")
+
+    def test_flat_height_command_range_is_reachable_and_declared(self) -> None:
+        low, high = _STANDING_HEIGHT_RANGE
+        self.assertLess(low, high)
+        # 腿完全伸直（主动杆夹角 0）且轮心 x 取平衡目标时可达的最大 base 高度。
+        _, length_grid, *_ = _height_default_lut_np()
+        reachable_max = _WHEEL_RADIUS + math.sqrt(length_grid[-1] ** 2 - _BALANCED_WHEEL_X**2)
+        self.assertLess(high, reachable_max)
+        top_pose = policy_default_from_height_np(np.asarray([high]), self.cfg)[0]
+        active_angle = float(top_pose[0] - top_pose[1])
+        self.assertGreater(active_angle, math.radians(3.0), "上限处主动杆夹角应保留伸直余量")
+        cfg = flat_env_cfg()
+        command_cfg = cfg.commands["velocity_height"]
+        self.assertEqual(tuple(command_cfg.height_range), _STANDING_HEIGHT_RANGE)
+        self.assertEqual(tuple(command_cfg.standing_height_range), _STANDING_HEIGHT_RANGE)
+        self.assertEqual(tuple(command_cfg.deployment_ranges["height"]), _STANDING_HEIGHT_RANGE)
+        self.assertNotIn("command_height", cfg.curriculum, "Flat 高度范围不走课程")
 
     def test_torch_and_numpy_height_defaults_agree(self) -> None:
         expected = policy_default_from_height_np(_HEIGHTS, self.cfg)

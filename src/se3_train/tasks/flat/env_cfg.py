@@ -41,7 +41,10 @@ _LEG_JOINT_VEL_NOISE_RAD_S = 1.5
 _ANG_VEL_NOISE = _ANG_VEL_NOISE_RAD_S * _OBS_DEFAULTS.ang_vel_scale
 _LEG_JOINT_VEL_NOISE = _LEG_JOINT_VEL_NOISE_RAD_S * _OBS_DEFAULTS.leg_vel_scale
 _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
-_STANDING_HEIGHT_RANGE = (0.20, 0.32)
+# 高度指令范围（有速度指令与站立 env 共用，全程无课程）。2026-09-05 由 0.20–0.32 改为 0.20–0.38：
+# 轮心 x 取 -29.6 mm 时腿完全伸直对应 base 0.389 m，0.38 m 处主动杆夹角只剩 5°，是可达上限附近；
+# v2 高度默认在 0.38 m 的整机质心残差 +5.2 mm（约 1.1°）。
+_STANDING_HEIGHT_RANGE = (0.20, 0.38)
 _FLAT_LEG_ACTION_SCALE = 0.25
 # 轮 action scale：基类默认沿用 RobotConfig 的 45（rough/stair/jump/flow_match 继承线契约不变）；
 # Flat 任务本身（flat/__init__.py 注册）显式使用 15，与 recovery 族一致（σ-gate 诊断：scale 45 时
@@ -66,6 +69,8 @@ FLAT_HISTORY_LENGTH = 5
 # 自适应课程从零起步，commands_vel_adaptive() 首次调用即覆写为 (0,0)
 _FLAT_INITIAL_LIN_VEL_X_RANGE = (0.0, 0.0)
 _FLAT_INITIAL_ANG_VEL_YAW_RANGE = (0.0, 0.0)
+# 速度课程终值，也是写进 ONNX metadata 的部署包络（lin_vel_x）。
+_FLAT_MAX_LIN_VEL_X = 2.4
 _FLAT_COMMAND_WHEEL_RADIUS = 0.06
 _FLAT_COMMAND_HALF_TRACK = 0.20
 _FLAT_COMMAND_WHEEL_SPEED_FRACTION = 0.9
@@ -382,6 +387,20 @@ def env_cfg(
             diff_drive_wheel_speed_fraction=_FLAT_COMMAND_WHEEL_SPEED_FRACTION,
         ),
     }
+    # 写进 ONNX metadata 的最终 command 包络（课程终值）。不声明时部署端会退回旧兼容边界
+    # （height 0.20–0.32 等），sim2x 会拒绝 0.32 m 以上的高度指令。只影响 metadata 与
+    # 部署端输入校验/控件范围，不影响训练采样。
+    _flat_command_cfg = cfg.commands["velocity_height"]
+    _flat_command_cfg.deployment_ranges = {
+        "lin_vel_x": (-_FLAT_MAX_LIN_VEL_X, _FLAT_MAX_LIN_VEL_X),
+        "ang_vel_yaw": (-float(max_ang_vel_yaw), float(max_ang_vel_yaw)),
+        "pitch": tuple(_flat_command_cfg.pitch_range),
+        "roll": tuple(_flat_command_cfg.roll_range),
+        "height": _STANDING_HEIGHT_RANGE,
+        "jump_flag": (0.0, 0.0),
+        "jump_target_height": (0.0, 0.0),
+        "jump_phase": (0.0, 0.0),
+    }
     cfg.rewards = {
         "tracking_lin_vel": RewardTermCfg(
             func=rewards.tracking_lin_vel,
@@ -610,7 +629,7 @@ def env_cfg(
                     "command_name": "velocity_height",
                     "lin_vel_x_step": 0.2,
                     "ang_vel_yaw_step": float(curriculum_ang_vel_yaw_step),
-                    "max_lin_vel_x": 2.4,
+                    "max_lin_vel_x": _FLAT_MAX_LIN_VEL_X,
                     "max_ang_vel_yaw": float(max_ang_vel_yaw),
                     "init_lin_vel_x": 0.0,
                     "init_ang_vel_yaw": 0.0,

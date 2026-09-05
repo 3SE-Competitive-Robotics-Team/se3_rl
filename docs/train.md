@@ -19,7 +19,7 @@ default_coupler_pos = [1.383008518072, -1.383008518072]
 default_base_height = 0.22 m
 ```
 
-随高度指令变化的默认腿姿（`se3_shared.height_default`，算法 `serialleg_height_conditioned_policy_default.v2`）用同一个轮心 x 目标（−29.59 mm）反解，0.22 m 处与 `default_dof_pos` 一致，0.20–0.32 m 内质心残差在 −0.14 … +2.35 mm。部署端 `se3_runtime` 同时保留 v1（只对齐 base 质心）供 2026-09-05 之前导出的 artifact 回放，由 ONNX metadata 的 `policy_io.action.height_default_strategy` 选择；sim2x reset 的关节零点以 artifact 自己的 metadata 为准，MJCF 的 `standing` keyframe 只提供 base 位姿。`tests/test_default_pose_balance.py` 守护这些数值的一致性。
+随高度指令变化的默认腿姿（`se3_shared.height_default`，算法 `serialleg_height_conditioned_policy_default.v2`）用同一个轮心 x 目标（−29.59 mm）反解，0.22 m 处与 `default_dof_pos` 一致，0.20–0.38 m 内质心残差在 −0.14 … +5.2 mm（0.38 m 处约 1.1°，腿距完全伸直仅 5°）。部署端 `se3_runtime` 同时保留 v1（只对齐 base 质心）供 2026-09-05 之前导出的 artifact 回放，由 ONNX metadata 的 `policy_io.action.height_default_strategy` 选择；sim2x reset 的关节零点以 artifact 自己的 metadata 为准，MJCF 的 `standing` keyframe 只提供 base 位姿。`tests/test_default_pose_balance.py` 守护这些数值的一致性。
 
 这只是两轮倒立系统的 reset 几何基点；零轮速开环 PD 仍不能替代策略的轮子平衡反馈。
 

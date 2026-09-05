@@ -6,7 +6,7 @@
 
 v1 把 x 取为 base_link 质心 x（−17.8 mm），忽略了腿与轮的质量，整机质心落后轮轴约 11 mm，策略只能
 靠前倾配平；v2 把 x 取为 0.22 m 站姿下整机质心正对轮轴时的轮心 x（−29.59 mm），0.22 m 处的结果就是
-``RobotConfig.default_dof_pos``，0.20–0.32 m 内质心残差在 −0.14 … +2.35 mm。部署端
+``RobotConfig.default_dof_pos``，0.20–0.38 m 内质心残差在 −0.14 … +5.2 mm。部署端
 ``se3_runtime._serialleg_v1`` 保存同算法的 NumPy 副本（v1 与 v2 并存，供旧 artifact 回放），
 两侧改动必须同步并提升版本号，ONNX metadata 的 ``policy_io.action.height_default_strategy`` 声明所用版本。
 """
