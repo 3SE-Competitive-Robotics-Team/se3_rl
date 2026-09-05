@@ -88,10 +88,33 @@ def main() -> int:
         "--csv", type=Path, default=None, help="逐 policy tick 的时间序列 CSV 输出路径"
     )
     parser.add_argument("--no-video", action="store_true", help="不渲染不写视频，只算指标/CSV")
+    parser.add_argument(
+        "--action-noise",
+        default=None,
+        help="给策略输出叠加训练式高斯探索噪声（归一化动作单位）：腿σ,轮σ，例如 0.21,0.26；用于复现训练条件",
+    )
     args = parser.parse_args()
     phases = args.phase or [_parse_phase(p) for p in DEFAULT_PHASES]
 
     runtime = PolicyRuntime.load(args.onnx, action_delay_random_seed=args.seed)
+    if args.action_noise:
+        leg_sigma, wheel_sigma = (float(x) for x in args.action_noise.split(","))
+        sigma = np.array([leg_sigma] * 4 + [wheel_sigma] * 2, dtype=np.float32)
+        rng = np.random.default_rng(args.seed)
+        session = runtime.bundle.session
+
+        class _NoisySession:
+            """在 ONNX 输出上叠加 N(0, σ) 噪声：噪声动作同时进入 last_actions 观测与动作 FIFO，与训练一致。"""
+
+            def run(self, output_names, feeds):
+                outputs = list(session.run(output_names, feeds))
+                outputs[0] = (
+                    outputs[0]
+                    + rng.normal(0.0, 1.0, size=outputs[0].shape).astype(np.float32) * sigma
+                )
+                return outputs
+
+        object.__setattr__(runtime.bundle, "session", _NoisySession())
     adapter = MujocoPolicyAdapter(
         runtime.contract,
         artifact_path=runtime.bundle.path,
