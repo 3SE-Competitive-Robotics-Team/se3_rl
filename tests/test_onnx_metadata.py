@@ -28,6 +28,7 @@ from se3_runtime import (
 )
 from se3_shared import (
     DM8009P,
+    HEIGHT_CONDITIONED_DEFAULT_STRATEGY,
     M3508_C620_14,
     RobotConfig,
     build_policy_observation_np,
@@ -451,7 +452,7 @@ class OnnxMetadataTests(unittest.TestCase):
     def test_action_default_semantics_reach_runtime_contract(self) -> None:
         """B18：hcad 必须写入 metadata 并驱动 runtime 的 default strategy。"""
         for flag, expected_mode in (
-            (True, "serialleg_height_conditioned_policy_default.v1"),
+            (True, HEIGHT_CONDITIONED_DEFAULT_STRATEGY),
             (False, "entity_default_joint_position"),
         ):
             env = _fake_env()
@@ -463,6 +464,10 @@ class OnnxMetadataTests(unittest.TestCase):
             self.assertIs(
                 metadata["policy_io"]["action"]["height_conditioned_action_default"],
                 flag,
+            )
+            self.assertEqual(
+                metadata["policy_io"]["action"]["height_default_strategy"],
+                "serialleg_height_conditioned_policy_default.v2",
             )
             with TemporaryDirectory() as temp_dir:
                 model_path = Path(temp_dir) / f"hcad_{flag}.onnx"
@@ -483,13 +488,15 @@ class OnnxMetadataTests(unittest.TestCase):
                 )
 
     def test_legacy_v2_without_action_default_flag_keeps_height_conditioned(self) -> None:
-        """旧 v2 artifact 不带 hcad 字段时，runtime 必须保持高度条件语义。"""
+        """旧 v2 artifact 不带 hcad 字段时，runtime 必须保持高度条件语义（v1 算法）。"""
         env = _fake_env()
         metadata = build_deployment_onnx_metadata(
             env,
             observation_group_names=("actor",),
         )
         del metadata["policy_io"]["action"]["height_conditioned_action_default"]
+        # B18 之前的 artifact 同样没有 height_default_strategy 字段。
+        del metadata["policy_io"]["action"]["height_default_strategy"]
         with TemporaryDirectory() as temp_dir:
             model_path = Path(temp_dir) / "legacy_no_flag.onnx"
             _write_test_model(model_path, 34, recurrent=False)
@@ -502,6 +509,62 @@ class OnnxMetadataTests(unittest.TestCase):
             strategy = PolicyBundle.load(model_path).contract.action.default_strategy
 
         self.assertEqual(strategy.mode, "serialleg_height_conditioned_policy_default.v1")
+
+    def test_height_conditioned_artifact_without_strategy_key_falls_back_to_v1(self) -> None:
+        """2026-09-05 之前导出的 hcad=True artifact 不带 height_default_strategy，必须继续按 v1 解码。"""
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        self.assertTrue(metadata["policy_io"]["action"]["height_conditioned_action_default"])
+        del metadata["policy_io"]["action"]["height_default_strategy"]
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_hcad_no_strategy.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+            contract = PolicyBundle.load(model_path).contract
+
+        self.assertEqual(
+            contract.action.default_strategy.mode,
+            "serialleg_height_conditioned_policy_default.v1",
+        )
+        # v1 与 v2 在 0.22 m 的腿部零点相差约 3.8°，两者不得混用。
+        commands = {"velocity_height": np.asarray((0.0, 0.0, 0.0, 0.0, 0.22, 0.0, 0.0, 0.0))}
+        legacy_default = PolicyActionDecoder(contract).policy_default(commands)
+        np.testing.assert_allclose(
+            legacy_default,
+            (-0.237981949227, -1.550423887933, 0.237981949227, 1.550423887933),
+            rtol=0.0,
+            atol=1.0e-9,
+        )
+        self.assertGreater(abs(float(legacy_default[0]) - RobotConfig().default_dof_pos[0]), 0.05)
+
+    def test_unknown_height_default_strategy_is_rejected(self) -> None:
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        metadata["policy_io"]["action"]["height_default_strategy"] = (
+            "serialleg_height_conditioned_policy_default.v3"
+        )
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "bad_height_default_strategy.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            with self.assertRaisesRegex(PolicyContractError, "height_default_strategy"):
+                embed_onnx_metadata(
+                    model_path,
+                    metadata,
+                    policy_iteration=4999,
+                    is_rnn=False,
+                )
+                PolicyBundle.load(model_path)
 
     def test_legacy_v2_without_command_ranges_uses_compat_bounds(self) -> None:
         """旧 v2 artifact 不带 ranges 时，runtime 继续使用兼容边界。"""

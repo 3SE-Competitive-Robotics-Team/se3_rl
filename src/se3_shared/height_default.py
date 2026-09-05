@@ -1,4 +1,15 @@
-"""按指令高度生成 SerialLeg 的默认腿部姿态。"""
+"""按指令高度生成 SerialLeg 的默认腿部姿态。
+
+算法 id ``serialleg_height_conditioned_policy_default.v2``：给定 base 高度指令 h，取轮心相对 base 原点
+（髋轴 lf0/rf0 在 base 原点正下方，x 偏移为 0）的目标位置 (x, z) = (_BALANCED_WHEEL_X, 轮半径 − h)，
+由腿长查表反解主动杆夹角，再旋转前杆让轮心落到目标点，左右镜像。
+
+v1 把 x 取为 base_link 质心 x（−17.8 mm），忽略了腿与轮的质量，整机质心落后轮轴约 11 mm，策略只能
+靠前倾配平；v2 把 x 取为 0.22 m 站姿下整机质心正对轮轴时的轮心 x（−29.59 mm），0.22 m 处的结果就是
+``RobotConfig.default_dof_pos``，0.20–0.32 m 内质心残差在 −0.14 … +2.35 mm。部署端
+``se3_runtime._serialleg_v1`` 保存同算法的 NumPy 副本（v1 与 v2 并存，供旧 artifact 回放），
+两侧改动必须同步并提升版本号，ONNX metadata 的 ``policy_io.action.height_default_strategy`` 声明所用版本。
+"""
 
 from __future__ import annotations
 
@@ -12,10 +23,14 @@ from .robot import RobotConfig
 if TYPE_CHECKING:
     import torch
 
+HEIGHT_CONDITIONED_DEFAULT_STRATEGY = "serialleg_height_conditioned_policy_default.v2"
+
 _ROBOT_CFG = RobotConfig()
 _LUT_SIZE = 1024
 _WHEEL_RADIUS = 0.06
-_BASE_COM_X = -0.01780372
+# 轮心相对 base 原点的 x 目标：0.22 m 站姿下整机质心正对轮轴（MuJoCo FK + 全 body 质量求得）。
+# v1 用的是 base_link 质心 x = -0.01780372。
+_BALANCED_WHEEL_X = -0.0295923
 _LF1_BODY_XZ = (-0.12990117, 0.04639203)
 _LF1_JOINT_XZ = (-0.05003347, -0.04149627)
 _WHEEL_BODY_XZ = (-0.15699, -0.21049)
@@ -37,7 +52,7 @@ def policy_default_from_height_torch(
     active_by_length, length_grid, active_grid, vec_x_grid, vec_z_grid = _height_default_lut_torch(
         height.device, height.dtype
     )
-    target_x = torch.full_like(height, _BASE_COM_X)
+    target_x = torch.full_like(height, _BALANCED_WHEEL_X)
     target_z = torch.as_tensor(_WHEEL_RADIUS, device=height.device, dtype=height.dtype) - height
     target_length = torch.clamp(
         torch.sqrt(target_x * target_x + target_z * target_z),
@@ -65,7 +80,7 @@ def policy_default_from_height_np(
     original_shape = height.shape
     flat_height = height.reshape(-1)
     active_by_length, length_grid, active_grid, vec_x_grid, vec_z_grid = _height_default_lut_np()
-    target_x = np.full_like(flat_height, _BASE_COM_X)
+    target_x = np.full_like(flat_height, _BALANCED_WHEEL_X)
     target_z = _WHEEL_RADIUS - flat_height
     target_length = np.clip(
         np.hypot(target_x, target_z),

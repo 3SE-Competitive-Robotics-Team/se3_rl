@@ -36,7 +36,11 @@ from .fourbar import (
     wheel_xz_to_output_pos_np,
     wheel_xz_to_output_pos_torch,
 )
-from .height_default import policy_default_from_height_np, policy_default_from_height_torch
+from .height_default import (
+    HEIGHT_CONDITIONED_DEFAULT_STRATEGY,
+    policy_default_from_height_np,
+    policy_default_from_height_torch,
+)
 from .leg_policy import (
     policy_leg_phase_active_obs_np,
     policy_leg_phase_active_obs_torch,
@@ -74,6 +78,7 @@ __all__ = [
     "FRONT_ACTION_INDICES",
     "FRONT_ACTION_PERIOD",
     "FRONT_PHYSICAL_PERIOD",
+    "HEIGHT_CONDITIONED_DEFAULT_STRATEGY",
     "LEG_ACTION_SEMANTICS",
     "M3508_C620_14",
     "M3508_HEXROLL",

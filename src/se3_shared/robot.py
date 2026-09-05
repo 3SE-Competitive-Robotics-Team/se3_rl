@@ -139,16 +139,21 @@ class RobotConfig(BaseModel):
         M3508_C620_14.rated_torque,
         M3508_C620_14.rated_torque,
     )
+    # 默认站姿（2026-09-05 重标定）：base_link 距地 0.22 m、轮心落地、整机质心（含腿与轮）正对轮轴，
+    # 机身水平时静平衡。旧值 (-0.275423, -1.592100, ...) 只对齐了 base_link 质心，整机质心落后轮轴
+    # 17.2 mm，策略必须前倾约 8° 才能站住。数值 = se3_shared.height_default 在 0.22 m 处的 v2 高度默认
+    # （两者必须一致），被动关节由 fourbar.policy_to_closedchain_passive_pos_np 求得；MJCF 的
+    # standing keyframe 与 docs/train.md 同步维护，tests/test_default_pose_balance.py 守护。
     default_dof_pos: tuple[float, ...] = (
-        -0.275422946189,
-        -1.592100148957,
-        0.275422946189,
-        1.592100148957,
+        -0.172440681279,
+        -1.472348626559,
+        0.172440681279,
+        1.472348626559,
         0.0,
         0.0,
     )
-    default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
-    default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
+    default_output_knee_pos: tuple[float, float] = (-1.228738430820, 1.228738430820)
+    default_coupler_pos: tuple[float, float] = (1.383008518072, -1.383008518072)
     active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
     active_rod_lower_target_overdrive: float = 0.20
     active_rod_soft_limit_factor: float = 1.0
