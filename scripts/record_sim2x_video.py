@@ -84,6 +84,10 @@ def main() -> int:
     parser.add_argument(
         "--settle-s", type=float, default=1.0, help="每阶段统计时跳过的起始过渡秒数"
     )
+    parser.add_argument(
+        "--csv", type=Path, default=None, help="逐 policy tick 的时间序列 CSV 输出路径"
+    )
+    parser.add_argument("--no-video", action="store_true", help="不渲染不写视频，只算指标/CSV")
     args = parser.parse_args()
     phases = args.phase or [_parse_phase(p) for p in DEFAULT_PHASES]
 
@@ -99,7 +103,9 @@ def main() -> int:
     base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, runtime.contract.robot.base_link)
 
     _hide_collision_geoms(model)
-    renderer = mujoco.Renderer(model, height=args.height, width=args.width)
+    renderer = (
+        None if args.no_video else mujoco.Renderer(model, height=args.height, width=args.width)
+    )
     camera = mujoco.MjvCamera()
     camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
     camera.trackbodyid = base_id
@@ -109,8 +115,12 @@ def main() -> int:
     scene_option = mujoco.MjvOption()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    writer = imageio.get_writer(
-        str(args.output), fps=args.fps, codec="libx264", quality=8, macro_block_size=1
+    writer = (
+        None
+        if args.no_video
+        else imageio.get_writer(
+            str(args.output), fps=args.fps, codec="libx264", quality=8, macro_block_size=1
+        )
     )
 
     loop.reset()
@@ -152,6 +162,21 @@ def main() -> int:
             base_z = float(data.xpos[base_id][2])
             if tilt_deg > 60.0 or base_z < 0.08:
                 fallen = True
+            joint_pos = np.asarray(adapter.policy_joint_position, dtype=np.float64).ravel()
+            raw_action = np.asarray(result.inference.raw_action, dtype=np.float64).ravel()
+            pitch_deg = math.degrees(-math.asin(float(np.clip(rot[2, 0], -1.0, 1.0))))
+            roll_deg = math.degrees(math.atan2(float(rot[2, 1]), float(rot[2, 2])))
+            extra = {"pitch_deg": pitch_deg, "roll_deg": roll_deg}
+            extra.update({f"q{i}": float(joint_pos[i]) for i in range(4)})
+            extra.update(
+                {f"leg_target{i}": float(leg[i]) for i in range(4)} if leg is not None else {}
+            )
+            extra.update(
+                {f"wheel_target{i}": float(wheel[i]) for i in range(2)} if wheel is not None else {}
+            )
+            extra.update(
+                {f"action{i}": float(raw_action[i]) for i in range(min(6, raw_action.size))}
+            )
             records.append(
                 {
                     "t": t,
@@ -169,9 +194,10 @@ def main() -> int:
                     "wheel_r": float(joint_vel[5]),
                     "leg_target_rate_rad": leg_rate,
                     "wheel_target_rate_rad_s": wheel_rate,
+                    **extra,
                 }
             )
-            if t + 1e-9 >= next_frame_t:
+            if renderer is not None and writer is not None and t + 1e-9 >= next_frame_t:
                 next_frame_t += frame_period
                 renderer.update_scene(data, camera=camera, scene_option=scene_option)
                 frame = Image.fromarray(renderer.render())
@@ -185,7 +211,17 @@ def main() -> int:
                 for i, line in enumerate(lines):
                     draw.text((12, 10 + 18 * i), line, fill=(255, 255, 255))
                 writer.append_data(np.asarray(frame))
-    writer.close()
+    if writer is not None:
+        writer.close()
+    if args.csv is not None:
+        import csv
+
+        args.csv.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.csv, "w", newline="", encoding="utf-8") as f:
+            cols = list(records[0].keys())
+            w = csv.DictWriter(f, fieldnames=cols)
+            w.writeheader()
+            w.writerows(records)
 
     # 分阶段指标（跳过每阶段起始过渡）
     summary = []
@@ -230,7 +266,9 @@ def main() -> int:
     args.output.with_suffix(".json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8"
     )
-    print(f"视频: {args.output}  帧数 {int(next_frame_t * args.fps)}  倒地: {fallen}")
+    print(
+        f"视频: {'未渲染' if args.no_video else args.output}  帧数 {int(next_frame_t * args.fps)}  倒地: {fallen}"
+    )
     print(
         f"{'phase':18s} {'vx_cmd':>6} {'vx':>6} {'|err|':>6} {'yaw_cmd':>7} {'yaw':>6} {'|err|':>6} {'tilt':>5} {'tiltσ':>5} {'z':>6} {'wheelΔ':>7} {'legΔ°':>6} {'whlΔ':>6}"
     )
