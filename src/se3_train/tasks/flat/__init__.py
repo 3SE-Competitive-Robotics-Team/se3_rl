@@ -9,6 +9,7 @@ from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import (
     FLAT_ACTION_DELAY_RANGE_ONE_TO_THREE_STEPS_S,
+    FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_BAD_TILT_LIMITS_TIGHT_DEG,
     FLAT_CMD_VEL_DEADBAND_WIDE,
@@ -45,6 +46,9 @@ EXP_DEADBAND_TILT_TASK_ID = "SE3-WheelLegged-Flat-Exp-DeadbandTilt"
 # 2026-09-04 动作语义改动：四维 action 直接是四根主动杆的绝对目标角。
 # 契约变了（decoder serialleg_joint.v1），必须从头重训，旧 checkpoint 不可混用。
 EXP_JOINT_ACTION_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointAction"
+# 2026-09-05 σ 平衡点实验：在 JointAction 之上只改动作罚项轮分量的定价（1/9 → 1.0，
+# 即 action_rate 轮 1.0、action_smoothness 轮 2.0），对照 D2（steps24）看轮 σ 是否不再回升。
+EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointActionWheelPrice"
 
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
@@ -162,6 +166,12 @@ def register() -> None:
     )
     # 动作语义：四维直接是四根主动杆的绝对目标角，去掉夹角中间量与解码器夹紧。
     _register_flat_mlp_variant(EXP_JOINT_ACTION_TASK_ID, leg_action_semantics="joint")
+    # 动作罚项轮分量按归一化动作单位计价，撤销 (15/45)² 折价；其余与 Exp-JointAction 逐项相同。
+    _register_flat_mlp_variant(
+        EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID,
+        leg_action_semantics="joint",
+        action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
+    )
 
 
 __all__ = [
@@ -171,6 +181,7 @@ __all__ = [
     "EXP_CURRICULUM_RETREAT_TASK_ID",
     "EXP_DEADBAND_TILT_TASK_ID",
     "EXP_JOINT_ACTION_TASK_ID",
+    "EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
     "EXP_WHEEL_CONTACT_TASK_ID",
     "EXP_YAW_CURRICULUM_TASK_ID",

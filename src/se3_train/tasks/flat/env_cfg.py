@@ -104,6 +104,16 @@ FLAT_CURRICULUM_RETREAT = False
 # 没有夹角这个中间量，也没有解码器夹紧（隐含夹角越界交给 MJCF 的 tendon 限位承接）。
 # 改这个会改变 ONNX 契约，必须重训，旧 checkpoint 与新 sim2x 不可混用。
 FLAT_LEG_ACTION_SEMANTICS: Literal["active_rod", "joint"] = "active_rod"
+# 动作罚项（action_rate / action_smoothness）轮分量的定价基准。None = 按 (wheel_action_scale/45)² 折算，
+# 即"同一物理轮速轨迹的罚款与 scale 无关"，是 Flat 三任务与 Exp-* 的基线。
+# 2026-09-05 σ 诊断：σ 按归一化动作维度学习，熵奖励 entropy_coef 也按归一化维度给，不随折价缩放。
+# 轮分量折到 1/9 后，一单位归一化轮噪声的折现代价 k_wheel=0.0051，只有腿 k_leg=0.032 的 1/6.3；
+# 平衡点 σ = sqrt(entropy_coef·std_A / 2k)（std_A≈sqrt(Loss/value)≈1.4）给出轮 0.85 / 腿 0.34，
+# 与 D2/A0 实测轮 0.90-0.98、腿 0.25-0.30 一致；收敛后 action_rate 的 72-81%、action_smoothness 的
+# 91-104% 都是纯探索噪声地板。同一 entropy_coef、同一 -0.12/cap 320 但轮分量 2.0 的 4gs3te0p，σ 退火到 0.23。
+# 1.0 = 轮分量按归一化动作单位计价：action_rate 轮 1.0、action_smoothness 轮 2.0，预测轮 σ 平衡点 0.28。
+FLAT_ACTION_PENALTY_WHEEL_PRICING: float | None = None
+FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT = 1.0
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
@@ -137,6 +147,7 @@ def env_cfg(
     curriculum_yaw_gate: bool = FLAT_CURRICULUM_YAW_GATE,
     curriculum_retreat: bool = FLAT_CURRICULUM_RETREAT,
     leg_action_semantics: Literal["active_rod", "joint"] = FLAT_LEG_ACTION_SEMANTICS,
+    action_penalty_wheel_pricing: float | None = FLAT_ACTION_PENALTY_WHEEL_PRICING,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -149,12 +160,18 @@ def env_cfg(
     见 FLAT_CMD_VEL_DEADBAND 等常量的注释。
     curriculum_*：速度课程爬升方式的单变量旋钮，默认即基线，见 FLAT_CURRICULUM_* 常量。
     leg_action_semantics：腿部 action 语义，见 FLAT_LEG_ACTION_SEMANTICS 注释。
+    action_penalty_wheel_pricing：动作罚项轮分量的定价基准，None 即 (wheel_action_scale/45)²，
+    见 FLAT_ACTION_PENALTY_WHEEL_PRICING 注释。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
     bad_tilt_soft_deg, bad_tilt_hard_deg = bad_tilt_limits_deg
     # 同一物理轮速轨迹：动作幅值 ×(45/scale)、差分平方 ×(45/scale)²，权重乘以其倒数保持定价。
-    wheel_pricing = (float(wheel_action_scale) / _FLAT_LEGACY_WHEEL_ACTION_SCALE) ** 2
+    # 显式传入时改按该值计价（σ 平衡点实验，见 FLAT_ACTION_PENALTY_WHEEL_PRICING 注释）。
+    if action_penalty_wheel_pricing is None:
+        wheel_pricing = (float(wheel_action_scale) / _FLAT_LEGACY_WHEEL_ACTION_SCALE) ** 2
+    else:
+        wheel_pricing = float(action_penalty_wheel_pricing)
 
     scene = SceneCfg(
         terrain=TerrainEntityCfg(terrain_type="plane"),
