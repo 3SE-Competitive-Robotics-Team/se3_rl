@@ -126,6 +126,12 @@ FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG = -120.0
 # 行进时 D4 0.49/s、D2 0.30/s。训练条件（σ 采样 + 观测噪声 + 域随机化）下两者都约 1.9/s，该项会同时把两种策略往默认姿态推。
 FLAT_JOINT_POS_PENALTY_WEIGHT: float | None = None
 FLAT_JOINT_POS_PENALTY_WEIGHT_RECOVERY_LINE = -1.0
+# command_velocity_error（速度违令二次罚，死区外 (|err|-db)²/scale² 封顶 9）权重；None = 删除该项。
+# 2026-09-05 诊断：tracking_lin_vel 的高斯核 σ=0.08 在误差 >0.4 m/s 时无梯度，该项本意是补远处梯度（52ba696）；
+# 但 D4 确定性评测拆分显示它 99% 的代价来自每次指令阶跃后 1 s 内（2.4 m/s / 12 rad/s 阶跃按额定扭矩至少
+# 0.4-1 s 才能跟上，二次项直接顶到封顶），稳态只有 0.003/s；训练里平均 -1.44/s 是最大单项罚，
+# 等于奖励指令跳变后猛冲（高增益）。此前 A1 只放宽死区，只动了稳态那 1%。
+FLAT_COMMAND_VELOCITY_ERROR_WEIGHT: float | None = -2.0
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
@@ -162,6 +168,7 @@ def env_cfg(
     action_penalty_wheel_pricing: float | None = FLAT_ACTION_PENALTY_WHEEL_PRICING,
     tracking_orientation_weight: float = FLAT_TRACKING_ORIENTATION_WEIGHT,
     joint_pos_penalty_weight: float | None = FLAT_JOINT_POS_PENALTY_WEIGHT,
+    command_velocity_error_weight: float | None = FLAT_COMMAND_VELOCITY_ERROR_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -178,6 +185,7 @@ def env_cfg(
     见 FLAT_ACTION_PENALTY_WHEEL_PRICING 注释。
     tracking_orientation_weight：机身姿态 L2 罚权重，见 FLAT_TRACKING_ORIENTATION_WEIGHT 注释。
     joint_pos_penalty_weight：腿姿态回默认罚权重，None 不加，见 FLAT_JOINT_POS_PENALTY_WEIGHT 注释。
+    command_velocity_error_weight：速度违令罚权重，None 删除该项，见 FLAT_COMMAND_VELOCITY_ERROR_WEIGHT 注释。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
@@ -413,7 +421,7 @@ def env_cfg(
         ),
         "command_velocity_error": RewardTermCfg(
             func=rewards.command_velocity_error,
-            weight=-2.0,
+            weight=float(command_velocity_error_weight or 0.0),
             params={
                 "command_name": "velocity_height",
                 "lin_vel_scale": 0.5,
@@ -547,6 +555,8 @@ def env_cfg(
         # ETH/Unitree/CMU 所有框架 termination weight = 0,这是行业共识
         "is_alive": RewardTermCfg(func=rewards.is_alive, weight=1.0),
     }
+    if command_velocity_error_weight is None:
+        del cfg.rewards["command_velocity_error"]
     if joint_pos_penalty_weight is not None:
         # 参数与 recovery / recovery_discovery 线完全一致。
         cfg.rewards["joint_pos_penalty"] = RewardTermCfg(

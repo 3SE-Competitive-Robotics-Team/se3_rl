@@ -65,6 +65,11 @@ EXP_JOINT_ACTION_WHEEL_PRICE_ORIENT_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointAct
 EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID = (
     "SE3-WheelLegged-Flat-Exp-JointActionWheelPricePoseHold"
 )
+# 2026-09-05 速度违令罚实验：在 WheelPrice 之上只删除 command_velocity_error（见 FLAT_COMMAND_VELOCITY_ERROR_WEIGHT 注释），
+# 对照 D4 看指令跳变后的猛冲压力去掉之后跟踪、抖动与摆动的变化。
+EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_TASK_ID = (
+    "SE3-WheelLegged-Flat-Exp-JointActionWheelPriceNoCmdErr"
+)
 
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
@@ -197,6 +202,13 @@ def register() -> None:
         action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
         tracking_orientation_weight=FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG,
     )
+    # 删除 command_velocity_error，其余与 Exp-JointActionWheelPrice 逐项相同。
+    _register_flat_mlp_variant(
+        EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_TASK_ID,
+        leg_action_semantics="joint",
+        action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
+        command_velocity_error_weight=None,
+    )
     # 腿姿态回默认罚 -1.0，其余与 Exp-JointActionWheelPrice 逐项相同。
     _register_flat_mlp_variant(
         EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID,
@@ -222,6 +234,7 @@ __all__ = [
     "EXP_JOINT_ACTION_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_ORIENT_TASK_ID",
+    "EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
