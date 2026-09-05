@@ -120,6 +120,12 @@ FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT = 1.0
 # 行进俯仰 0.3-1.4° 不受影响。该项与用腿还是用轮做平衡无关，直接压机身晃动。
 FLAT_TRACKING_ORIENTATION_WEIGHT = -12.0
 FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG = -120.0
+# joint_pos_penalty（腿关节偏离高度条件默认姿态的 L2 范数，直立门控、始终生效，静止时 ×5）权重。
+# None = 不加，Flat 基线只有指令为零时才生效的 stand_still。-1.0 与 recovery / recovery_discovery / stair 三条线相同。
+# 2026-09-05 腿部摆动诊断的量级：D4 确定性站立慢摆 ||Δq|| 均值 0.32 rad，×5 后 1.6/s；D2 式安静站立 0.04 rad，0.18/s；
+# 行进时 D4 0.49/s、D2 0.30/s。训练条件（σ 采样 + 观测噪声 + 域随机化）下两者都约 1.9/s，该项会同时把两种策略往默认姿态推。
+FLAT_JOINT_POS_PENALTY_WEIGHT: float | None = None
+FLAT_JOINT_POS_PENALTY_WEIGHT_RECOVERY_LINE = -1.0
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
@@ -155,6 +161,7 @@ def env_cfg(
     leg_action_semantics: Literal["active_rod", "joint"] = FLAT_LEG_ACTION_SEMANTICS,
     action_penalty_wheel_pricing: float | None = FLAT_ACTION_PENALTY_WHEEL_PRICING,
     tracking_orientation_weight: float = FLAT_TRACKING_ORIENTATION_WEIGHT,
+    joint_pos_penalty_weight: float | None = FLAT_JOINT_POS_PENALTY_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -170,6 +177,7 @@ def env_cfg(
     action_penalty_wheel_pricing：动作罚项轮分量的定价基准，None 即 (wheel_action_scale/45)²，
     见 FLAT_ACTION_PENALTY_WHEEL_PRICING 注释。
     tracking_orientation_weight：机身姿态 L2 罚权重，见 FLAT_TRACKING_ORIENTATION_WEIGHT 注释。
+    joint_pos_penalty_weight：腿姿态回默认罚权重，None 不加，见 FLAT_JOINT_POS_PENALTY_WEIGHT 注释。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
@@ -539,6 +547,19 @@ def env_cfg(
         # ETH/Unitree/CMU 所有框架 termination weight = 0,这是行业共识
         "is_alive": RewardTermCfg(func=rewards.is_alive, weight=1.0),
     }
+    if joint_pos_penalty_weight is not None:
+        # 参数与 recovery / recovery_discovery 线完全一致。
+        cfg.rewards["joint_pos_penalty"] = RewardTermCfg(
+            func=rewards.joint_pos_penalty,
+            weight=float(joint_pos_penalty_weight),
+            params={
+                "command_name": "velocity_height",
+                "stand_still_scale": 5.0,
+                "velocity_threshold": 0.5,
+                "command_threshold": 0.1,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
 
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=terminations.time_out, time_out=True),

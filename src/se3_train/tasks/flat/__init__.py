@@ -15,6 +15,7 @@ from .env_cfg import (
     FLAT_CMD_VEL_DEADBAND_WIDE,
     FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
     FLAT_CURRICULUM_ANG_VEL_YAW_STEP_FINE,
+    FLAT_JOINT_POS_PENALTY_WEIGHT_RECOVERY_LINE,
     FLAT_MAX_ANG_VEL_YAW_LOW,
     FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG,
     FLAT_WHEEL_ACTION_SCALE,
@@ -59,6 +60,11 @@ EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID = (
 # 2026-09-05 腿部摆动实验：在 WheelPrice 之上只把 tracking_orientation_l2 权重 -12 → -120，
 # 对照 D4 看确定性站立的 0.67 Hz 极限环是否消失（见 FLAT_TRACKING_ORIENTATION_WEIGHT 注释）。
 EXP_JOINT_ACTION_WHEEL_PRICE_ORIENT_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointActionWheelPriceOrient"
+# 2026-09-05 腿部摆动实验（用户选定方案）：在 WheelPrice 之上只加 joint_pos_penalty -1.0（腿姿态回默认，
+# 与 recovery 线同参数），对照 D4 看确定性站立的 0.67 Hz 极限环是否消失。
+EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID = (
+    "SE3-WheelLegged-Flat-Exp-JointActionWheelPricePoseHold"
+)
 
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
@@ -191,6 +197,13 @@ def register() -> None:
         action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
         tracking_orientation_weight=FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG,
     )
+    # 腿姿态回默认罚 -1.0，其余与 Exp-JointActionWheelPrice 逐项相同。
+    _register_flat_mlp_variant(
+        EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID,
+        leg_action_semantics="joint",
+        action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
+        joint_pos_penalty_weight=FLAT_JOINT_POS_PENALTY_WEIGHT_RECOVERY_LINE,
+    )
     # critic 固定 LR，其余与 Exp-JointActionWheelPrice 逐项相同（唯一差异在 algorithm 配置）。
     _register_flat_mlp_variant(
         EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID,
@@ -209,6 +222,7 @@ __all__ = [
     "EXP_JOINT_ACTION_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_ORIENT_TASK_ID",
+    "EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
     "EXP_WHEEL_CONTACT_TASK_ID",
