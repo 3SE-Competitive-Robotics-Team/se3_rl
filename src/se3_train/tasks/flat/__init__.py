@@ -21,7 +21,7 @@ from .env_cfg import (
     env_cfg,
     history_env_cfg,
 )
-from .rl_cfg import mlp_rl_cfg, rl_cfg
+from .rl_cfg import FLAT_LEARNING_RATE, mlp_rl_cfg, rl_cfg
 
 TASK_ID = "SE3-WheelLegged-Flat-GRU"
 MLP_TASK_ID = "SE3-WheelLegged-Flat-MLP"
@@ -49,6 +49,12 @@ EXP_JOINT_ACTION_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointAction"
 # 2026-09-05 σ 平衡点实验：在 JointAction 之上只改动作罚项轮分量的定价（1/9 → 1.0，
 # 即 action_rate 轮 1.0、action_smoothness 轮 2.0），对照 D2（steps24）看轮 σ 是否不再回升。
 EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointActionWheelPrice"
+# 2026-09-05 critic 解耦实验：在 WheelPrice 之上只把 critic 的 LR 固定为 actor 初始值 6.5e-4，
+# actor 仍走 KL 自适应。D4 诊断：σ 缩小后 KL 规则把共用 LR 压到 1e-5 地板，critic 被一起冻住，
+# 4250 轮后 Loss/value 出现最高 27 的尖峰；critic 的回归目标与策略信任域无关，不该被限速。
+EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID = (
+    "SE3-WheelLegged-Flat-Exp-JointActionWheelPriceCriticLr"
+)
 
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
@@ -57,13 +63,15 @@ _FLAT_SPRING_BASE = {
 }
 
 
-def _register_flat_mlp_variant(task_id: str, **env_kwargs: object) -> None:
-    """注册一个只改 env_cfg 单个旋钮的 Flat-MLP 变体；网络与 PPO 配置完全相同。"""
+def _register_flat_mlp_variant(
+    task_id: str, *, rl_kwargs: dict[str, object] | None = None, **env_kwargs: object
+) -> None:
+    """注册一个只改单个旋钮的 Flat-MLP 变体；env 旋钮走 env_kwargs，PPO 旋钮走 rl_kwargs。"""
     register_mjlab_task(
         task_id=task_id,
         env_cfg=env_cfg(**_FLAT_SPRING_BASE, **env_kwargs),  # type: ignore[arg-type]
         play_env_cfg=env_cfg(play=True, **_FLAT_SPRING_BASE, **env_kwargs),  # type: ignore[arg-type]
-        rl_cfg=bind_task_name(mlp_rl_cfg(), task_id),
+        rl_cfg=bind_task_name(mlp_rl_cfg(**(rl_kwargs or {})), task_id),  # type: ignore[arg-type]
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
 
@@ -172,6 +180,13 @@ def register() -> None:
         leg_action_semantics="joint",
         action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
     )
+    # critic 固定 LR，其余与 Exp-JointActionWheelPrice 逐项相同（唯一差异在 algorithm 配置）。
+    _register_flat_mlp_variant(
+        EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID,
+        rl_kwargs={"critic_learning_rate": FLAT_LEARNING_RATE},
+        leg_action_semantics="joint",
+        action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
+    )
 
 
 __all__ = [
@@ -181,6 +196,7 @@ __all__ = [
     "EXP_CURRICULUM_RETREAT_TASK_ID",
     "EXP_DEADBAND_TILT_TASK_ID",
     "EXP_JOINT_ACTION_TASK_ID",
+    "EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
     "EXP_WHEEL_CONTACT_TASK_ID",

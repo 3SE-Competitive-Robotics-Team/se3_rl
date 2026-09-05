@@ -363,6 +363,9 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                     std_flat[list(JointGroup.WHEEL_ACTUATORS)].mean().item(),
                     iteration,
                 )
+        critic_lr = getattr(getattr(self.alg, "optimizer", None), "critic_lr", None)
+        if critic_lr is not None:
+            writer.add_scalar("Loss/critic_learning_rate", float(critic_lr), iteration)
         writer.add_scalar("Perf/update_s", timing.learn_s, iteration)
         writer.add_scalar(
             "Perf/async_host_logger_flush_s", self._se3_last_async_logger_flush_s, iteration
