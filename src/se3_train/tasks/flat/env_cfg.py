@@ -114,6 +114,12 @@ FLAT_LEG_ACTION_SEMANTICS: Literal["active_rod", "joint"] = "active_rod"
 # 1.0 = 轮分量按归一化动作单位计价：action_rate 轮 1.0、action_smoothness 轮 2.0，预测轮 σ 平衡点 0.28。
 FLAT_ACTION_PENALTY_WHEEL_PRICING: float | None = None
 FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT = 1.0
+# tracking_orientation_l2 权重。2026-09-05 腿部摆动诊断：D4 确定性策略站立时有 0.67 Hz 极限环（腿峰峰 24°、
+# 俯仰 rms 2.2°、横滚 1.9°），训练模拟器里带 σ 采样与观测噪声时和 D2 分不开，只有确定性 rollout 才露出来。
+# -12 下这段慢摆只花 0.03/s 等于免费；-120 时 0.31/s 与动作罚项同量级，D2 式安静站立仍只花 0.03/s，
+# 行进俯仰 0.3-1.4° 不受影响。该项与用腿还是用轮做平衡无关，直接压机身晃动。
+FLAT_TRACKING_ORIENTATION_WEIGHT = -12.0
+FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG = -120.0
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
@@ -148,6 +154,7 @@ def env_cfg(
     curriculum_retreat: bool = FLAT_CURRICULUM_RETREAT,
     leg_action_semantics: Literal["active_rod", "joint"] = FLAT_LEG_ACTION_SEMANTICS,
     action_penalty_wheel_pricing: float | None = FLAT_ACTION_PENALTY_WHEEL_PRICING,
+    tracking_orientation_weight: float = FLAT_TRACKING_ORIENTATION_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
@@ -162,6 +169,7 @@ def env_cfg(
     leg_action_semantics：腿部 action 语义，见 FLAT_LEG_ACTION_SEMANTICS 注释。
     action_penalty_wheel_pricing：动作罚项轮分量的定价基准，None 即 (wheel_action_scale/45)²，
     见 FLAT_ACTION_PENALTY_WHEEL_PRICING 注释。
+    tracking_orientation_weight：机身姿态 L2 罚权重，见 FLAT_TRACKING_ORIENTATION_WEIGHT 注释。
     """
     smooth_weight, smooth_cap, smooth_wheel_base = action_smoothness
     cmd_lin_deadband, cmd_yaw_deadband = command_velocity_deadband
@@ -410,7 +418,7 @@ def env_cfg(
         # 姿态相关项只使用惩罚语义:偏离目标姿态扣分,明显倾斜加重扣分。
         "tracking_orientation_l2": RewardTermCfg(
             func=rewards.tracking_orientation_l2,
-            weight=-12.0,
+            weight=float(tracking_orientation_weight),
             params={"command_name": "velocity_height"},
         ),
         "flat_base_height": RewardTermCfg(

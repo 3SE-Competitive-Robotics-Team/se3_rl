@@ -45,6 +45,9 @@ def main() -> int:
         help="腿 action → 目标角的 scale，仅用于 CSV 的 leg_target 列",
     )
     parser.add_argument("--wheel-action-scale", type=float, default=15.0)
+    parser.add_argument(
+        "--stochastic", action="store_true", help="按训练时的高斯 σ 采样动作，而不是确定性均值"
+    )
     args = parser.parse_args()
 
     from dataclasses import asdict
@@ -93,7 +96,7 @@ def main() -> int:
         resets = np.zeros(args.num_envs, dtype=int)
         for k in range(steps):
             with torch.no_grad():
-                actions = policy(obs)
+                actions = policy(obs, stochastic_output=args.stochastic)
             obs, _rew, dones, _extras = env.step(actions)
             pin_commands()
             resets += dones.cpu().numpy().astype(int).reshape(-1)
