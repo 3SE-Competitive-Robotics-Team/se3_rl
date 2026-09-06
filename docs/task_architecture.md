@@ -8,7 +8,7 @@
 
 | 目录 | task id | 用途 |
 | --- | --- | --- |
-| `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
+| `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-StairEval` / `SE3-WheelLegged-Rough-NoStepUp` | 崎岖地形行走任务。2026-09-06 按 scutrobotlab/wheeled-legged_RL 的 V14 rough 线重写：环境继承冻结的 Flat 基线（轮 scale 15 + 弹簧时代 action_smoothness），只换四样东西——带课程的地形集（平地/上下台阶/上下斜坡/随机起伏，台阶 0.02–0.20 m、踏面 1.5 m，10 级难度，全员从第 0 级起步）、`terrain_levels` 地形难度课程、step_up 台阶前瞻状态机（身前 0.5 m 探到 0.06–0.22 m 抬升就把高度指令 +0.10 保持 2 s，跨不过去的障碍转 time_out）、能耗三项（`leg_torques`/`wheel_torques`/`leg_power`）÷10。PPO 与 Flat 基线逐项相同，只把轮数改为 5000。`-StairEval` 只留平地与上下台阶做定向评测，`-NoStepUp` 关掉状态机做单变量对照。由 `tests/test_rough_port.py` 守护 |
 | `flat/` | `SE3-WheelLegged-Flat-GRU` / `SE3-WheelLegged-Flat-MLP` / `SE3-WheelLegged-Flat-History-MLP` | 平地行走基模：GRU、单帧 MLP、五帧展平历史 MLP 三个入口共享环境与 PPO 配置，仅网络/观测历史不同。2026-09-06 合并 D2–D8 已验证的改动为默认：腿动作语义 `joint`、动作罚轮分量按归一化单位计价（`action_rate` 轮 1.0、`action_smoothness` 轮 2.0）、删除 `command_velocity_error`、整机质心正对轮轴的静平衡默认站姿与高度默认 v2、高度指令 0.20–0.38、PPO 超参数对齐 kyber_rl_lab（lr 1e-3、entropy_coef 0.01、epochs 5、clip 0.2）。合并后 `Flat-MLP` 的环境与 `Exp-JointActionWheelPriceNoCmdErr` 逐项相同 |
 | `flat/` | `SE3-WheelLegged-Flat-Exp-CmdDeadband` / `-Exp-WheelContact` / `-Exp-TiltBarrier` / `-Exp-ActionDelay` / `-Exp-YawCurriculum` | 2026-09-03 抖动对照实验入口：网络与 PPO 完全同 `Flat-MLP`，各自只改一个旋钮（速度违令死区 0.15/0.30、轮离地罚 -30、bad_tilt 6°/25°、动作延迟 20-60 ms、yaw 课程上限 6 rad/s）；基线用 `Flat-MLP` 换随机种子重跑 |
 | `flat/` | `SE3-WheelLegged-Flat-Exp-YawGate` / `-Exp-CurriculumRetreat` / `-Exp-YawStep` / `-Exp-AdvanceThreshold` / `-Exp-DeadbandTilt` | 2026-09-04 课程对照实验入口：yaw 上限一律保持 12 rad/s，只改爬升方式（yaw 由 yaw 跟踪 EMA 独立门控、课程可回退滞回、yaw 步长 0.25、推进阈值 0.75），外加把已确证的速度死区与 bad_tilt barrier 两个改动合并的入口 |
