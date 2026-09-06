@@ -13,6 +13,7 @@ from .env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_BAD_TILT_LIMITS_TIGHT_DEG,
     FLAT_CMD_VEL_DEADBAND_WIDE,
+    FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
     FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
     FLAT_CURRICULUM_ANG_VEL_YAW_STEP_FINE,
     FLAT_JOINT_POS_PENALTY_WEIGHT_RECOVERY_LINE,
@@ -152,6 +153,9 @@ def register() -> None:
     _register_flat_mlp_variant(
         EXP_CMD_DEADBAND_TASK_ID,
         command_velocity_deadband=FLAT_CMD_VEL_DEADBAND_WIDE,
+        # 2026-09-06 基线默认删掉了 command_velocity_error；这个入口调的就是该项的死区，
+        # 必须显式钉回旧权重，否则退化成与基线完全相同的空对照。
+        command_velocity_error_weight=FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
     )
     # A2 加重轮离地罚：唯一一个越训越差的项（轮离地率 3%→6.6%），-10 拦不住策略去蹦。
     _register_flat_mlp_variant(
@@ -194,6 +198,7 @@ def register() -> None:
         EXP_DEADBAND_TILT_TASK_ID,
         command_velocity_deadband=FLAT_CMD_VEL_DEADBAND_WIDE,
         bad_tilt_limits_deg=FLAT_BAD_TILT_LIMITS_TIGHT_DEG,
+        command_velocity_error_weight=FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
     )
     # 动作语义：四维直接是四根主动杆的绝对目标角，去掉夹角中间量与解码器夹紧。
     _register_flat_mlp_variant(EXP_JOINT_ACTION_TASK_ID, leg_action_semantics="joint")

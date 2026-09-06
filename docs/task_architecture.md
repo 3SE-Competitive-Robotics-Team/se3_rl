@@ -9,7 +9,7 @@
 | 目录 | task id | 用途 |
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
-| `flat/` | `SE3-WheelLegged-Flat-GRU` / `SE3-WheelLegged-Flat-MLP` / `SE3-WheelLegged-Flat-History-MLP` | 平地行走基模：GRU、单帧 MLP、五帧展平历史 MLP 三个入口共享环境（轮 scale 15 + (15/45)² 罚项补偿）与 PPO 配置，仅网络/观测历史不同 |
+| `flat/` | `SE3-WheelLegged-Flat-GRU` / `SE3-WheelLegged-Flat-MLP` / `SE3-WheelLegged-Flat-History-MLP` | 平地行走基模：GRU、单帧 MLP、五帧展平历史 MLP 三个入口共享环境与 PPO 配置，仅网络/观测历史不同。2026-09-06 合并 D2–D8 已验证的改动为默认：腿动作语义 `joint`、动作罚轮分量按归一化单位计价（`action_rate` 轮 1.0、`action_smoothness` 轮 2.0）、删除 `command_velocity_error`、整机质心正对轮轴的静平衡默认站姿与高度默认 v2、高度指令 0.20–0.38、PPO 超参数对齐 kyber_rl_lab（lr 1e-3、entropy_coef 0.01、epochs 5、clip 0.2）。合并后 `Flat-MLP` 的环境与 `Exp-JointActionWheelPriceNoCmdErr` 逐项相同 |
 | `flat/` | `SE3-WheelLegged-Flat-Exp-CmdDeadband` / `-Exp-WheelContact` / `-Exp-TiltBarrier` / `-Exp-ActionDelay` / `-Exp-YawCurriculum` | 2026-09-03 抖动对照实验入口：网络与 PPO 完全同 `Flat-MLP`，各自只改一个旋钮（速度违令死区 0.15/0.30、轮离地罚 -30、bad_tilt 6°/25°、动作延迟 20-60 ms、yaw 课程上限 6 rad/s）；基线用 `Flat-MLP` 换随机种子重跑 |
 | `flat/` | `SE3-WheelLegged-Flat-Exp-YawGate` / `-Exp-CurriculumRetreat` / `-Exp-YawStep` / `-Exp-AdvanceThreshold` / `-Exp-DeadbandTilt` | 2026-09-04 课程对照实验入口：yaw 上限一律保持 12 rad/s，只改爬升方式（yaw 由 yaw 跟踪 EMA 独立门控、课程可回退滞回、yaw 步长 0.25、推进阈值 0.75），外加把已确证的速度死区与 bad_tilt barrier 两个改动合并的入口 |
 | `flat/` | `SE3-WheelLegged-Flat-Exp-JointAction` | 2026-09-04 动作语义改动：4 维 action 直接是四根主动杆的绝对目标角（`target = default + action × scale`），去掉夹角中间量与解码器夹紧；隐含夹角越界交给 MJCF 的 `active_rod` tendon 限位承接。ONNX 契约 decoder 变为 `serialleg_joint.v1`，必须从头重训，旧 checkpoint 与新 sim2x 不可混用 |
@@ -23,6 +23,8 @@
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
+
+2026-09-06 起 Flat 基线默认值已合并 D2–D8 的已验证改动，早于该日期的 `Flat-Exp-*` 入口（A/B/C 批课程与抖动对照）当时是相对旧基线的单变量，现在跑会落在新基线上；复现旧实验请切到该实验的 commit。其中 `Exp-CmdDeadband` 与 `Exp-DeadbandTilt` 调的是已被删除的 `command_velocity_error` 死区，已显式钉回旧权重以保留对照含义。
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 

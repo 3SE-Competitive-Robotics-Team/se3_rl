@@ -108,7 +108,9 @@ FLAT_CURRICULUM_RETREAT = False
 # 腿部 action 语义。默认沿用旧契约；joint 语义下四维直接是四根主动杆的绝对目标角，
 # 没有夹角这个中间量，也没有解码器夹紧（隐含夹角越界交给 MJCF 的 tendon 限位承接）。
 # 改这个会改变 ONNX 契约，必须重训，旧 checkpoint 与新 sim2x 不可混用。
-FLAT_LEG_ACTION_SEMANTICS: Literal["active_rod", "joint"] = "active_rod"
+# 2026-09-06 起 joint 成为 Flat 默认：D2 以来的全部 D 系列实验都建立在该语义上，部署契约
+# serialleg_joint.v1 已在 sim2x 落地。旧 active_rod 只作为继承线的历史取值保留。
+FLAT_LEG_ACTION_SEMANTICS: Literal["active_rod", "joint"] = "joint"
 # 动作罚项（action_rate / action_smoothness）轮分量的定价基准。None = 按 (wheel_action_scale/45)² 折算，
 # 即"同一物理轮速轨迹的罚款与 scale 无关"，是 Flat 三任务与 Exp-* 的基线。
 # 2026-09-05 σ 诊断：σ 按归一化动作维度学习，熵奖励 entropy_coef 也按归一化维度给，不随折价缩放。
@@ -117,8 +119,12 @@ FLAT_LEG_ACTION_SEMANTICS: Literal["active_rod", "joint"] = "active_rod"
 # 与 D2/A0 实测轮 0.90-0.98、腿 0.25-0.30 一致；收敛后 action_rate 的 72-81%、action_smoothness 的
 # 91-104% 都是纯探索噪声地板。同一 entropy_coef、同一 -0.12/cap 320 但轮分量 2.0 的 4gs3te0p，σ 退火到 0.23。
 # 1.0 = 轮分量按归一化动作单位计价：action_rate 轮 1.0、action_smoothness 轮 2.0，预测轮 σ 平衡点 0.28。
-FLAT_ACTION_PENALTY_WHEEL_PRICING: float | None = None
+# 2026-09-06 起 1.0 成为 Flat 默认：D4 对 D2 实测轮 σ 0.922 → 0.256、腿 σ 0.285 → 0.212，
+# mean_reward 60.2 → 81.8，速度/yaw 跟踪、违令罚、轮离地罚、姿态项全部更好，存活持平。
+FLAT_ACTION_PENALTY_WHEEL_PRICING: float | None = 1.0
 FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT = 1.0
+# 折价基准的历史取值（(wheel_action_scale/45)²），供继承线与旧实验入口显式引用。
+FLAT_ACTION_PENALTY_WHEEL_PRICING_LEGACY: float | None = None
 # tracking_orientation_l2 权重。2026-09-05 腿部摆动诊断：D4 确定性策略站立时有 0.67 Hz 极限环（腿峰峰 24°、
 # 俯仰 rms 2.2°、横滚 1.9°），训练模拟器里带 σ 采样与观测噪声时和 D2 分不开，只有确定性 rollout 才露出来。
 # -12 下这段慢摆只花 0.03/s 等于免费；-120 时 0.31/s 与动作罚项同量级，D2 式安静站立仍只花 0.03/s，
@@ -136,7 +142,11 @@ FLAT_JOINT_POS_PENALTY_WEIGHT_RECOVERY_LINE = -1.0
 # 但 D4 确定性评测拆分显示它 99% 的代价来自每次指令阶跃后 1 s 内（2.4 m/s / 12 rad/s 阶跃按额定扭矩至少
 # 0.4-1 s 才能跟上，二次项直接顶到封顶），稳态只有 0.003/s；训练里平均 -1.44/s 是最大单项罚，
 # 等于奖励指令跳变后猛冲（高增益）。此前 A1 只放宽死区，只动了稳态那 1%。
-FLAT_COMMAND_VELOCITY_ERROR_WEIGHT: float | None = -2.0
+# 2026-09-06 起删除成为 Flat 默认：D7 对 D4 实测跟踪分更高（lin 2.91/2.77、ang 2.68/2.66）、
+# 动作罚减半（action_rate -0.195/-0.434）、轮离地与姿态项更好、存活持平，且学习率全程未贴地板。
+FLAT_COMMAND_VELOCITY_ERROR_WEIGHT: float | None = None
+# 该项的历史权重，供仍需要它的实验入口（速度死区对照）显式引用。
+FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY: float | None = -2.0
 
 
 def _action_delay_kwargs(action_delay_range_s: tuple[float, float] | None) -> dict[str, object]:
