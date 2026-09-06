@@ -70,6 +70,14 @@ EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID = (
 EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_TASK_ID = (
     "SE3-WheelLegged-Flat-Exp-JointActionWheelPriceNoCmdErr"
 )
+# 2026-09-06 critic 解耦复测：在 NoCmdErr（D7/D8 的任务）之上只把 critic 的 LR 固定为 6.5e-4。
+# D8 诊断：2750 轮起共用 LR 贴 1e-5 地板，之后 Loss/value 尾部指数发散（分段最大 0.6 → 1151，
+# 中位数始终 0.5），确定性站立质量从 1300 轮的腿峰峰 4.7° 退回 7.4°，reward 峰值 123 → 终点 113。
+# 六次实验横向对照：贴地板的 D4/D8 最大 Loss/value 为 27.5/991，不贴地板的 D5/D6/D7 只有 4.1/3.7/1.0。
+# D5 曾在 D4 基线上测过同一改动但结论模糊（当时基线仍带 command_velocity_error），故在新基线复测。
+EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_CRITIC_LR_TASK_ID = (
+    "SE3-WheelLegged-Flat-Exp-JointActionWheelPriceNoCmdErrCriticLr"
+)
 
 # Flat 三任务与 Exp-* 共享的基线契约：轮 scale 15 + 弹簧时代 action_smoothness 定价。
 _FLAT_SPRING_BASE = {
@@ -223,6 +231,14 @@ def register() -> None:
         leg_action_semantics="joint",
         action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
     )
+    # critic 固定 LR，其余与 Exp-JointActionWheelPriceNoCmdErr 逐项相同（唯一差异在 algorithm 配置）。
+    _register_flat_mlp_variant(
+        EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_CRITIC_LR_TASK_ID,
+        rl_kwargs={"critic_learning_rate": FLAT_LEARNING_RATE},
+        leg_action_semantics="joint",
+        action_penalty_wheel_pricing=FLAT_ACTION_PENALTY_WHEEL_PRICING_UNIT,
+        command_velocity_error_weight=None,
+    )
 
 
 __all__ = [
@@ -233,8 +249,9 @@ __all__ = [
     "EXP_DEADBAND_TILT_TASK_ID",
     "EXP_JOINT_ACTION_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID",
-    "EXP_JOINT_ACTION_WHEEL_PRICE_ORIENT_TASK_ID",
+    "EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_CRITIC_LR_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_TASK_ID",
+    "EXP_JOINT_ACTION_WHEEL_PRICE_ORIENT_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID",
     "EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID",
     "EXP_TILT_BARRIER_TASK_ID",
