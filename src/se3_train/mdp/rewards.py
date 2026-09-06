@@ -12,7 +12,6 @@ import torch
 from mjlab.managers import ManagerTermBase
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
-from mjlab.sensor.terrain_height_sensor import TerrainHeightSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from se3_shared import RobotConfig as SharedRobotConfig
@@ -34,6 +33,7 @@ from se3_train.mdp.joint_indices import (
     wheel_actuator_ids,
     wheel_joint_ids,
 )
+from se3_train.mdp.terrain_height import frame_height_above_terrain
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -355,8 +355,8 @@ def _recovery_success_components(
     upright = tilt < upright_limit
 
     cmd = env.command_manager.get_command(command_name)
-    height_sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height_ok = torch.abs(height_sensor.data.heights[:, 0] - cmd[:, 4]) < float(height_tolerance)
+    height = frame_height_above_terrain(env, height_sensor_name)
+    height_ok = torch.abs(height - cmd[:, 4]) < float(height_tolerance)
 
     ang_vel_norm = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)
     stable = ang_vel_norm < float(ang_vel_threshold)
@@ -934,8 +934,7 @@ def tracking_height(
     """高度跟踪项，支持 exp 奖励或 L2 误差惩罚。"""
     cmd = env.command_manager.get_command(command_name)
 
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    height = frame_height_above_terrain(env, height_sensor_name)
     target_height = cmd[:, 4]
     error_sq = torch.square(height - target_height)
     if kernel == "exp":
@@ -1081,16 +1080,26 @@ def flat_base_height_penalty_no_jump(
     command_name: str,
     height_sensor_name: str,
     sigma: float = 0.05,
+    max_error: float | None = 0.15,
 ) -> torch.Tensor:
-    """平地段 base 高度 L2 惩罚。"""
+    """平地段 base 高度 L2 惩罚。
+
+    max_error：平方前把高度误差夹到 ±max_error(m)，None 不夹。对齐参考仓库
+    scutrobotlab/wheeled-legged_RL 的 `height_err_constraint = 0.15`。这一项是无界二次罚，
+    而 sigma=0.05 让它在误差 0.15 m 处就已经是 36/s（正常总奖励约 10/s 量级）；
+    没有上限时，实体地形上的一次坏读数或一次大穿模就能把 critic 的回归目标推进万级。
+    高度本身由 terrain_height 模块给出，已经不会返回哨兵值，夹紧是第二道保险。
+    """
     cmd = env.command_manager.get_command(command_name)
     jump_flag = cmd[:, 5] > 0.5
     flat = (~jump_flag) & (~_recovery_reset_mask(env))
 
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    height = frame_height_above_terrain(env, height_sensor_name)
     target_height = cmd[:, 4]
-    penalty = torch.square(height - target_height) / (float(sigma) ** 2)
+    error = height - target_height
+    if max_error is not None:
+        error = torch.clamp(error, -float(max_error), float(max_error))
+    penalty = torch.square(error) / (float(sigma) ** 2)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(
@@ -1710,13 +1719,7 @@ def _accumulate_recovery_curriculum_ready_score(
     pg_z = robot.data.projected_gravity_b[:, 2]
     upright_15 = -pg_z > math.cos(math.radians(15.0))
 
-    height_sensor: TerrainHeightSensor = env.scene[base_height_sensor_name]
-    base_height = torch.nan_to_num(
-        height_sensor.data.heights[:, 0],
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
+    base_height = frame_height_above_terrain(env, base_height_sensor_name)
     height_ok_2cm = torch.abs(base_height - cmd[:, 4]) < 0.02
 
     wheel_sensor: ContactSensor = env.scene[wheel_sensor_name]
@@ -1791,13 +1794,7 @@ def recovery_diagnostics(
     upright_15 = tilt_deg < 15.0
     upright_30 = tilt_deg < 30.0
 
-    height_sensor: TerrainHeightSensor = env.scene[base_height_sensor_name]
-    base_height = torch.nan_to_num(
-        height_sensor.data.heights[:, 0],
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
+    base_height = frame_height_above_terrain(env, base_height_sensor_name)
     target_height = (
         cmd[:, 4]
         if cmd.shape[1] > 4
@@ -2309,8 +2306,7 @@ def recovery_progress(
     pg_z = robot.data.projected_gravity_b[:, 2]
     upright = torch.clamp((-pg_z + 1.0) * 0.5, 0.0, 1.0)
 
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = sensor.data.heights[:, 0]
+    height = frame_height_above_terrain(env, height_sensor_name)
 
     prev_upright = recovery_state.ensure_float_buffer(env, "_recovery_prev_upright")
     prev_height = recovery_state.ensure_float_buffer(env, "_recovery_prev_height")
@@ -2482,8 +2478,7 @@ def recovery_height(
     """倒地恢复期 base 高度奖励，目标高度沿用当前站立高度指令。"""
     active = _recovery_reset_mask(env)
     cmd = env.command_manager.get_command(command_name)
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    height = torch.nan_to_num(sensor.data.heights[:, 0], nan=0.0, posinf=0.0, neginf=0.0)
+    height = frame_height_above_terrain(env, height_sensor_name)
     target_height = cmd[:, 4]
     reward = torch.exp(-torch.square(height - target_height) / float(sigma))
     pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]

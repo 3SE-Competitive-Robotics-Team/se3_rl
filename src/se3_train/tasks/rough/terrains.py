@@ -34,6 +34,14 @@ _STEP_WIDTH = 1.5
 _PLATFORM_WIDTH = 2.0
 _STAIR_BORDER_WIDTH = 0.5
 
+# heightfield 的水平分辨率(m)。MuJoCo 的凸体-hfield 碰撞按 AABB 覆盖的格子逐格生成
+# 2 个三角棱柱，单对上限 mjMAXCONPAIR=50，即最多 25 格。机身最大碰撞块 0.52 m 宽，
+# 默认 0.1 m 格子要占 7x7=49 格 = 98 个三角形，接触被直接丢弃，机身会穿进地形
+# （2026-09-06 R1 崩溃的物理侧诱因）。0.2 m 格子只占 4x4=16 格 = 32 个三角形，留 36% 余量。
+# 斜坡是平面，棱柱三角化在任何分辨率下都精确还原，粗化不损失几何；
+# random_rough 的鼓包宽度会从 0.1 m 变成 0.2 m。
+_HF_HORIZONTAL_SCALE = 0.2
+
 
 def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
     """返回带课程的崎岖地形集：平地、上/下台阶、上/下斜坡、随机起伏。
@@ -75,6 +83,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 slope_range=(0.05, 0.30),
                 platform_width=2.0,
                 border_width=0.25,
+                horizontal_scale=_HF_HORIZONTAL_SCALE,
             ),
             "slope_down": HfPyramidSlopedTerrainCfg(
                 proportion=0.15,
@@ -83,6 +92,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 platform_width=2.0,
                 border_width=0.25,
                 inverted=True,
+                horizontal_scale=_HF_HORIZONTAL_SCALE,
             ),
             "random_rough": HfRandomUniformTerrainCfg(
                 proportion=0.05,
@@ -90,6 +100,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 noise_range=(0.0, 0.05),
                 noise_step=0.005,
                 border_width=0.25,
+                horizontal_scale=_HF_HORIZONTAL_SCALE,
             ),
         },
         add_lights=False,
