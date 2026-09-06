@@ -6,8 +6,22 @@ from mjlab.rl import RslRlModelCfg, RslRlPpoAlgorithmCfg
 
 from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
 
-# actor 的初始学习率（KL 自适应从这里出发）；critic 解耦实验用同一个值作为固定 LR，不引入新数字。
-FLAT_LEARNING_RATE = 6.5e-4
+# 2026-09-06：PPO 超参数改为与 BioInnov/kyber_rl_lab 的 locomotion 基线一致（读自其
+# rsl_rl_ppo_cfg.py 的 BasePPORunnerCfg）。那边同样是 rsl_rl 5.4 + num_steps_per_env=24
+# + adaptive KL + desired_kl 0.01 + max_grad_norm 1.0 + num_mini_batches 4，是一套在同一
+# 算法实现上长期跑通的取值，故整体对齐而非逐项对照：
+#
+#   learning_rate       6.5e-4 → 1e-3
+#   entropy_coef      0.00516 → 0.01
+#   num_learning_epochs     7 → 5
+#   clip_param          0.167 → 0.2
+#
+# 与 D8 暴露的学习率地板问题的关系：entropy_coef 抬高让 σ 平衡点上移（σ ∝ sqrt(entropy_coef)，
+# 预计 0.15 → 0.21），epoch 减少让单次更新内的策略漂移变小，两者都压低 KL、缓解 LR 被压到
+# 1e-5 地板；clip_param 与 learning_rate 抬高方向相反。净效果需由训练曲线判定。
+#
+# FLAT_LEARNING_RATE 同时用作 critic 解耦实验的固定 critic LR（Se3PPO），保持不引入新数字。
+FLAT_LEARNING_RATE = 1.0e-3
 
 
 def _model_cfg(
@@ -53,9 +67,9 @@ def _rl_cfg(
     algorithm_kwargs = dict(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
-        clip_param=0.167,
-        entropy_coef=0.00516,
-        num_learning_epochs=7,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=FLAT_LEARNING_RATE,
         schedule="adaptive",

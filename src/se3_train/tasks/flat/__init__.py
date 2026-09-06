@@ -51,7 +51,7 @@ EXP_JOINT_ACTION_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointAction"
 # 2026-09-05 σ 平衡点实验：在 JointAction 之上只改动作罚项轮分量的定价（1/9 → 1.0，
 # 即 action_rate 轮 1.0、action_smoothness 轮 2.0），对照 D2（steps24）看轮 σ 是否不再回升。
 EXP_JOINT_ACTION_WHEEL_PRICE_TASK_ID = "SE3-WheelLegged-Flat-Exp-JointActionWheelPrice"
-# 2026-09-05 critic 解耦实验：在 WheelPrice 之上只把 critic 的 LR 固定为 actor 初始值 6.5e-4，
+# 2026-09-05 critic 解耦实验：在 WheelPrice 之上只把 critic 的 LR 固定为 actor 的初始学习率（FLAT_LEARNING_RATE），
 # actor 仍走 KL 自适应。D4 诊断：σ 缩小后 KL 规则把共用 LR 压到 1e-5 地板，critic 被一起冻住，
 # 4250 轮后 Loss/value 出现最高 27 的尖峰；critic 的回归目标与策略信任域无关，不该被限速。
 EXP_JOINT_ACTION_WHEEL_PRICE_CRITIC_LR_TASK_ID = (
@@ -70,7 +70,7 @@ EXP_JOINT_ACTION_WHEEL_PRICE_POSE_HOLD_TASK_ID = (
 EXP_JOINT_ACTION_WHEEL_PRICE_NO_CMD_ERR_TASK_ID = (
     "SE3-WheelLegged-Flat-Exp-JointActionWheelPriceNoCmdErr"
 )
-# 2026-09-06 critic 解耦复测：在 NoCmdErr（D7/D8 的任务）之上只把 critic 的 LR 固定为 6.5e-4。
+# 2026-09-06 critic 解耦复测：在 NoCmdErr（D7/D8 的任务）之上只把 critic 的 LR 固定为 FLAT_LEARNING_RATE。
 # D8 诊断：2750 轮起共用 LR 贴 1e-5 地板，之后 Loss/value 尾部指数发散（分段最大 0.6 → 1151，
 # 中位数始终 0.5），确定性站立质量从 1300 轮的腿峰峰 4.7° 退回 7.4°，reward 峰值 123 → 终点 113。
 # 六次实验横向对照：贴地板的 D4/D8 最大 Loss/value 为 27.5/991，不贴地板的 D5/D6/D7 只有 4.1/3.7/1.0。
