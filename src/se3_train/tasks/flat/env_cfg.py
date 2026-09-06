@@ -762,7 +762,12 @@ def env_cfg(
                 mode="startup",
                 # ±5cm 对 7kg/40cm 级机身占比过大，7lxhzb64 学出原地摆腿探测质心的
                 # 习惯（zero_hold 前杆摆动 7 倍于基线）；收到 ±2cm 保留鲁棒性、压掉探测摆。
-                params={"com_range": 0.02, "asset_cfg": SceneEntityCfg("robot")},
+                # 2026-09-06 再收到 ±0.5cm：同一病理在 ±2cm 下仍然成立。base_link 10.745 kg
+                # 占整机 12.729 kg 的 84.4%，base 质心 x 偏 ±20 mm 等于整机质心偏 ±16.9 mm；
+                # 默认站姿质心高出轮心 123 mm，对应配平倾角 ±7.8°，比本周刚修掉的静平衡 bug
+                # （17.2 mm / 8.0°）还大，等于把静平衡默认站姿的收益随机掉。±5 mm 对应整机
+                # ±4.2 mm、配平倾角 ±2.0°，仍覆盖真实装配误差。
+                params={"com_range": 0.005, "asset_cfg": SceneEntityCfg("robot")},
             ),
             "pd_gains": EventTermCfg(
                 func=events.randomize_pd_gains,
