@@ -23,6 +23,16 @@ from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
 # FLAT_LEARNING_RATE 同时用作 critic 解耦实验的固定 critic LR（Se3PPO），保持不引入新数字。
 FLAT_LEARNING_RATE = 1.0e-3
 
+# rollout 长度。D 系列全部实验都在命令行传 --agent.num-steps-per-env=24，2026-09-06 起写入默认值，
+# 使不带覆盖直接跑即可复现基线。GRU 线的该值同时是 BPTT 窗口长度，24 步只有 0.48 s，对平衡任务偏短，
+# 故仍保留 64；GRU 从未进入 D 系列对照，改它需要单独验证。
+FLAT_NUM_STEPS_PER_ENV = 24
+FLAT_GRU_NUM_STEPS_PER_ENV = 64
+
+# 训练轮数。D2–D8 用 5000，但逐轮曲线显示有信息量的窗口在 3500 轮以内：D8 的退化在 3150 轮已充分暴露，
+# D11 的站立质量在 1000–1300 轮达到最好。3500 轮约 100 分钟，比 5000 轮省 40 分钟。
+FLAT_MAX_ITERATIONS = 3500
+
 
 def _model_cfg(
     *,
@@ -56,12 +66,15 @@ def _rl_cfg(
 
     critic_learning_rate：None 沿用 rsl_rl.PPO（actor/critic 共用 KL 自适应 LR）；给定时切到
     se3_train.ppo.Se3PPO，critic 用该固定 LR，actor 仍走 KL 自适应，见 se3_train/ppo.py。
+
+    2026-09-06：本函数的取值即冻结的 Flat 基线（D11，W&B `mher9vfk`，commit 236666c），
+    不带任何命令行覆盖直接跑 SE3-WheelLegged-Flat-MLP 即可复现。由 tests/test_flat_baseline.py 守护。
     """
     if smoke or os.environ.get("SE3_SMOKE", "0") == "1":
         max_iterations = 5
         logger = "tensorboard"
     else:
-        max_iterations = 5000
+        max_iterations = FLAT_MAX_ITERATIONS
         logger = os.environ.get("SE3_LOGGER", "wandb")
 
     algorithm_kwargs = dict(
@@ -95,7 +108,7 @@ def _rl_cfg(
         ),
         experiment_name="se3_wheel_leg",
         save_interval=100,
-        num_steps_per_env=64,
+        num_steps_per_env=(FLAT_GRU_NUM_STEPS_PER_ENV if recurrent else FLAT_NUM_STEPS_PER_ENV),
         max_iterations=max_iterations,
         logger=logger,
     )

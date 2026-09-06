@@ -24,6 +24,12 @@
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
+**Flat 基线已于 2026-09-06 冻结**，取 D11 的配置（W&B `mher9vfk`，commit `236666c`）：不带任何命令行覆盖直接跑
+`SE3-WheelLegged-Flat-MLP` 即可复现。除已合并的奖励与动作改动外，`num_steps_per_env` 由 64 改为 24（D 系列
+全部实验的实际取值；GRU 线的该值同时是 BPTT 窗口，保留 64），`max_iterations` 由 5000 改为 3500（逐轮曲线显示
+有信息量的窗口在 3500 轮以内），`randomize_com` 由 ±20 mm 收到 ±5 mm。全部数值由
+`tests/test_flat_baseline.py` 逐项守护，改基线必须同步改该测试并在提交信息里写明对照实验编号。
+
 2026-09-06 起 Flat 基线默认值已合并 D2–D8 的已验证改动，早于该日期的 `Flat-Exp-*` 入口（A/B/C 批课程与抖动对照）当时是相对旧基线的单变量，现在跑会落在新基线上；复现旧实验请切到该实验的 commit。其中 `Exp-CmdDeadband` 与 `Exp-DeadbandTilt` 调的是已被删除的 `command_velocity_error` 死区，已显式钉回旧权重以保留对照含义。
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。

@@ -116,7 +116,7 @@ uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1 --gpu-ids None
 轮数和保存间隔在对应任务的 `src/se3_train/tasks/<task>/rl_cfg.py` 里配置：
 
 ```python
-max_iterations=5000,  # 默认 5000 轮
+max_iterations=3500,  # Flat 基线默认 3500 轮；其余线仍为 5000
 save_interval=100,    # 每 100 轮保存一次 checkpoint
 ```
 
