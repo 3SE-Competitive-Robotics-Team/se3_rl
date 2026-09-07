@@ -64,10 +64,11 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 
 # CTBC：轮子顶住台阶立面时替策略把该侧轮子向后上方缩回（stair 线的 teacher-forcing，见 ctbc.py）。
 # 退火按训练轮次：ann_start 之前满幅，ann_start→ann_end 线性退到 0，之后策略自己上台阶。
-# rough 从零开始训，地形课程要几百轮才把 env 送到台阶前，退火比 stair 线（200→500）放得晚。
+# 只在上台阶列触发；500 轮前满幅，500→1500 线性退火，之后关闭（2026-09-07 用户定）。
 ROUGH_CTBC_ENABLED = True
-ROUGH_CTBC_ANN_START_ITER = 2500
-ROUGH_CTBC_ANN_END_ITER = 4000
+ROUGH_CTBC_ANN_START_ITER = 500
+ROUGH_CTBC_ANN_END_ITER = 1500
+ROUGH_CTBC_TERRAIN_TYPE_NAMES = ("stairs_up",)
 ROUGH_CTBC_RISER_SENSOR_NAME = "wheel_riser_sensor"
 ROUGH_CTBC_STEPS_PER_POLICY_ITER = 24
 
@@ -249,6 +250,7 @@ def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: i
             "riser_sensor_name": ROUGH_CTBC_RISER_SENSOR_NAME,
             "riser_normal_z_max": 0.5,
             "num_steps_per_env": ROUGH_CTBC_STEPS_PER_POLICY_ITER,
+            "terrain_type_names": ROUGH_CTBC_TERRAIN_TYPE_NAMES,
         },
     )
     cfg.events["reset_ctbc_state"] = EventTermCfg(func=ctbc.reset_ctbc_state, mode="reset")
@@ -273,6 +275,7 @@ __all__ = [
     "ROUGH_CTBC_ANN_END_ITER",
     "ROUGH_CTBC_ANN_START_ITER",
     "ROUGH_CTBC_ENABLED",
+    "ROUGH_CTBC_TERRAIN_TYPE_NAMES",
     "ROUGH_ENERGY_PENALTY_SCALE",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_STEP_UP_ENABLED",

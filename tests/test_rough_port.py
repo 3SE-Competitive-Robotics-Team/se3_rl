@@ -243,8 +243,12 @@ class CtbcPortTests(unittest.TestCase):
         self.assertEqual(self.cfg.events["step_ctbc_state"].mode, "interval")
         self.assertEqual(self.cfg.events["reset_ctbc_state"].mode, "reset")
         params = self.cfg.events["init_ctbc_state"].params
-        self.assertLess(params["ann_start_iter"], params["ann_end_iter"])
-        self.assertLessEqual(params["ann_end_iter"], load_rl_cfg(_ROUGH).max_iterations)
+        # 2026-09-07 用户定：500 轮前满幅，500→1500 线性退火，之后关闭；只在上台阶列触发。
+        self.assertEqual(params["ann_start_iter"], 500)
+        self.assertEqual(params["ann_end_iter"], 1500)
+        self.assertEqual(
+            tuple(self.cfg.events["step_ctbc_state"].params["terrain_type_names"]), ("stairs_up",)
+        )
 
     def test_ctbc_obs_replaces_jump_slots_without_changing_dims(self) -> None:
         flat = flat_env_cfg(
@@ -311,6 +315,10 @@ class RoughRuntimeTests(unittest.TestCase):
         self.assertGreater(float(obs[0, 0]), 0.0)
         self.assertEqual(float(obs[0, 2]), 1.0)
         self.assertEqual(float(obs[1:].abs().sum()), 0.0)
+        # 退火时间表：500 轮前 1.0，1000 轮 0.5，1500 轮起 0。
+        for iteration, expected in ((499, 1.0), (1000, 0.5), (1500, 0.0)):
+            state.update_iter(iteration)
+            self.assertAlmostEqual(state.kff, expected, msg=f"iter {iteration}")
         # 退火结束（kff=0）后观测必须全 0，与没有状态机的部署端一致。
         state.update_iter(10**6)
         self.assertEqual(state.kff, 0.0)
@@ -319,6 +327,21 @@ class RoughRuntimeTests(unittest.TestCase):
         env_ids = torch.arange(self.env.num_envs, device=self.env.device)
         state.reset(env_ids)
         self.assertEqual(float(ctbc.ctbc_obs(self.env).abs().sum()), 0.0)
+
+    def test_ctbc_only_runs_on_the_stairs_up_column(self) -> None:
+        state = getattr(self.env, ctbc.CTBC_STATE_ATTR)
+        terrain = self.env.scene.terrain
+        names = list(terrain.cfg.terrain_generator.sub_terrains.keys())
+        up = (self.terrain_types == names.index("stairs_up")).nonzero().flatten()
+        down = (self.terrain_types == names.index("stairs_down")).nonzero().flatten()
+        state.update_iter(0)
+        # 两列各挑一个 env 手动置成前馈进行中，跑一次 step 事件：下台阶列必须被清掉，上台阶列保留推进。
+        state._ff_phase[up[0], 0] = 3
+        state._ff_phase[down[0], 1] = 3
+        ctbc.step_ctbc_state(self.env, None, terrain_type_names=("stairs_up",))
+        self.assertEqual(int(state.ff_phase[down[0], 1]), -1)
+        self.assertEqual(int(state.ff_phase[up[0], 0]), 4)
+        state.reset(torch.arange(self.env.num_envs, device=self.env.device))
 
     def test_non_flat_columns_only_get_forward_commands(self) -> None:
         non_flat = self.terrain_types != self.flat_col

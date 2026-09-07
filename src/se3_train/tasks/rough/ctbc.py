@@ -54,8 +54,8 @@ def init_ctbc_state(
     ff_hold_ratio: float = 0.0,
     ff_wheel_action: float = 0.0,
     ff_start_iter: int = 0,
-    ann_start_iter: int = 2500,
-    ann_end_iter: int = 4000,
+    ann_start_iter: int = 500,
+    ann_end_iter: int = 1500,
     phantom_trigger_iter: int = 0,
     allow_bilateral_trigger: bool = False,
     profile_path: Path | str | None = None,
@@ -132,6 +132,26 @@ def _riser_contact_force_xy(
     return torch.nan_to_num(wheel_xy, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _terrain_inactive_mask(
+    env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...] | None
+) -> torch.Tensor | None:
+    """返回“不在允许触发 CTBC 的子地形列上”的 env 掩码；不限列或非课程地形时返回 None。"""
+    if not terrain_type_names:
+        return None
+    terrain = getattr(env.scene, "terrain", None)
+    generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if generator is None or terrain_types is None:
+        return None
+    names = list(generator.sub_terrains.keys())
+    allowed = [names.index(n) for n in terrain_type_names if n in names]
+    types = terrain_types.to(device=env.device, dtype=torch.long)
+    active = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    for col in allowed:
+        active |= types == col
+    return ~active
+
+
 def step_ctbc_state(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -139,13 +159,23 @@ def step_ctbc_state(
     riser_sensor_name: str | None = "wheel_riser_sensor",
     riser_normal_z_max: float = 0.5,
     num_steps_per_env: int = 24,
+    terrain_type_names: tuple[str, ...] | None = ("stairs_up",),
 ) -> None:
-    """interval 事件（每控制步）：更新触发窗口、前馈相位与退火权重，并写诊断日志。"""
+    """interval 事件（每控制步）：更新触发窗口、前馈相位与退火权重，并写诊断日志。
+
+    只有 `terrain_type_names` 列（默认只有上台阶列）允许触发；其余列每步清零接触输入并复位状态，
+    下台阶、斜坡、起伏上偶发的近水平接触不会引发前馈。
+    """
     del env_ids
     state = getattr(env, CTBC_STATE_ATTR, None)
     if state is None:
         return
     wheel_xy = _riser_contact_force_xy(env, wheel_sensor_name, riser_sensor_name, riser_normal_z_max)
+    inactive = _terrain_inactive_mask(env, terrain_type_names)
+    if inactive is not None and bool(inactive.any()):
+        inactive_ids = inactive.nonzero(as_tuple=False).flatten()
+        wheel_xy[inactive_ids] = 0.0
+        state.reset(inactive_ids)
     state.step(wheel_xy)
     iteration = int(env.common_step_counter) // max(1, int(num_steps_per_env))
     state.update_iter(iteration)
