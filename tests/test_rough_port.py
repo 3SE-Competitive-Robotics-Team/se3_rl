@@ -272,18 +272,15 @@ class CtbcPortTests(unittest.TestCase):
         for group in ("actor", "critic"):
             rough_terms = [t for t in self.cfg.observations[group].terms if t != "height_scan"]
             flat_terms = list(flat.observations[group].terms)
-            self.assertNotIn("jump_commands", rough_terms)
-            self.assertIn("ctbc", rough_terms)
-            # 槽位一一对应：只是把 jump_commands 换成 ctbc，顺序与个数不变。
-            self.assertEqual(
-                [("jump_commands" if t == "ctbc" else t) for t in rough_terms], flat_terms
-            )
-            self.assertIs(self.cfg.observations[group].terms["ctbc"].func, ctbc.ctbc_obs)
+            # 项名、顺序、个数与 Flat 完全一致：部署契约（se3-sim2x policy_contract）只认 jump_commands，
+            # 这里只换实现函数。
+            self.assertEqual(rough_terms, flat_terms)
+            self.assertIs(self.cfg.observations[group].terms["jump_commands"].func, ctbc.ctbc_obs)
 
     def test_ctbc_can_be_switched_off_for_ablation(self) -> None:
         off = rough_env_cfg(ctbc_enabled=False)
         self.assertNotIn("init_ctbc_state", off.events)
-        self.assertIn("jump_commands", off.observations["actor"].terms)
+        self.assertIsNot(off.observations["actor"].terms["jump_commands"].func, ctbc.ctbc_obs)
         self.assertNotIn("wheel_riser_sensor", {s.name for s in off.scene.sensors or ()})
 
 

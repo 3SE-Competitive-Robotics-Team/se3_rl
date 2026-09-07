@@ -37,8 +37,6 @@ _TERM_WIDTHS = {
     "wheel_vel": 2,
     "last_actions": 6,
     "jump_commands": 3,
-    # rough 线用 CTBC 相位/触发位占 jump_commands 的 3 个扩展槽；退火结束后恒 0，部署端填 0。
-    "ctbc": 3,
 }
 _COMMAND_FIELD_NAMES = (
     "lin_vel_x",
@@ -460,7 +458,6 @@ def _observation_scale(term_name: str, term_cfg: Any) -> list[float]:
         "wheel_vel": [cfg.wheel_vel_scale] * 2,
         "last_actions": [1.0] * 6,
         "jump_commands": [1.0] * 3,
-        "ctbc": [1.0] * 3,
     }[term_name]
     manager_scale = getattr(term_cfg, "scale", None)
     if manager_scale is None:

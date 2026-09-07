@@ -150,7 +150,7 @@ def env_cfg(
     flat_curriculum_signal_only：平地速度课程只按平地列的跟踪分推进（R3 里全体均值被地形列拖住，
     平地列整场 vx=0）；关掉即退回 Flat 的全体均值判据。
     ctbc_enabled：接触触发的轮端抬升前馈（ctbc.py）。关掉后不加立面传感器、不挂状态机，
-    actor 的 3 维扩展槽退回 Flat 的 jump_commands（恒 0），观测维数不变。
+    actor 的 jump_commands 扩展槽退回 Flat 的实现（恒 0），观测维数与项名都不变。
     ctbc_ann_start_iter / ctbc_ann_end_iter：前馈退火起止轮次；play 模式下按 checkpoint 轮次
     由 play.py 固定。
     critic_height_scan：critic 加 77 点地形高度扫描特权观测（observations.height_scan_obs），
@@ -316,7 +316,8 @@ def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: i
     )
     cfg.events["reset_ctbc_state"] = EventTermCfg(func=ctbc.reset_ctbc_state, mode="reset")
 
-    # 3 维扩展槽由 jump_commands（行走任务恒 0）改为 CTBC 相位/触发位；
+    # 3 维扩展槽仍叫 jump_commands（部署契约 se3-sim2x policy_contract 只认这个名字，部署端填 0），
+    # 只把实现换成 CTBC 相位/触发位——退火结束后训练侧也恒 0，与部署端语义一致。
     # last_actions 改为策略原始输出，不含注入的前馈（与 stair 线一致）。
     ctbc_term = ObservationTermCfg(func=ctbc.ctbc_obs)
     last_actions_term = ObservationTermCfg(func=stair_observations.last_actions_obs)
@@ -325,8 +326,7 @@ def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: i
         group_cfg = cfg.observations[group_name]
         terms = dict(group_cfg.terms)
         assert "jump_commands" in terms, f"{group_name} 观测组缺少 jump_commands 扩展槽"
-        terms = {("ctbc" if k == "jump_commands" else k): (ctbc_term if k == "jump_commands" else v)
-                 for k, v in terms.items()}
+        terms["jump_commands"] = ctbc_term
         terms["last_actions"] = last_actions_term
         cfg.observations[group_name] = replace(group_cfg, terms=terms)
 
