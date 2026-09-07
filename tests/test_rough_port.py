@@ -292,10 +292,28 @@ class RoughRuntimeTests(unittest.TestCase):
         curriculums.terrain_levels(self.env, env_ids, command_name="velocity_height")
         self.assertTrue(torch.equal(terrain.terrain_levels, before))
 
+    def test_terrain_levels_ignore_the_initial_reset(self) -> None:
+        # 首次 reset 前机器人还在世界原点附近，到出生点的距离远超门槛，但不能算升级。
+        terrain = self.env.scene.terrain
+        assert terrain is not None
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        terrain.terrain_levels[:] = 3
+        self._place_offset(30.0, 30.0)
+        saved = self.env.common_step_counter
+        self.env.common_step_counter = 0
+        try:
+            curriculums.terrain_levels(self.env, env_ids, command_name="velocity_height")
+        finally:
+            self.env.common_step_counter = saved
+        self.assertTrue(bool((terrain.terrain_levels == 3).all()))
+        self._place_offset(0.0, 0.0)
+
     def test_terrain_levels_use_chebyshev_distance(self) -> None:
         terrain = self.env.scene.terrain
         assert terrain is not None
         env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        # 走过一步之后才结算；测试环境没 step 过，手动把计数拨到 1。
+        self.env.common_step_counter = max(int(self.env.common_step_counter), 1)
         # 对角线上欧氏 4.5 m（旧门槛）只到 L∞ 3.18 m：两级台阶只爬了一级，不能升。
         terrain.terrain_levels[:] = 3
         self._place_offset(3.18, 3.18)

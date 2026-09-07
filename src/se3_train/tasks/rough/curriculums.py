@@ -52,6 +52,11 @@ def terrain_levels(
     move_up = distance >= float(clear_distance_m)
     move_down = torch.zeros_like(move_up)
 
+    # 首次 reset 发生在任何一步之前，机器人还在模型默认位姿（世界原点附近）而不是出生点，
+    # 到 env_origins 的距离可达几十米，会把全员无条件升一级（R3 首轮 level 全为 1.0 即此故障）。
+    if env.common_step_counter == 0:
+        move_up = torch.zeros_like(move_up)
+
     terrain.update_env_origins(env_ids, move_up, move_down)
 
     levels = terrain.terrain_levels.float()
