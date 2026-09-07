@@ -69,7 +69,9 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 # CTBC：轮子顶住台阶立面时替策略把该侧轮子向后上方缩回（stair 线的 teacher-forcing，见 ctbc.py）。
 # 退火按训练轮次：ann_start 之前满幅，ann_start→ann_end 线性退到 0，之后策略自己上台阶。
 # 只在上台阶列触发；500 轮前满幅，500→1500 线性退火，之后关闭（2026-09-07 用户定）。
-ROUGH_CTBC_ENABLED = True
+# 2026-09-07 默认关闭：R4/R5 从第 0 轮注入前馈，100–700 轮 catastrophic 0.2–0.5（R3 为 0），
+# 策略学成回避接触，平地跟踪也一起退化（4000 轮策略 vx 0.7 不走）。要开显式传 ctbc_enabled=True。
+ROUGH_CTBC_ENABLED = False
 ROUGH_CTBC_ANN_START_ITER = 500
 ROUGH_CTBC_ANN_END_ITER = 1500
 ROUGH_CTBC_TERRAIN_TYPE_NAMES = ("stairs_up",)

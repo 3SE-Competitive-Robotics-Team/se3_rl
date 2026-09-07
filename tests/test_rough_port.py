@@ -241,11 +241,18 @@ if __name__ == "__main__":
 
 
 class CtbcPortTests(unittest.TestCase):
-    """CTBC 从 stair 线移植到 rough 的接线：传感器、事件、观测槽位、旋钮。"""
+    """CTBC 从 stair 线移植到 rough 的接线：传感器、事件、观测槽位、旋钮。默认关闭，显式打开来测。"""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cfg = load_env_cfg(_ROUGH)
+        cls.cfg = rough_env_cfg(ctbc_enabled=True)
+
+    def test_ctbc_is_off_by_default(self) -> None:
+        # R4/R5：第 0 轮起注入前馈把策略教成回避接触，平地跟踪一起退化，默认关闭。
+        default = load_env_cfg(_ROUGH)
+        self.assertNotIn("init_ctbc_state", default.events)
+        self.assertNotIn("wheel_riser_sensor", {s.name for s in default.scene.sensors or ()})
+        self.assertIsNot(default.observations["actor"].terms["jump_commands"].func, ctbc.ctbc_obs)
 
     def test_riser_sensor_and_events_are_wired(self) -> None:
         sensors = {sensor.name: sensor for sensor in self.cfg.scene.sensors or ()}
@@ -318,7 +325,7 @@ class RoughRuntimeTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cfg = rough_env_cfg()
+        cfg = rough_env_cfg(ctbc_enabled=True)  # 运行时测试覆盖 CTBC 链路，显式打开
         cfg.scene.num_envs = 12  # 6 列各 2 个 env
         cls.env = ManagerBasedRlEnv(cfg, device="cpu")
         cls.env.reset()
@@ -359,8 +366,9 @@ class RoughRuntimeTests(unittest.TestCase):
             scan = observations.height_scan_obs(self.env, "critic_height_scan")
             self.assertEqual(tuple(scan.shape), (self.env.num_envs, 77))
             step_h = 0.02 + 0.18 * 3 / 9
-            # 平地列：四周全平，读数应接近 0。
-            self.assertLess(float(scan[flat].abs().max()), 0.02)
+            # 平地列：四周全平，读数应接近 0。腿/轮上的自击只在抬升 >3 cm 时才被过滤，
+            # 所以允许 3 cm 以内的残余。
+            self.assertLess(float(scan[flat].abs().max()), 0.03)
             # 上台阶列：前方最高读数等于一级台阶高，身后仍是坑底。
             self.assertAlmostEqual(float(scan[up].max(dim=1).values.mean()), step_h, delta=0.02)
             self.assertLess(float(scan[up].min(dim=1).values.abs().max()), 0.02)
