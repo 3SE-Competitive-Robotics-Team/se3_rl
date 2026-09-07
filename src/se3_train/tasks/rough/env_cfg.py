@@ -36,7 +36,7 @@ from se3_train.tasks.flat.env_cfg import (
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.stair import observations as stair_observations
 
-from . import ctbc, curriculums, events, terminations
+from . import ctbc, curriculums, events, observations, terminations
 from .commands import StepUpCommandCfg
 from .terrains import rough_terrains_cfg
 
@@ -75,6 +75,13 @@ ROUGH_CTBC_ANN_END_ITER = 1500
 ROUGH_CTBC_TERRAIN_TYPE_NAMES = ("stairs_up",)
 ROUGH_CTBC_RISER_SENSOR_NAME = "wheel_riser_sensor"
 ROUGH_CTBC_STEPS_PER_POLICY_ITER = 24
+
+# critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
+# 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
+ROUGH_CRITIC_HEIGHT_SCAN_ENABLED = True
+ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME = "critic_height_scan"
+ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M = (1.0, 0.6)
+ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M = 0.1
 
 # 接触传感器匹配槽数，见 env_cfg() 内的注释。
 ROUGH_CONTACT_SENSOR_MAXMATCH = 500
@@ -127,6 +134,7 @@ def env_cfg(
     ctbc_enabled: bool = ROUGH_CTBC_ENABLED,
     ctbc_ann_start_iter: int = ROUGH_CTBC_ANN_START_ITER,
     ctbc_ann_end_iter: int = ROUGH_CTBC_ANN_END_ITER,
+    critic_height_scan: bool = ROUGH_CRITIC_HEIGHT_SCAN_ENABLED,
 ) -> ManagerBasedRlEnvCfg:
     """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
 
@@ -145,6 +153,8 @@ def env_cfg(
     actor 的 3 维扩展槽退回 Flat 的 jump_commands（恒 0），观测维数不变。
     ctbc_ann_start_iter / ctbc_ann_end_iter：前馈退火起止轮次；play 模式下按 checkpoint 轮次
     由 play.py 固定。
+    critic_height_scan：critic 加 77 点地形高度扫描特权观测（observations.height_scan_obs），
+    actor 不变；关掉即 critic 只有原来的标量离地高度。
     """
     cfg = flat_env_cfg(play=play, **_ROUGH_FLAT_BASELINE)  # type: ignore[arg-type]
 
@@ -208,6 +218,9 @@ def env_cfg(
             ann_end_iter=ctbc_ann_end_iter,
         )
 
+    if critic_height_scan:
+        _add_critic_height_scan(cfg)
+
     # 上台阶要更大的力矩与功率，沿用平地定价会把爬升直接压住。
     cfg.rewards = dict(cfg.rewards)
     for name in _ROUGH_ENERGY_REWARD_NAMES:
@@ -222,6 +235,31 @@ def env_cfg(
         )
 
     return cfg
+
+
+def _add_critic_height_scan(cfg: ManagerBasedRlEnvCfg) -> None:
+    """给 critic 加机身周围的地形高度扫描：一个网格射线传感器 + 一个只在 critic 组的观测项。"""
+    scan_sensor = TerrainHeightSensorCfg(
+        name=ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+        frame=ObjRef(type="body", name="base_link", entity="robot"),
+        ray_alignment="yaw",
+        pattern=GridPatternCfg(
+            size=ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M,
+            resolution=ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M,
+        ),
+        max_distance=2.0,
+        include_geom_groups=(0,),
+        reduction="none",
+    )
+    cfg.scene.sensors = (*cfg.scene.sensors, scan_sensor)
+    cfg.observations = dict(cfg.observations)
+    critic = cfg.observations["critic"]
+    terms = dict(critic.terms)
+    terms["height_scan"] = ObservationTermCfg(
+        func=observations.height_scan_obs,
+        params={"sensor_name": ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME},
+    )
+    cfg.observations["critic"] = replace(critic, terms=terms)
 
 
 def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: int) -> None:
@@ -295,6 +333,10 @@ def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: i
 
 __all__ = [
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
+    "ROUGH_CRITIC_HEIGHT_SCAN_ENABLED",
+    "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
+    "ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME",
+    "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
     "ROUGH_CTBC_ANN_END_ITER",
     "ROUGH_CTBC_ANN_START_ITER",
     "ROUGH_CTBC_ENABLED",

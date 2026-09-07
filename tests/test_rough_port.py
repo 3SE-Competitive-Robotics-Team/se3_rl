@@ -26,7 +26,7 @@ from se3_train.tasks.flat.env_cfg import (
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
-from se3_train.tasks.rough import ctbc, curriculums, events, terminations
+from se3_train.tasks.rough import ctbc, curriculums, events, observations, terminations
 from se3_train.tasks.rough.commands import StepUpCommandCfg
 from se3_train.tasks.rough.env_cfg import (
     ROUGH_ENERGY_PENALTY_SCALE,
@@ -270,7 +270,7 @@ class CtbcPortTests(unittest.TestCase):
             action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
         )
         for group in ("actor", "critic"):
-            rough_terms = list(self.cfg.observations[group].terms)
+            rough_terms = [t for t in self.cfg.observations[group].terms if t != "height_scan"]
             flat_terms = list(flat.observations[group].terms)
             self.assertNotIn("jump_commands", rough_terms)
             self.assertIn("ctbc", rough_terms)
@@ -285,6 +285,35 @@ class CtbcPortTests(unittest.TestCase):
         self.assertNotIn("init_ctbc_state", off.events)
         self.assertIn("jump_commands", off.observations["actor"].terms)
         self.assertNotIn("wheel_riser_sensor", {s.name for s in off.scene.sensors or ()})
+
+
+class CriticHeightScanTests(unittest.TestCase):
+    """critic 特权地形扫描（照 yly-true/fudan_rl_wheel_leg）：只进 critic，actor 契约不变。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = load_env_cfg(_ROUGH)
+
+    def test_scan_sensor_matches_reference_grid(self) -> None:
+        sensors = {sensor.name: sensor for sensor in self.cfg.scene.sensors or ()}
+        sensor = sensors["critic_height_scan"]
+        assert isinstance(sensor, TerrainHeightSensorCfg)
+        assert isinstance(sensor.pattern, GridPatternCfg)
+        # 参考仓库 measured_points_x = -0.5..0.5、measured_points_y = -0.3..0.3，步长 0.1 → 11×7。
+        self.assertEqual(tuple(sensor.pattern.size), (1.0, 0.6))
+        self.assertAlmostEqual(sensor.pattern.resolution, 0.1)
+        self.assertEqual(sensor.ray_alignment, "yaw")
+        self.assertEqual(sensor.reduction, "none")
+        offsets, _ = sensor.pattern.generate_rays(None, device="cpu")
+        self.assertEqual(int(offsets.shape[0]), 77)
+
+    def test_scan_only_in_critic_group(self) -> None:
+        self.assertIn("height_scan", self.cfg.observations["critic"].terms)
+        self.assertNotIn("height_scan", self.cfg.observations["actor"].terms)
+        self.assertIs(self.cfg.observations["critic"].terms["height_scan"].func, observations.height_scan_obs)
+        off = rough_env_cfg(critic_height_scan=False)
+        self.assertNotIn("height_scan", off.observations["critic"].terms)
+        self.assertNotIn("critic_height_scan", {s.name for s in off.scene.sensors or ()})
 
 
 class RoughRuntimeTests(unittest.TestCase):
@@ -309,6 +338,39 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated(self) -> None:
         self.assertEqual(sorted(set(self.terrain_types.tolist())), list(range(6)))
+
+    def test_height_scan_reads_step_rise_ahead(self) -> None:
+        terrain = self.env.scene.terrain
+        names = list(terrain.cfg.terrain_generator.sub_terrains.keys())
+        up = (self.terrain_types == names.index("stairs_up")).nonzero().flatten()
+        flat = (self.terrain_types == self.flat_col).nonzero().flatten()
+        # 上台阶列的 env 放到第 3 行（8 cm 台阶）坑底，朝 +x 站在 x=0.7：网格 x≥+0.3 的射线打在第一级台面上。
+        levels = terrain.terrain_levels.clone()
+        terrain.terrain_levels[up] = 3
+        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+        robot = self.env.scene["robot"]
+        pose = robot.data.root_link_pose_w.clone()
+        pose[:, 0] = self.env.scene.env_origins[:, 0] + 0.7
+        pose[:, 1] = self.env.scene.env_origins[:, 1]
+        pose[:, 2] = self.env.scene.env_origins[:, 2] + 0.30
+        pose[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0])
+        try:
+            for _ in range(2):
+                robot.write_root_link_pose_to_sim(pose)
+                self.env.sim.forward()
+                self.env.sim.sense()
+            scan = observations.height_scan_obs(self.env, "critic_height_scan")
+            self.assertEqual(tuple(scan.shape), (self.env.num_envs, 77))
+            step_h = 0.02 + 0.18 * 3 / 9
+            # 平地列：四周全平，读数应接近 0。
+            self.assertLess(float(scan[flat].abs().max()), 0.02)
+            # 上台阶列：前方最高读数等于一级台阶高，身后仍是坑底。
+            self.assertAlmostEqual(float(scan[up].max(dim=1).values.mean()), step_h, delta=0.02)
+            self.assertLess(float(scan[up].min(dim=1).values.abs().max()), 0.02)
+        finally:
+            terrain.terrain_levels[:] = levels
+            terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+            self.env.reset()
 
     def test_ctbc_state_attached_and_injects_leg_action(self) -> None:
         state = getattr(self.env, ctbc.CTBC_STATE_ATTR, None)
