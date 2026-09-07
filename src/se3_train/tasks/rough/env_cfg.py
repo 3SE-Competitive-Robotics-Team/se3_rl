@@ -12,12 +12,20 @@ flat 的整套配置，只换地形、加地形课程、开台阶状态机，奖
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
-from mjlab.sensor import GridPatternCfg, ObjRef, TerrainHeightSensorCfg
+from mjlab.sensor import (
+    ContactMatch,
+    ContactSensorCfg,
+    GridPatternCfg,
+    ObjRef,
+    TerrainHeightSensorCfg,
+)
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
@@ -26,8 +34,9 @@ from se3_train.tasks.flat.env_cfg import (
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
+from se3_train.tasks.stair import observations as stair_observations
 
-from . import curriculums, terminations
+from . import ctbc, curriculums, terminations
 from .commands import StepUpCommandCfg
 from .terrains import rough_terrains_cfg
 
@@ -52,6 +61,15 @@ _ROUGH_ENERGY_REWARD_NAMES = ("leg_torques", "wheel_torques", "leg_power")
 
 # 全部 env 从最简单一行起步，难度由 terrain_levels 课程逐级放开。
 ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
+
+# CTBC：轮子顶住台阶立面时替策略把该侧轮子向后上方缩回（stair 线的 teacher-forcing，见 ctbc.py）。
+# 退火按训练轮次：ann_start 之前满幅，ann_start→ann_end 线性退到 0，之后策略自己上台阶。
+# rough 从零开始训，地形课程要几百轮才把 env 送到台阶前，退火比 stair 线（200→500）放得晚。
+ROUGH_CTBC_ENABLED = True
+ROUGH_CTBC_ANN_START_ITER = 2500
+ROUGH_CTBC_ANN_END_ITER = 4000
+ROUGH_CTBC_RISER_SENSOR_NAME = "wheel_riser_sensor"
+ROUGH_CTBC_STEPS_PER_POLICY_ITER = 24
 
 # 接触传感器匹配槽数，见 env_cfg() 内的注释。
 ROUGH_CONTACT_SENSOR_MAXMATCH = 500
@@ -99,6 +117,9 @@ def env_cfg(
     terrain_command_override: bool = ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED,
     terrain_lin_vel_x_range: tuple[float, float] = ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     terrain_ang_vel_yaw_range: tuple[float, float] = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
+    ctbc_enabled: bool = ROUGH_CTBC_ENABLED,
+    ctbc_ann_start_iter: int = ROUGH_CTBC_ANN_START_ITER,
+    ctbc_ann_end_iter: int = ROUGH_CTBC_ANN_END_ITER,
 ) -> ManagerBasedRlEnvCfg:
     """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
 
@@ -110,6 +131,10 @@ def env_cfg(
     terrain_curriculum：关掉后地形难度不再随表现提升（play 模式下恒为关）。
     terrain_command_override：非平地列只发前向直行指令（vx/yaw 范围见后两个参数），
     平地列沿用 Flat 速度课程；关掉即全部列都走 Flat 的对称随机指令。
+    ctbc_enabled：接触触发的轮端抬升前馈（ctbc.py）。关掉后不加立面传感器、不挂状态机，
+    actor 的 3 维扩展槽退回 Flat 的 jump_commands（恒 0），观测维数不变。
+    ctbc_ann_start_iter / ctbc_ann_end_iter：前馈退火起止轮次；play 模式下按 checkpoint 轮次
+    由 play.py 固定。
     """
     cfg = flat_env_cfg(play=play, **_ROUGH_FLAT_BASELINE)  # type: ignore[arg-type]
 
@@ -152,6 +177,13 @@ def env_cfg(
         time_out=True,
     )
 
+    if ctbc_enabled:
+        _add_ctbc(
+            cfg,
+            ann_start_iter=ctbc_ann_start_iter,
+            ann_end_iter=ctbc_ann_end_iter,
+        )
+
     # 上台阶要更大的力矩与功率，沿用平地定价会把爬升直接压住。
     cfg.rewards = dict(cfg.rewards)
     for name in _ROUGH_ENERGY_REWARD_NAMES:
@@ -168,8 +200,79 @@ def env_cfg(
     return cfg
 
 
+def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: int) -> None:
+    """接 CTBC：立面接触传感器、三个事件、3 维观测替换 jump_commands、last_actions 排除前馈。"""
+    # 逐槽位带法向的轮-地形接触传感器：只有法向接近水平的接触才算顶住台阶立面。
+    riser_sensor = ContactSensorCfg(
+        name=ROUGH_CTBC_RISER_SENSOR_NAME,
+        primary=ContactMatch(
+            mode="body",
+            pattern=r"^(l_wheel_Link|r_wheel_Link)$",
+            entity="robot",
+        ),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("found", "force", "normal", "tangent"),
+        reduce="maxforce",
+        num_slots=4,
+        global_frame=True,
+    )
+    cfg.scene.sensors = (*cfg.scene.sensors, riser_sensor)
+
+    cfg.events = dict(cfg.events)
+    cfg.events["init_ctbc_state"] = EventTermCfg(
+        func=ctbc.init_ctbc_state,
+        mode="startup",
+        params={
+            "contact_window": 3,
+            "force_threshold_n": 10.0,
+            "ff_amplitude_rad": 1.70,
+            "ff_x_m": 0.02,
+            "ff_lift_m": 0.02,
+            "ff_period_s": 0.60,
+            "ff_rise_ratio": 0.35,
+            "ff_hold_ratio": 0.0,
+            "ff_wheel_action": 0.0,
+            "ff_start_iter": 0,
+            "ann_start_iter": int(ann_start_iter),
+            "ann_end_iter": int(ann_end_iter),
+            "phantom_trigger_iter": 0,
+            "allow_bilateral_trigger": False,
+            "profile_path": None,
+        },
+    )
+    cfg.events["step_ctbc_state"] = EventTermCfg(
+        func=ctbc.step_ctbc_state,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        params={
+            "wheel_sensor_name": "wheel_sensor",
+            "riser_sensor_name": ROUGH_CTBC_RISER_SENSOR_NAME,
+            "riser_normal_z_max": 0.5,
+            "num_steps_per_env": ROUGH_CTBC_STEPS_PER_POLICY_ITER,
+        },
+    )
+    cfg.events["reset_ctbc_state"] = EventTermCfg(func=ctbc.reset_ctbc_state, mode="reset")
+
+    # 3 维扩展槽由 jump_commands（行走任务恒 0）改为 CTBC 相位/触发位；
+    # last_actions 改为策略原始输出，不含注入的前馈（与 stair 线一致）。
+    ctbc_term = ObservationTermCfg(func=ctbc.ctbc_obs)
+    last_actions_term = ObservationTermCfg(func=stair_observations.last_actions_obs)
+    cfg.observations = dict(cfg.observations)
+    for group_name in ("actor", "critic"):
+        group_cfg = cfg.observations[group_name]
+        terms = dict(group_cfg.terms)
+        assert "jump_commands" in terms, f"{group_name} 观测组缺少 jump_commands 扩展槽"
+        terms = {("ctbc" if k == "jump_commands" else k): (ctbc_term if k == "jump_commands" else v)
+                 for k, v in terms.items()}
+        terms["last_actions"] = last_actions_term
+        cfg.observations[group_name] = replace(group_cfg, terms=terms)
+
+
 __all__ = [
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
+    "ROUGH_CTBC_ANN_END_ITER",
+    "ROUGH_CTBC_ANN_START_ITER",
+    "ROUGH_CTBC_ENABLED",
     "ROUGH_ENERGY_PENALTY_SCALE",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_STEP_UP_ENABLED",

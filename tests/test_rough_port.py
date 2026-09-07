@@ -26,7 +26,7 @@ from se3_train.tasks.flat.env_cfg import (
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
-from se3_train.tasks.rough import curriculums, terminations
+from se3_train.tasks.rough import ctbc, curriculums, terminations
 from se3_train.tasks.rough.commands import StepUpCommandCfg
 from se3_train.tasks.rough.env_cfg import (
     ROUGH_ENERGY_PENALTY_SCALE,
@@ -226,6 +226,49 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class CtbcPortTests(unittest.TestCase):
+    """CTBC 从 stair 线移植到 rough 的接线：传感器、事件、观测槽位、旋钮。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = load_env_cfg(_ROUGH)
+
+    def test_riser_sensor_and_events_are_wired(self) -> None:
+        sensors = {sensor.name: sensor for sensor in self.cfg.scene.sensors or ()}
+        self.assertIn("wheel_riser_sensor", sensors)
+        self.assertIn("normal", sensors["wheel_riser_sensor"].fields)
+        for name in ("init_ctbc_state", "step_ctbc_state", "reset_ctbc_state"):
+            self.assertIn(name, self.cfg.events)
+        self.assertEqual(self.cfg.events["init_ctbc_state"].mode, "startup")
+        self.assertEqual(self.cfg.events["step_ctbc_state"].mode, "interval")
+        self.assertEqual(self.cfg.events["reset_ctbc_state"].mode, "reset")
+        params = self.cfg.events["init_ctbc_state"].params
+        self.assertLess(params["ann_start_iter"], params["ann_end_iter"])
+        self.assertLessEqual(params["ann_end_iter"], load_rl_cfg(_ROUGH).max_iterations)
+
+    def test_ctbc_obs_replaces_jump_slots_without_changing_dims(self) -> None:
+        flat = flat_env_cfg(
+            wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
+            action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
+        )
+        for group in ("actor", "critic"):
+            rough_terms = list(self.cfg.observations[group].terms)
+            flat_terms = list(flat.observations[group].terms)
+            self.assertNotIn("jump_commands", rough_terms)
+            self.assertIn("ctbc", rough_terms)
+            # 槽位一一对应：只是把 jump_commands 换成 ctbc，顺序与个数不变。
+            self.assertEqual(
+                [("jump_commands" if t == "ctbc" else t) for t in rough_terms], flat_terms
+            )
+            self.assertIs(self.cfg.observations[group].terms["ctbc"].func, ctbc.ctbc_obs)
+
+    def test_ctbc_can_be_switched_off_for_ablation(self) -> None:
+        off = rough_env_cfg(ctbc_enabled=False)
+        self.assertNotIn("init_ctbc_state", off.events)
+        self.assertIn("jump_commands", off.observations["actor"].terms)
+        self.assertNotIn("wheel_riser_sensor", {s.name for s in off.scene.sensors or ()})
+
+
 class RoughRuntimeTests(unittest.TestCase):
     """在 CPU 上建一个小环境，验证分列指令覆盖与只升不降的课程真的生效。"""
 
@@ -248,6 +291,34 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated(self) -> None:
         self.assertEqual(sorted(set(self.terrain_types.tolist())), list(range(6)))
+
+    def test_ctbc_state_attached_and_injects_leg_action(self) -> None:
+        state = getattr(self.env, ctbc.CTBC_STATE_ATTR, None)
+        self.assertIsNotNone(state)
+        obs = ctbc.ctbc_obs(self.env)
+        self.assertEqual(tuple(obs.shape), (self.env.num_envs, 3))
+        self.assertEqual(float(obs.abs().sum()), 0.0)
+        # 手动触发 env 0 左侧前馈：动作项必须只对 env 0 的腿部动作注入增量。
+        state.update_iter(0)
+        self.assertEqual(state.kff, 1.0)
+        state._ff_phase[0, 0] = max(1, state.ff_rise_steps // 2)
+        term = self.env.action_manager.get_term("delayed_action")
+        term.process_actions(torch.zeros(self.env.num_envs, self.env.action_manager.total_action_dim))
+        delta = term.ctbc_action_delta
+        self.assertGreater(float(delta[0, :4].abs().sum()), 1e-4)
+        self.assertEqual(float(delta[1:, :4].abs().sum()), 0.0)
+        obs = ctbc.ctbc_obs(self.env)
+        self.assertGreater(float(obs[0, 0]), 0.0)
+        self.assertEqual(float(obs[0, 2]), 1.0)
+        self.assertEqual(float(obs[1:].abs().sum()), 0.0)
+        # 退火结束（kff=0）后观测必须全 0，与没有状态机的部署端一致。
+        state.update_iter(10**6)
+        self.assertEqual(state.kff, 0.0)
+        self.assertEqual(float(ctbc.ctbc_obs(self.env).abs().sum()), 0.0)
+        state.update_iter(0)
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        state.reset(env_ids)
+        self.assertEqual(float(ctbc.ctbc_obs(self.env).abs().sum()), 0.0)
 
     def test_non_flat_columns_only_get_forward_commands(self) -> None:
         non_flat = self.terrain_types != self.flat_col
