@@ -17,7 +17,7 @@ from dataclasses import fields, replace
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import (
     ContactMatch,
@@ -29,6 +29,7 @@ from mjlab.sensor import (
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_train.mdp.amp_observations import build_amp_obs_terms
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
@@ -71,6 +72,9 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 # 速度课程推进阈值改用 Flat 的严格档 0.75：默认 0.5 在 vx=0 阶段轻松通过，100 轮内就把 vx 放到 1.6。
 ROUGH_FLAT_WARMUP_ITERATIONS = 500
 ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT
+
+# AMP 观测组：19 维运动状态单帧（契约 se3.amp.motion.v1，见 docs/amp_input.md），只供判别器用。
+ROUGH_AMP_OBS_GROUP = "amp"
 
 # CTBC：轮子顶住台阶立面时替策略把该侧轮子向后上方缩回（stair 线的 teacher-forcing，见 ctbc.py）。
 # 退火按训练轮次：ann_start 之前满幅，ann_start→ann_end 线性退到 0，之后策略自己上台阶。
@@ -145,6 +149,7 @@ def env_cfg(
     critic_height_scan: bool = ROUGH_CRITIC_HEIGHT_SCAN_ENABLED,
     flat_warmup_iterations: int = ROUGH_FLAT_WARMUP_ITERATIONS,
     curriculum_advance_threshold: float = ROUGH_CURRICULUM_ADVANCE_THRESHOLD,
+    amp_enabled: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
 
@@ -167,6 +172,8 @@ def env_cfg(
     actor 不变；关掉即 critic 只有原来的标量离地高度。
     flat_warmup_iterations：前 N 轮全部 env 在平地列（curriculums.flat_warmup），0 关闭。
     curriculum_advance_threshold：Flat 速度课程推进阈值（默认严格档 0.75）。
+    amp_enabled：加 `amp` 观测组（19 维运动帧，mdp/amp_observations.amp_motion_frame），只供
+    se3_train.amp 使用，actor/critic 不看它。判别器与数据集在 rl_cfg 的 amp_cfg 里配。
     """
     cfg = flat_env_cfg(
         play=play,
@@ -236,6 +243,14 @@ def env_cfg(
 
     if critic_height_scan:
         _add_critic_height_scan(cfg)
+
+    if amp_enabled:
+        cfg.observations = dict(cfg.observations)
+        cfg.observations[ROUGH_AMP_OBS_GROUP] = ObservationGroupCfg(
+            terms=build_amp_obs_terms(),
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
 
     # 上台阶要更大的力矩与功率，沿用平地定价会把爬升直接压住。
     cfg.rewards = dict(cfg.rewards)
@@ -361,6 +376,7 @@ def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: i
 
 
 __all__ = [
+    "ROUGH_AMP_OBS_GROUP",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CRITIC_HEIGHT_SCAN_ENABLED",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",

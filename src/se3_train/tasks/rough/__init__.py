@@ -8,7 +8,7 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import env_cfg
-from .rl_cfg import rl_cfg
+from .rl_cfg import amp_rl_cfg, rl_cfg
 from .terrains import stair_only_terrains_cfg
 
 TASK_ID = "SE3-WheelLegged-Rough"
@@ -16,6 +16,8 @@ TASK_ID = "SE3-WheelLegged-Rough"
 STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 只换地形、不开状态机的单变量对照：用来量“台阶前瞻辅助”本身值多少。
 NO_STEP_UP_TASK_ID = "SE3-WheelLegged-Rough-NoStepUp"
+# AMP：加 amp 观测组 + 判别器风格奖励（se3_train.amp），专家数据集见 docs/amp_dataset.md。
+AMP_TASK_ID = "SE3-WheelLegged-Rough-AMP"
 
 
 def register() -> None:
@@ -41,9 +43,17 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), NO_STEP_UP_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=AMP_TASK_ID,
+        env_cfg=env_cfg(amp_enabled=True),
+        play_env_cfg=env_cfg(play=True, amp_enabled=True),
+        rl_cfg=bind_task_name(amp_rl_cfg(), AMP_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "AMP_TASK_ID",
     "NO_STEP_UP_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
