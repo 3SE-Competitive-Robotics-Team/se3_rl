@@ -9,12 +9,76 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_train.mdp.curriculums import commands_vel, push_disturbance
 
+from .events import set_curriculum_env_mask
 from .terrains import ROUGH_TERRAIN_CLEARED_DISTANCE_M
+
+# 平地热身状态挂在 env 上的属性名。
+FLAT_WARMUP_ORIGINAL_TYPES_ATTR = "_se3_flat_warmup_original_types"
+FLAT_WARMUP_DONE_ATTR = "_se3_flat_warmup_done"
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 _DEFAULT_ROBOT_CFG = SceneEntityCfg("robot")
+
+
+def _refresh_terrain_dependent_masks(env: ManagerBasedRlEnv, command_name: str) -> None:
+    """env 换列后刷新按列计算的两个掩码：地形列前向指令覆盖、平地速度课程信号掩码。"""
+    term = env.command_manager.get_term(command_name)
+    refresh = getattr(term, "refresh_terrain_override", None)
+    if callable(refresh):
+        refresh()
+    set_curriculum_env_mask(env, None)
+
+
+def flat_warmup(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    iterations: int = 500,
+    steps_per_policy_iter: int = 24,
+    flat_name: str = "flat",
+) -> dict[str, torch.Tensor]:
+    """前 `iterations` 轮全部 env 放在平地列、第 0 行；之后各 env 在下一次 reset 时换回原列、第 0 行。
+
+    目的：先把 Flat 基线练出来再进地形。R4/R5/R6 里地形课程 250 轮就把策略推上 12 cm 下台阶和 25% 坡，
+    策略在还不会稳走时学成原地站着。逐 env 在 reset 时换列，不在 episode 中途改出生点。
+    换列后同步刷新地形列前向指令覆盖与平地速度课程信号掩码（它们按列计算）。
+    必须排在 terrain_levels 之前；热身期 terrain_levels 不升级。
+    """
+    terrain = env.scene.terrain
+    assert terrain is not None and terrain.terrain_origins is not None
+    generator = terrain.cfg.terrain_generator
+    assert generator is not None
+    names = list(generator.sub_terrains.keys())
+    flat_col = names.index(flat_name)
+
+    original = getattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, None)
+    if original is None:
+        original = terrain.terrain_types.clone()
+        setattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, original)
+        setattr(env, FLAT_WARMUP_DONE_ATTR, torch.zeros(env.num_envs, device=env.device, dtype=torch.bool))
+    done: torch.Tensor = getattr(env, FLAT_WARMUP_DONE_ATTR)
+
+    iteration = int(env.common_step_counter) // max(1, int(steps_per_policy_iter))
+    changed = False
+    if iteration < int(iterations):
+        ids = env_ids[~done[env_ids] & (terrain.terrain_types[env_ids] != flat_col)]
+        if ids.numel() > 0:
+            terrain.terrain_types[ids] = flat_col
+            terrain.terrain_levels[ids] = 0
+            changed = True
+    else:
+        ids = env_ids[~done[env_ids]]
+        if ids.numel() > 0:
+            terrain.terrain_types[ids] = original[ids]
+            terrain.terrain_levels[ids] = 0
+            done[ids] = True
+            changed = True
+    if changed:
+        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+        _refresh_terrain_dependent_masks(env, command_name)
+    return {"active": (~done).float().mean()}
 
 
 def terrain_levels(
@@ -56,6 +120,10 @@ def terrain_levels(
     # 到 env_origins 的距离可达几十米，会把全员无条件升一级（R3 首轮 level 全为 1.0 即此故障）。
     if env.common_step_counter == 0:
         move_up = torch.zeros_like(move_up)
+    # 平地热身期不升级（平地列每行都一样，升了也只是把 env 挪到另一块平地）。
+    warmup_done = getattr(env, FLAT_WARMUP_DONE_ATTR, None)
+    if isinstance(warmup_done, torch.Tensor):
+        move_up = move_up & warmup_done[env_ids]
 
     terrain.update_env_origins(env_ids, move_up, move_down)
 
@@ -78,4 +146,4 @@ def terrain_levels(
     return result
 
 
-__all__ = ["commands_vel", "push_disturbance", "terrain_levels"]
+__all__ = ["commands_vel", "flat_warmup", "push_disturbance", "terrain_levels"]

@@ -155,6 +155,17 @@ class RoughTerrainTests(unittest.TestCase):
         # 地形列 vx 上限跟随平地课程。
         self.assertTrue(command.terrain_lin_vel_x_follow_curriculum)
 
+    def test_flat_warmup_and_strict_advance_threshold(self) -> None:
+        # 2026-09-07 用户定（R7）：前 500 轮全平地，之后换回原列；推进阈值 0.75。
+        self.assertEqual(next(iter(self.cfg.curriculum)), "flat_warmup")
+        params = self.cfg.curriculum["flat_warmup"].params
+        self.assertEqual(params["iterations"], 500)
+        self.assertEqual(params["steps_per_policy_iter"], load_rl_cfg(_ROUGH).num_steps_per_env)
+        self.assertLess(list(self.cfg.curriculum).index("flat_warmup"), list(self.cfg.curriculum).index("terrain_levels"))
+        self.assertAlmostEqual(self.cfg.curriculum["command_vel"].params["advance_threshold"], 0.75)
+        off = rough_env_cfg(flat_warmup_iterations=0)
+        self.assertNotIn("flat_warmup", off.curriculum)
+
     def test_flat_velocity_curriculum_reads_flat_column_only(self) -> None:
         self.assertEqual(self.cfg.events["set_curriculum_env_mask"].mode, "startup")
         self.assertEqual(
@@ -234,6 +245,62 @@ class StepUpStateMachineTests(unittest.TestCase):
         self.assertAlmostEqual(ROUGH_TERRAIN_CLEARED_DISTANCE_M, 4.0)
         self.assertGreater(ROUGH_TERRAIN_EXIT_DISTANCE_M, ROUGH_TERRAIN_CLEARED_DISTANCE_M)
         self.assertLess(ROUGH_TERRAIN_EXIT_DISTANCE_M, 4.5)
+
+
+class FlatWarmupRuntimeTests(unittest.TestCase):
+    """平地热身：前 N 轮全员平地，之后 reset 时换回原列，两个按列掩码随之刷新。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(flat_warmup_iterations=500)
+        cfg.scene.num_envs = 12
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+        cls.terrain = cls.env.scene.terrain
+        names = list(cls.terrain.cfg.terrain_generator.sub_terrains.keys())
+        cls.flat_col = names.index("flat")
+        cls.term = cls.env.command_manager.get_term("velocity_height")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def test_everyone_starts_on_flat_then_returns_to_own_column(self) -> None:
+        types = self.terrain.terrain_types
+        original = getattr(self.env, curriculums.FLAT_WARMUP_ORIGINAL_TYPES_ATTR)
+        self.assertEqual(len(set(original.tolist())), 6)  # 原列分配保留了六列
+        self.assertTrue(bool((types == self.flat_col).all()))
+        self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
+        # 热身期：前向指令覆盖对谁都不生效，课程信号掩码全员为真。
+        self.assertFalse(bool(self.term._terrain_override_mask.any()))
+        self.assertTrue(bool(getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR).all()))
+        # 热身期 terrain_levels 不升级：把机器人放到清块距离之外也不动。
+        robot = self.env.scene["robot"]
+        pose = robot.data.root_link_pose_w.clone()
+        pose[:, 0] = self.env.scene.env_origins[:, 0] + 4.1
+        robot.write_root_link_pose_to_sim(pose)
+        self.env.sim.forward()
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        self.env.common_step_counter = 10 * 24
+        curriculums.terrain_levels(self.env, env_ids, command_name="velocity_height")
+        self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
+        # 500 轮后：reset 到的 env 换回原列、第 0 行，掩码按新列重算。
+        self.env.common_step_counter = 500 * 24
+        half = env_ids[:6]
+        curriculums.flat_warmup(self.env, half, command_name="velocity_height", iterations=500)
+        self.assertTrue(torch.equal(types[:6], original[:6]))
+        self.assertTrue(bool((types[6:] == self.flat_col).all()))
+        curriculums.flat_warmup(self.env, env_ids, command_name="velocity_height", iterations=500)
+        self.assertTrue(torch.equal(types, original))
+        self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
+        self.assertTrue(torch.equal(self.term._terrain_override_mask, original != self.flat_col))
+        self.assertTrue(torch.equal(getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR), original == self.flat_col))
+        # 换列后升级恢复。
+        pose[:, 0] = self.env.scene.env_origins[:, 0] + 4.1
+        robot.write_root_link_pose_to_sim(pose)
+        self.env.sim.forward()
+        curriculums.terrain_levels(self.env, env_ids, command_name="velocity_height")
+        self.assertTrue(bool((self.terrain.terrain_levels == 1).all()))
 
 
 if __name__ == "__main__":
@@ -325,7 +392,8 @@ class RoughRuntimeTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cfg = rough_env_cfg(ctbc_enabled=True)  # 运行时测试覆盖 CTBC 链路，显式打开
+        # 运行时测试覆盖 CTBC 链路，显式打开；关掉平地热身，让 env 一开始就在各自的列上。
+        cfg = rough_env_cfg(ctbc_enabled=True, flat_warmup_iterations=0)
         cfg.scene.num_envs = 12  # 6 列各 2 个 env
         cls.env = ManagerBasedRlEnv(cfg, device="cpu")
         cls.env.reset()

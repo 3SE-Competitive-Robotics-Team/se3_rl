@@ -31,6 +31,7 @@ from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
+    FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
@@ -65,6 +66,11 @@ _ROUGH_ENERGY_REWARD_NAMES = ("leg_torques", "wheel_torques", "leg_power")
 
 # 全部 env 从最简单一行起步，难度由 terrain_levels 课程逐级放开。
 ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
+
+# 平地热身：前 N 轮全部 env 在平地列，之后各 env 在下一次 reset 时换回原列（2026-09-07 用户定，R7）。
+# 速度课程推进阈值改用 Flat 的严格档 0.75：默认 0.5 在 vx=0 阶段轻松通过，100 轮内就把 vx 放到 1.6。
+ROUGH_FLAT_WARMUP_ITERATIONS = 500
+ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT
 
 # CTBC：轮子顶住台阶立面时替策略把该侧轮子向后上方缩回（stair 线的 teacher-forcing，见 ctbc.py）。
 # 退火按训练轮次：ann_start 之前满幅，ann_start→ann_end 线性退到 0，之后策略自己上台阶。
@@ -137,6 +143,8 @@ def env_cfg(
     ctbc_ann_start_iter: int = ROUGH_CTBC_ANN_START_ITER,
     ctbc_ann_end_iter: int = ROUGH_CTBC_ANN_END_ITER,
     critic_height_scan: bool = ROUGH_CRITIC_HEIGHT_SCAN_ENABLED,
+    flat_warmup_iterations: int = ROUGH_FLAT_WARMUP_ITERATIONS,
+    curriculum_advance_threshold: float = ROUGH_CURRICULUM_ADVANCE_THRESHOLD,
 ) -> ManagerBasedRlEnvCfg:
     """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
 
@@ -157,8 +165,14 @@ def env_cfg(
     由 play.py 固定。
     critic_height_scan：critic 加 77 点地形高度扫描特权观测（observations.height_scan_obs），
     actor 不变；关掉即 critic 只有原来的标量离地高度。
+    flat_warmup_iterations：前 N 轮全部 env 在平地列（curriculums.flat_warmup），0 关闭。
+    curriculum_advance_threshold：Flat 速度课程推进阈值（默认严格档 0.75）。
     """
-    cfg = flat_env_cfg(play=play, **_ROUGH_FLAT_BASELINE)  # type: ignore[arg-type]
+    cfg = flat_env_cfg(
+        play=play,
+        curriculum_advance_threshold=float(curriculum_advance_threshold),
+        **_ROUGH_FLAT_BASELINE,  # type: ignore[arg-type]
+    )
 
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
@@ -231,6 +245,19 @@ def env_cfg(
 
     if not play and terrain_curriculum:
         cfg.curriculum = dict(cfg.curriculum)
+        if int(flat_warmup_iterations) > 0:
+            # 必须排在 terrain_levels 之前（同一次 reset 内先换列再结算课程）。
+            cfg.curriculum = {
+                "flat_warmup": CurriculumTermCfg(
+                    func=curriculums.flat_warmup,
+                    params={
+                        "command_name": "velocity_height",
+                        "iterations": int(flat_warmup_iterations),
+                        "steps_per_policy_iter": ROUGH_CTBC_STEPS_PER_POLICY_ITER,
+                    },
+                ),
+                **cfg.curriculum,
+            }
         cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
             func=curriculums.terrain_levels,
             params={"command_name": "velocity_height"},
@@ -343,9 +370,11 @@ __all__ = [
     "ROUGH_CTBC_ANN_START_ITER",
     "ROUGH_CTBC_ENABLED",
     "ROUGH_CTBC_TERRAIN_TYPE_NAMES",
+    "ROUGH_CURRICULUM_ADVANCE_THRESHOLD",
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_ENERGY_PENALTY_SCALE",
+    "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_STEP_UP_ENABLED",
     "ROUGH_STEP_UP_LOOKAHEAD_M",

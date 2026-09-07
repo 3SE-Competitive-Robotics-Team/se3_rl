@@ -148,14 +148,34 @@ class StepUpCommandTerm(JumpCommandTerm):
         # 非平地列的 env 掩码；None 表示没有可用的分列地形或覆盖未启用。
         self._terrain_override_mask: torch.Tensor | None = None
         if cfg.terrain_command_override_enabled:
-            self._terrain_override_mask = self._build_terrain_override_mask(env)
-            if self._terrain_override_mask is not None and bool(self._terrain_override_mask.any()):
-                ids = self._terrain_override_mask.nonzero(as_tuple=False).flatten()
-                self.set_velocity_ranges(
-                    ids,
-                    lin_vel_x_range=tuple(cfg.terrain_lin_vel_x_range),
-                    ang_vel_yaw_range=tuple(cfg.terrain_ang_vel_yaw_range),
-                )
+            self.refresh_terrain_override()
+
+    def refresh_terrain_override(self) -> None:
+        """按当前 terrain_types 重算“非平地列”掩码并刷新逐 env 的速度范围覆盖。
+
+        env 换列（平地热身结束、课程重掷）后必须调用，否则覆盖还按旧列生效。
+        """
+        if not self.cfg.terrain_command_override_enabled:
+            return
+        self._terrain_override_mask = self._build_terrain_override_mask(self._env)
+        if self._terrain_override_mask is None:
+            return
+        all_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        # 先把所有 env 的覆盖清掉（回到 cfg 范围），再给非平地列重新设。
+        self.set_velocity_ranges(
+            all_ids,
+            lin_vel_x_range=tuple(self.cfg.lin_vel_x_range),
+            ang_vel_yaw_range=tuple(self.cfg.ang_vel_yaw_range),
+        )
+        assert self._velocity_range_override_mask is not None
+        self._velocity_range_override_mask[:] = False
+        if bool(self._terrain_override_mask.any()):
+            ids = self._terrain_override_mask.nonzero(as_tuple=False).flatten()
+            self.set_velocity_ranges(
+                ids,
+                lin_vel_x_range=tuple(self.cfg.terrain_lin_vel_x_range),
+                ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
+            )
 
     def _build_terrain_override_mask(self, env: ManagerBasedRlEnv) -> torch.Tensor | None:
         """返回“不在平地列”的 env 掩码。
