@@ -26,7 +26,7 @@ from se3_train.tasks.flat.env_cfg import (
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
-from se3_train.tasks.rough import ctbc, curriculums, terminations
+from se3_train.tasks.rough import ctbc, curriculums, events, terminations
 from se3_train.tasks.rough.commands import StepUpCommandCfg
 from se3_train.tasks.rough.env_cfg import (
     ROUGH_ENERGY_PENALTY_SCALE,
@@ -152,6 +152,20 @@ class RoughTerrainTests(unittest.TestCase):
         # 单变量对照旋钮：关掉后逐位退回 Flat 的对称随机指令。
         off = rough_env_cfg(terrain_command_override=False).commands["velocity_height"]
         self.assertFalse(off.terrain_command_override_enabled)
+        # 地形列 vx 上限跟随平地课程。
+        self.assertTrue(command.terrain_lin_vel_x_follow_curriculum)
+
+    def test_flat_velocity_curriculum_reads_flat_column_only(self) -> None:
+        self.assertEqual(self.cfg.events["set_curriculum_env_mask"].mode, "startup")
+        self.assertEqual(
+            tuple(self.cfg.events["set_curriculum_env_mask"].params["terrain_type_names"]), ("flat",)
+        )
+        params = self.cfg.curriculum["command_vel"].params
+        self.assertEqual(params["tracking_log_key"], "Locomotion/tracking_lin_vel_reward_curriculum")
+        # 关掉旋钮即退回 Flat 的全体均值判据。
+        off = rough_env_cfg(flat_curriculum_signal_only=False)
+        self.assertNotIn("set_curriculum_env_mask", off.events)
+        self.assertNotIn("tracking_log_key", off.curriculum["command_vel"].params or {})
 
     def test_contact_sensor_slots_cover_generator_terrain(self) -> None:
         # 生成器地形有几百个 terrain geom，默认 64 个匹配槽会溢出并让接触力读数失真。
@@ -359,6 +373,43 @@ class RoughRuntimeTests(unittest.TestCase):
             self.assertTrue(bool((cmd[:, 1] >= yaw_lo - 1e-6).all()), cmd[:, 1])
             self.assertTrue(bool((cmd[:, 1] <= yaw_hi + 1e-6).all()), cmd[:, 1])
             self.assertFalse(bool(self.term._standing_mask[non_flat].any()))
+
+    def test_terrain_vx_upper_bound_follows_flat_curriculum(self) -> None:
+        non_flat = self.terrain_types != self.flat_col
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        saved = self.term.cfg.lin_vel_x_range
+        try:
+            # 课程起点 (0,0)：地形列拿到下界 0.4 的定速指令。
+            self.term.cfg.lin_vel_x_range = (0.0, 0.0)
+            self.term._resample_command(env_ids)
+            self.assertTrue(bool(((self.term.command[non_flat][:, 0] - 0.4).abs() < 1e-5).all()))
+            # 课程推到 ±0.8：地形列上限 0.8。
+            self.term.cfg.lin_vel_x_range = (-0.8, 0.8)
+            for _ in range(20):
+                self.term._resample_command(env_ids)
+                vx = self.term.command[non_flat][:, 0]
+                self.assertTrue(bool((vx >= 0.4 - 1e-5).all()) and bool((vx <= 0.8 + 1e-5).all()))
+            # 课程到顶 ±2.4：上限回到 terrain_lin_vel_x_range 的 2.4。
+            self.term.cfg.lin_vel_x_range = (-2.4, 2.4)
+            seen_max = 0.0
+            for _ in range(30):
+                self.term._resample_command(env_ids)
+                seen_max = max(seen_max, float(self.term.command[non_flat][:, 0].max()))
+            self.assertGreater(seen_max, 1.5)
+        finally:
+            self.term.cfg.lin_vel_x_range = saved
+            self.term._resample_command(env_ids)
+
+    def test_curriculum_signal_mask_marks_flat_column_and_is_logged(self) -> None:
+        mask = getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR, None)
+        assert mask is not None
+        self.assertTrue(torch.equal(mask.cpu(), (self.terrain_types == self.flat_col).cpu()))
+        # 强制每步写日志，走一步，课程专用的跟踪分键必须出现。
+        self.env._se3_reward_log_interval_steps = 1
+        self.env.step(torch.zeros(self.env.num_envs, self.env.action_manager.total_action_dim))
+        log = self.env.extras.get("log", {})
+        self.assertIn("Locomotion/tracking_lin_vel_reward_curriculum", log)
+        self.assertIn("Locomotion/tracking_lin_vel_reward_all", log)
 
     def test_flat_column_keeps_flat_command_ranges(self) -> None:
         # Flat 速度课程起点是 vx=yaw=0，平地列 reset 后指令必须仍是 0，而不是被覆盖成前向直行。

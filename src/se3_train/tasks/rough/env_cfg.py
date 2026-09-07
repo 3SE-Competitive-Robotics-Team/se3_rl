@@ -36,7 +36,7 @@ from se3_train.tasks.flat.env_cfg import (
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.stair import observations as stair_observations
 
-from . import ctbc, curriculums, terminations
+from . import ctbc, curriculums, events, terminations
 from .commands import StepUpCommandCfg
 from .terrains import rough_terrains_cfg
 
@@ -53,6 +53,10 @@ ROUGH_STEP_UP_LOOKAHEAD_M = 0.5
 ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED = True
 ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 2.4)
 ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
+# 地形列 vx 上限跟随平地速度课程当前上限；平地速度课程只按平地列的跟踪分推进。
+ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM = True
+ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
+ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
 
 # 能耗类罚项在崎岖地形上的折价系数。参考仓库把 wheel_power 与 joint_torque
 # 从 -1e-4 降到 -1e-5：上台阶本来就要更多力矩和功率，沿用平地定价会把爬升压住。
@@ -118,6 +122,8 @@ def env_cfg(
     terrain_command_override: bool = ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED,
     terrain_lin_vel_x_range: tuple[float, float] = ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     terrain_ang_vel_yaw_range: tuple[float, float] = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
+    terrain_lin_vel_x_follow_curriculum: bool = ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM,
+    flat_curriculum_signal_only: bool = True,
     ctbc_enabled: bool = ROUGH_CTBC_ENABLED,
     ctbc_ann_start_iter: int = ROUGH_CTBC_ANN_START_ITER,
     ctbc_ann_end_iter: int = ROUGH_CTBC_ANN_END_ITER,
@@ -132,6 +138,9 @@ def env_cfg(
     terrain_curriculum：关掉后地形难度不再随表现提升（play 模式下恒为关）。
     terrain_command_override：非平地列只发前向直行指令（vx/yaw 范围见后两个参数），
     平地列沿用 Flat 速度课程；关掉即全部列都走 Flat 的对称随机指令。
+    terrain_lin_vel_x_follow_curriculum：非平地列 vx 上限跟随平地速度课程当前上限。
+    flat_curriculum_signal_only：平地速度课程只按平地列的跟踪分推进（R3 里全体均值被地形列拖住，
+    平地列整场 vx=0）；关掉即退回 Flat 的全体均值判据。
     ctbc_enabled：接触触发的轮端抬升前馈（ctbc.py）。关掉后不加立面传感器、不挂状态机，
     actor 的 3 维扩展槽退回 Flat 的 jump_commands（恒 0），观测维数不变。
     ctbc_ann_start_iter / ctbc_ann_end_iter：前馈退火起止轮次；play 模式下按 checkpoint 轮次
@@ -164,7 +173,21 @@ def env_cfg(
         terrain_command_override_enabled=terrain_command_override,
         terrain_lin_vel_x_range=tuple(terrain_lin_vel_x_range),
         terrain_ang_vel_yaw_range=tuple(terrain_ang_vel_yaw_range),
+        terrain_lin_vel_x_follow_curriculum=terrain_lin_vel_x_follow_curriculum,
     )
+
+    if flat_curriculum_signal_only:
+        cfg.events = dict(cfg.events)
+        cfg.events["set_curriculum_env_mask"] = EventTermCfg(
+            func=events.set_curriculum_env_mask,
+            mode="startup",
+            params={"terrain_type_names": ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES},
+        )
+        if not play and "command_vel" in cfg.curriculum:
+            cfg.curriculum = dict(cfg.curriculum)
+            params = dict(cfg.curriculum["command_vel"].params or {})
+            params["tracking_log_key"] = ROUGH_CURRICULUM_TRACKING_LOG_KEY
+            cfg.curriculum["command_vel"] = replace(cfg.curriculum["command_vel"], params=params)
 
     # 墙（地形外围 border 这类高过机身的障碍）不是策略失败，按截断 bootstrap。
     cfg.terminations = dict(cfg.terminations)
@@ -276,12 +299,15 @@ __all__ = [
     "ROUGH_CTBC_ANN_START_ITER",
     "ROUGH_CTBC_ENABLED",
     "ROUGH_CTBC_TERRAIN_TYPE_NAMES",
+    "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
+    "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_ENERGY_PENALTY_SCALE",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_STEP_UP_ENABLED",
     "ROUGH_STEP_UP_LOOKAHEAD_M",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
     "ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED",
+    "ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM",
     "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
     "env_cfg",
 ]

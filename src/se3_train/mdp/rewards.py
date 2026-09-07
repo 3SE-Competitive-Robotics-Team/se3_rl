@@ -647,6 +647,15 @@ def tracking_lin_vel(
                 "Locomotion/tracking_upright_gate": _masked_mean(gate, locomotion),
             }
         )
+        # 课程信号子集：env 上挂了 `_se3_curriculum_env_mask`（rough 线只取平地列）时，
+        # 再记一份只看这些 env 的跟踪分，供 commands_vel_adaptive 的 tracking_log_key 使用。
+        # 否则地形列（强制前向指令、跟踪分天然偏低）会把全体均值拖在阈值之下，
+        # 平地列的速度课程永远推不动（R3/p06cgbqe：1100 轮 EMA 最高 0.33，lin_vel_x_max 恒 0）。
+        curriculum_mask = getattr(env, "_se3_curriculum_env_mask", None)
+        if isinstance(curriculum_mask, torch.Tensor) and curriculum_mask.shape[0] == env.num_envs:
+            env.extras["log"]["Locomotion/tracking_lin_vel_reward_curriculum"] = _masked_mean(
+                reward, locomotion & curriculum_mask.to(device=reward.device, dtype=torch.bool)
+            )
 
     return reward
 

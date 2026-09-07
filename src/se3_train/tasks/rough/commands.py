@@ -111,6 +111,14 @@ class StepUpCommandCfg(JumpCommandCfg):
     terrain_ang_vel_yaw_range: tuple[float, float] = (-0.2, 0.2)
     """非平地列的 yaw 角速度采样范围(rad/s)。"""
 
+    terrain_lin_vel_x_follow_curriculum: bool = True
+    """非平地列 vx 上限是否跟随平地速度课程的当前上限（`cfg.lin_vel_x_range[1]`）。
+
+    开启时每次重采样取 min(terrain_lin_vel_x_range[1], 当前课程上限)，且不低于下界；
+    课程起点 0 时地形列拿到的就是下界 0.4 m/s 的定速指令，随课程一起爬到 2.4。
+    R3 从第 0 轮就给 0.4–2.4，500 轮的策略对 vx ≥ 1.0 的指令原地不动。
+    """
+
     def build(self, env: ManagerBasedRlEnv) -> StepUpCommandTerm:
         return StepUpCommandTerm(self, env)
 
@@ -265,6 +273,14 @@ class StepUpCommandTerm(JumpCommandTerm):
             if flat_ids.numel() > 0:
                 super()._resample_command(flat_ids)
             if terrain_ids.numel() > 0:
+                if self.cfg.terrain_lin_vel_x_follow_curriculum:
+                    lo, hi = (float(v) for v in self.cfg.terrain_lin_vel_x_range)
+                    hi = max(lo, min(hi, float(self.cfg.lin_vel_x_range[1])))
+                    self.set_velocity_ranges(
+                        terrain_ids,
+                        lin_vel_x_range=(lo, hi),
+                        ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
+                    )
                 standing_ratio = self.cfg.standing_ratio
                 self.cfg.standing_ratio = 0.0
                 try:
