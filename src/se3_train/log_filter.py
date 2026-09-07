@@ -19,6 +19,9 @@ _KEEP_NAMESPACES = (
     "Episode_Reward/",
     "Episode_Termination/",
     "Curriculum/",
+    # rough 线 step_up 状态机的占比（hold/detect/wall），每轮只有 3 个键；
+    # 没有它们就看不出状态机有没有触发（R2 时被裁掉，无法判断策略是否在台阶前退缩）。
+    "Rough/",
 )
 
 _KEEP_EXACT = frozenset(

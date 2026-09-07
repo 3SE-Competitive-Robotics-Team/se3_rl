@@ -93,6 +93,24 @@ class StepUpCommandCfg(JumpCommandCfg):
     step_up_height_max_cmd: float | None = None
     """抬升后的高度指令上限(m)；None 时取 `height_range` 上界。"""
 
+    terrain_command_override_enabled: bool = False
+    """是否按所在地形列限制速度指令。
+
+    开启后，`terrain_command_flat_names` 以外的列（台阶、斜坡、起伏）只发前向直行指令：
+    vx 在 `terrain_lin_vel_x_range` 内、yaw 在 `terrain_ang_vel_yaw_range` 内采样，且不抽静站样本；
+    平地列不受影响，仍走 Flat 的速度课程。目的是让机器人正对台阶直冲，而不是在台阶前
+    转圈或倒车（对称随机指令下净位移是随机游走，地形课程无法推进，见 curriculums.py）。
+    """
+
+    terrain_command_flat_names: tuple[str, ...] = ("flat",)
+    """沿用 Flat 速度指令的子地形名（课程模式下列号即子地形名的序号）。"""
+
+    terrain_lin_vel_x_range: tuple[float, float] = (0.4, 2.4)
+    """非平地列的 vx 采样范围(m/s)。下界为正，保证一直朝前走。"""
+
+    terrain_ang_vel_yaw_range: tuple[float, float] = (-0.2, 0.2)
+    """非平地列的 yaw 角速度采样范围(rad/s)。"""
+
     def build(self, env: ManagerBasedRlEnv) -> StepUpCommandTerm:
         return StepUpCommandTerm(self, env)
 
@@ -119,6 +137,39 @@ class StepUpCommandTerm(JumpCommandTerm):
             if cfg.step_up_height_max_cmd is not None
             else float(cfg.height_range[1])
         )
+        # 非平地列的 env 掩码；None 表示没有可用的分列地形或覆盖未启用。
+        self._terrain_override_mask: torch.Tensor | None = None
+        if cfg.terrain_command_override_enabled:
+            self._terrain_override_mask = self._build_terrain_override_mask(env)
+            if self._terrain_override_mask is not None and bool(self._terrain_override_mask.any()):
+                ids = self._terrain_override_mask.nonzero(as_tuple=False).flatten()
+                self.set_velocity_ranges(
+                    ids,
+                    lin_vel_x_range=tuple(cfg.terrain_lin_vel_x_range),
+                    ang_vel_yaw_range=tuple(cfg.terrain_ang_vel_yaw_range),
+                )
+
+    def _build_terrain_override_mask(self, env: ManagerBasedRlEnv) -> torch.Tensor | None:
+        """返回“不在平地列”的 env 掩码。
+
+        只在课程模式（每种子地形独占一列）下有定义：`terrain_types` 即列号，列号对应
+        `sub_terrains` 的键序。非课程模式或平面地形时返回 None，覆盖静默关闭。
+        """
+        terrain = getattr(env.scene, "terrain", None)
+        generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+        terrain_types = getattr(terrain, "terrain_types", None)
+        terrain_origins = getattr(terrain, "terrain_origins", None)
+        if generator is None or terrain_types is None or terrain_origins is None:
+            return None
+        names = list(generator.sub_terrains.keys())
+        if not generator.curriculum or terrain_origins.shape[1] != len(names):
+            return None
+        flat_cols = [i for i, name in enumerate(names) if name in self.cfg.terrain_command_flat_names]
+        types = terrain_types.to(device=self.device, dtype=torch.long)
+        is_flat = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        for col in flat_cols:
+            is_flat |= types == col
+        return ~is_flat
 
     def _forward_rise(self) -> torch.Tensor | None:
         """返回每个 env 前方地面相对身下地面的抬升(m)，形状 [B, F]。
@@ -204,7 +255,22 @@ class StepUpCommandTerm(JumpCommandTerm):
         log["Rough/wall_blocked_rate"] = self._wall_blocked.float().mean()
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        super()._resample_command(env_ids)
+        if self._terrain_override_mask is None:
+            super()._resample_command(env_ids)
+        else:
+            # 非平地列不抽静站样本：vx 下界为正的约束对静站（vx=0）没有意义。
+            overridden = self._terrain_override_mask[env_ids]
+            flat_ids = env_ids[~overridden]
+            terrain_ids = env_ids[overridden]
+            if flat_ids.numel() > 0:
+                super()._resample_command(flat_ids)
+            if terrain_ids.numel() > 0:
+                standing_ratio = self.cfg.standing_ratio
+                self.cfg.standing_ratio = 0.0
+                try:
+                    super()._resample_command(terrain_ids)
+                finally:
+                    self.cfg.standing_ratio = standing_ratio
         self._base_height_cmd[env_ids] = self._command[env_ids, 4]
         if not self.cfg.step_up_enabled:
             return

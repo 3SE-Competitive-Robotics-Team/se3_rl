@@ -9,6 +9,8 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 
 from se3_train.mdp.curriculums import commands_vel, push_disturbance
 
+from .terrains import ROUGH_TERRAIN_CLEARED_DISTANCE_M
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -20,14 +22,19 @@ def terrain_levels(
     env_ids: torch.Tensor,
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
+    clear_distance_m: float = ROUGH_TERRAIN_CLEARED_DISTANCE_M,
 ) -> dict[str, torch.Tensor]:
-    """按本 episode 走出的距离升降地形难度等级。
+    """清掉本块全部台阶就升一级；只升不降。
 
-    与 mjlab `tasks.velocity.mdp.terrain_levels_vel` 同一套判据：走够半块地形升一级，
-    走不到指令距离的一半降一级。不能直接复用那个实现，因为它按
-    `norm(command[:, :2])` 取指令速度，而本仓库的指令布局是
-    `[lin_vel_x, ang_vel_yaw, pitch, roll, height]`，第 1 维是角速度（rad/s），
-    混进模长会把要求的行进距离算错。
+    升级判据：episode 结束时出生点到机身的切比雪夫距离 max(|dx|, |dy|) ≥ `clear_distance_m`
+    （默认 = 平台半宽 + 台阶数 × 踏面，见 terrains.ROUGH_TERRAIN_CLEARED_DISTANCE_M），
+    即越过最外一级台阶，与朝向和指令速度无关。配合 terminations.terrain_cleared 在出块时截断，
+    一个 episode 最多记一次升级，且经验不会串到邻块的难度行。
+
+    不用 mjlab `terrain_levels_vel` 的欧氏位移：金字塔是正方形，欧氏门槛在对角线方向少算台阶数。
+    降级也去掉了：原判据用 episode 末段的 |vx| 反推应走距离，末段静站时永不降、末段高速时几乎必降，
+    与地形能力无关；对称随机指令下净位移本身是随机游走，升降各半会把课程钉在低位
+    （R2，W&B 32eentyo 的平地列也只到 1.6）。
     """
     asset = env.scene[asset_cfg.name]
     terrain = env.scene.terrain
@@ -38,19 +45,12 @@ def terrain_levels(
     command = env.command_manager.get_command(command_name)
     assert command is not None
 
-    distance = torch.norm(
-        asset.data.root_link_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2],
-        dim=1,
-    )
-    move_up = distance > terrain_generator.size[0] / 2
-    required = torch.abs(command[env_ids, 0]) * env.max_episode_length_s * 0.5
-    move_down = (distance < required) & ~move_up
+    del command  # 只升不降后不再需要指令反推应走距离；保留取值以校验指令项存在。
 
-    # 首次 reset 发生在任何一步之前，distance 还是出生点到出生点的 0，
-    # 会把所有 env 无条件降级，抹掉 max_init_terrain_level。
-    if env.common_step_counter == 0:
-        move_up = torch.zeros_like(move_up)
-        move_down = torch.zeros_like(move_down)
+    offset = asset.data.root_link_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2]
+    distance = offset.abs().max(dim=1).values
+    move_up = distance >= float(clear_distance_m)
+    move_down = torch.zeros_like(move_up)
 
     terrain.update_env_origins(env_ids, move_up, move_down)
 

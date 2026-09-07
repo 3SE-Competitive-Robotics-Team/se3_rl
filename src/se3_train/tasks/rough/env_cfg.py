@@ -39,6 +39,12 @@ ROUGH_STEP_UP_ENABLED = True
 # 传感器把射线排成 [-d, 0, +d]，索引 0/1/2 = 后方/身下/前方。
 ROUGH_STEP_UP_LOOKAHEAD_M = 0.5
 
+# 非平地列的速度指令限制：只发前向直行指令，平地列沿用 Flat 的速度课程。
+# 对称随机指令下 20 s 的净位移是随机游走，地形课程的位移判据推不动（R2 平地列也只到 1.6）。
+ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED = True
+ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 2.4)
+ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
+
 # 能耗类罚项在崎岖地形上的折价系数。参考仓库把 wheel_power 与 joint_torque
 # 从 -1e-4 降到 -1e-5：上台阶本来就要更多力矩和功率，沿用平地定价会把爬升压住。
 ROUGH_ENERGY_PENALTY_SCALE = 0.1
@@ -90,6 +96,9 @@ def env_cfg(
     step_up_lookahead_m: float = ROUGH_STEP_UP_LOOKAHEAD_M,
     energy_penalty_scale: float = ROUGH_ENERGY_PENALTY_SCALE,
     terrain_curriculum: bool = True,
+    terrain_command_override: bool = ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED,
+    terrain_lin_vel_x_range: tuple[float, float] = ROUGH_TERRAIN_LIN_VEL_X_RANGE,
+    terrain_ang_vel_yaw_range: tuple[float, float] = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
 ) -> ManagerBasedRlEnvCfg:
     """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
 
@@ -98,7 +107,9 @@ def env_cfg(
     step_up_enabled：关掉后指令项逐位退化为 Flat 的 JumpCommandTerm，用于做“只有地形课程、
     没有状态机”的单变量对照。
     energy_penalty_scale：能耗类罚项相对 Flat 基线的折价系数，1.0 即与平地同价。
-    terrain_curriculum：关掉后地形难度不再随表现升降（play 模式下恒为关）。
+    terrain_curriculum：关掉后地形难度不再随表现提升（play 模式下恒为关）。
+    terrain_command_override：非平地列只发前向直行指令（vx/yaw 范围见后两个参数），
+    平地列沿用 Flat 速度课程；关掉即全部列都走 Flat 的对称随机指令。
     """
     cfg = flat_env_cfg(play=play, **_ROUGH_FLAT_BASELINE)  # type: ignore[arg-type]
 
@@ -124,12 +135,20 @@ def env_cfg(
         cfg.commands["velocity_height"],
         step_up_enabled=step_up_enabled,
         step_up_sensor_name=sensor_name,
+        terrain_command_override_enabled=terrain_command_override,
+        terrain_lin_vel_x_range=tuple(terrain_lin_vel_x_range),
+        terrain_ang_vel_yaw_range=tuple(terrain_ang_vel_yaw_range),
     )
 
     # 墙（地形外围 border 这类高过机身的障碍）不是策略失败，按截断 bootstrap。
     cfg.terminations = dict(cfg.terminations)
     cfg.terminations["wall_blocked"] = TerminationTermCfg(
         func=terminations.wall_blocked,
+        time_out=True,
+    )
+    # 清掉本块台阶、走到边框即截断结算课程，不进邻块（邻块是另一行难度）。
+    cfg.terminations["terrain_cleared"] = TerminationTermCfg(
+        func=terminations.terrain_cleared,
         time_out=True,
     )
 
@@ -155,5 +174,8 @@ __all__ = [
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_STEP_UP_ENABLED",
     "ROUGH_STEP_UP_LOOKAHEAD_M",
+    "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
+    "ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED",
+    "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
     "env_cfg",
 ]
