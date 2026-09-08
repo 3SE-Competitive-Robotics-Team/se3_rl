@@ -111,6 +111,10 @@ ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM = False
 ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ("stairs_up",)
 ROUGH_STAIR_LIN_VEL_X_RANGE = (1.0, 2.4)
 ROUGH_STAIR_HEIGHT_RANGE = (0.35, 0.38)
+# 逐项奖励的分列日志（2026-09-09 用户定，A9）：每步把奖励表每一项在台阶列上的均值记一份，
+# 键名 Rough/rw_<项名>_stairs。A8 只能读出 command_velocity_error 在台阶列是 −2.48/s
+# （因为它本来就只在那列生效），其余罚项被平地列稀释、无从定位。不改奖励数学。
+ROUGH_REWARD_SPLIT_LOG_ENABLED = True
 ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
 ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
 
@@ -190,6 +194,7 @@ def env_cfg(
     stair_command_terrain_names: tuple[str, ...] = ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
     stair_lin_vel_x_range: tuple[float, float] = ROUGH_STAIR_LIN_VEL_X_RANGE,
     stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE,
+    reward_split_log: bool = ROUGH_REWARD_SPLIT_LOG_ENABLED,
     command_velocity_error_weight: float | None = ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT,
     zero_base_height_on_terrain: bool = ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN,
     energy_penalty_scale: float = ROUGH_ENERGY_PENALTY_SCALE,
@@ -222,6 +227,7 @@ def env_cfg(
     stair_command_terrain_names：单独发高速/高站姿指令的子地形列名，空元组即关闭
     （这些列退回 terrain_lin_vel_x_range 与全局 height_range）。
     stair_lin_vel_x_range / stair_height_range：台阶列的 vx 与机身高度指令范围。
+    reward_split_log：每步记一份奖励表逐项在台阶列上的均值（Rough/rw_*_stairs），纯诊断。
     command_velocity_error_weight：只在这些列生效的速度违令二次罚权重；None 即不加该项
     （退回 Flat 基线，全线都没有它），见 ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT 注释。
     zero_base_height_on_terrain：把 flat_base_height 在这些列上置零；关掉即全线同价。
@@ -279,6 +285,15 @@ def env_cfg(
         terrain_ang_vel_yaw_range=tuple(terrain_ang_vel_yaw_range),
         terrain_lin_vel_x_follow_curriculum=terrain_lin_vel_x_follow_curriculum,
     )
+
+    if reward_split_log:
+        cfg.events = dict(cfg.events)
+        cfg.events["log_reward_split"] = EventTermCfg(
+            func=events.log_reward_split_by_column,
+            mode="interval",
+            interval_range_s=(0.0, 0.0),
+            params={"terrain_type_names": tuple(reward_terrain_type_names)},
+        )
 
     if flat_curriculum_signal_only:
         cfg.events = dict(cfg.events)
@@ -525,6 +540,7 @@ __all__ = [
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
+    "ROUGH_REWARD_SPLIT_LOG_ENABLED",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",

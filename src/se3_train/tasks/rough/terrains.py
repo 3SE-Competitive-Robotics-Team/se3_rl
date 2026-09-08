@@ -63,8 +63,11 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
     """返回带课程的崎岖地形集：平地、上/下台阶、上/下斜坡、随机起伏。
 
     上行与下行成对出现（正金字塔与反金字塔），这是参考仓库的做法。`proportion` 在课程模式下只决定各列的
-    env 分配比例，不决定列数。2026-09-08 用户定（A4）：env 集中到上行——flat 25%、stairs_up 40%、slope_up 30%、
-    random_rough 5%，stairs_down/slope_down 设 0（mjlab 仍给每列至少 1 个 env，列保留，日志键不变）。
+    env 分配比例，不决定列数。2026-09-09 用户定（A9）：只留平地与上台阶——flat 30%、stairs_up 70%，
+    slope/下行/随机起伏全部设 0（mjlab 仍给每列至少 1 个 env，列保留，日志键不变）。
+    A8 的诊断：slope_up 已经爬到 6.4 级、正常清块，但它在 `Rough/*_terrain` 这些"非平地"口径里
+    把 stairs_up 的数字整个稀释掉了，看不出台阶列到底卡在哪；去掉之后非平地口径实质上就等于台阶列。
+    此前分配为 flat 25 / stairs_up 40 / slope_up 30 / random_rough 5（A4）。
     """
     return TerrainGeneratorCfg(
         size=_PATCH_SIZE,
@@ -77,10 +80,10 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
         difficulty_range=(0.0, 1.0),
         color_scheme="none",
         sub_terrains={
-            "flat": BoxFlatTerrainCfg(proportion=0.25, size=_PATCH_SIZE),
+            "flat": BoxFlatTerrainCfg(proportion=0.30, size=_PATCH_SIZE),
             # 出生在凹坑底部，向外爬升。
             "stairs_up": BoxInvertedPyramidStairsTerrainCfg(
-                proportion=0.40,
+                proportion=0.70,
                 size=_PATCH_SIZE,
                 step_height_range=_STEP_HEIGHT_RANGE,
                 step_width=_STEP_WIDTH,
@@ -97,7 +100,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 border_width=_STAIR_BORDER_WIDTH,
             ),
             "slope_up": HfPyramidSlopedTerrainCfg(
-                proportion=0.30,
+                proportion=0.0,
                 size=_PATCH_SIZE,
                 slope_range=(0.05, 0.30),
                 platform_width=2.0,
@@ -114,7 +117,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 horizontal_scale=_HF_HORIZONTAL_SCALE,
             ),
             "random_rough": HfRandomUniformTerrainCfg(
-                proportion=0.05,
+                proportion=0.0,
                 size=_PATCH_SIZE,
                 noise_range=(0.0, 0.05),
                 noise_step=0.005,

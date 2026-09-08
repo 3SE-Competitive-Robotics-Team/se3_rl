@@ -144,10 +144,17 @@ class RoughTerrainTests(unittest.TestCase):
             list(generator.sub_terrains),
             ["flat", "stairs_up", "stairs_down", "slope_up", "slope_down", "random_rough"],
         )
-        # A4 起 env 集中到上行列：flat 25 / stairs_up 40 / slope_up 30 / random_rough 5，下行列 0。
+        # A9 起只留平地与上台阶：flat 30 / stairs_up 70，其余列 proportion 为 0
+        # （mjlab 仍给每列至少 1 个 env，列与日志键都保留）。此前是 A4 的 25/40/30/5。
         self.assertEqual(
             {n: c.proportion for n, c in generator.sub_terrains.items()},
-            {"flat": 0.25, "stairs_up": 0.40, "stairs_down": 0.0, "slope_up": 0.30, "slope_down": 0.0, "random_rough": 0.05},
+            {"flat": 0.30, "stairs_up": 0.70, "stairs_down": 0.0, "slope_up": 0.0, "slope_down": 0.0, "random_rough": 0.0},
+        )
+        # 去掉 slope 之后「非平地」口径（Rough/*_terrain）实质上就等于台阶列——
+        # A8 里 slope_up 爬到 6.4 级、正常清块，把台阶列的数字整个稀释了，看不出卡在哪。
+        self.assertEqual(
+            [n for n, c in generator.sub_terrains.items() if c.proportion > 0.0],
+            ["flat", "stairs_up"],
         )
         for name in ("stairs_up", "stairs_down"):
             self.assertEqual(
@@ -643,6 +650,31 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated(self) -> None:
         self.assertEqual(sorted(set(self.terrain_types.tolist())), list(range(6)))
+
+    def test_reward_split_logs_every_term_on_the_stairs_column(self) -> None:
+        """A9：逐项奖励在台阶列上的均值每步记一份，用来定位「哪个罚在压台阶」。
+
+        A8 卡在这：Episode_Reward/* 是全体均值，除了本来就只在台阶列生效的
+        command_velocity_error，其余项各是多少完全读不出来。
+        """
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        events.log_reward_split_by_column(self.env, env_ids, terrain_type_names=("stairs_up",))
+        log = self.env.extras.get("log", {})
+        manager = self.env.reward_manager
+        terms = list(manager.active_terms)
+        keys = [k for k in log if k.startswith(events.REWARD_SPLIT_LOG_PREFIX)]
+        self.assertEqual(len(keys), len(terms))
+
+        names = list(self.env.scene.terrain.cfg.terrain_generator.sub_terrains.keys())
+        stairs = self.terrain_types == names.index("stairs_up")
+        step_reward = manager._step_reward
+        for name in terms:
+            logged = float(log[f"{events.REWARD_SPLIT_LOG_PREFIX}{name}_stairs"])
+            manual = float(step_reward[stairs, terms.index(name)].mean())
+            self.assertAlmostEqual(logged, manual, places=6, msg=name)
+        # 走 Rough/ 命名空间，必须整段留在常驻白名单里。
+        for key in keys:
+            self.assertTrue(keep_log_key(key), key)
 
     def test_terrain_column_rewards_only_bite_on_the_stairs_column(self) -> None:
         """台阶列吃速度违令罚、不吃高度罚；其余列正好相反。"""
