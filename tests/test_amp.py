@@ -284,18 +284,20 @@ class AmpMotionFrameTests(unittest.TestCase):
 
     def test_frame_geometry_and_yaw_invariance(self) -> None:
         n = self.env.num_envs
-        self._place(torch.linspace(0.0, 1.3, n))
+        i = _IDX
+        self._place(torch.zeros(n))
         frame = amp_motion_frame(self.env)
         self.assertEqual(tuple(frame.shape), (n, AMP_FRAME_DIM))
         self.assertEqual(list(self.env.observation_manager.compute()["amp"].shape), [n, AMP_FRAME_DIM])
-        i = _IDX
         self.assertTrue(torch.allclose(frame[:, i["gravity_z"]], torch.full((n,), -1.0), atol=1e-3))
-        # 轮心在髋轴下方（z<0），左右对称（x 相近）。
+        # 轮心在髋轴下方（z<0），左右对称（x 相近；容差留给逐 env 的模型随机化）。
         self.assertTrue(bool((frame[:, i["left_wheel_z"]] < -0.1).all()))
         self.assertTrue(bool((frame[:, i["right_wheel_z"]] < -0.1).all()))
-        self.assertLess(float((frame[:, i["left_wheel_x"]] - frame[:, i["right_wheel_x"]]).abs().max()), 0.03)
-        # 各 env 姿态相同、只有 yaw 不同，特征必须一致；容差留给逐 env 的模型随机化（毫米级）。
-        self.assertTrue(torch.allclose(frame, frame[:1].expand_as(frame), atol=1e-2))
+        self.assertLess(float((frame[:, i["left_wheel_x"]] - frame[:, i["right_wheel_x"]]).abs().max()), 0.05)
+        # 同一个 env 整体绕 z 转 1.3 rad，特征不变（不跨 env 比较，避免逐 env 随机化干扰）。
+        self._place(torch.full((n,), 1.3))
+        rotated = amp_motion_frame(self.env)
+        self.assertTrue(torch.allclose(frame, rotated, atol=1e-4))
 
 
 class AmpTaskTests(unittest.TestCase):
