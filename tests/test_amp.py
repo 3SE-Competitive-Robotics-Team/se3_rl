@@ -1,11 +1,12 @@
 """AMP 流水线回归测试：19 维运动帧、数据集加载与镜像、判别器可分性、任务注册、Se3PPO 端到端一轮、存档往返。
 
-专家数据用合成的 `source_dataset.npz`（契约 se3.amp.motion.v1，见 docs/amp_input.md），不依赖真实数据集。
+专家数据用合成的 se3.amp.pkl.v1（契约 se3.amp.motion.v1，见 docs/amp_input.md），不依赖真实数据集。
 """
 
 from __future__ import annotations
 
 import os
+import pickle
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -20,8 +21,10 @@ from mjlab.utils.lab_api.math import quat_from_euler_xyz
 
 import se3_train  # noqa: F401  # 注册任务
 from se3_shared.amp import AMP_FEATURE_NAMES, AMP_FRAME_DIM
-from se3_train.amp import AMP, build_amp_dataset, load_amp_sequences, mirror_amp_frames
+from se3_train.amp import AMP
+from se3_train.amp_dataset_factory import build_amp_dataset
 from se3_train.mdp.amp_observations import amp_motion_frame
+from se3_train.motion_loader import MotionLoader
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.rl_cfg import amp_rl_cfg
 
@@ -29,47 +32,89 @@ _AMP_TASK = "SE3-WheelLegged-Rough-AMP"
 _IDX = {name: i for i, name in enumerate(AMP_FEATURE_NAMES)}
 
 
-def _write_synthetic_dataset(root: Path, *, lengths: tuple[int, ...] = (40, 30, 50)) -> None:
-    """按 package 脚本的 source_dataset.npz 形态写合成序列：frames + frame_offsets。"""
+def _write_synthetic_dataset(root: Path, *, lengths: tuple[int, ...] = (40, 30, 50), fps: float = 50.0) -> Path:
+    """按 scripts/export_fudan_amp_pkl.py 的 se3.amp.pkl.v1 形态写合成序列，返回 pkl 路径。"""
     rng = np.random.default_rng(0)
     root.mkdir(parents=True, exist_ok=True)
-    frames = []
+    sequences = []
     for length in lengths:
         walk = np.cumsum(rng.normal(scale=0.02, size=(length, AMP_FRAME_DIM)), axis=0)
         walk[:, 0:3] = walk[:, 0:3] * 0.05 + np.array([0.0, 0.0, -1.0])
         walk[:, 9:13] += np.array([-0.05, -0.20, -0.05, -0.20])
-        frames.append(walk.astype(np.float32))
-    offsets = np.concatenate([[0], np.cumsum([f.shape[0] for f in frames])])
-    np.savez(root / "source_dataset.npz", frames=np.concatenate(frames), frame_offsets=offsets)
+        sequences.append(walk.astype(np.float32))
+    payload = dict(
+        format="se3.amp.pkl.v1",
+        motion_contract="se3.amp.motion.v1",
+        fps=fps,
+        dt=1.0 / fps,
+        frame_dim=19,
+        transition_dim=38,
+        normalization="raw SI",
+        retargeted_to_serialleg=False,
+        feature_names=list(AMP_FEATURE_NAMES),
+        sequences=sequences,
+        transitions=[np.concatenate([s[:-1], s[1:]], axis=1) for s in sequences],
+        lengths=[int(s.shape[0]) for s in sequences],
+        time_s=[np.arange(s.shape[0]) / fps for s in sequences],
+        source_time_s=[np.arange(s.shape[0]) / fps for s in sequences],
+        annotations=[{"id": f"clip{i}", "step_height_m": 0.12} for i in range(len(sequences))],
+    )
+    path = root / "amp_training.pkl"
+    with path.open("wb") as f:
+        pickle.dump(payload, f, protocol=5)
+    return path
 
 
 class AmpDatasetTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "ds"
-        _write_synthetic_dataset(self.root)
+        self.pkl = _write_synthetic_dataset(self.root)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_split_by_offsets(self) -> None:
-        seqs = load_amp_sequences(self.root, 0.02)
-        self.assertEqual([s.shape for s in seqs], [(40, 19), (30, 19), (50, 19)])
-        with self.assertRaises(ValueError):
-            load_amp_sequences(self.root, 0.01)  # 契约固定 20 ms
+    def test_loader_shapes_and_format(self) -> None:
+        loader = MotionLoader(self.root, 0.02, mirror_augmentation=False)
+        self.assertEqual([tuple(s.shape) for s in loader.sequences], [(40, 19), (30, 19), (50, 19)])
+        self.assertEqual(loader.obs_dim, 19)
+        self.assertEqual(loader.format["fields"], list(AMP_FEATURE_NAMES))
+        self.assertEqual(loader.format["feature_slices"]["left_wheel_x"], [9, 10])
+        self.assertFalse(loader.metadata["retargeted_to_serialleg"])
+        self.assertEqual(loader.metadata["annotations"][1]["id"], "clip1")
+        # 目录与单文件两种给法等价。
+        self.assertEqual(MotionLoader(self.pkl, 0.02, mirror_augmentation=False).obs_dim, 19)
 
-    def test_per_sample_features_layout(self) -> None:
-        root = Path(self.tmp.name) / "samples"
-        for k in range(2):
-            d = root / f"step{k}" / "amp"
-            d.mkdir(parents=True)
-            np.savez(d / "source_features.npz", frames=np.zeros((10 + k, 19), np.float32), valid=np.ones(9 + k, bool))
-        self.assertEqual([s.shape[0] for s in load_amp_sequences(root, 0.02)], [10, 11])
+    def test_resample_to_control_dt(self) -> None:
+        root = Path(self.tmp.name) / "fast"
+        _write_synthetic_dataset(root, lengths=(41,), fps=100.0)
+        loader = MotionLoader(root, 0.02, mirror_augmentation=False)
+        self.assertEqual(int(loader.sequences[0].shape[0]), 21)  # 0.4 s @ 20 ms
+
+    def test_field_subset(self) -> None:
+        loader = MotionLoader(self.root, 0.02, fields=["gravity_z", "left_wheel_spin"], mirror_augmentation=False)
+        self.assertEqual(loader.obs_dim, 2)
+        with self.assertRaises(ValueError):
+            MotionLoader(self.root, 0.02, fields=["nope"])
+
+    def test_contract_checks(self) -> None:
+        bad = Path(self.tmp.name) / "bad"
+        bad.mkdir()
+        with (bad / "x.pkl").open("wb") as f:
+            pickle.dump({"format": "other", "motion_contract": "se3.amp.motion.v1", "fps": 50.0}, f)
+        with self.assertRaises(ValueError):
+            MotionLoader(bad, 0.02)
+        with (bad / "x.pkl").open("wb") as f:
+            payload = pickle.load(self.pkl.open("rb"))
+            payload["feature_names"] = list(reversed(payload["feature_names"]))
+            pickle.dump(payload, f)
+        with self.assertRaises(ValueError):
+            MotionLoader(bad, 0.02)
 
     def test_mirror(self) -> None:
         ds = build_amp_dataset(dataset_root=str(self.root), simulation_dt=0.02, mirror_augmentation=True)
         self.assertEqual(len(ds["sequences"]), 6)
-        orig, mirrored = ds["sequences"][0], ds["sequences"][3]
+        orig, mirrored = ds["sequences"][0], ds["sequences"][1]  # 镜像紧跟原序列（与 kyber 一致）
         i = _IDX
         self.assertTrue(torch.allclose(mirrored[:, i["gravity_y"]], -orig[:, i["gravity_y"]]))
         self.assertTrue(torch.allclose(mirrored[:, i["gravity_z"]], orig[:, i["gravity_z"]]))
@@ -81,7 +126,20 @@ class AmpDatasetTests(unittest.TestCase):
         self.assertTrue(torch.allclose(mirrored[:, i["right_wheel_vz"]], orig[:, i["left_wheel_vz"]]))
         self.assertTrue(torch.allclose(mirrored[:, i["left_wheel_spin"]], orig[:, i["right_wheel_spin"]]))
         # 镜像两次回到原状。
-        self.assertTrue(torch.allclose(mirror_amp_frames(mirror_amp_frames(orig)), orig))
+        twice = MotionLoader._mirror_frames(MotionLoader._mirror_frames(orig.numpy()))
+        self.assertTrue(np.allclose(twice, orig.numpy()))
+
+    def test_factory_validates_env_obs_dim(self) -> None:
+        class _Env:
+            step_dt = 0.02
+
+            class observation_manager:
+                @staticmethod
+                def compute():
+                    return {"amp": torch.zeros(2, 18)}
+
+        with self.assertRaises(ValueError):
+            build_amp_dataset(env=_Env(), dataset_root=str(self.root))
 
 
 class _DummyStorage:

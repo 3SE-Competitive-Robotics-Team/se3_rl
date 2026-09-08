@@ -12,21 +12,17 @@
   `AMP.process_env_step(obs, transition, extras)`；update 里在 storage 清空之前调用
   `AMP.individual_update(storage)`；存档键沿用 fork 的 `ext_state_dict["amp"]`。
 
-专家数据：契约 `se3.amp.motion.v1`（se3_shared.amp，19 维单帧、20 ms），由
-scripts/export_fudan_amp_features.py / package_fudan_amp_dataset.py 产出，
-`build_amp_dataset` 读成 fork 约定的 `{"sequences": [Tensor[T, 19]], "lengths": [T]}`。
+专家数据：`se3.amp.pkl.v1`（scripts/export_fudan_amp_pkl.py 产出，契约 se3.amp.motion.v1 的 19 维帧），
+由 se3_train.motion_loader.MotionLoader + se3_train.amp_dataset_factory.build_amp_dataset（照 kyber）
+读成 `{"sequences": [Tensor[T, 19]], "lengths": [T], "fps", "format", "metadata"}`。
 """
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
-from itertools import pairwise
-from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from rsl_rl.modules import MLP
 from rsl_rl.modules.normalization import EmpiricalNormalization
@@ -34,113 +30,12 @@ from rsl_rl.storage import RolloutStorage
 from tensordict import TensorDict
 from torch import nn, optim
 
-from se3_shared.amp import AMP_CONTROL_DT_S, AMP_FRAME_DIM
+from se3_shared.amp import AMP_FRAME_DIM
+from se3_train.amp_dataset_factory import build_amp_dataset
 
 # ---------------------------------------------------------------------------
-# 专家数据集（se3.amp.motion.v1）
+# 专家数据集：se3.amp.pkl.v1，加载器与工厂照 kyber（motion_loader.py / amp_dataset_factory.py）
 # ---------------------------------------------------------------------------
-# 19 维单帧的左右镜像（关于机身 xz 平面）：
-#   gravity y 取反；omega x、z 取反；velocity y 取反；
-#   左右轮 xz 位置/速度互换；左右轮自转互换。
-_MIRROR_PERM = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 9, 10, 15, 16, 13, 14, 18, 17]
-_MIRROR_SIGN = [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0] + [1.0] * 10
-
-
-def mirror_amp_frames(frames: torch.Tensor) -> torch.Tensor:
-    """[T, 19] → 左右镜像后的 [T, 19]。"""
-    if frames.shape[-1] != AMP_FRAME_DIM:
-        raise ValueError(f"AMP 帧必须是 {AMP_FRAME_DIM} 维，实际 {frames.shape}")
-    perm = torch.tensor(_MIRROR_PERM, device=frames.device)
-    sign = torch.tensor(_MIRROR_SIGN, device=frames.device, dtype=frames.dtype)
-    return frames[..., perm] * sign
-
-
-def _sequences_from_frames(frames: np.ndarray, offsets: np.ndarray | None) -> list[np.ndarray]:
-    if frames.ndim != 2 or frames.shape[1] != AMP_FRAME_DIM:
-        raise ValueError(f"frames 形状应为 [N, {AMP_FRAME_DIM}]，实际 {frames.shape}")
-    if not np.isfinite(frames).all():
-        raise ValueError("frames 含非有限值")
-    if offsets is None:
-        return [frames]
-    offsets = np.asarray(offsets, dtype=np.int64).reshape(-1)
-    if offsets[0] != 0 or offsets[-1] != frames.shape[0] or np.any(np.diff(offsets) <= 0):
-        raise ValueError(f"frame_offsets 必须从 0 单调递增到 {frames.shape[0]}，实际 {offsets.tolist()}")
-    return [frames[a:b] for a, b in pairwise(offsets)]
-
-
-def _check_control_dt(path: Path, simulation_dt: float) -> None:
-    """契约固定 20 ms；训练控制周期必须一致，不做重采样。"""
-    if abs(float(simulation_dt) - AMP_CONTROL_DT_S) > 1e-8:
-        raise ValueError(f"AMP 契约要求相邻帧 20 ms，训练 step_dt={simulation_dt}（{path}）")
-
-
-def load_amp_sequences(dataset_root: str | Path, simulation_dt: float) -> list[np.ndarray]:
-    """读专家序列，返回若干 [T, 19]。
-
-    `dataset_root` 可以是：
-    - 含 `source_dataset.npz`（frames + frame_offsets，package 脚本产物）的目录；
-    - 含若干 `<sample>/amp/source_features.npz`（frames，export 脚本产物）的目录；
-    - 单个上述 .npz 文件。
-    """
-    root = Path(dataset_root)
-    _check_control_dt(root, simulation_dt)
-    if root.is_file():
-        files = [root]
-    elif (root / "source_dataset.npz").is_file():
-        files = [root / "source_dataset.npz"]
-    else:
-        files = sorted(root.glob("*/amp/source_features.npz")) + sorted(root.glob("*.npz"))
-    if not files:
-        raise FileNotFoundError(f"AMP 数据集为空：{root}")
-    sequences: list[np.ndarray] = []
-    for path in files:
-        with np.load(path, allow_pickle=False) as data:
-            if "frames" not in data:
-                raise ValueError(f"{path} 缺少 frames")
-            frames = np.asarray(data["frames"], dtype=np.float32)
-            offsets = np.asarray(data["frame_offsets"]) if "frame_offsets" in data else None
-        for seq in _sequences_from_frames(frames, offsets):
-            if seq.shape[0] >= 2:
-                sequences.append(seq)
-    if not sequences:
-        raise ValueError(f"AMP 数据集 {root} 没有长度 ≥ 2 帧的序列")
-    return sequences
-
-
-def _dataset_readiness_note(dataset_root: str | Path) -> str | None:
-    """读导出元数据里的就绪标记，未重定向到 SerialLeg 的数据给出提示（不阻断）。"""
-    root = Path(dataset_root)
-    for meta in [root / "amp_training.json", root / "metadata.json", *sorted(root.glob("*/amp/metadata.json"))[:1]]:
-        if meta.is_file():
-            try:
-                payload = json.loads(meta.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if payload.get("ready_for_discriminator_training") is False:
-                return f"{meta}: ready_for_discriminator_training=false（{payload.get('status', '')}）"
-            return None
-    return None
-
-
-def build_amp_dataset(
-    device: str = "cpu",
-    *,
-    dataset_root: str,
-    simulation_dt: float,
-    mirror_augmentation: bool = True,
-) -> dict[str, Any]:
-    """AMP 的 dataset_callable：返回 fork 约定的 {"sequences": [Tensor[T, 19]], "lengths": [T]}。"""
-    sequences = [
-        torch.as_tensor(seq, dtype=torch.float32, device=device)
-        for seq in load_amp_sequences(dataset_root, float(simulation_dt))
-    ]
-    if mirror_augmentation:
-        sequences = sequences + [mirror_amp_frames(seq) for seq in sequences]
-    note = _dataset_readiness_note(dataset_root)
-    if note:
-        print(f"[AMP] 提示：{note}")
-    print(f"[AMP] 数据集 {dataset_root}：{len(sequences)} 段序列（含镜像），{sum(int(s.shape[0]) for s in sequences)} 帧")
-    return {"sequences": sequences, "lengths": [int(seq.shape[0]) for seq in sequences]}
 
 
 def default_dataset_root(fallback: str) -> str:
@@ -287,7 +182,8 @@ class AMP(nn.Module):
         if "dataset_root" not in dataset_kwargs:
             raise ValueError("AMP cfg.dataset_kwargs 必须包含 dataset_root")
         dataset_kwargs.setdefault("simulation_dt", self.step_dt)
-        return build_amp_dataset(device=str(self.device), **dataset_kwargs)
+        dataset_kwargs.setdefault("obs_group", self.obs_group)
+        return build_amp_dataset(env=None, device=str(self.device), **dataset_kwargs)
 
     def _register_dataset(self, dataset: Mapping[str, Any]) -> None:
         sequences = [seq.to(self.device) for seq in dataset["sequences"]]
@@ -439,11 +335,4 @@ class AMP(nn.Module):
             self.optimizer.load_state_dict(state["optimizer_state_dict"])
 
 
-__all__ = [
-    "AMP",
-    "MotionDiscriminator",
-    "build_amp_dataset",
-    "default_dataset_root",
-    "load_amp_sequences",
-    "mirror_amp_frames",
-]
+__all__ = ["AMP", "MotionDiscriminator", "build_amp_dataset", "default_dataset_root"]

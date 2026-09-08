@@ -20,7 +20,7 @@ ROUGH_MAX_ITERATIONS = 5000
 
 # AMP 默认参数照 kyber_rl_lab 的 g1 velocity AMP：reward_weight 3.0、热身 100 次更新、
 # 每轮 2 步判别器更新、batch 4096、lr 1e-4、R1 惩罚 10、判别器 [512,256]+输入归一化。
-ROUGH_AMP_DATASET_ROOT = "assets/amp/fudan_stairs20_20260907"
+ROUGH_AMP_DATASET_ROOT = "assets/amp/fudan_stairs20_20260907/amp_training.pkl"
 
 
 def amp_cfg_dict(*, dataset_root: str) -> dict:
@@ -38,6 +38,7 @@ def amp_cfg_dict(*, dataset_root: str) -> dict:
         "model_cfg": {"hidden_dims": [512, 256], "activation": "elu", "state_normalization": True},
         "dataset_kwargs": {
             "dataset_root": dataset_root,
+            "dataset_glob": "*.pkl",
             "mirror_augmentation": True,
         },
     }
@@ -54,7 +55,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 def amp_rl_cfg(smoke: bool = False, *, dataset_root: str | None = None) -> RslRlOnPolicyRunnerCfg:
     """带 AMP 的 PPO 配置：其余与 rl_cfg 逐项相同，算法换成 Se3PPO + amp_cfg。
 
-    数据集目录默认 assets/amp/fudan_stairs20_20260907（package_fudan_amp_dataset.py 产物），
+    数据集默认 assets/amp/fudan_stairs20_20260907/amp_training.pkl（export_fudan_amp_pkl.py 产物，目录时按 *.pkl 匹配），
     可用环境变量 SE3_AMP_DATASET_ROOT 覆盖；注册时不要求目录存在，真正加载在训练启动、构造算法时。
     """
     cfg = rl_cfg(smoke=smoke)

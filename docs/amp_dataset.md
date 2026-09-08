@@ -14,17 +14,25 @@
 
 `amp` 观测组只有一项 `motion_frame`，actor/critic 观测与 ONNX 契约不变。
 
-## 2. 数据集
+## 2. 数据集（照 kyber 的 MotionLoader / amp_dataset_factory）
 
-`dataset_root`（默认 `assets/amp/fudan_stairs20_20260907`，环境变量 `SE3_AMP_DATASET_ROOT` 覆盖）可以是：
+| 位置 | 内容 |
+|---|---|
+| `se3_train.motion_loader.MotionLoader` | 读 `se3.amp.pkl.v1`：校验 format/motion_contract/feature_names，按 `simulation_dt` 线性重采样，镜像增广，可选字段子集，产出 `format` / `metadata` / `get_dataset_dict()` |
+| `se3_train.amp_dataset_factory.build_amp_dataset` | 解析字段 → MotionLoader → 校验字段顺序 → 校验 env `amp` 观测组维数 |
 
-- 含 `source_dataset.npz` 的目录（`scripts/package_fudan_amp_dataset.py` 产物，`frames [N,19]` + `frame_offsets`）；
-- 含若干 `<sample>/amp/source_features.npz` 的目录（`scripts/export_fudan_amp_features.py` 产物）；
-- 单个上述 `.npz`。
+`dataset_root`（默认 `assets/amp/fudan_stairs20_20260907/amp_training.pkl`，环境变量 `SE3_AMP_DATASET_ROOT` 覆盖）
+可以是单个 `.pkl`，或按 `dataset_glob="*.pkl"` 匹配的目录。文件由 `scripts/export_fudan_amp_pkl.py` 产出，payload：
 
-加载规则：按 `frame_offsets` 切段，不跨段配对；契约固定 20 ms，训练 `step_dt` 必须相等，不重采样；
-`mirror_augmentation=True` 追加左右镜像段（重力 y 取反，角速度 x、z 取反，线速度 y 取反，左右轮位置/速度/自转互换）。
-导出元数据里 `ready_for_discriminator_training=false` 时启动只打印提示，不阻断。
+```
+format="se3.amp.pkl.v1", motion_contract="se3.amp.motion.v1", fps, dt, frame_dim=19, transition_dim=38,
+feature_names[19], sequences: list[np.ndarray[T,19]], transitions: list[[T-1,38]], lengths, time_s, source_time_s,
+annotations: list[dict]（台阶高、指令、接触力标注，不进判别器）, retargeted_to_serialleg
+```
+
+加载规则：每条 sequence 单独成段，不跨段配对；fps 与训练 `1/step_dt` 不同时线性重采样（与 kyber 一致）；
+`mirror_augmentation=True` 时镜像段紧跟原段（重力 y 取反，角速度 x、z 取反，线速度 y 取反，左右轮位置/速度/自转互换）；
+`retargeted_to_serialleg=false` 只打印提示，不阻断。
 
 ## 3. 配置（`tasks/rough/rl_cfg.py` 的 `amp_cfg_dict`，默认值照 kyber g1 velocity AMP）
 
