@@ -62,8 +62,9 @@ ROUGH_TERRAIN_EXIT_DISTANCE_M = _PATCH_SIZE[0] / 2 - 0.25
 def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
     """返回带课程的崎岖地形集：平地、上/下台阶、上/下斜坡、随机起伏。
 
-    上行与下行成对出现（正金字塔与反金字塔），保证上台阶和下台阶、上坡和下坡都练到，
-    这是参考仓库的做法。`proportion` 在课程模式下只决定各列的 env 分配比例，不决定列数。
+    上行与下行成对出现（正金字塔与反金字塔），这是参考仓库的做法。`proportion` 在课程模式下只决定各列的
+    env 分配比例，不决定列数。2026-09-08 用户定（A4）：env 集中到上行——flat 25%、stairs_up 40%、slope_up 30%、
+    random_rough 5%，stairs_down/slope_down 设 0（mjlab 仍给每列至少 1 个 env，列保留，日志键不变）。
     """
     return TerrainGeneratorCfg(
         size=_PATCH_SIZE,
@@ -79,7 +80,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
             "flat": BoxFlatTerrainCfg(proportion=0.25, size=_PATCH_SIZE),
             # 出生在凹坑底部，向外爬升。
             "stairs_up": BoxInvertedPyramidStairsTerrainCfg(
-                proportion=0.2,
+                proportion=0.40,
                 size=_PATCH_SIZE,
                 step_height_range=_STEP_HEIGHT_RANGE,
                 step_width=_STEP_WIDTH,
@@ -88,7 +89,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
             ),
             # 出生在顶部平台，向外下行。
             "stairs_down": BoxPyramidStairsTerrainCfg(
-                proportion=0.2,
+                proportion=0.0,
                 size=_PATCH_SIZE,
                 step_height_range=_STEP_HEIGHT_RANGE,
                 step_width=_STEP_WIDTH,
@@ -96,7 +97,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 border_width=_STAIR_BORDER_WIDTH,
             ),
             "slope_up": HfPyramidSlopedTerrainCfg(
-                proportion=0.15,
+                proportion=0.30,
                 size=_PATCH_SIZE,
                 slope_range=(0.05, 0.30),
                 platform_width=2.0,
@@ -105,7 +106,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
                 horizontal_scale=_HF_HORIZONTAL_SCALE,
             ),
             "slope_down": HfPyramidSlopedTerrainCfg(
-                proportion=0.15,
+                proportion=0.0,
                 size=_PATCH_SIZE,
                 slope_range=(0.05, 0.30),
                 platform_width=2.0,

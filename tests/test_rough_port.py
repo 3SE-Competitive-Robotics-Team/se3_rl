@@ -118,6 +118,11 @@ class RoughTerrainTests(unittest.TestCase):
             list(generator.sub_terrains),
             ["flat", "stairs_up", "stairs_down", "slope_up", "slope_down", "random_rough"],
         )
+        # A4 起 env 集中到上行列：flat 25 / stairs_up 40 / slope_up 30 / random_rough 5，下行列 0。
+        self.assertEqual(
+            {n: c.proportion for n, c in generator.sub_terrains.items()},
+            {"flat": 0.25, "stairs_up": 0.40, "stairs_down": 0.0, "slope_up": 0.30, "slope_down": 0.0, "random_rough": 0.05},
+        )
         for name in ("stairs_up", "stairs_down"):
             self.assertEqual(
                 tuple(generator.sub_terrains[name].step_height_range), _STEP_HEIGHT_RANGE
