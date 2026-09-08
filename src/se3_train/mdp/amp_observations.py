@@ -79,6 +79,26 @@ def amp_motion_frame(env: ManagerBasedRlEnv) -> torch.Tensor:
     return _finite_clamp(frame)
 
 
+def amp_terrain_mask(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...] = ("stairs_up",)) -> torch.Tensor:
+    """[B, 1]：env 是否在允许 AMP 生效的子地形列上（1/0）。非课程地形（无分列）时全 1。
+
+    照 kyber fork 的 enabled_group_mask：只有这些 env 拿风格奖励、进判别器的策略窗口。
+    平地热身期所有 env 都在平地列，掩码全 0，判别器不更新、预热计数不走，换列后才开始。
+    """
+    terrain = getattr(env.scene, "terrain", None)
+    generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if not terrain_type_names or generator is None or terrain_types is None or not generator.curriculum:
+        return torch.ones(env.num_envs, 1, device=env.device)
+    names = list(generator.sub_terrains.keys())
+    allowed = [names.index(n) for n in terrain_type_names if n in names]
+    types = terrain_types.to(device=env.device, dtype=torch.long)
+    active = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    for col in allowed:
+        active |= types == col
+    return active.to(dtype=torch.float32).unsqueeze(-1)
+
+
 def amp_obs_dim() -> int:
     return AMP_FRAME_DIM
 
@@ -88,11 +108,22 @@ def build_amp_obs_terms() -> dict[str, ObservationTermCfg]:
     return {"motion_frame": ObservationTermCfg(func=amp_motion_frame)}
 
 
+def build_amp_mask_terms(terrain_type_names: tuple[str, ...]) -> dict[str, ObservationTermCfg]:
+    """AMP 掩码观测组唯一一项：所在地形列是否启用 AMP。"""
+    return {
+        "terrain": ObservationTermCfg(
+            func=amp_terrain_mask, params={"terrain_type_names": tuple(terrain_type_names)}
+        )
+    }
+
+
 __all__ = [
     "AMP_HIP_BODY_SUFFIXES",
     "AMP_WHEEL_BODY_SUFFIXES",
     "AMP_WHEEL_SPIN_SIGNS",
     "amp_motion_frame",
     "amp_obs_dim",
+    "amp_terrain_mask",
+    "build_amp_mask_terms",
     "build_amp_obs_terms",
 ]

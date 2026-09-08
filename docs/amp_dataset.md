@@ -14,6 +14,8 @@
 
 `amp` 观测组只有一项 `motion_frame`，actor/critic 观测与 ONNX 契约不变。
 
+**只对上台阶列生效**：另有 `amp_mask` 观测组（一项 `terrain`，env 是否在 `ROUGH_AMP_TERRAIN_TYPE_NAMES=("stairs_up",)` 列上），AMP 用它做 fork 里 `enabled_group_mask` 的事：不在列上的 env 不拿风格奖励、其 transition 不进判别器；平地热身期全员在平地列，掩码全 0，判别器不更新、预热计数不走，换列后才开始。env_cfg 旋钮 `amp_terrain_type_names`，空元组即全部 env。
+
 ## 2. 数据集（照 kyber 的 MotionLoader / amp_dataset_factory）
 
 | 位置 | 内容 |

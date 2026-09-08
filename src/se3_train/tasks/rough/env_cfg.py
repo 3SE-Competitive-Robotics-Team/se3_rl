@@ -29,7 +29,7 @@ from mjlab.sensor import (
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
-from se3_train.mdp.amp_observations import build_amp_obs_terms
+from se3_train.mdp.amp_observations import build_amp_mask_terms, build_amp_obs_terms
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
@@ -75,6 +75,9 @@ ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT
 
 # AMP 观测组：19 维运动状态单帧（契约 se3.amp.motion.v1，见 docs/amp_input.md），只供判别器用。
 ROUGH_AMP_OBS_GROUP = "amp"
+# AMP 只对这些子地形列生效（2026-09-08 用户定：只有上台阶列）；掩码走独立观测组，判别器按它筛 env。
+ROUGH_AMP_MASK_OBS_GROUP = "amp_mask"
+ROUGH_AMP_TERRAIN_TYPE_NAMES = ("stairs_up",)
 
 # CTBC：轮子顶住台阶立面时替策略把该侧轮子向后上方缩回（stair 线的 teacher-forcing，见 ctbc.py）。
 # 退火按训练轮次：ann_start 之前满幅，ann_start→ann_end 线性退到 0，之后策略自己上台阶。
@@ -150,6 +153,7 @@ def env_cfg(
     flat_warmup_iterations: int = ROUGH_FLAT_WARMUP_ITERATIONS,
     curriculum_advance_threshold: float = ROUGH_CURRICULUM_ADVANCE_THRESHOLD,
     amp_enabled: bool = False,
+    amp_terrain_type_names: tuple[str, ...] = ROUGH_AMP_TERRAIN_TYPE_NAMES,
 ) -> ManagerBasedRlEnvCfg:
     """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
 
@@ -172,8 +176,10 @@ def env_cfg(
     actor 不变；关掉即 critic 只有原来的标量离地高度。
     flat_warmup_iterations：前 N 轮全部 env 在平地列（curriculums.flat_warmup），0 关闭。
     curriculum_advance_threshold：Flat 速度课程推进阈值（默认严格档 0.75）。
-    amp_enabled：加 `amp` 观测组（19 维运动帧，mdp/amp_observations.amp_motion_frame），只供
-    se3_train.amp 使用，actor/critic 不看它。判别器与数据集在 rl_cfg 的 amp_cfg 里配。
+    amp_enabled：加 `amp` 观测组（19 维运动帧，mdp/amp_observations.amp_motion_frame）与 `amp_mask` 观测组
+    （env 是否在 amp_terrain_type_names 列上），只供 se3_train.amp 使用，actor/critic 不看它们。
+    判别器与数据集在 rl_cfg 的 amp_cfg 里配。
+    amp_terrain_type_names：AMP 生效的子地形列，默认只有上台阶列；空元组即全部 env。
     """
     cfg = flat_env_cfg(
         play=play,
@@ -248,6 +254,11 @@ def env_cfg(
         cfg.observations = dict(cfg.observations)
         cfg.observations[ROUGH_AMP_OBS_GROUP] = ObservationGroupCfg(
             terms=build_amp_obs_terms(),
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
+        cfg.observations[ROUGH_AMP_MASK_OBS_GROUP] = ObservationGroupCfg(
+            terms=build_amp_mask_terms(amp_terrain_type_names),
             concatenate_terms=True,
             enable_corruption=False,
         )
@@ -376,7 +387,9 @@ def _add_ctbc(cfg: ManagerBasedRlEnvCfg, *, ann_start_iter: int, ann_end_iter: i
 
 
 __all__ = [
+    "ROUGH_AMP_MASK_OBS_GROUP",
     "ROUGH_AMP_OBS_GROUP",
+    "ROUGH_AMP_TERRAIN_TYPE_NAMES",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CRITIC_HEIGHT_SCAN_ENABLED",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",

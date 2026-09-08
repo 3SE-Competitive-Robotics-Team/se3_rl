@@ -133,6 +133,10 @@ class AMP(nn.Module):
         self.obs_group = str(cfg.get("obs_group", "amp"))
         if self.obs_group not in obs:
             raise ValueError(f"AMP 观测组 '{self.obs_group}' 不存在，可用：{list(obs.keys())}")
+        # 可选的逐 env 启用掩码观测组（[B,1]，>0.5 为启用），对应 fork 的 enabled_group_mask。
+        self.mask_obs_group: str | None = cfg.get("mask_obs_group") or None
+        if self.mask_obs_group is not None and self.mask_obs_group not in obs:
+            raise ValueError(f"AMP 掩码观测组 '{self.mask_obs_group}' 不存在，可用：{list(obs.keys())}")
         self.step_dt = float(step_dt)
         self.transition_frames = int(cfg.get("transition_frames", 2))
         if self.transition_frames < 2:
@@ -229,9 +233,11 @@ class AMP(nn.Module):
         assert rewards is not None and dones is not None
         frames = obs[self.obs_group]
         dones_bool = dones.view(-1).bool()
+        amp_mask = self._enabled_mask(obs)
 
-        self.frame_count[dones_bool] = 0
-        write_mask = ~dones_bool
+        # 与 fork 一致：done 或不在启用集合里的 env 清帧缓冲。
+        self.frame_count[dones_bool | ~amp_mask] = 0
+        write_mask = amp_mask & ~dones_bool
         self.frame_buffer[write_mask, self.write_idx] = frames[write_mask]
         self.frame_count[write_mask] = torch.clamp(self.frame_count[write_mask] + 1, max=self.transition_frames)
 
@@ -249,6 +255,12 @@ class AMP(nn.Module):
         amp_rewards = self.reward_scale() * amp_rewards
         rewards.add_(amp_rewards)
         extras.setdefault("ext_reward", {})["amp"] = amp_rewards.detach()
+
+    def _enabled_mask(self, obs: TensorDict) -> torch.Tensor:
+        """[B] bool：本步允许 AMP 生效的 env。"""
+        if self.mask_obs_group is None:
+            return torch.ones(self.frame_count.shape[0], dtype=torch.bool, device=self.device)
+        return obs[self.mask_obs_group].reshape(-1) > 0.5
 
     # ---- 更新 ----
     def individual_update(self, storage: RolloutStorage) -> dict[str, float]:
@@ -313,6 +325,8 @@ class AMP(nn.Module):
         if storage.step < self.transition_frames:
             return torch.empty(0, dtype=torch.long, device=self.device)
         step_valid = ~storage.dones[: storage.step].squeeze(-1).bool()
+        if self.mask_obs_group is not None:
+            step_valid &= storage.observations[self.mask_obs_group][: storage.step].reshape(step_valid.shape) > 0.5
         window_valid = step_valid.clone()
         for offset in range(1, self.transition_frames):
             shifted = torch.zeros_like(step_valid)

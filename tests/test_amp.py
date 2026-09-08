@@ -201,6 +201,31 @@ class AmpDiscriminatorTests(unittest.TestCase):
         self.assertTrue(torch.allclose(t.rewards[1:], torch.full((3,), 3.0 * 0.02)))  # 3.0×dt×1
         self.assertIn("amp", extras["ext_reward"])
 
+    def test_mask_group_gates_reward_and_windows(self) -> None:
+        from rsl_rl.storage import RolloutStorage
+        from tensordict import TensorDict
+
+        amp = self._make_amp(num_envs=4)
+        amp.mask_obs_group = "amp_mask"
+        amp.discriminator.predict_reward = lambda sequences: torch.ones(sequences.shape[0])  # type: ignore[method-assign]
+        mask = torch.tensor([[1.0], [1.0], [0.0], [0.0]])
+        obs = TensorDict({"amp": torch.zeros(4, 19), "amp_mask": mask}, batch_size=[4])
+        t = RolloutStorage.Transition()
+        for _ in range(2):
+            t.rewards = torch.zeros(4)
+            t.dones = torch.zeros(4, dtype=torch.bool)
+            amp.process_env_step(obs, t, {})
+        self.assertTrue(torch.allclose(t.rewards, torch.tensor([0.06, 0.06, 0.0, 0.0])))  # 未启用的 env 拿 0
+        # 判别器窗口同样只来自启用的 env。
+        from tensordict import TensorDict as TD
+
+        frames = torch.zeros(6, 4, 19)
+        storage = _DummyStorage(frames, torch.zeros(6, 4, 1, dtype=torch.uint8))
+        storage.observations = TD({"amp": frames, "amp_mask": mask.expand(6, 4, 1).clone()}, batch_size=[6, 4])
+        valid = amp._rollout_valid_end_indices(storage)
+        self.assertEqual(int(valid.numel()), 5 * 2)  # 4 env 里 2 个启用，各 5 个窗口
+        self.assertTrue(bool(((valid % 4) < 2).all()))
+
     def test_normalizer_is_per_frame_and_shared(self) -> None:
         amp = self._make_amp()
         self.assertEqual(tuple(amp.discriminator.normalizer._mean.shape[-1:]), (19,))
@@ -226,7 +251,7 @@ class AmpMotionFrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cfg = rough_env_cfg(amp_enabled=True, flat_warmup_iterations=0)
-        cfg.scene.num_envs = 2
+        cfg.scene.num_envs = 6  # 六列各 1 个 env，含上台阶列
         cls.env = ManagerBasedRlEnv(cfg, device="cpu")
         cls.env.reset()
 
@@ -247,27 +272,41 @@ class AmpMotionFrameTests(unittest.TestCase):
         robot.write_root_link_velocity_to_sim(torch.zeros(self.env.num_envs, 6))
         self.env.sim.forward()
 
+    def test_terrain_mask_marks_stairs_up_column(self) -> None:
+        from se3_train.mdp.amp_observations import amp_terrain_mask
+
+        terrain = self.env.scene.terrain
+        names = list(terrain.cfg.terrain_generator.sub_terrains.keys())
+        expected = (terrain.terrain_types == names.index("stairs_up")).to(torch.float32).unsqueeze(-1)
+        self.assertTrue(torch.equal(amp_terrain_mask(self.env, ("stairs_up",)), expected))
+        self.assertTrue(torch.equal(self.env.observation_manager.compute()["amp_mask"], expected))
+        self.assertTrue(bool((amp_terrain_mask(self.env, ()) == 1.0).all()))
+
     def test_frame_geometry_and_yaw_invariance(self) -> None:
-        self._place(torch.tensor([0.0, 1.3]))
+        n = self.env.num_envs
+        self._place(torch.linspace(0.0, 1.3, n))
         frame = amp_motion_frame(self.env)
-        self.assertEqual(tuple(frame.shape), (2, AMP_FRAME_DIM))
-        self.assertEqual(list(self.env.observation_manager.compute()["amp"].shape), [2, AMP_FRAME_DIM])
+        self.assertEqual(tuple(frame.shape), (n, AMP_FRAME_DIM))
+        self.assertEqual(list(self.env.observation_manager.compute()["amp"].shape), [n, AMP_FRAME_DIM])
         i = _IDX
-        self.assertTrue(torch.allclose(frame[:, i["gravity_z"]], torch.full((2,), -1.0), atol=1e-3))
+        self.assertTrue(torch.allclose(frame[:, i["gravity_z"]], torch.full((n,), -1.0), atol=1e-3))
         # 轮心在髋轴下方（z<0），左右对称（x 相近）。
         self.assertTrue(bool((frame[:, i["left_wheel_z"]] < -0.1).all()))
         self.assertTrue(bool((frame[:, i["right_wheel_z"]] < -0.1).all()))
         self.assertLess(float((frame[:, i["left_wheel_x"]] - frame[:, i["right_wheel_x"]]).abs().max()), 0.03)
-        # env 0（yaw 0）与 env 1（yaw 1.3）姿态相同，特征必须一致；容差留给逐 env 的模型随机化（毫米级）。
-        self.assertTrue(torch.allclose(frame[0], frame[1], atol=1e-2))
+        # 各 env 姿态相同、只有 yaw 不同，特征必须一致；容差留给逐 env 的模型随机化（毫米级）。
+        self.assertTrue(torch.allclose(frame, frame[:1].expand_as(frame), atol=1e-2))
 
 
 class AmpTaskTests(unittest.TestCase):
     def test_rough_amp_task_has_group_and_algorithm(self) -> None:
         cfg = load_env_cfg(_AMP_TASK)
         self.assertEqual(list(cfg.observations["amp"].terms), ["motion_frame"])
+        self.assertEqual(list(cfg.observations["amp_mask"].terms), ["terrain"])
+        self.assertEqual(cfg.observations["amp_mask"].terms["terrain"].params["terrain_type_names"], ("stairs_up",))
         self.assertNotIn("amp", load_env_cfg("SE3-WheelLegged-Rough").observations)
         rl = load_rl_cfg(_AMP_TASK)
+        self.assertEqual(rl.algorithm.amp_cfg["mask_obs_group"], "amp_mask")
         self.assertEqual(rl.algorithm.class_name, "se3_train.ppo:Se3PPO")
         self.assertEqual(rl.algorithm.amp_cfg["reward_weight"], 3.0)
         base = asdict(load_rl_cfg("SE3-WheelLegged-Rough").algorithm)
@@ -296,7 +335,7 @@ class AmpEndToEndTests(unittest.TestCase):
         root = Path(cls.tmp.name) / "ds"
         _write_synthetic_dataset(root)
         env_cfg = rough_env_cfg(amp_enabled=True, flat_warmup_iterations=0)
-        env_cfg.scene.num_envs = 4
+        env_cfg.scene.num_envs = 6  # 六列各 1 个 env，含上台阶列
         agent = amp_rl_cfg(dataset_root=str(root))
         agent.logger = "tensorboard"
         agent.num_steps_per_env = 6

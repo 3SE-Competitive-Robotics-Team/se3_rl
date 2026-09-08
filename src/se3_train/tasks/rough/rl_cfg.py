@@ -27,6 +27,7 @@ def amp_cfg_dict(*, dataset_root: str) -> dict:
     """Se3PpoAlgorithmCfg.amp_cfg 的内容（键与 kyber RslRlAmpCfg 一致，数据集走 dataset_kwargs）。"""
     return {
         "obs_group": "amp",
+        "mask_obs_group": "amp_mask",  # 只对上台阶列的 env 给风格奖励/采策略窗口
         "transition_frames": 2,
         "reward_weight": 3.0,
         "reward_warmup_updates": 100,
