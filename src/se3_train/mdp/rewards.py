@@ -584,7 +584,7 @@ def tracking_lin_vel(
     command_name: str,
     sigma_move: float,
     sigma_stand: float,
-    vz_weight: float = 2.0,
+    vz_weight: float | torch.Tensor = 2.0,
     use_upright_gate: bool = True,
     tracking_upright_full_cos: float = 0.7,
 ) -> torch.Tensor:
@@ -592,6 +592,10 @@ def tracking_lin_vel(
 
     reward = exp(-(error_x² + vz_weight·v_z²) / sigma)
     低速时 sigma 收紧(adaptive),直立门控。
+
+    `vz_weight` 可以传形状 [num_envs] 的张量做逐 env 权重（核里按元素广播），
+    rough 线用它把非平地列的 vz 项关掉——爬升必须有垂直速度，见
+    tasks/rough/rewards.tracking_lin_vel_terrain_vz。
     """
     robot = env.scene["robot"]
     cmd = env.command_manager.get_command(command_name)

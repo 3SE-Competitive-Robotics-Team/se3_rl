@@ -51,6 +51,14 @@ _KEEP_EXACT = frozenset(
         "Reset/standard_pose_supine_ratio",
         "Reset/standard_pose_mean_init_tilt_deg",
         "Reset/joint_randomization_prob",
+        # 速度跟踪的全体口径：rough 线换列后跟踪暴跌，只看 Episode_Reward 分不清是
+        # episode 变短还是每步分变低（A6 只能靠本机 sim2x 回放反推）。按列拆开的记在 Rough/ 下。
+        "Locomotion/cmd_vx_mean",
+        "Locomotion/base_vx_mean",
+        "Locomotion/base_vx_error_abs",
+        "Locomotion/tracking_lin_vel_reward",
+        "Locomotion/tracking_lin_vel_reward_all",
+        "Locomotion/tracking_lin_vel_reward_curriculum",
     }
 )
 

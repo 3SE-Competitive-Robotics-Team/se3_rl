@@ -82,14 +82,26 @@ ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 1.5
 # 在台阶列置零：爬升时机身相对脚下地面的高度必然大幅偏离指令，这项罚等于按爬升幅度罚钱。
 # 置零后台阶列的姿态由 AMP 风格奖励和地形感知高度下限管；其余列与 Flat 基线逐位相同。
 ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN = True
+# 非平地列把 tracking_lin_vel 核里的 vz 项关掉（2026-09-08 用户定，A7）。
+# 核是 exp(-(err_x² + vz_weight·vz²)/σ)，爬台阶和上坡必须有垂直速度，而这项按 vz² 扣分：
+# vz 0.2 m/s 把核乘掉 0.37，16° 坡上以 1 m/s 走的 vz 就是 0.28。平地列保持 2.0 不变。
+# 用“非平地”取反而不是点名列，新增子地形时不用记得来加名字。
+ROUGH_TERRAIN_VZ_WEIGHT = 0.0
+ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES = ("flat",)
 
 # 非平地列的速度指令限制：只发前向直行指令，平地列沿用 Flat 的速度课程。
 # 对称随机指令下 20 s 的净位移是随机游走，地形课程的位移判据推不动（R2 平地列也只到 1.6）。
 ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED = True
-ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 2.4)
+# 2026-09-08 用户定（A7）：地形列 vx 从 (0.4, 2.4) 收到 (0.4, 0.8)，并与平地课程脱钩。
+# 依据：A6 的 Rough/command_velocity_error_terrain=0.95 反解出地形列 vx 误差约 1.5 m/s（RMS 口径），
+# 而指令均值 (0.4+2.4)/2=1.4——误差和指令一样大，机器人相对指令基本不动，
+# 核 exp(-1.5²/0.08)=7e-13 精确为零：没有分，也没有梯度。
+# 原来 vx 上限跟随**平地**课程当前上限，而平地 350 轮就冲到 2.4，等于换列那一刻直接给了
+# 一个爬 5 cm 台阶的轮足机器人做不到的数。R4 加 follow_curriculum 的直觉对，但挂错了信号。
+# 收到 0.8 之后指令均值 0.6：踏面上滚到 0.4 就是误差 0.2 → 核 0.61，梯度回来。
+ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 0.8)
 ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
-# 地形列 vx 上限跟随平地速度课程当前上限；平地速度课程只按平地列的跟踪分推进。
-ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM = True
+ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM = False
 ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
 ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
 
@@ -106,6 +118,11 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 # 且靠种子（A4 到 499 轮只推到 0.2）；Flat 基线 D10 用 0.5 在 45 轮推进、350 轮到 2.4、1000 轮追平跟踪。
 # 2026-09-08 用户定（A5）：改回 Flat 默认 0.5。
 ROUGH_FLAT_WARMUP_ITERATIONS = 500
+# 换列不再一刀切：地形 env 比例在 500→1000 轮之间从 0 线性涨到 1（2026-09-08 用户定，A7）。
+# A5/A6 的本机 sim2x 回放显示伤害集中在换列后那 100 轮：A6 model_500 在 2 m/s 上误差 0.02，
+# model_600 掉到 0.93，A5 同型（model_1000 误差 1.80）——一次性把 75% 的 env 扔进跟不上的
+# 指令里，共享 actor 连平地一起退化。0 即退回一刀切。
+ROUGH_FLAT_WARMUP_RAMP_ITERATIONS = 500
 ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD
 
 # AMP 观测组：契约 19 维运动帧（se3.amp.motion.v1，docs/amp_input.md）按 AMP_DISCRIMINATOR_FIELDS 切成 17 维（去轮速），只供判别器用。
@@ -175,6 +192,8 @@ def env_cfg(
     ctbc_ann_end_iter: int = ROUGH_CTBC_ANN_END_ITER,
     critic_height_scan: bool = ROUGH_CRITIC_HEIGHT_SCAN_ENABLED,
     flat_warmup_iterations: int = ROUGH_FLAT_WARMUP_ITERATIONS,
+    flat_warmup_ramp_iterations: int = ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
+    terrain_vz_weight: float = ROUGH_TERRAIN_VZ_WEIGHT,
     curriculum_advance_threshold: float = ROUGH_CURRICULUM_ADVANCE_THRESHOLD,
     amp_enabled: bool = False,
     amp_terrain_type_names: tuple[str, ...] = ROUGH_AMP_TERRAIN_TYPE_NAMES,
@@ -205,6 +224,8 @@ def env_cfg(
     critic_height_scan：critic 加 77 点地形高度扫描特权观测（observations.height_scan_obs），
     actor 不变；关掉即 critic 只有原来的标量离地高度。
     flat_warmup_iterations：前 N 轮全部 env 在平地列（curriculums.flat_warmup），0 关闭。
+    flat_warmup_ramp_iterations：热身结束后地形 env 比例从 0 线性涨到 1 所用的轮数，0 即一刀切。
+    terrain_vz_weight：非平地列 tracking_lin_vel 核里的 vz 系数（平地列恒为 Flat 的 2.0）。
     curriculum_advance_threshold：Flat 速度课程推进阈值（默认与 Flat 相同 0.5；R7–A4 曾用 0.75）。
     amp_enabled：加 `amp` 观测组（AMP_DISCRIMINATOR_FIELDS 切列的运动帧，mdp/amp_observations.amp_motion_frame）与 `amp_mask` 观测组
     （env 是否在 amp_terrain_type_names 列上），只供 se3_train.amp 使用，actor/critic 不看它们。
@@ -295,6 +316,7 @@ def env_cfg(
         terrain_type_names=tuple(reward_terrain_type_names),
         command_velocity_error_weight=command_velocity_error_weight,
         zero_base_height=zero_base_height_on_terrain,
+        terrain_vz_weight=terrain_vz_weight,
     )
 
     if not play and terrain_curriculum:
@@ -307,6 +329,7 @@ def env_cfg(
                     params={
                         "command_name": "velocity_height",
                         "iterations": int(flat_warmup_iterations),
+                        "ramp_iterations": int(flat_warmup_ramp_iterations),
                         "steps_per_policy_iter": ROUGH_CTBC_STEPS_PER_POLICY_ITER,
                     },
                 ),
@@ -326,6 +349,7 @@ def _apply_terrain_column_rewards(
     terrain_type_names: tuple[str, ...],
     command_velocity_error_weight: float | None,
     zero_base_height: bool,
+    terrain_vz_weight: float,
 ) -> None:
     """把台阶列的两处分列定价接进奖励表（见 rewards.py 的模块 docstring）。
 
@@ -353,6 +377,17 @@ def _apply_terrain_column_rewards(
             func=rewards.base_height_penalty_off_terrain,
             params={**term.params, "terrain_type_names": terrain_type_names},
         )
+    # 非平地列的 vz 项：同样用 replace，σ / 死区 / 权重继续跟随 Flat 基线。
+    track = cfg.rewards["tracking_lin_vel"]
+    cfg.rewards["tracking_lin_vel"] = replace(
+        track,
+        func=rewards.tracking_lin_vel_terrain_vz,
+        params={
+            **track.params,
+            "terrain_vz_weight": float(terrain_vz_weight),
+            "flat_type_names": ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES,
+        },
+    )
 
 
 def _add_critic_height_scan(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -470,6 +505,7 @@ __all__ = [
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_ENERGY_PENALTY_SCALE",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
+    "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
@@ -479,6 +515,8 @@ __all__ = [
     "ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM",
     "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
     "ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES",
+    "ROUGH_TERRAIN_VZ_WEIGHT",
+    "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN",
     "env_cfg",
 ]

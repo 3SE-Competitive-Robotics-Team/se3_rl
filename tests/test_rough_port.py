@@ -37,11 +37,13 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
     ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
     ROUGH_ENERGY_PENALTY_SCALE,
+    ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
     ROUGH_REWARD_TERRAIN_TYPE_NAMES,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
+    ROUGH_TERRAIN_VZ_WEIGHT,
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
@@ -98,7 +100,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         """rough 相对 Flat 基线只有三处奖励差异，逐处钉住。
 
         1. 能耗三项折价；2. 台阶列加回速度违令罚（Flat 已整项删除）；
-        3. flat_base_height 换成按列置零的包装（权重与核参数不变）。
+        3. flat_base_height 换成按列置零的包装；4. tracking_lin_vel 换成按列关 vz 的包装。
+        后两处只换函数，权重与核参数逐位不变。
         """
         self.assertEqual(
             set(self.cfg.rewards) - set(self.flat.rewards), {"command_velocity_error"}
@@ -111,8 +114,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             if name in _ENERGY_REWARDS:
                 expected *= ROUGH_ENERGY_PENALTY_SCALE
             self.assertAlmostEqual(float(term.weight), expected, places=12, msg=name)
-            # 除了按列置零的高度罚，奖励函数本身必须与 Flat 是同一个对象。
-            if name != "flat_base_height":
+            # 除了两个按列包装，奖励函数本身必须与 Flat 是同一个对象。
+            if name not in ("flat_base_height", "tracking_lin_vel"):
                 self.assertIs(term.func, self.flat.rewards[name].func, msg=name)
         # 折价必须真的生效，否则上面那圈断言会退化成空对照。
         self.assertLess(ROUGH_ENERGY_PENALTY_SCALE, 1.0)
@@ -172,13 +175,16 @@ class RoughTerrainTests(unittest.TestCase):
         # 非平地列只准朝前直冲：vx 下界为正、上界不超过 Flat 课程终值，yaw 近零。
         self.assertGreater(ROUGH_TERRAIN_LIN_VEL_X_RANGE[0], 0.0)
         self.assertLessEqual(ROUGH_TERRAIN_LIN_VEL_X_RANGE[1], 2.4)
+        # A7：vx 与平地课程脱钩并钉在低速档。A6 实测地形列误差约 1.5 m/s、指令均值 1.4，
+        # 核 exp(-err²/0.08) 在误差 0.8 以上就恒为 0，指令必须落在策略够得着的范围里。
+        self.assertFalse(command.terrain_lin_vel_x_follow_curriculum)
+        self.assertLessEqual(ROUGH_TERRAIN_LIN_VEL_X_RANGE[1], 1.0)
         self.assertLessEqual(abs(ROUGH_TERRAIN_ANG_VEL_YAW_RANGE[0]), 0.2)
         self.assertLessEqual(abs(ROUGH_TERRAIN_ANG_VEL_YAW_RANGE[1]), 0.2)
         # 单变量对照旋钮：关掉后逐位退回 Flat 的对称随机指令。
         off = rough_env_cfg(terrain_command_override=False).commands["velocity_height"]
         self.assertFalse(off.terrain_command_override_enabled)
         # 地形列 vx 上限跟随平地课程。
-        self.assertTrue(command.terrain_lin_vel_x_follow_curriculum)
 
     def test_flat_warmup_and_strict_advance_threshold(self) -> None:
         # 2026-09-07 用户定（R7）：前 500 轮全平地，之后换回原列。推进阈值 R7–A4 为 0.75，2026-09-08（A5）改回 Flat 的 0.5。
@@ -255,12 +261,44 @@ class TerrainColumnRewardTests(unittest.TestCase):
         self.assertEqual(ROUGH_REWARD_TERRAIN_TYPE_NAMES, ROUGH_AMP_TERRAIN_TYPE_NAMES)
         self.assertEqual(ROUGH_REWARD_TERRAIN_TYPE_NAMES, ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES)
 
+    def test_vz_term_is_disabled_off_the_flat_column(self) -> None:
+        """爬升必须有垂直速度，而核按 vz² 扣分；非平地列把这一项关掉。"""
+        term = self.cfg.rewards["tracking_lin_vel"]
+        self.assertIs(term.func, rough_rewards.tracking_lin_vel_terrain_vz)
+        self.assertEqual(term.params["terrain_vz_weight"], ROUGH_TERRAIN_VZ_WEIGHT)
+        self.assertEqual(term.params["terrain_vz_weight"], 0.0)
+        # 平地列与 Flat 基线逐位相同：σ、vz 系数、门控开关都不动。
+        flat_term = flat_env_cfg(
+            wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
+            action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
+        ).rewards["tracking_lin_vel"]
+        for key in ("sigma_move", "sigma_stand", "vz_weight", "use_upright_gate"):
+            self.assertEqual(term.params[key], flat_term.params[key], msg=key)
+        self.assertAlmostEqual(float(term.weight), float(flat_term.weight))
+        # 生效范围是“非平地”取反，不是点名列：新增子地形时不会漏。
+        self.assertEqual(term.params["flat_type_names"], ("flat",))
+
+    def test_column_split_diagnostics_survive_log_filter(self) -> None:
+        for key in (
+            "Rough/tracking_lin_vel_terrain",
+            "Rough/tracking_lin_vel_flat",
+            "Rough/cmd_vx_terrain",
+            "Rough/base_vx_terrain",
+            "Rough/base_vx_error_terrain",
+            "Locomotion/base_vx_error_abs",
+            "Locomotion/tracking_lin_vel_reward",
+        ):
+            self.assertTrue(keep_log_key(key), key)
+
     def test_both_knobs_fall_back_to_the_flat_baseline(self) -> None:
         off = rough_env_cfg(command_velocity_error_weight=None, zero_base_height_on_terrain=False)
         self.assertNotIn("command_velocity_error", off.rewards)
         self.assertIs(
             off.rewards["flat_base_height"].func, flat_rewards.flat_base_height_penalty_no_jump
         )
+        # vz 旋钮设回 2.0 即与 Flat 数值等价（函数仍是包装，但逐 env 权重恒为 2.0）。
+        same = rough_env_cfg(terrain_vz_weight=2.0)
+        self.assertEqual(same.rewards["tracking_lin_vel"].params["terrain_vz_weight"], 2.0)
 
 
 class TerrainAwareHeightFloorTests(unittest.TestCase):
@@ -392,6 +430,91 @@ class FlatWarmupRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FlatWarmupRampTests(unittest.TestCase):
+    """A7：换列不再一刀切，地形 env 比例在 500→1000 轮之间从 0 线性涨到 1。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(flat_warmup_iterations=500, flat_warmup_ramp_iterations=500)
+        cfg.scene.num_envs = 12
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+        cls.terrain = cls.env.scene.terrain
+        names = list(cls.terrain.cfg.terrain_generator.sub_terrains.keys())
+        cls.flat_col = names.index("flat")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def _step_to(self, iteration: int) -> int:
+        """把课程推进到指定轮次，返回已迁移（离开平地列）的 env 数。"""
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        self.env.common_step_counter = iteration * 24
+        curriculums.flat_warmup(
+            self.env,
+            env_ids,
+            command_name="velocity_height",
+            iterations=500,
+            ramp_iterations=500,
+        )
+        return int(getattr(self.env, curriculums.FLAT_WARMUP_DONE_ATTR).sum())
+
+    def test_default_ramp_is_configured(self) -> None:
+        params = load_env_cfg(_ROUGH).curriculum["flat_warmup"].params
+        self.assertEqual(params["ramp_iterations"], ROUGH_FLAT_WARMUP_RAMP_ITERATIONS)
+        self.assertGreater(ROUGH_FLAT_WARMUP_RAMP_ITERATIONS, 0)
+
+    def test_fraction_ramps_linearly_and_never_goes_back(self) -> None:
+        n = self.env.num_envs
+        # 热身期内一个都不放；恰好在 iterations 那一轮 progress=0，仍然一个都不放。
+        self.assertEqual(self._step_to(300), 0)
+        self.assertEqual(self._step_to(500), 0)
+        # 阈值均匀铺在 [0,1)，所以迁移数就是 round(progress * n)。
+        for iteration, expected in ((625, n // 4), (750, n // 2), (875, 3 * n // 4)):
+            self.assertEqual(self._step_to(iteration), expected, msg=str(iteration))
+        # ramp 末尾全部迁移完。
+        self.assertEqual(self._step_to(1000), n)
+        # 迁移是单调的：把轮次调回去也不会有人被送回平地列。
+        self.assertEqual(self._step_to(600), n)
+
+    def test_migrated_envs_return_to_their_own_column_and_row_zero(self) -> None:
+        original = getattr(self.env, curriculums.FLAT_WARMUP_ORIGINAL_TYPES_ATTR)
+        self._step_to(1000)
+        self.assertTrue(torch.equal(self.terrain.terrain_types, original))
+        self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
+
+    def test_terrain_levels_only_promote_migrated_envs(self) -> None:
+        """还留在平地列的 env 不升级——平地每行都一样，升了只是挪到另一块平地。
+
+        自建 env：本类其余用例共用 cls.env 且会把 ramp 推到底，顺序依赖会让这条恒真。
+        """
+        cfg = rough_env_cfg(flat_warmup_iterations=500, flat_warmup_ramp_iterations=500)
+        cfg.scene.num_envs = 12
+        env = ManagerBasedRlEnv(cfg, device="cpu")
+        try:
+            env.reset()
+            env_ids = torch.arange(env.num_envs, device=env.device)
+            env.common_step_counter = 750 * 24  # ramp 过半
+            curriculums.flat_warmup(
+                env, env_ids, command_name="velocity_height",
+                iterations=500, ramp_iterations=500,
+            )
+            done = getattr(env, curriculums.FLAT_WARMUP_DONE_ATTR).clone()
+            self.assertTrue(bool(done.any()) and bool((~done).any()))
+            robot = env.scene["robot"]
+            pose = robot.data.root_link_pose_w.clone()
+            pose[:, 0] = env.scene.env_origins[:, 0] + 4.1  # 越过清块门槛
+            robot.write_root_link_pose_to_sim(pose)
+            env.sim.forward()
+            curriculums.terrain_levels(env, env_ids, command_name="velocity_height")
+            levels = env.scene.terrain.terrain_levels
+            self.assertTrue(bool((levels[done] == 1).all()))
+            self.assertTrue(bool((levels[~done] == 0).all()))
+        finally:
+            env.close()
 
 
 class CtbcPortTests(unittest.TestCase):
@@ -662,31 +785,22 @@ class RoughRuntimeTests(unittest.TestCase):
             self.assertTrue(bool((cmd[:, 1] <= yaw_hi + 1e-6).all()), cmd[:, 1])
             self.assertFalse(bool(self.term._standing_mask[non_flat].any()))
 
-    def test_terrain_vx_upper_bound_follows_flat_curriculum(self) -> None:
+    def test_terrain_vx_is_decoupled_from_the_flat_curriculum(self) -> None:
+        """A7：地形列 vx 恒在 (0.4, 0.8)，平地课程怎么涨都不跟。"""
         non_flat = self.terrain_types != self.flat_col
         env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        lo, hi = ROUGH_TERRAIN_LIN_VEL_X_RANGE
         saved = self.term.cfg.lin_vel_x_range
         try:
-            # 课程起点 (0,0)：地形列拿到下界 0.4 的定速指令。
-            self.term.cfg.lin_vel_x_range = (0.0, 0.0)
-            self.term._resample_command(env_ids)
-            self.assertTrue(bool(((self.term.command[non_flat][:, 0] - 0.4).abs() < 1e-5).all()))
-            # 课程推到 ±0.8：地形列上限 0.8。
-            self.term.cfg.lin_vel_x_range = (-0.8, 0.8)
-            for _ in range(20):
-                self.term._resample_command(env_ids)
-                vx = self.term.command[non_flat][:, 0]
-                self.assertTrue(bool((vx >= 0.4 - 1e-5).all()) and bool((vx <= 0.8 + 1e-5).all()))
-            # 课程到顶 ±2.4：上限回到 terrain_lin_vel_x_range 的 2.4。
-            self.term.cfg.lin_vel_x_range = (-2.4, 2.4)
-            seen_max = 0.0
-            for _ in range(30):
-                self.term._resample_command(env_ids)
-                seen_max = max(seen_max, float(self.term.command[non_flat][:, 0].max()))
-            self.assertGreater(seen_max, 1.5)
+            for flat_range in ((0.0, 0.0), (-0.8, 0.8), (-2.4, 2.4)):
+                self.term.cfg.lin_vel_x_range = flat_range
+                for _ in range(15):
+                    self.term._resample_command(env_ids)
+                    vx = self.term.command[non_flat][:, 0]
+                    self.assertGreaterEqual(float(vx.min()), lo - 1e-5, msg=str(flat_range))
+                    self.assertLessEqual(float(vx.max()), hi + 1e-5, msg=str(flat_range))
         finally:
             self.term.cfg.lin_vel_x_range = saved
-            self.term._resample_command(env_ids)
 
     def test_curriculum_signal_mask_marks_flat_column_and_is_logged(self) -> None:
         mask = getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR, None)

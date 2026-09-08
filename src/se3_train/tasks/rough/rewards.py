@@ -14,8 +14,18 @@
    这项罚等于按爬升幅度罚钱。置零后台阶列的姿态改由 AMP 风格奖励和地形感知高度下限
    （见 commands.py）来管。
 
-两个包装都只做掩码乘法，不改被包装函数的任何参数；掩码为 None（非课程地形、平面地形、
+上面两个包装都只做掩码乘法，不改被包装函数的任何参数；掩码为 None（非课程地形、平面地形、
 列名对不上）时退化成 Flat 基线的行为：速度罚不生效、高度罚照常。
+
+3. **非平地列把 `tracking_lin_vel` 的 vz 项关掉（2026-09-08 用户定，A7）。** 核是
+   `exp(-(err_x² + vz_weight·vz²)/σ)`，vz 是机身垂直速度。爬台阶和上坡**必须**有垂直速度，
+   而这一项按 vz² 扣分：vz 0.2 m/s 就把核乘掉 0.37，斜坡上 1 m/s 走 16° 坡的 vz 是 0.28。
+   这是 7280006（"vz 折入 tracking 核、删掉独立 lin_vel_z 项"）给平地设计的——平地上 vz 本该是 0。
+   平地列保持 2.0 不变，非平地列取 0。逐 env 的权重张量喂给同一个函数，不复制任何观测或奖励数学。
+
+   顺带在这里记按列拆开的诊断（`Locomotion/*` 是全体均值，看不出地形列到底差多少）：
+   `Rough/tracking_lin_vel_{flat,terrain}`、`Rough/{cmd_vx,base_vx,base_vx_error}_terrain`。
+   A6 只能从 `Rough/command_velocity_error_terrain` 反解出地形列误差 ≈1.5 m/s，太绕。
 """
 
 from __future__ import annotations
@@ -26,7 +36,11 @@ import torch
 
 from se3_train.tasks.flat.rewards import *  # noqa: F403
 from se3_train.tasks.flat.rewards import __all__ as _FLAT_ALL
-from se3_train.tasks.flat.rewards import command_velocity_error, flat_base_height_penalty_no_jump
+from se3_train.tasks.flat.rewards import (
+    command_velocity_error,
+    flat_base_height_penalty_no_jump,
+    tracking_lin_vel,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -116,9 +130,95 @@ def base_height_penalty_off_terrain(
     return penalty * (~mask).float()
 
 
+def non_flat_column_mask(
+    env: ManagerBasedRlEnv,
+    flat_type_names: tuple[str, ...] = ("flat",),
+) -> torch.Tensor | None:
+    """返回“不在平地列”的 env 掩码；非课程地形时返回 None。
+
+    与 commands.RoughCommandTerm._build_terrain_override_mask 同一套口径：分列定价按
+    `terrain_type_names` 点名生效列，而 vz 项是“凡是要爬升的列都关”，用取反更稳
+    （新增子地形时不用记得来加名字）。
+    """
+    terrain = getattr(env.scene, "terrain", None)
+    generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
+    terrain_types = getattr(terrain, "terrain_types", None)
+    if generator is None or terrain_types is None or not generator.curriculum:
+        return None
+    names = list(generator.sub_terrains.keys())
+    flat_cols = [names.index(n) for n in flat_type_names if n in names]
+    if not flat_cols:
+        return None
+    types = terrain_types.to(device=env.device, dtype=torch.long)
+    is_flat = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    for col in flat_cols:
+        is_flat |= types == col
+    return ~is_flat
+
+
+def tracking_lin_vel_terrain_vz(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma_move: float,
+    sigma_stand: float,
+    vz_weight: float = 2.0,
+    terrain_vz_weight: float = 0.0,
+    flat_type_names: tuple[str, ...] = ("flat",),
+    use_upright_gate: bool = True,
+    tracking_upright_full_cos: float = 0.7,
+) -> torch.Tensor:
+    """x 速度跟踪，非平地列把核里的 vz 项换成 `terrain_vz_weight`（默认 0）。
+
+    逐 env 的权重张量直接喂给 `tracking_lin_vel`，核里 `vz_weight * vz**2` 按元素广播，
+    所以观测、σ 选择、死区、课程累加、`Locomotion/*` 记账全部与 Flat 基线逐位相同，
+    只有 vz 的系数按列不同。掩码为 None 时退化成标量 `vz_weight`，即 Flat 行为。
+    """
+    mask = non_flat_column_mask(env, flat_type_names)
+    weight: float | torch.Tensor = float(vz_weight)
+    if mask is not None:
+        weight = torch.where(
+            mask,
+            torch.tensor(float(terrain_vz_weight), device=env.device),
+            torch.tensor(float(vz_weight), device=env.device),
+        )
+    reward = tracking_lin_vel(
+        env,
+        command_name=command_name,
+        sigma_move=sigma_move,
+        sigma_stand=sigma_stand,
+        vz_weight=weight,
+        use_upright_gate=use_upright_gate,
+        tracking_upright_full_cos=tracking_upright_full_cos,
+    )
+    if mask is None:
+        return reward
+
+    # 按列拆开的诊断：Locomotion/* 是全体均值，地形列的误差被平地列稀释了看不出来。
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        terrain = mask.float()
+        flat = (~mask).float()
+        n_t = terrain.sum().clamp(min=1.0)
+        n_f = flat.sum().clamp(min=1.0)
+        cmd_vx = env.command_manager.get_command(command_name)[:, 0]
+        base_vx = env.scene["robot"].data.root_link_lin_vel_b[:, 0]
+        log.update(
+            {
+                "Rough/tracking_lin_vel_terrain": (reward * terrain).sum() / n_t,
+                "Rough/tracking_lin_vel_flat": (reward * flat).sum() / n_f,
+                "Rough/cmd_vx_terrain": (cmd_vx * terrain).sum() / n_t,
+                "Rough/base_vx_terrain": (base_vx * terrain).sum() / n_t,
+                "Rough/base_vx_error_terrain": ((cmd_vx - base_vx).abs() * terrain).sum() / n_t,
+            }
+        )
+    return reward
+
+
 __all__ = [
     *_FLAT_ALL,
     "base_height_penalty_off_terrain",
     "command_velocity_error_on_terrain",
+    "non_flat_column_mask",
     "terrain_column_mask",
+    "tracking_lin_vel_terrain_vz",
 ]

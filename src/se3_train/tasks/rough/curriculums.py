@@ -15,6 +15,7 @@ from .terrains import ROUGH_TERRAIN_CLEARED_DISTANCE_M
 # 平地热身状态挂在 env 上的属性名。
 FLAT_WARMUP_ORIGINAL_TYPES_ATTR = "_se3_flat_warmup_original_types"
 FLAT_WARMUP_DONE_ATTR = "_se3_flat_warmup_done"
+FLAT_WARMUP_THRESHOLD_ATTR = "_se3_flat_warmup_threshold"
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -36,15 +37,24 @@ def flat_warmup(
     env_ids: torch.Tensor,
     command_name: str,
     iterations: int = 500,
+    ramp_iterations: int = 0,
     steps_per_policy_iter: int = 24,
     flat_name: str = "flat",
 ) -> dict[str, torch.Tensor]:
-    """前 `iterations` 轮全部 env 放在平地列、第 0 行；之后各 env 在下一次 reset 时换回原列、第 0 行。
+    """前 `iterations` 轮全部 env 放在平地列、第 0 行，之后逐 env 在 reset 时换回原列、第 0 行。
 
     目的：先把 Flat 基线练出来再进地形。R4/R5/R6 里地形课程 250 轮就把策略推上 12 cm 下台阶和 25% 坡，
     策略在还不会稳走时学成原地站着。逐 env 在 reset 时换列，不在 episode 中途改出生点。
     换列后同步刷新地形列前向指令覆盖与平地速度课程信号掩码（它们按列计算）。
-    必须排在 terrain_levels 之前；热身期 terrain_levels 不升级。
+    必须排在 terrain_levels 之前；还留在平地列的 env，terrain_levels 不给它升级。
+
+    `ramp_iterations > 0` 时不再一刀切：地形 env 的比例在
+    `iterations → iterations + ramp_iterations` 之间从 0 线性涨到 1。每个 env 建表时分到一个
+    固定阈值（均匀铺在 [0,1) 上，保证任何 env 数下比例都严格线性），进度越过自己的阈值才换列，
+    所以迁移单调、不会回平地，终态与一刀切相同。
+    2026-09-08 用户定（A7）：A5/A6 的本机回放显示伤害集中在换列后那 100 轮
+    （A6 model_500 在 2 m/s 上误差 0.02，model_600 掉到 0.93，且 A5 同型），
+    一次性把 75% 的 env 扔进跟不上的指令里，共享 actor 连平地一起退化。
     """
     terrain = env.scene.terrain
     assert terrain is not None and terrain.terrain_origins is not None
@@ -58,27 +68,44 @@ def flat_warmup(
         original = terrain.terrain_types.clone()
         setattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, original)
         setattr(env, FLAT_WARMUP_DONE_ATTR, torch.zeros(env.num_envs, device=env.device, dtype=torch.bool))
+        # 逐 env 的迁移阈值：把 [0,1) 均匀铺开再随机置换，任何 env 数下比例都严格线性，
+        # 且阈值与列号无关（各列同步迁移，不会先把台阶列整列放出去）。
+        order = torch.randperm(env.num_envs, device=env.device)
+        setattr(env, FLAT_WARMUP_THRESHOLD_ATTR, order.float() / float(env.num_envs))
     done: torch.Tensor = getattr(env, FLAT_WARMUP_DONE_ATTR)
+    threshold: torch.Tensor = getattr(env, FLAT_WARMUP_THRESHOLD_ATTR)
 
     iteration = int(env.common_step_counter) // max(1, int(steps_per_policy_iter))
-    changed = False
-    if iteration < int(iterations):
-        ids = env_ids[~done[env_ids] & (terrain.terrain_types[env_ids] != flat_col)]
-        if ids.numel() > 0:
-            terrain.terrain_types[ids] = flat_col
-            terrain.terrain_levels[ids] = 0
-            changed = True
+    ramp = max(int(ramp_iterations), 0)
+    if ramp > 0:
+        progress = (iteration - int(iterations)) / float(ramp)
     else:
-        ids = env_ids[~done[env_ids]]
-        if ids.numel() > 0:
-            terrain.terrain_types[ids] = original[ids]
-            terrain.terrain_levels[ids] = 0
-            done[ids] = True
+        progress = 1.0 if iteration >= int(iterations) else 0.0
+    progress = min(max(progress, 0.0), 1.0)
+
+    changed = False
+    pending = ~done[env_ids]
+    hold = env_ids[pending & (threshold[env_ids] >= progress)]
+    move = env_ids[pending & (threshold[env_ids] < progress)]
+    if hold.numel() > 0:
+        # 还没轮到自己迁移：留在平地列第 0 行。
+        stay = hold[terrain.terrain_types[hold] != flat_col]
+        if stay.numel() > 0:
+            terrain.terrain_types[stay] = flat_col
+            terrain.terrain_levels[stay] = 0
             changed = True
+    if move.numel() > 0:
+        terrain.terrain_types[move] = original[move]
+        terrain.terrain_levels[move] = 0
+        done[move] = True
+        changed = True
     if changed:
         terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
         _refresh_terrain_dependent_masks(env, command_name)
-    return {"active": (~done).float().mean()}
+    return {
+        "active": (~done).float().mean(),
+        "progress": torch.tensor(progress, device=env.device),
+    }
 
 
 def terrain_levels(
