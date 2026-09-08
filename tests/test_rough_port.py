@@ -1,7 +1,7 @@
 """崎岖地形任务的移植回归测试。
 
-来源：scutrobotlab/wheeled-legged_RL 的 V14 rough 线（地形课程 + step_up 状态机）。
-移植原则是 rough 只相对冻结的 Flat 基线改地形、地形课程、台阶状态机和能耗三项定价，
+来源：scutrobotlab/wheeled-legged_RL 的 V14 rough 线（地形课程 + 台阶前的机身抬升）。
+移植原则是 rough 只相对冻结的 Flat 基线改地形、地形课程、地形感知高度下限和能耗三项定价，
 其余逐项不动；本文件把这几条钉住。要改 rough 就一并改这里，并写清对照实验编号。
 """
 
@@ -21,18 +21,27 @@ from mjlab.terrains import (
 
 import se3_train  # noqa: F401  # 注册任务
 from se3_train.log_filter import keep_log_key
+from se3_train.tasks.flat import rewards as flat_rewards
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
+    FLAT_CMD_VEL_DEADBAND,
+    FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.rough import ctbc, curriculums, events, observations, terminations
-from se3_train.tasks.rough.commands import StepUpCommandCfg
+from se3_train.tasks.rough import rewards as rough_rewards
+from se3_train.tasks.rough.commands import RoughCommandCfg
 from se3_train.tasks.rough.env_cfg import (
+    ROUGH_AMP_TERRAIN_TYPE_NAMES,
+    ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
+    ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
     ROUGH_ENERGY_PENALTY_SCALE,
-    ROUGH_STEP_UP_LOOKAHEAD_M,
+    ROUGH_REWARD_TERRAIN_TYPE_NAMES,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
+    ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
+    ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
@@ -43,12 +52,10 @@ from se3_train.tasks.rough.terrains import (
 
 _ROUGH = "SE3-WheelLegged-Rough"
 _STAIR_EVAL = "SE3-WheelLegged-Rough-StairEval"
-_NO_STEP_UP = "SE3-WheelLegged-Rough-NoStepUp"
 _FLAT_MLP = "SE3-WheelLegged-Flat-MLP"
 
 # 参考仓库 rough 相对 flat 只放松能耗类罚项（wheel_power / joint_torque 各 ÷10）。
 _ENERGY_REWARDS = ("leg_torques", "wheel_torques", "leg_power")
-_SENSOR_NAME = "wheel_forward_sensor"
 
 
 class RoughInheritsFlatBaselineTests(unittest.TestCase):
@@ -87,13 +94,26 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertEqual(tuple(command.height_range), (0.20, 0.38))
         self.assertEqual(tuple(command.deployment_ranges["height"]), (0.20, 0.38))
 
-    def test_only_energy_rewards_differ_from_flat(self) -> None:
-        self.assertEqual(set(self.cfg.rewards), set(self.flat.rewards))
+    def test_only_energy_and_terrain_column_rewards_differ_from_flat(self) -> None:
+        """rough 相对 Flat 基线只有三处奖励差异，逐处钉住。
+
+        1. 能耗三项折价；2. 台阶列加回速度违令罚（Flat 已整项删除）；
+        3. flat_base_height 换成按列置零的包装（权重与核参数不变）。
+        """
+        self.assertEqual(
+            set(self.cfg.rewards) - set(self.flat.rewards), {"command_velocity_error"}
+        )
+        self.assertEqual(set(self.flat.rewards) - set(self.cfg.rewards), set())
         for name, term in self.cfg.rewards.items():
+            if name == "command_velocity_error":
+                continue
             expected = float(self.flat.rewards[name].weight)
             if name in _ENERGY_REWARDS:
                 expected *= ROUGH_ENERGY_PENALTY_SCALE
             self.assertAlmostEqual(float(term.weight), expected, places=12, msg=name)
+            # 除了按列置零的高度罚，奖励函数本身必须与 Flat 是同一个对象。
+            if name != "flat_base_height":
+                self.assertIs(term.func, self.flat.rewards[name].func, msg=name)
         # 折价必须真的生效，否则上面那圈断言会退化成空对照。
         self.assertLess(ROUGH_ENERGY_PENALTY_SCALE, 1.0)
 
@@ -144,7 +164,7 @@ class RoughTerrainTests(unittest.TestCase):
 
     def test_terrain_command_override_config(self) -> None:
         command = self.cfg.commands["velocity_height"]
-        assert isinstance(command, StepUpCommandCfg)
+        assert isinstance(command, RoughCommandCfg)
         self.assertTrue(command.terrain_command_override_enabled)
         self.assertEqual(command.terrain_command_flat_names, ("flat",))
         self.assertEqual(tuple(command.terrain_lin_vel_x_range), ROUGH_TERRAIN_LIN_VEL_X_RANGE)
@@ -193,55 +213,117 @@ class RoughTerrainTests(unittest.TestCase):
         self.assertEqual(list(stair_eval.sub_terrains), ["flat", "stairs_up", "stairs_down"])
 
 
-class StepUpStateMachineTests(unittest.TestCase):
+class TerrainColumnRewardTests(unittest.TestCase):
+    """台阶列分列定价（2026-09-08 用户定，A6）：速度违令罚只在台阶列加回来，机身高度罚在台阶列置零。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cfg = load_env_cfg(_ROUGH)
+
+    def test_command_velocity_error_is_gated_to_the_stairs_column(self) -> None:
+        term = self.cfg.rewards["command_velocity_error"]
+        self.assertIs(term.func, rough_rewards.command_velocity_error_on_terrain)
+        # 权重与死区沿用 2026-09-06 从 Flat 删除前的历史值，这次只改生效范围。
+        self.assertAlmostEqual(float(term.weight), FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY)
+        self.assertEqual(
+            (term.params["lin_deadband"], term.params["yaw_deadband"]), FLAT_CMD_VEL_DEADBAND
+        )
+        self.assertEqual(term.params["terrain_type_names"], ROUGH_REWARD_TERRAIN_TYPE_NAMES)
+
+    def test_lin_scale_keeps_the_penalty_inside_its_quadratic_region(self) -> None:
+        """误差归一化尺度必须让整个可达误差区间都落在封顶以内，否则这项就退化成常数。"""
+        term = self.cfg.rewards["command_velocity_error"]
+        scale = term.params["lin_vel_scale"]
+        self.assertAlmostEqual(scale, ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE)
+        # 台阶列最坏情况：满指令 2.4 m/s 而机器人不动。此时罚值必须仍未顶到 max_penalty。
+        worst_excess = ROUGH_TERRAIN_LIN_VEL_X_RANGE[1] - term.params["lin_deadband"]
+        self.assertLess((worst_excess / scale) ** 2, term.params["max_penalty"])
+        # 且封顶后的量级不能压过正奖励预算（is_alive 1 + 跟踪三项 4/3/2 = 10/s）。
+        self.assertLess(abs(term.weight) * (worst_excess / scale) ** 2, 10.0)
+
+    def test_base_height_penalty_is_zeroed_on_the_stairs_column(self) -> None:
+        term = self.cfg.rewards["flat_base_height"]
+        self.assertIs(term.func, rough_rewards.base_height_penalty_off_terrain)
+        self.assertEqual(term.params["terrain_type_names"], ROUGH_REWARD_TERRAIN_TYPE_NAMES)
+        # 只改生效范围：权重与核参数继续跟随 Flat 基线。
+        self.assertAlmostEqual(float(term.weight), -4.0)
+        self.assertAlmostEqual(term.params["sigma"], 0.05)
+
+    def test_all_three_column_switches_point_at_the_same_column(self) -> None:
+        # AMP 掩码、地形感知高度下限、分列定价必须是同一组列，
+        # 否则"只改台阶列"这句话在三处的含义就不一样了。
+        self.assertEqual(ROUGH_REWARD_TERRAIN_TYPE_NAMES, ROUGH_AMP_TERRAIN_TYPE_NAMES)
+        self.assertEqual(ROUGH_REWARD_TERRAIN_TYPE_NAMES, ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES)
+
+    def test_both_knobs_fall_back_to_the_flat_baseline(self) -> None:
+        off = rough_env_cfg(command_velocity_error_weight=None, zero_base_height_on_terrain=False)
+        self.assertNotIn("command_velocity_error", off.rewards)
+        self.assertIs(
+            off.rewards["flat_base_height"].func, flat_rewards.flat_base_height_penalty_no_jump
+        )
+
+
+class TerrainAwareHeightFloorTests(unittest.TestCase):
+    """台阶前的机身抬升：2026-09-08 用户定，删掉 step_up 状态机，改用地形感知高度下限。"""
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.cfg = load_env_cfg(_ROUGH)
         cls.command = cls.cfg.commands["velocity_height"]
 
-    def _sensor(self) -> TerrainHeightSensorCfg:
-        sensors = {sensor.name: sensor for sensor in self.cfg.scene.sensors or ()}
-        sensor = sensors[_SENSOR_NAME]
-        assert isinstance(sensor, TerrainHeightSensorCfg)
-        return sensor
+    def _floor(self, difficulty: float) -> float:
+        """按 mdp/commands._terrain_aware_min_height 的公式复算该难度下的高度指令下限。"""
+        step_low, step_high = _STEP_HEIGHT_RANGE
+        step_height = step_low + difficulty * (step_high - step_low)
+        required = (
+            step_height
+            + self.command.terrain_height_clearance
+            - self.command.body_collision_bottom_offset
+        )
+        return max(self.command.height_range[0], required)
 
-    def test_command_term_is_step_up_and_enabled(self) -> None:
-        self.assertIsInstance(self.command, StepUpCommandCfg)
-        self.assertTrue(self.command.step_up_enabled)
-        self.assertEqual(self.command.step_up_sensor_name, _SENSOR_NAME)
-        self.assertEqual(self.command.step_up_hold_s, 2.0)
-        self.assertFalse(load_env_cfg(_NO_STEP_UP).commands["velocity_height"].step_up_enabled)
+    def test_terrain_aware_height_floor_is_configured(self) -> None:
+        self.assertIsInstance(self.command, RoughCommandCfg)
+        self.assertTrue(self.command.terrain_aware_height)
+        # clearance 必须为正，否则 _apply_terrain_aware_height / _sample_terrain_aware_height
+        # 整段短路，下限静默失效（这正是 A1–A5 之前的状态）。
+        self.assertGreater(self.command.terrain_height_clearance, 0.0)
+        self.assertEqual(self.command.terrain_height_clearance, ROUGH_TERRAIN_HEIGHT_CLEARANCE)
+        self.assertEqual(
+            self.command.body_collision_bottom_offset, ROUGH_BODY_COLLISION_BOTTOM_OFFSET
+        )
+        self.assertLess(self.command.body_collision_bottom_offset, 0.0)
 
-    def test_thresholds_bracket_the_terrain_step_range(self) -> None:
-        # 台阶窗口必须盖住地形最高一级台阶，墙阈值必须在其之上，
-        # 否则真台阶会被判成墙、episode 被无谓截断。
-        self.assertLess(self.command.step_up_height_min, _STEP_HEIGHT_RANGE[1])
-        self.assertGreater(self.command.step_up_height_max, _STEP_HEIGHT_RANGE[1])
-        self.assertGreaterEqual(self.command.step_up_wall_height, _STEP_HEIGHT_RANGE[1])
-        # 随机起伏最大 0.05 m，检测下限必须高于它，避免地面噪声误触发。
-        self.assertGreater(self.command.step_up_height_min, 0.05)
+    def test_step_height_type_names_match_the_terrain_columns(self) -> None:
+        """列名对不上时下限静默失效——基类默认值是 stair 线的列名，rough 必须自己配。"""
+        generator = self.cfg.scene.terrain.terrain_generator
+        assert generator is not None
+        names = tuple(self.command.terrain_step_height_type_names)
+        self.assertEqual(names, ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES)
+        self.assertTrue(names)
+        for name in names:
+            self.assertIn(name, generator.sub_terrains)
+            # 没有 step_height_range 的列（斜坡、随机起伏）会被 _terrain_aware_min_height 跳过。
+            self.assertIsNotNone(getattr(generator.sub_terrains[name], "step_height_range", None))
 
-    def test_forward_probe_ray_order(self) -> None:
-        """commands.py 的 _RAY_BACKWARD/_RAY_UNDER/_RAY_FORWARD 索引硬编码为 0/1/2。"""
-        sensor = self._sensor()
-        self.assertEqual(sensor.reduction, "none")
-        self.assertEqual(sensor.ray_alignment, "yaw")
-        pattern = sensor.pattern
-        assert isinstance(pattern, GridPatternCfg)
-        offsets, directions = pattern.generate_rays(None, "cpu")
-        self.assertEqual(tuple(offsets.shape), (3, 3))
-        self.assertAlmostEqual(float(offsets[0, 0]), -ROUGH_STEP_UP_LOOKAHEAD_M, places=6)
-        self.assertAlmostEqual(float(offsets[1, 0]), 0.0, places=6)
-        self.assertAlmostEqual(float(offsets[2, 0]), ROUGH_STEP_UP_LOOKAHEAD_M, places=6)
-        self.assertAlmostEqual(float(directions[0, 2]), -1.0, places=6)
+    def test_floor_spans_the_step_range_without_saturating(self) -> None:
+        low, high = self.command.height_range
+        # 最低难度的台阶（0.02 m）不该顶起下限，否则平地段的高度指令分布也跟着变。
+        self.assertAlmostEqual(self._floor(0.0), low)
+        # 最高难度的台阶（0.20 m）必须顶起来，且不能顶到上界——顶满就退化成定值指令。
+        self.assertGreater(self._floor(1.0), low)
+        self.assertLess(self._floor(1.0), high)
 
-    def test_wall_termination_is_a_timeout(self) -> None:
-        # 参考实现把墙算成截断而不是失败；注册成 time_out=False 会让 PPO 把它当成 0 值终局。
-        self.assertTrue(self.cfg.terminations["wall_blocked"].time_out)
+    def test_step_up_state_machine_is_gone(self) -> None:
+        # 前瞻传感器、墙终止、状态机字段都不该再出现；留着就是死代码 + 每步一次白跑的射线。
+        sensor_names = {sensor.name for sensor in self.cfg.scene.sensors or ()}
+        self.assertNotIn("wheel_forward_sensor", sensor_names)
+        self.assertNotIn("wall_blocked", self.cfg.terminations)
+        self.assertFalse(hasattr(self.command, "step_up_enabled"))
 
-    def test_step_up_rates_survive_log_filter(self) -> None:
-        # 状态机占比走 Rough/ 命名空间，必须在常驻白名单里，否则 W&B 上看不到它有没有触发。
-        for key in ("Rough/step_up_hold_rate", "Rough/step_up_detect_rate", "Rough/wall_blocked_rate"):
+    def test_terrain_diagnostics_survive_log_filter(self) -> None:
+        # 下限有没有顶起来、台阶列的速度违令罚吃了多少，只能从这两个键看出来。
+        for key in ("Rough/height_cmd_terrain_mean", "Rough/command_velocity_error_terrain"):
             self.assertTrue(keep_log_key(key), key)
 
     def test_terrain_cleared_is_a_timeout_beyond_the_last_step(self) -> None:
@@ -415,6 +497,72 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated(self) -> None:
         self.assertEqual(sorted(set(self.terrain_types.tolist())), list(range(6)))
+
+    def test_terrain_column_rewards_only_bite_on_the_stairs_column(self) -> None:
+        """台阶列吃速度违令罚、不吃高度罚；其余列正好相反。"""
+        names = list(self.env.scene.terrain.cfg.terrain_generator.sub_terrains.keys())
+        up = (self.terrain_types == names.index("stairs_up")).nonzero().flatten()
+        flat = (self.terrain_types == self.flat_col).nonzero().flatten()
+        cmd = self.env.command_manager.get_command("velocity_height")
+        saved = cmd.clone()
+        try:
+            # 造一个所有 env 都同时违令的状态：指令 vx=2 而机器人基本不动，
+            # 高度指令远低于实际高度（误差顶到 max_error=0.15，罚值封顶）。
+            cmd[:, 0] = 2.0
+            cmd[:, 1] = 0.0
+            cmd[:, 4] = 0.0
+            cmd[:, 5] = 0.0
+            vel_pen = rough_rewards.command_velocity_error_on_terrain(
+                self.env,
+                command_name="velocity_height",
+                terrain_type_names=("stairs_up",),
+            )
+            height_pen = rough_rewards.base_height_penalty_off_terrain(
+                self.env,
+                command_name="velocity_height",
+                height_sensor_name="base_height_sensor",
+                terrain_type_names=("stairs_up",),
+            )
+        finally:
+            cmd[:] = saved
+        self.assertGreater(float(vel_pen[up].min()), 0.0)
+        self.assertEqual(float(vel_pen[flat].abs().max()), 0.0)
+        self.assertEqual(float(height_pen[up].abs().max()), 0.0)
+        self.assertGreater(float(height_pen[flat].min()), 0.0)
+
+    def test_terrain_aware_height_floor_lifts_the_stairs_up_command(self) -> None:
+        """最高难度行上，上台阶列的高度指令下界被顶到台阶高 + 余量；平地列不受影响。
+
+        配置侧的断言（TerrainAwareHeightFloorTests）只能保证参数填对了，
+        真正会静默失效的是 terrain_levels/terrain_types 这条查表链路，只能在运行时钉。
+        """
+        terrain = self.env.scene.terrain
+        names = list(terrain.cfg.terrain_generator.sub_terrains.keys())
+        up = (self.terrain_types == names.index("stairs_up")).nonzero().flatten()
+        flat = (self.terrain_types == self.flat_col).nonzero().flatten()
+        cfg = self.term.cfg
+        expected = (
+            _STEP_HEIGHT_RANGE[1]
+            + cfg.terrain_height_clearance
+            - cfg.body_collision_bottom_offset
+        )
+        self.assertLess(expected, cfg.height_range[1])
+        levels = terrain.terrain_levels.clone()
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        flat_min = float("inf")
+        try:
+            terrain.terrain_levels[:] = terrain.terrain_origins.shape[0] - 1
+            for _ in range(8):  # 高度是区间内均匀采样，多抽几次才钉得住下界
+                self.term._resample_command(env_ids)
+                height = self.term.command[:, 4]
+                self.assertGreaterEqual(float(height[up].min()), expected - 1e-6)
+                self.assertLessEqual(float(height[up].max()), cfg.height_range[1] + 1e-6)
+                self.assertGreaterEqual(float(height[flat].min()), cfg.height_range[0] - 1e-6)
+                flat_min = min(flat_min, float(height[flat].min()))
+        finally:
+            terrain.terrain_levels[:] = levels
+        # 下限只对上台阶列生效：平地列必须能抽到低于该下限的高度，否则是全局抬高了。
+        self.assertLess(flat_min, expected)
 
     def test_height_scan_reads_step_rise_ahead(self) -> None:
         terrain = self.env.scene.terrain

@@ -1,37 +1,23 @@
-"""崎岖地形任务的指令项：在速度/高度指令之上叠加台阶前瞻辅助（step_up 状态机）。
+"""崎岖地形任务的指令项：按所在地形列限制速度指令。
 
-移植自 scutrobotlab/wheeled-legged_RL 的 `state_machines/step_up.py`（其 rough 线
-`WheelbipeV14RoughEnvCfg_v1` 打开该状态机）。原理是策略本身不学“上台阶”这个新技能，
-只需要会跟随高度指令；由状态机在检测到前方台阶时替它把腿伸长，把台阶问题降级成
-已有能力的自动触发。
+高度指令这一侧不做任何前瞻：台阶前的抬升由 `mdp/commands.py` 的**地形感知抬高下限**
+负责——重采样时按 env 当前所在的地形列与难度行算出这一级台阶需要的最低机身高度
+（`step_height + terrain_height_clearance − body_collision_bottom_offset`），
+把采样区间的下界顶到那个值，上界仍是 `height_range[1]`。
+数值在 rough/env_cfg.py 里配，与 stair 线同一套标定。
 
-与参考实现的三处已知差异，都是 MJLab 传感器 API 的约束造成的：
+2026-09-08 用户定：删掉原来的 step_up 前瞻状态机（身前 0.5 m 探到 0.06–0.22 m 抬升就把
+高度指令 +0.10 保持 2 s），改用上面这条下限。两者的差别：
 
-1. **空间差分而非时间差分。** 参考仓库对轮前方固定偏移处每步打一次向下的射线，比较本步与
-   上一步的地面高度。本实现让同一个传感器同时打“身下”和“身前”两条射线，取
-   `身下净空 − 身前净空`，等于 `前方地面高度 − 身下地面高度`，与机身自身高度无关
-   （两条射线共用同一个 `frame_z`，相减即抵消）。判据等价，但不需要跨步状态、不需要处理
-   行进方向翻转与 reset 清理。
+* 状态机是**事件触发**的，只在台阶前 0.5 m 内抬高，抬完 2 s 自动落回，且需要一个额外的
+  三射线前向传感器；下限是**按列按行静态生效**的，整条 episode 都不会低于该值，不用传感器。
+* 状态机会随行进方向翻转扫描方向、会把高过机身的障碍判成墙并转 time_out；下限没有这两件事，
+  出块由 `terminations.terrain_cleared` 的距离判据接管。
+* 部署契约上，状态机要求上层控制器复现同一套逻辑才能对齐训练期的高度指令；下限只是
+  改变了训练期高度指令的采样分布，部署端照常自己发高度指令即可，没有额外契约。
 
-2. **射线挂在 base_link 而不是轮子上。** MJLab 的 `GridPatternCfg` 只在 frame 所在平面
-   铺射线（局部 z 偏移恒为 0），而参考仓库是把射线起点抬高 5 m 再往下打。射线起点若落在
-   几何体内部，MJLab 判为 backface 并把净空钳到 0，所以挂在轮心（离地 0.06 m）的探针
-   量不出高于轮半径的台阶。base_link 是本模型最高的可用 frame。
-   由此得到一条有用的性质：前方障碍高过机身时 `身前净空` 恒为 0，`rise` 读数正好等于
-   机身离地高度；把 `step_up_wall_height` 卡在地形最高一级台阶之上、机身高度指令下界附近，
-   墙（地形外围 border）就会稳定判为墙，而真台阶最多读到自己的高度，仍判为台阶。
-
-3. **墙不再屏蔽同帧的失败终止。** 参考实现是 `terminate &= ~wall`；MJLab 的
-   TerminationManager 按 term 独立累加 terminated/truncated 两个 buffer，没有这个钩子。
-   墙是在 0.5 m 之外提前判定的，实测不会与摔倒类终止同帧触发，故只保留“墙 → time_out”。
-
-另外，传感器在 `sim.sense()` 里更新，而 `sim.sense()` 排在 `command_manager.compute()`
-之后，所以本状态机读到的地形高度恒落后一个控制步（20 ms）。2 m/s 时对应 4 cm，
-远小于 0.5 m 的前瞻距离。
-
-部署契约提醒：状态机会在训练时把高度指令顶高，部署端若不复现同一套逻辑，策略在台阶前
-拿到的就是另一个高度指令。要么上层控制器复现该状态机，要么把它当成训练期的课程手段，
-在评测时关掉（`step_up_enabled=False` 即逐位退化为 JumpCommandTerm）。
+保留下来的只有速度指令的分列覆盖：非平地列只发前向直行指令，因为对称随机指令下 20 s 的
+净位移是随机游走，地形课程的位移判据推不动（见 curriculums.py）。
 """
 
 from __future__ import annotations
@@ -42,56 +28,21 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
-from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
-# 前向探针把三条射线排成 [-offset, 0, +offset]（见 mjlab GridPatternCfg.generate_rays），
-# 故索引固定为：0 后方、1 身下、2 前方。
-_RAY_BACKWARD = 0
-_RAY_UNDER = 1
-_RAY_FORWARD = 2
-
-# env 上挂的墙判定标志属性名；终止条件按该标志把该 env 转成 time_out。
-WALL_BLOCKED_ATTR = "_se3_rough_wall_blocked"
-
 
 @dataclass
-class StepUpCommandCfg(JumpCommandCfg):
-    """在 JumpCommand 之上增加台阶前瞻辅助的配置。
+class RoughCommandCfg(JumpCommandCfg):
+    """在 JumpCommand 之上增加“按地形列限制速度指令”的配置。
 
-    `step_up_enabled=False` 时本类退化为 JumpCommandTerm，逐位等价。
+    高度指令的地形感知下限走基类 `VelocityHeightCommandCfg` 的
+    `terrain_aware_height` / `terrain_height_clearance` /
+    `body_collision_bottom_offset` / `terrain_step_height_type_names` 四个字段，
+    本类不再额外定义。
     """
-
-    step_up_enabled: bool = False
-    """是否启用台阶前瞻辅助。"""
-
-    step_up_sensor_name: str = "wheel_forward_sensor"
-    """前向地形高度传感器名，reduction 必须为 none 且每帧 3 条射线。"""
-
-    step_up_height_min: float = 0.06
-    """判为可跨台阶的最小前方抬升(m)。低于该值视为地面起伏，不触发。"""
-
-    step_up_height_max: float = 0.22
-    """判为可跨台阶的最大前方抬升(m)。"""
-
-    step_up_wall_height: float = 0.22
-    """判为墙的前方抬升阈值(m)。墙优先于台阶，且不算策略失败。
-
-    取值应略高于地形最高一级台阶（见 terrains._STEP_HEIGHT_RANGE），
-    使真台阶永远落在台阶窗口内，只有 border 那种高过机身的障碍才判为墙。
-    """
-
-    step_up_height_bias: float = 0.10
-    """检测到台阶后在当前高度指令上叠加的抬升量(m)。"""
-
-    step_up_hold_s: float = 2.0
-    """一次触发后高度指令保持抬升的时长(s)。"""
-
-    step_up_height_max_cmd: float | None = None
-    """抬升后的高度指令上限(m)；None 时取 `height_range` 上界。"""
 
     terrain_command_override_enabled: bool = False
     """是否按所在地形列限制速度指令。
@@ -119,32 +70,17 @@ class StepUpCommandCfg(JumpCommandCfg):
     R3 从第 0 轮就给 0.4–2.4，500 轮的策略对 vx ≥ 1.0 的指令原地不动。
     """
 
-    def build(self, env: ManagerBasedRlEnv) -> StepUpCommandTerm:
-        return StepUpCommandTerm(self, env)
+    def build(self, env: ManagerBasedRlEnv) -> RoughCommandTerm:
+        return RoughCommandTerm(self, env)
 
 
-class StepUpCommandTerm(JumpCommandTerm):
-    """带台阶前瞻辅助的速度/姿态/高度指令项。"""
+class RoughCommandTerm(JumpCommandTerm):
+    """按地形列限制速度指令的速度/姿态/高度指令项。"""
 
-    cfg: StepUpCommandCfg
+    cfg: RoughCommandCfg
 
-    def __init__(self, cfg: StepUpCommandCfg, env: ManagerBasedRlEnv):
+    def __init__(self, cfg: RoughCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        zeros = torch.zeros(self.num_envs, device=self.device)
-        # 采样得到的原始高度指令。抬升是叠加在它之上的覆盖层，不写回它，
-        # 否则每步都在上一次抬升的结果上再加一次 bias，两三步就顶到上限。
-        self._base_height_cmd = self._command[:, 4].clone()
-        self._hold_remaining_s = zeros.clone()
-        self._hold_value = zeros.clone()
-        self._step_detect = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        self._wall_blocked = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        # 终止条件通过 env 上的属性读取墙标志，避免终止函数依赖 command term 的内部结构。
-        setattr(env, WALL_BLOCKED_ATTR, self._wall_blocked)
-        self._max_cmd = (
-            float(cfg.step_up_height_max_cmd)
-            if cfg.step_up_height_max_cmd is not None
-            else float(cfg.height_range[1])
-        )
         # 非平地列的 env 掩码；None 表示没有可用的分列地形或覆盖未启用。
         self._terrain_override_mask: torch.Tensor | None = None
         if cfg.terrain_command_override_enabled:
@@ -199,128 +135,51 @@ class StepUpCommandTerm(JumpCommandTerm):
             is_flat |= types == col
         return ~is_flat
 
-    def _forward_rise(self) -> torch.Tensor | None:
-        """返回每个 env 前方地面相对身下地面的抬升(m)，形状 [B, F]。
-
-        行进方向为负时改用后方射线，与参考仓库按 vx 指令取扫描方向一致。
-        """
-        sensor = self._env.scene.sensors.get(self.cfg.step_up_sensor_name)
-        if sensor is None:
-            return None
-        try:
-            heights = sensor.data.heights
-        except (AttributeError, AssertionError, RuntimeError):
-            # 第一次 sim.sense() 之前传感器缓冲区还没建立。
-            return None
-        if heights is None or heights.ndim != 3 or heights.shape[-1] < 3:
-            return None
-        under = heights[..., _RAY_UNDER]
-        ahead = heights[..., _RAY_FORWARD]
-        behind = heights[..., _RAY_BACKWARD]
-        # heights 是净空（frame_z - hit_z），故 under - probe = probe 处地面 - 身下地面。
-        rise_forward = under - ahead
-        rise_backward = under - behind
-        reversing = (self._command[:, 0] < 0.0).unsqueeze(-1)
-        rise = torch.where(reversing, rise_backward, rise_forward)
-        # 身下射线打空（max_distance 之内没有地面）时 under 会被填成 max_distance，
-        # 直接相减会得到一个假的巨大抬升。这种帧一律判为无效，不触发台阶也不触发墙。
-        max_distance = float(getattr(sensor.cfg, "max_distance", float("inf")))
-        rise = torch.where(under >= max_distance - 1e-3, torch.zeros_like(rise), rise)
-        return torch.nan_to_num(rise, nan=0.0, posinf=0.0, neginf=0.0)
-
     def _update_command(self) -> None:
         super()._update_command()
-        if not self.cfg.step_up_enabled:
+        # 地形感知下限只在重采样时抬高高度指令的采样下界，没有任何逐步状态；
+        # 这里只把它的效果记一笔，否则 W&B 上看不出下限有没有真的顶起来
+        # （原来这个位置记的是 step_up 状态机的触发率）。
+        if self._terrain_override_mask is None:
             return
-
-        self._hold_remaining_s.sub_(self._env.step_dt).clamp_(min=0.0)
-        self._step_detect.zero_()
-        self._wall_blocked.zero_()
-
-        rise = self._forward_rise()
-        if rise is not None:
-            wall = torch.any(rise > self.cfg.step_up_wall_height, dim=1)
-            step = (
-                torch.any(
-                    (rise > self.cfg.step_up_height_min) & (rise < self.cfg.step_up_height_max),
-                    dim=1,
-                )
-                & ~wall
-            )
-            self._wall_blocked.copy_(wall)
-            self._step_detect.copy_(step)
-            # 撞墙时撤销已保持的抬升，避免下一次 reset 前继续顶着高指令。
-            self._hold_remaining_s[wall] = 0.0
-            self._hold_value[wall] = 0.0
-            if self.cfg.step_up_hold_s > 0.0 and bool(step.any()):
-                self._hold_value[step] = torch.clamp(
-                    self._base_height_cmd[step] + self.cfg.step_up_height_bias,
-                    max=self._max_cmd,
-                )
-                self._hold_remaining_s[step] = self.cfg.step_up_hold_s
-
-        # 覆盖层每步从原始指令重算：保持期内只抬高不压低，保持结束立即回到原始指令。
-        holding = self._hold_remaining_s > 0.0
-        effective = torch.where(
-            holding,
-            torch.maximum(self._base_height_cmd, self._hold_value),
-            self._base_height_cmd,
-        )
-        changed = (effective != self._command[:, 4]).nonzero(as_tuple=False).flatten()
-        self._command[:, 4] = effective
-        if changed.numel() > 0:
-            # 奖励侧的默认腿姿随高度指令变化，抬升生效/失效时必须同步刷新缓存。
-            update_policy_default_from_height_cache(
-                self._env,
-                "velocity_height",
-                env_ids=changed,
-                command=self._command,
-            )
-
+        height_cmd = self._command[:, 4]
+        terrain = self._terrain_override_mask.float()
         log = self._env.extras.setdefault("log", {})
-        log["Rough/step_up_hold_rate"] = holding.float().mean()
-        log["Rough/step_up_detect_rate"] = self._step_detect.float().mean()
-        log["Rough/wall_blocked_rate"] = self._wall_blocked.float().mean()
+        log["Rough/height_cmd_terrain_mean"] = (height_cmd * terrain).sum() / terrain.sum().clamp(
+            min=1.0
+        )
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         if self._terrain_override_mask is None:
             super()._resample_command(env_ids)
-        else:
-            # 非平地列不抽静站样本：vx 下界为正的约束对静站（vx=0）没有意义。
-            overridden = self._terrain_override_mask[env_ids]
-            flat_ids = env_ids[~overridden]
-            terrain_ids = env_ids[overridden]
-            if flat_ids.numel() > 0:
-                super()._resample_command(flat_ids)
-            if terrain_ids.numel() > 0:
-                if self.cfg.terrain_lin_vel_x_follow_curriculum:
-                    lo, hi = (float(v) for v in self.cfg.terrain_lin_vel_x_range)
-                    hi = max(lo, min(hi, float(self.cfg.lin_vel_x_range[1])))
-                    self.set_velocity_ranges(
-                        terrain_ids,
-                        lin_vel_x_range=(lo, hi),
-                        ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
-                    )
-                standing_ratio = self.cfg.standing_ratio
-                self.cfg.standing_ratio = 0.0
-                try:
-                    super()._resample_command(terrain_ids)
-                finally:
-                    self.cfg.standing_ratio = standing_ratio
-        self._base_height_cmd[env_ids] = self._command[env_ids, 4]
-        if not self.cfg.step_up_enabled:
             return
-        self._hold_remaining_s[env_ids] = 0.0
-        self._hold_value[env_ids] = 0.0
-        self._step_detect[env_ids] = False
-        self._wall_blocked[env_ids] = False
+        # 非平地列不抽静站样本：vx 下界为正的约束对静站（vx=0）没有意义。
+        overridden = self._terrain_override_mask[env_ids]
+        flat_ids = env_ids[~overridden]
+        terrain_ids = env_ids[overridden]
+        if flat_ids.numel() > 0:
+            super()._resample_command(flat_ids)
+        if terrain_ids.numel() > 0:
+            if self.cfg.terrain_lin_vel_x_follow_curriculum:
+                lo, hi = (float(v) for v in self.cfg.terrain_lin_vel_x_range)
+                hi = max(lo, min(hi, float(self.cfg.lin_vel_x_range[1])))
+                self.set_velocity_ranges(
+                    terrain_ids,
+                    lin_vel_x_range=(lo, hi),
+                    ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
+                )
+            standing_ratio = self.cfg.standing_ratio
+            self.cfg.standing_ratio = 0.0
+            try:
+                super()._resample_command(terrain_ids)
+            finally:
+                self.cfg.standing_ratio = standing_ratio
 
 
 __all__ = [
-    "WALL_BLOCKED_ATTR",
     "JumpCommandCfg",
-    "StepUpCommandCfg",
-    "StepUpCommandTerm",
+    "RoughCommandCfg",
+    "RoughCommandTerm",
     "VelocityHeightCommandCfg",
     "VelocityHeightCommandTerm",
 ]

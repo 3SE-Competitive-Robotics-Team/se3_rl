@@ -23,7 +23,11 @@ import se3_train  # noqa: F401  # 注册任务
 from se3_shared.amp import AMP_FEATURE_NAMES, AMP_FRAME_DIM
 from se3_train.amp import AMP
 from se3_train.amp_dataset_factory import build_amp_dataset
-from se3_train.mdp.amp_observations import AMP_DISCRIMINATOR_FIELDS, amp_field_indices, amp_motion_frame
+from se3_train.mdp.amp_observations import (
+    AMP_DISCRIMINATOR_FIELDS,
+    amp_field_indices,
+    amp_motion_frame,
+)
 from se3_train.motion_loader import MotionLoader
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.rl_cfg import amp_rl_cfg

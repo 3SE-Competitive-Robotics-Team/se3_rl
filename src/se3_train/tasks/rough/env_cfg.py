@@ -1,7 +1,7 @@
 """崎岖地形行走任务环境配置。
 
 移植自 scutrobotlab/wheeled-legged_RL 的 V14 rough 线，做法与参考仓库一致：rough 直接继承
-flat 的整套配置，只换地形、加地形课程、开台阶状态机，奖励表只放松能耗类三项，其余逐项不动。
+flat 的整套配置，只换地形、加地形课程、按地形抬高高度指令下限，奖励表只放松能耗类三项，其余逐项不动。
 参考仓库 rough 相对 flat 的奖励改动就只有 `wheel_power` 与 `joint_torque` 各 ÷10
 （`WheelbipeV14RoughEnvCfg.__post_init__`）；不引入新的奖励项。
 
@@ -18,6 +18,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import (
     ContactMatch,
@@ -32,23 +33,55 @@ from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 from se3_train.mdp.amp_observations import build_amp_mask_terms, build_amp_obs_terms
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
+    FLAT_CMD_VEL_DEADBAND,
+    FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
     FLAT_CURRICULUM_ADVANCE_THRESHOLD,
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.stair import observations as stair_observations
 
-from . import ctbc, curriculums, events, observations, terminations
-from .commands import StepUpCommandCfg
+from . import ctbc, curriculums, events, observations, rewards, terminations
+from .commands import RoughCommandCfg
 from .terrains import rough_terrains_cfg
 
-# 台阶前瞻辅助默认开启：这是本次移植的主体，参考仓库跑场线
-# （WheelbipeV14RoughEnvCfg_v1）也是开着的。关掉即退化为纯地形课程。
-ROUGH_STEP_UP_ENABLED = True
+# 台阶前的机身抬升：2026-09-08 用户定，删掉 step_up 前瞻状态机，改用**地形感知抬高下限**。
+# 重采样时按 env 所在列与难度行算出这一级台阶需要的最低机身高度，把高度指令采样区间的
+# 下界顶到该值（实现在 mdp/commands.py 的 _terrain_aware_min_height，rough 只负责配数）：
+#   required = step_height + terrain_height_clearance - body_collision_bottom_offset
+# 数值沿用 stair 线的标定（tasks/stair/env_cfg.py）：机体碰撞网格底面在 base_link 下方
+# 0.12 m（COACD 网格 z 范围 [-0.1376, 0.1118]，取平底面而非最低角点），再留 0.02 m 余量。
+# 台阶 0.02→0.20 m 对应的下限是 0.20（行 0-1 不生效）→0.34 m，始终在 height_range 上界 0.38 之内。
+ROUGH_TERRAIN_AWARE_HEIGHT = True
+ROUGH_TERRAIN_HEIGHT_CLEARANCE = 0.02
+ROUGH_BODY_COLLISION_BOTTOM_OFFSET = -0.12
+# 只在上台阶列抬高：下行列的台阶在身后，抬高只是白白升高重心（该列当前 proportion 也是 0）。
+# 名字必须是 terrains.rough_terrains_cfg() 里带 step_height_range 的子地形名，
+# 对不上时下限静默失效（基类默认值是 stair 线的列名），由 tests/test_rough_port.py 钉住。
+ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ("stairs_up",)
 
-# 前瞻距离(m)，与参考仓库 `wheel_forward_scan_cfg.scan.forward_offset` 一致。
-# 传感器把射线排成 [-d, 0, +d]，索引 0/1/2 = 后方/身下/前方。
-ROUGH_STEP_UP_LOOKAHEAD_M = 0.5
+# 台阶列的分列定价（2026-09-08 用户定，A6）：这两项都只改生效范围，不改数值。
+# 生效列与 AMP、地形感知高度下限取同一组，默认只有上台阶列。
+ROUGH_REWARD_TERRAIN_TYPE_NAMES = ("stairs_up",)
+# 速度违令二次罚（rewards.command_velocity_error_on_terrain）只在台阶列加回来。
+# tracking_lin_vel 的高斯核 σ_move=0.08 在误差 >0.4 m/s 处没有梯度；平地上误差小且短暂，
+# 所以 2026-09-06（D7 对 D4）把这一项从 Flat 删掉是对的（它 99% 的代价来自指令阶跃后 1 s 内，
+# 等于奖励指令跳变后猛冲）。台阶列是另一个区间：A5 换列后跟踪误差长期大于 0.4 m/s、
+# 跟踪分从 2.2 掉到 0.5 再没回来，正是核压零、没有梯度的那一段。权重与死区沿用删除前的历史值。
+# None = 不加回来，退回 Flat 基线（全线都没有这一项）。
+ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT: float | None = FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY
+# 唯一相对历史值改动的参数：误差归一化尺度 0.5 → 1.5（2026-09-08 用户定）。
+# 0.5 是按平地的误差量级定的：封顶 9 在误差 1.55 m/s 处就到顶。台阶列的 vx 指令是 0.4–2.4，
+# 而 A5 的策略在台阶上跑不到 2 m/s，误差长期 1.5–2.4，用 0.5 会全程贴封顶——
+# 贴封顶等于常数，梯度又没了（正是这项要解决的问题），而 |weight|×9 = 18/s 的常数负奖励
+# 比全部正项加起来（约 10/s，is_alive 只有 1/s）还大，早终止在数值上严格更优，会教出自杀策略。
+# 1.5 让二次区间一直延伸到误差 4.55 m/s：误差 1.5 → -1.9/s、2.0 → -3.4/s、2.4 → -4.9/s，
+# 全程有梯度且不压过正奖励预算。yaw 尺度不动：台阶列 yaw 指令只有 ±0.2，误差本来就小。
+ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 1.5
+# 机身高度罚（flat_base_height，(clamp(err,±0.15)/0.05)² 无界二次罚，误差 0.15 m 即 36/s）
+# 在台阶列置零：爬升时机身相对脚下地面的高度必然大幅偏离指令，这项罚等于按爬升幅度罚钱。
+# 置零后台阶列的姿态由 AMP 风格奖励和地形感知高度下限管；其余列与 Flat 基线逐位相同。
+ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN = True
 
 # 非平地列的速度指令限制：只发前向直行指令，平地列沿用 Flat 的速度课程。
 # 对称随机指令下 20 s 的净位移是随机游走，地形课程的位移判据推不动（R2 平地列也只到 1.6）。
@@ -109,38 +142,27 @@ _ROUGH_FLAT_BASELINE = {
 }
 
 
-def _forward_probe_sensor_cfg(name: str, lookahead_m: float) -> TerrainHeightSensorCfg:
-    """身前/身下/身后三条向下射线，供 step_up 状态机做空间差分。
+def _to_rough_command_cfg(command_cfg, **overrides) -> RoughCommandCfg:
+    """把 Flat 的 JumpCommandCfg 原样搬进 RoughCommandCfg，再覆盖 rough 要改的字段。
 
-    frame 取 base_link 而不是轮子：MJLab 的射线起点就是 frame 位置（局部 z 偏移恒为 0），
-    起点落进几何体内部时净空被钳到 0，挂在轮心量不出高于轮半径的台阶。详见 commands.py。
-    """
-    return TerrainHeightSensorCfg(
-        name=name,
-        frame=ObjRef(type="body", name="base_link", entity="robot"),
-        ray_alignment="yaw",
-        pattern=GridPatternCfg(size=(2.0 * lookahead_m, 0.0), resolution=lookahead_m),
-        max_distance=2.0,
-        include_geom_groups=(0,),
-        reduction="none",
-    )
-
-
-def _to_step_up_command_cfg(command_cfg, **step_up_kwargs) -> StepUpCommandCfg:
-    """把 Flat 的 JumpCommandCfg 原样搬进 StepUpCommandCfg，只追加 step_up_* 字段。
-
-    逐字段搬运而不是重新构造，是为了让 Flat 基线以后改指令参数时 rough 自动跟随。
+    逐字段搬运而不是重新构造，是为了让 Flat 基线以后改指令参数时 rough 自动跟随；
+    `overrides` 既能填 RoughCommandCfg 新增的分列速度字段，也能覆盖继承来的
+    地形感知高度字段（后者在基类 VelocityHeightCommandCfg 上，Flat 用的是默认值）。
     """
     base = {f.name: getattr(command_cfg, f.name) for f in fields(command_cfg) if f.init}
-    return StepUpCommandCfg(**base, **step_up_kwargs)
+    base.update(overrides)
+    return RoughCommandCfg(**base)
 
 
 def env_cfg(
     play: bool = False,
     *,
     terrain_generator: TerrainGeneratorCfg | None = None,
-    step_up_enabled: bool = ROUGH_STEP_UP_ENABLED,
-    step_up_lookahead_m: float = ROUGH_STEP_UP_LOOKAHEAD_M,
+    terrain_height_clearance: float = ROUGH_TERRAIN_HEIGHT_CLEARANCE,
+    terrain_step_height_type_names: tuple[str, ...] = ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
+    reward_terrain_type_names: tuple[str, ...] = ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+    command_velocity_error_weight: float | None = ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT,
+    zero_base_height_on_terrain: bool = ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN,
     energy_penalty_scale: float = ROUGH_ENERGY_PENALTY_SCALE,
     terrain_curriculum: bool = True,
     terrain_command_override: bool = ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED,
@@ -157,12 +179,18 @@ def env_cfg(
     amp_enabled: bool = False,
     amp_terrain_type_names: tuple[str, ...] = ROUGH_AMP_TERRAIN_TYPE_NAMES,
 ) -> ManagerBasedRlEnvCfg:
-    """带地形课程与台阶前瞻辅助的崎岖地形环境配置。
+    """带地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测可传
     `stair_only_terrains_cfg()`。
-    step_up_enabled：关掉后指令项逐位退化为 Flat 的 JumpCommandTerm，用于做“只有地形课程、
-    没有状态机”的单变量对照。
+    terrain_height_clearance：机体碰撞盒底面相对单级台阶顶部的最小余量(m)，
+    高度指令的采样下界按 `台阶高 + 该余量 - body_collision_bottom_offset` 抬高；
+    设 0 即关掉下限，高度指令退回 Flat 的 0.20–0.38 均匀采样。
+    terrain_step_height_type_names：下限生效的子地形列名，默认只有上台阶列。
+    reward_terrain_type_names：下面两项分列定价生效的子地形列名，默认只有上台阶列。
+    command_velocity_error_weight：只在这些列生效的速度违令二次罚权重；None 即不加该项
+    （退回 Flat 基线，全线都没有它），见 ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT 注释。
+    zero_base_height_on_terrain：把 flat_base_height 在这些列上置零；关掉即全线同价。
     energy_penalty_scale：能耗类罚项相对 Flat 基线的折价系数，1.0 即与平地同价。
     terrain_curriculum：关掉后地形难度不再随表现提升（play 模式下恒为关）。
     terrain_command_override：非平地列只发前向直行指令（vx/yaw 范围见后两个参数），
@@ -200,17 +228,13 @@ def env_cfg(
     # 只动这一个传感器缓冲区，不碰 solver/cone/impratio，避免与 Flat 基线产生物理差异。
     cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
 
-    sensor_name = "wheel_forward_sensor"
-    cfg.scene.sensors = (
-        *cfg.scene.sensors,
-        _forward_probe_sensor_cfg(sensor_name, step_up_lookahead_m),
-    )
-
     cfg.commands = dict(cfg.commands)
-    cfg.commands["velocity_height"] = _to_step_up_command_cfg(
+    cfg.commands["velocity_height"] = _to_rough_command_cfg(
         cfg.commands["velocity_height"],
-        step_up_enabled=step_up_enabled,
-        step_up_sensor_name=sensor_name,
+        terrain_aware_height=ROUGH_TERRAIN_AWARE_HEIGHT,
+        terrain_height_clearance=float(terrain_height_clearance),
+        body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
+        terrain_step_height_type_names=tuple(terrain_step_height_type_names),
         terrain_command_override_enabled=terrain_command_override,
         terrain_lin_vel_x_range=tuple(terrain_lin_vel_x_range),
         terrain_ang_vel_yaw_range=tuple(terrain_ang_vel_yaw_range),
@@ -230,13 +254,8 @@ def env_cfg(
             params["tracking_log_key"] = ROUGH_CURRICULUM_TRACKING_LOG_KEY
             cfg.curriculum["command_vel"] = replace(cfg.curriculum["command_vel"], params=params)
 
-    # 墙（地形外围 border 这类高过机身的障碍）不是策略失败，按截断 bootstrap。
-    cfg.terminations = dict(cfg.terminations)
-    cfg.terminations["wall_blocked"] = TerminationTermCfg(
-        func=terminations.wall_blocked,
-        time_out=True,
-    )
     # 清掉本块台阶、走到边框即截断结算课程，不进邻块（邻块是另一行难度）。
+    cfg.terminations = dict(cfg.terminations)
     cfg.terminations["terrain_cleared"] = TerminationTermCfg(
         func=terminations.terrain_cleared,
         time_out=True,
@@ -271,6 +290,13 @@ def env_cfg(
         term = cfg.rewards[name]
         term.weight = float(term.weight) * float(energy_penalty_scale)
 
+    _apply_terrain_column_rewards(
+        cfg,
+        terrain_type_names=tuple(reward_terrain_type_names),
+        command_velocity_error_weight=command_velocity_error_weight,
+        zero_base_height=zero_base_height_on_terrain,
+    )
+
     if not play and terrain_curriculum:
         cfg.curriculum = dict(cfg.curriculum)
         if int(flat_warmup_iterations) > 0:
@@ -292,6 +318,41 @@ def env_cfg(
         )
 
     return cfg
+
+
+def _apply_terrain_column_rewards(
+    cfg: ManagerBasedRlEnvCfg,
+    *,
+    terrain_type_names: tuple[str, ...],
+    command_velocity_error_weight: float | None,
+    zero_base_height: bool,
+) -> None:
+    """把台阶列的两处分列定价接进奖励表（见 rewards.py 的模块 docstring）。
+
+    两项都只改生效范围：平地热身期（全员在平地列）与其余列的定价与 Flat 基线逐位相同。
+    """
+    if command_velocity_error_weight is not None:
+        cfg.rewards["command_velocity_error"] = RewardTermCfg(
+            func=rewards.command_velocity_error_on_terrain,
+            weight=float(command_velocity_error_weight),
+            params={
+                "command_name": "velocity_height",
+                "terrain_type_names": terrain_type_names,
+                "lin_vel_scale": ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
+                "yaw_vel_scale": 1.0,
+                "lin_deadband": float(FLAT_CMD_VEL_DEADBAND[0]),
+                "yaw_deadband": float(FLAT_CMD_VEL_DEADBAND[1]),
+                "max_penalty": 9.0,
+            },
+        )
+    if zero_base_height:
+        # 用 replace 而不是重建：sigma / max_error / 权重继续跟随 Flat 基线。
+        term = cfg.rewards["flat_base_height"]
+        cfg.rewards["flat_base_height"] = replace(
+            term,
+            func=rewards.base_height_penalty_off_terrain,
+            params={**term.params, "terrain_type_names": terrain_type_names},
+        )
 
 
 def _add_critic_height_scan(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -392,6 +453,9 @@ __all__ = [
     "ROUGH_AMP_MASK_OBS_GROUP",
     "ROUGH_AMP_OBS_GROUP",
     "ROUGH_AMP_TERRAIN_TYPE_NAMES",
+    "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",
+    "ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CRITIC_HEIGHT_SCAN_ENABLED",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
@@ -407,11 +471,14 @@ __all__ = [
     "ROUGH_ENERGY_PENALTY_SCALE",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
-    "ROUGH_STEP_UP_ENABLED",
-    "ROUGH_STEP_UP_LOOKAHEAD_M",
+    "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
+    "ROUGH_TERRAIN_AWARE_HEIGHT",
     "ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED",
+    "ROUGH_TERRAIN_HEIGHT_CLEARANCE",
     "ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM",
     "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
+    "ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES",
+    "ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN",
     "env_cfg",
 ]

@@ -19,8 +19,8 @@ _KEEP_NAMESPACES = (
     "Episode_Reward/",
     "Episode_Termination/",
     "Curriculum/",
-    # rough 线 step_up 状态机的占比（hold/detect/wall），每轮只有 3 个键；
-    # 没有它们就看不出状态机有没有触发（R2 时被裁掉，无法判断策略是否在台阶前退缩）。
+    # rough 线的地形侧诊断（地形列高度指令均值、CTBC 触发率），每轮只有几个键；
+    # 没有它们就看不出地形感知高度下限有没有顶起来（R2 时被裁掉，无法判断策略在台阶前的状态）。
     "Rough/",
 )
 
