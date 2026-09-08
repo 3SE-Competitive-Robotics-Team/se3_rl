@@ -153,8 +153,10 @@ class AMP(nn.Module):
         self.learning_rate = float(learning_rate) if learning_rate is not None else 5.0e-4
 
         self.amp_obs_dim = int(obs[self.obs_group].shape[-1])
-        if self.amp_obs_dim != AMP_FRAME_DIM:
-            raise ValueError(f"AMP 观测组 '{self.obs_group}' 应为 {AMP_FRAME_DIM} 维，实际 {self.amp_obs_dim}")
+        if not 1 <= self.amp_obs_dim <= AMP_FRAME_DIM:
+            raise ValueError(
+                f"AMP 观测组 '{self.obs_group}' 应为契约字段子集（1..{AMP_FRAME_DIM} 维），实际 {self.amp_obs_dim}"
+            )
         self.sequence_dim = self.transition_frames * self.amp_obs_dim
 
         self._register_dataset(self._load_dataset(cfg))

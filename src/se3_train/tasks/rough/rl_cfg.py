@@ -12,6 +12,7 @@ import os
 from dataclasses import asdict
 
 from se3_train.amp import default_dataset_root
+from se3_train.mdp.amp_observations import AMP_DISCRIMINATOR_FIELDS
 from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
 from se3_train.tasks.flat.rl_cfg import mlp_rl_cfg
 
@@ -28,7 +29,8 @@ def amp_cfg_dict(*, dataset_root: str) -> dict:
     return {
         "obs_group": "amp",
         "mask_obs_group": "amp_mask",  # 只对上台阶列的 env 给风格奖励/采策略窗口
-        "transition_frames": 2,
+        # 2026-09-08 A2：窗口 2 帧（40 ms）→ 5 帧（100 ms），判别器能看到一次抬轮/落轮的形状而不只是瞬时速度。
+        "transition_frames": 5,
         "reward_weight": 3.0,
         "reward_warmup_updates": 100,
         "discriminator_updates": 2,
@@ -41,6 +43,8 @@ def amp_cfg_dict(*, dataset_root: str) -> dict:
             "dataset_root": dataset_root,
             "dataset_glob": "*.pkl",
             "mirror_augmentation": True,
+            # 与 env 的 amp 观测组同一份字段子集（去轮速，17 维）。
+            "fields": list(AMP_DISCRIMINATOR_FIELDS),
         },
     }
 

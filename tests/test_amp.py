@@ -23,7 +23,7 @@ import se3_train  # noqa: F401  # 注册任务
 from se3_shared.amp import AMP_FEATURE_NAMES, AMP_FRAME_DIM
 from se3_train.amp import AMP
 from se3_train.amp_dataset_factory import build_amp_dataset
-from se3_train.mdp.amp_observations import amp_motion_frame
+from se3_train.mdp.amp_observations import AMP_DISCRIMINATOR_FIELDS, amp_field_indices, amp_motion_frame
 from se3_train.motion_loader import MotionLoader
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.rl_cfg import amp_rl_cfg
@@ -286,9 +286,14 @@ class AmpMotionFrameTests(unittest.TestCase):
         n = self.env.num_envs
         i = _IDX
         self._place(torch.zeros(n))
-        frame = amp_motion_frame(self.env)
+        frame = amp_motion_frame(self.env, fields=AMP_FEATURE_NAMES)
         self.assertEqual(tuple(frame.shape), (n, AMP_FRAME_DIM))
-        self.assertEqual(list(self.env.observation_manager.compute()["amp"].shape), [n, AMP_FRAME_DIM])
+        # 任务默认切列：去掉两个轮速，17 维，列顺序与契约一致。
+        sliced = self.env.observation_manager.compute(update_history=True)["amp"]  # 不带参会返回上一步缓存
+        self.assertEqual(len(AMP_DISCRIMINATOR_FIELDS), 17)
+        self.assertNotIn("left_wheel_spin", AMP_DISCRIMINATOR_FIELDS)
+        self.assertEqual(list(sliced.shape), [n, 17])
+        self.assertTrue(torch.allclose(sliced, frame[:, amp_field_indices(AMP_DISCRIMINATOR_FIELDS)]))
         self.assertTrue(torch.allclose(frame[:, i["gravity_z"]], torch.full((n,), -1.0), atol=1e-3))
         # 轮心在髋轴下方（z<0），左右对称（x 相近；容差留给逐 env 的模型随机化）。
         self.assertTrue(bool((frame[:, i["left_wheel_z"]] < -0.1).all()))
@@ -296,7 +301,7 @@ class AmpMotionFrameTests(unittest.TestCase):
         self.assertLess(float((frame[:, i["left_wheel_x"]] - frame[:, i["right_wheel_x"]]).abs().max()), 0.05)
         # 同一个 env 整体绕 z 转 1.3 rad，特征不变（不跨 env 比较，避免逐 env 随机化干扰）。
         self._place(torch.full((n,), 1.3))
-        rotated = amp_motion_frame(self.env)
+        rotated = amp_motion_frame(self.env, fields=AMP_FEATURE_NAMES)
         self.assertTrue(torch.allclose(frame, rotated, atol=1e-4))
 
 
@@ -311,6 +316,9 @@ class AmpTaskTests(unittest.TestCase):
         self.assertEqual(rl.algorithm.amp_cfg["mask_obs_group"], "amp_mask")
         self.assertEqual(rl.algorithm.class_name, "se3_train.ppo:Se3PPO")
         self.assertEqual(rl.algorithm.amp_cfg["reward_weight"], 3.0)
+        self.assertEqual(rl.algorithm.amp_cfg["transition_frames"], 5)
+        self.assertEqual(rl.algorithm.amp_cfg["dataset_kwargs"]["fields"], list(AMP_DISCRIMINATOR_FIELDS))
+        self.assertEqual(cfg.observations["amp"].terms["motion_frame"].params["fields"], AMP_DISCRIMINATOR_FIELDS)
         base = asdict(load_rl_cfg("SE3-WheelLegged-Rough").algorithm)
         mine = asdict(rl.algorithm)
         for key in ("learning_rate", "entropy_coef", "num_learning_epochs", "clip_param", "gamma", "lam", "desired_kl"):
@@ -359,7 +367,9 @@ class AmpEndToEndTests(unittest.TestCase):
         alg = self.runner.alg
         self.assertIsNotNone(alg.amp)
         self.assertAlmostEqual(alg.amp.step_dt, self.env.step_dt)
-        self.assertEqual(alg.amp.amp_obs_dim, AMP_FRAME_DIM)
+        self.assertEqual(alg.amp.amp_obs_dim, 17)
+        self.assertEqual(alg.amp.transition_frames, 5)
+        self.assertEqual(alg.amp.discriminator.input_dim, 5 * 17)
         obs = self.wrapped.get_observations()
         alg.train_mode()
         for _ in range(self.agent.num_steps_per_env):

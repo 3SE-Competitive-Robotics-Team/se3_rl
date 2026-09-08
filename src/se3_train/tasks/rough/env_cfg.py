@@ -73,7 +73,7 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 ROUGH_FLAT_WARMUP_ITERATIONS = 500
 ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT
 
-# AMP 观测组：19 维运动状态单帧（契约 se3.amp.motion.v1，见 docs/amp_input.md），只供判别器用。
+# AMP 观测组：契约 19 维运动帧（se3.amp.motion.v1，docs/amp_input.md）按 AMP_DISCRIMINATOR_FIELDS 切成 17 维（去轮速），只供判别器用。
 ROUGH_AMP_OBS_GROUP = "amp"
 # AMP 只对这些子地形列生效（2026-09-08 用户定：只有上台阶列）；掩码走独立观测组，判别器按它筛 env。
 ROUGH_AMP_MASK_OBS_GROUP = "amp_mask"
@@ -176,7 +176,7 @@ def env_cfg(
     actor 不变；关掉即 critic 只有原来的标量离地高度。
     flat_warmup_iterations：前 N 轮全部 env 在平地列（curriculums.flat_warmup），0 关闭。
     curriculum_advance_threshold：Flat 速度课程推进阈值（默认严格档 0.75）。
-    amp_enabled：加 `amp` 观测组（19 维运动帧，mdp/amp_observations.amp_motion_frame）与 `amp_mask` 观测组
+    amp_enabled：加 `amp` 观测组（AMP_DISCRIMINATOR_FIELDS 切列的运动帧，mdp/amp_observations.amp_motion_frame）与 `amp_mask` 观测组
     （env 是否在 amp_terrain_type_names 列上），只供 se3_train.amp 使用，actor/critic 不看它们。
     判别器与数据集在 rl_cfg 的 amp_cfg 里配。
     amp_terrain_type_names：AMP 生效的子地形列，默认只有上台阶列；空元组即全部 env。

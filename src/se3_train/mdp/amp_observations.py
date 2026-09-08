@@ -1,4 +1,4 @@
-"""AMP 判别器输入：19 维运动状态单帧，契约见 docs/amp_input.md 与 se3_shared.amp。
+"""AMP 判别器输入：契约 19 维运动状态单帧（docs/amp_input.md、se3_shared.amp）按 AMP_DISCRIMINATOR_FIELDS 切列。
 
 单帧 = [机身系重力(3), 机身角速度(3), 机身 link 原点线速度(3),
         左右轮心相对髋轴的 xz 位置(4), 其随体时间导数(4), 左右轮自转(2)]，
@@ -16,7 +16,7 @@ import torch
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.utils.lab_api.math import matrix_from_quat
 
-from se3_shared.amp import AMP_FRAME_DIM, amp_frame_from_world
+from se3_shared.amp import AMP_FEATURE_NAMES, amp_frame_from_world
 from se3_train.mdp.joint_indices import wheel_joint_ids
 from se3_train.mdp.observations import _finite_clamp
 
@@ -29,7 +29,20 @@ AMP_HIP_BODY_SUFFIXES = ("lf0_Link", "rf0_Link")
 # 关节轮速乘以该符号后，正值统一表示向前滚动（2026-09-08 用 R3 model_500 前进回放实测：
 # 左 +8.1 rad/s、右 −7.9 rad/s 对应 vx 0.47 m/s）。
 AMP_WHEEL_SPIN_SIGNS = (1.0, -1.0)
+# 判别器实际看的字段（2026-09-08 用户定，A2）：去掉左右轮自转——专家数据里轮速是打滑/悬空时的读数
+# （22±41 rad/s，策略 0.8±4.5），判别器仅凭它就能分开两边、风格信号无梯度；几何/速度字段两车同尺寸可直接比。
+AMP_DISCRIMINATOR_FIELDS: tuple[str, ...] = tuple(n for n in AMP_FEATURE_NAMES if not n.endswith("_spin"))
 _IDS_ATTR = "_se3_amp_body_ids"
+_FIELD_IDX_ATTR = "_se3_amp_field_idx"
+
+
+def amp_field_indices(fields: tuple[str, ...] | list[str]) -> list[int]:
+    """契约字段名 → 19 维帧内下标；字段必须存在、非空且不重复。"""
+    names = list(AMP_FEATURE_NAMES)
+    unknown = [f for f in fields if f not in names]
+    if unknown or not fields or len(set(fields)) != len(fields):
+        raise ValueError(f"AMP 字段非法：未知 {unknown}，请求 {list(fields)}")
+    return [names.index(f) for f in fields]
 
 
 def _body_ids(env: ManagerBasedRlEnv, suffixes: tuple[str, ...], names: list[str]) -> list[int]:
@@ -61,8 +74,10 @@ def _amp_ids(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor, torch.
     return cached
 
 
-def amp_motion_frame(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """19 维 AMP 运动状态单帧 [B, 19]，见 se3_shared.amp.AMP_FEATURE_NAMES。"""
+def amp_motion_frame(
+    env: ManagerBasedRlEnv, fields: tuple[str, ...] = AMP_DISCRIMINATOR_FIELDS
+) -> torch.Tensor:
+    """AMP 运动状态单帧 [B, len(fields)]：先按契约算 19 维（AMP_FEATURE_NAMES），再按 fields 切列。"""
     robot = env.scene["robot"]
     wheels, hips, joints, signs = _amp_ids(env)
     data = robot.data
@@ -76,7 +91,17 @@ def amp_motion_frame(env: ManagerBasedRlEnv) -> torch.Tensor:
         hip_lin_vel_world=data.body_link_lin_vel_w[:, hips],
         wheel_spin_forward=data.joint_vel[:, joints] * signs,
     )
-    return _finite_clamp(frame)
+    frame = _finite_clamp(frame)
+    key = tuple(fields)
+    if key == tuple(AMP_FEATURE_NAMES):
+        return frame
+    cache: dict = getattr(env, _FIELD_IDX_ATTR, None) or {}
+    idx = cache.get(key)
+    if idx is None:
+        idx = torch.tensor(amp_field_indices(key), device=env.device, dtype=torch.long)
+        cache[key] = idx
+        setattr(env, _FIELD_IDX_ATTR, cache)
+    return frame[:, idx]
 
 
 def amp_terrain_mask(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...] = ("stairs_up",)) -> torch.Tensor:
@@ -99,13 +124,14 @@ def amp_terrain_mask(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]
     return active.to(dtype=torch.float32).unsqueeze(-1)
 
 
-def amp_obs_dim() -> int:
-    return AMP_FRAME_DIM
+def amp_obs_dim(fields: tuple[str, ...] = AMP_DISCRIMINATOR_FIELDS) -> int:
+    return len(amp_field_indices(tuple(fields)))
 
 
-def build_amp_obs_terms() -> dict[str, ObservationTermCfg]:
-    """AMP 观测组唯一一项：19 维运动帧（无噪声、无缩放）。"""
-    return {"motion_frame": ObservationTermCfg(func=amp_motion_frame)}
+def build_amp_obs_terms(fields: tuple[str, ...] = AMP_DISCRIMINATOR_FIELDS) -> dict[str, ObservationTermCfg]:
+    """AMP 观测组唯一一项：按 fields 切列的运动帧（无噪声、无缩放）；数据集侧必须传同一个 fields。"""
+    amp_field_indices(tuple(fields))
+    return {"motion_frame": ObservationTermCfg(func=amp_motion_frame, params={"fields": tuple(fields)})}
 
 
 def build_amp_mask_terms(terrain_type_names: tuple[str, ...]) -> dict[str, ObservationTermCfg]:
@@ -118,9 +144,11 @@ def build_amp_mask_terms(terrain_type_names: tuple[str, ...]) -> dict[str, Obser
 
 
 __all__ = [
+    "AMP_DISCRIMINATOR_FIELDS",
     "AMP_HIP_BODY_SUFFIXES",
     "AMP_WHEEL_BODY_SUFFIXES",
     "AMP_WHEEL_SPIN_SIGNS",
+    "amp_field_indices",
     "amp_motion_frame",
     "amp_obs_dim",
     "amp_terrain_mask",
