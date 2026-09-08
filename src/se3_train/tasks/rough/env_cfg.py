@@ -102,6 +102,15 @@ ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED = True
 ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 0.8)
 ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
 ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM = False
+# 台阶列单独定价（2026-09-08 用户定，A8）：A7 把所有非平地列 vx 收到 (0.4, 0.8) 之后，
+# 平地能力（2 m/s 误差 0.03）和地形列梯度（base_vx_error_terrain 0.37）都回来了，
+# 但 stairs_up 1500 轮只从 1.09 挪到 1.11——6 cm 轮子靠 0.8 m/s 的动量翻不过 4 cm 立面，
+# 而 slope_up 已经 6.39、平地 6.1。所以把台阶列拆出来给高速 + 高站姿，其余地形列保持低速档。
+# vx 1.0–2.4 与专家数据（Fudan 12–20 cm 爬升，1.5–2.4 m/s）同一段；高度 0.35–0.38 顶到
+# Flat 上界附近换离地净空，整体高于地形感知抬高下限在最高难度行的 0.34，那条下限在本列被吞掉。
+ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ("stairs_up",)
+ROUGH_STAIR_LIN_VEL_X_RANGE = (1.0, 2.4)
+ROUGH_STAIR_HEIGHT_RANGE = (0.35, 0.38)
 ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
 ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
 
@@ -178,6 +187,9 @@ def env_cfg(
     terrain_height_clearance: float = ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     terrain_step_height_type_names: tuple[str, ...] = ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
     reward_terrain_type_names: tuple[str, ...] = ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+    stair_command_terrain_names: tuple[str, ...] = ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
+    stair_lin_vel_x_range: tuple[float, float] = ROUGH_STAIR_LIN_VEL_X_RANGE,
+    stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE,
     command_velocity_error_weight: float | None = ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT,
     zero_base_height_on_terrain: bool = ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN,
     energy_penalty_scale: float = ROUGH_ENERGY_PENALTY_SCALE,
@@ -207,6 +219,9 @@ def env_cfg(
     设 0 即关掉下限，高度指令退回 Flat 的 0.20–0.38 均匀采样。
     terrain_step_height_type_names：下限生效的子地形列名，默认只有上台阶列。
     reward_terrain_type_names：下面两项分列定价生效的子地形列名，默认只有上台阶列。
+    stair_command_terrain_names：单独发高速/高站姿指令的子地形列名，空元组即关闭
+    （这些列退回 terrain_lin_vel_x_range 与全局 height_range）。
+    stair_lin_vel_x_range / stair_height_range：台阶列的 vx 与机身高度指令范围。
     command_velocity_error_weight：只在这些列生效的速度违令二次罚权重；None 即不加该项
     （退回 Flat 基线，全线都没有它），见 ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT 注释。
     zero_base_height_on_terrain：把 flat_base_height 在这些列上置零；关掉即全线同价。
@@ -257,6 +272,9 @@ def env_cfg(
         body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
         terrain_step_height_type_names=tuple(terrain_step_height_type_names),
         terrain_command_override_enabled=terrain_command_override,
+        stair_command_terrain_names=tuple(stair_command_terrain_names),
+        stair_lin_vel_x_range=tuple(stair_lin_vel_x_range),
+        stair_height_range=tuple(stair_height_range),
         terrain_lin_vel_x_range=tuple(terrain_lin_vel_x_range),
         terrain_ang_vel_yaw_range=tuple(terrain_ang_vel_yaw_range),
         terrain_lin_vel_x_follow_curriculum=terrain_lin_vel_x_follow_curriculum,
@@ -508,6 +526,9 @@ __all__ = [
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
+    "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_STAIR_HEIGHT_RANGE",
+    "ROUGH_STAIR_LIN_VEL_X_RANGE",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
     "ROUGH_TERRAIN_AWARE_HEIGHT",
     "ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED",

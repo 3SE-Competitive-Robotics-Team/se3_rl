@@ -39,6 +39,9 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_ENERGY_PENALTY_SCALE,
     ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
     ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+    ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
+    ROUGH_STAIR_HEIGHT_RANGE,
+    ROUGH_STAIR_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
@@ -254,6 +257,26 @@ class TerrainColumnRewardTests(unittest.TestCase):
         # 只改生效范围：权重与核参数继续跟随 Flat 基线。
         self.assertAlmostEqual(float(term.weight), -4.0)
         self.assertAlmostEqual(term.params["sigma"], 0.05)
+
+    def test_stair_command_ranges_are_configured(self) -> None:
+        command = self.cfg.commands["velocity_height"]
+        self.assertEqual(
+            tuple(command.stair_command_terrain_names), ROUGH_STAIR_COMMAND_TERRAIN_NAMES
+        )
+        self.assertEqual(tuple(command.stair_lin_vel_x_range), ROUGH_STAIR_LIN_VEL_X_RANGE)
+        self.assertEqual(tuple(command.stair_height_range), ROUGH_STAIR_HEIGHT_RANGE)
+        # 台阶列的高度区间必须整体高于地形感知抬高下限在最高难度行的取值，
+        # 否则两套机制会在同一列上互相盖，读日志时说不清是谁在起作用。
+        floor_at_hardest = (
+            _STEP_HEIGHT_RANGE[1]
+            + command.terrain_height_clearance
+            - command.body_collision_bottom_offset
+        )
+        self.assertGreaterEqual(ROUGH_STAIR_HEIGHT_RANGE[0], floor_at_hardest)
+        # 高度上界不能超过 Flat 的采样上界，否则部署端拿到的是训练没见过的指令。
+        self.assertLessEqual(ROUGH_STAIR_HEIGHT_RANGE[1], command.height_range[1])
+        # 台阶列走高速档，其余地形列仍是 A7 的低速档。
+        self.assertGreater(ROUGH_STAIR_LIN_VEL_X_RANGE[0], ROUGH_TERRAIN_LIN_VEL_X_RANGE[1])
 
     def test_all_three_column_switches_point_at_the_same_column(self) -> None:
         # AMP 掩码、地形感知高度下限、分列定价必须是同一组列，
@@ -773,32 +796,87 @@ class RoughRuntimeTests(unittest.TestCase):
         mask = self.term._terrain_override_mask
         assert mask is not None
         self.assertTrue(torch.equal(mask.cpu(), non_flat.cpu()))
+        # A8：台阶列拆出来单独定价，其余地形列（斜坡、起伏）仍走通用低速档。
+        stair = self.term._stair_mask
+        assert stair is not None
+        self.assertTrue(bool(stair.any()) and bool((non_flat & ~stair).any()))
+        other = non_flat & ~stair.cpu()
         env_ids = torch.arange(self.env.num_envs, device=self.env.device)
-        vx_lo, vx_hi = ROUGH_TERRAIN_LIN_VEL_X_RANGE
         yaw_lo, yaw_hi = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE
         for _ in range(50):  # 多抽几轮，静站样本（10%）若漏进非平地列一定会被抓到
             self.term._resample_command(env_ids)
-            cmd = self.term.command[non_flat]
-            self.assertTrue(bool((cmd[:, 0] >= vx_lo - 1e-6).all()), cmd[:, 0])
-            self.assertTrue(bool((cmd[:, 0] <= vx_hi + 1e-6).all()), cmd[:, 0])
-            self.assertTrue(bool((cmd[:, 1] >= yaw_lo - 1e-6).all()), cmd[:, 1])
-            self.assertTrue(bool((cmd[:, 1] <= yaw_hi + 1e-6).all()), cmd[:, 1])
+            for sel, (vx_lo, vx_hi) in (
+                (other, ROUGH_TERRAIN_LIN_VEL_X_RANGE),
+                (stair.cpu(), ROUGH_STAIR_LIN_VEL_X_RANGE),
+            ):
+                cmd = self.term.command[sel]
+                self.assertTrue(bool((cmd[:, 0] >= vx_lo - 1e-6).all()), cmd[:, 0])
+                self.assertTrue(bool((cmd[:, 0] <= vx_hi + 1e-6).all()), cmd[:, 0])
+                self.assertTrue(bool((cmd[:, 1] >= yaw_lo - 1e-6).all()), cmd[:, 1])
+                self.assertTrue(bool((cmd[:, 1] <= yaw_hi + 1e-6).all()), cmd[:, 1])
             self.assertFalse(bool(self.term._standing_mask[non_flat].any()))
+
+    def test_stair_column_gets_its_own_speed_and_height(self) -> None:
+        """A8：台阶列 vx 1.0–2.4、机身高度 0.35–0.38；其余地形列与平地列都不受影响。"""
+        stair = self.term._stair_mask
+        assert stair is not None
+        non_flat = self.terrain_types != self.flat_col
+        other = non_flat & ~stair.cpu()
+        flat = ~non_flat
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        h_lo, h_hi = ROUGH_STAIR_HEIGHT_RANGE
+        seen_low = other_min_h = 1.0
+        seen_high = 0.0
+        for _ in range(40):
+            self.term._resample_command(env_ids)
+            h = self.term.command[stair.cpu(), 4]
+            self.assertGreaterEqual(float(h.min()), h_lo - 1e-6)
+            self.assertLessEqual(float(h.max()), h_hi + 1e-6)
+            seen_low = min(seen_low, float(h.min()))
+            seen_high = max(seen_high, float(h.max()))
+            other_min_h = min(other_min_h, float(self.term.command[other | flat, 4].min()))
+        # 区间确实被用满，而不是恒等于某个端点。
+        self.assertLess(seen_low, h_hi - 0.01)
+        self.assertGreater(seen_high, h_lo + 0.01)
+        # 其余列仍能抽到 Flat 下界附近的矮站姿，说明高度覆盖只作用在台阶列。
+        self.assertLess(other_min_h, h_lo)
+
+    def test_stair_height_refreshes_the_policy_default_pose_cache(self) -> None:
+        """高度指令改完必须同步刷新高度条件默认腿姿缓存，否则奖励侧用的是旧高度。"""
+        from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache
+
+        stair = self.term._stair_mask
+        assert stair is not None
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        self.term._resample_command(env_ids)
+        cache = get_policy_default_from_height_cache(
+            self.env, "velocity_height", device=torch.device("cpu"), dtype=torch.float32
+        )
+        from se3_shared import RobotConfig, policy_default_from_height_torch
+
+        expected = policy_default_from_height_torch(self.term.command[:, 4], RobotConfig())
+        self.assertTrue(bool((cache - expected).abs().max() < 1e-5))
 
     def test_terrain_vx_is_decoupled_from_the_flat_curriculum(self) -> None:
         """A7：地形列 vx 恒在 (0.4, 0.8)，平地课程怎么涨都不跟。"""
+        stair = self.term._stair_mask
+        assert stair is not None
         non_flat = self.terrain_types != self.flat_col
+        other = non_flat & ~stair.cpu()
         env_ids = torch.arange(self.env.num_envs, device=self.env.device)
-        lo, hi = ROUGH_TERRAIN_LIN_VEL_X_RANGE
         saved = self.term.cfg.lin_vel_x_range
         try:
             for flat_range in ((0.0, 0.0), (-0.8, 0.8), (-2.4, 2.4)):
                 self.term.cfg.lin_vel_x_range = flat_range
                 for _ in range(15):
                     self.term._resample_command(env_ids)
-                    vx = self.term.command[non_flat][:, 0]
-                    self.assertGreaterEqual(float(vx.min()), lo - 1e-5, msg=str(flat_range))
-                    self.assertLessEqual(float(vx.max()), hi + 1e-5, msg=str(flat_range))
+                    for sel, (lo, hi) in (
+                        (other, ROUGH_TERRAIN_LIN_VEL_X_RANGE),
+                        (stair.cpu(), ROUGH_STAIR_LIN_VEL_X_RANGE),
+                    ):
+                        vx = self.term.command[sel][:, 0]
+                        self.assertGreaterEqual(float(vx.min()), lo - 1e-5, msg=str(flat_range))
+                        self.assertLessEqual(float(vx.max()), hi + 1e-5, msg=str(flat_range))
         finally:
             self.term.cfg.lin_vel_x_range = saved
 
