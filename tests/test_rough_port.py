@@ -161,13 +161,13 @@ class RoughTerrainTests(unittest.TestCase):
         self.assertTrue(command.terrain_lin_vel_x_follow_curriculum)
 
     def test_flat_warmup_and_strict_advance_threshold(self) -> None:
-        # 2026-09-07 用户定（R7）：前 500 轮全平地，之后换回原列；推进阈值 0.75。
+        # 2026-09-07 用户定（R7）：前 500 轮全平地，之后换回原列。推进阈值 R7–A4 为 0.75，2026-09-08（A5）改回 Flat 的 0.5。
         self.assertEqual(next(iter(self.cfg.curriculum)), "flat_warmup")
         params = self.cfg.curriculum["flat_warmup"].params
         self.assertEqual(params["iterations"], 500)
         self.assertEqual(params["steps_per_policy_iter"], load_rl_cfg(_ROUGH).num_steps_per_env)
         self.assertLess(list(self.cfg.curriculum).index("flat_warmup"), list(self.cfg.curriculum).index("terrain_levels"))
-        self.assertAlmostEqual(self.cfg.curriculum["command_vel"].params["advance_threshold"], 0.75)
+        self.assertAlmostEqual(self.cfg.curriculum["command_vel"].params["advance_threshold"], 0.5)
         off = rough_env_cfg(flat_warmup_iterations=0)
         self.assertNotIn("flat_warmup", off.curriculum)
 

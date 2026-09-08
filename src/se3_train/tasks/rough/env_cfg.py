@@ -32,7 +32,7 @@ from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 from se3_train.mdp.amp_observations import build_amp_mask_terms, build_amp_obs_terms
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
-    FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT,
+    FLAT_CURRICULUM_ADVANCE_THRESHOLD,
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
@@ -69,9 +69,11 @@ _ROUGH_ENERGY_REWARD_NAMES = ("leg_torques", "wheel_torques", "leg_power")
 ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 
 # 平地热身：前 N 轮全部 env 在平地列，之后各 env 在下一次 reset 时换回原列（2026-09-07 用户定，R7）。
-# 速度课程推进阈值改用 Flat 的严格档 0.75：默认 0.5 在 vx=0 阶段轻松通过，100 轮内就把 vx 放到 1.6。
+# 速度课程推进阈值：R7–A4 用严格档 0.75，但 vx=0 阶段的跟踪 EMA 天花板就在 0.72–0.75，首次推进要等 200–350 轮、
+# 且靠种子（A4 到 499 轮只推到 0.2）；Flat 基线 D10 用 0.5 在 45 轮推进、350 轮到 2.4、1000 轮追平跟踪。
+# 2026-09-08 用户定（A5）：改回 Flat 默认 0.5。
 ROUGH_FLAT_WARMUP_ITERATIONS = 500
-ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD_STRICT
+ROUGH_CURRICULUM_ADVANCE_THRESHOLD = FLAT_CURRICULUM_ADVANCE_THRESHOLD
 
 # AMP 观测组：契约 19 维运动帧（se3.amp.motion.v1，docs/amp_input.md）按 AMP_DISCRIMINATOR_FIELDS 切成 17 维（去轮速），只供判别器用。
 ROUGH_AMP_OBS_GROUP = "amp"
@@ -175,7 +177,7 @@ def env_cfg(
     critic_height_scan：critic 加 77 点地形高度扫描特权观测（observations.height_scan_obs），
     actor 不变；关掉即 critic 只有原来的标量离地高度。
     flat_warmup_iterations：前 N 轮全部 env 在平地列（curriculums.flat_warmup），0 关闭。
-    curriculum_advance_threshold：Flat 速度课程推进阈值（默认严格档 0.75）。
+    curriculum_advance_threshold：Flat 速度课程推进阈值（默认与 Flat 相同 0.5；R7–A4 曾用 0.75）。
     amp_enabled：加 `amp` 观测组（AMP_DISCRIMINATOR_FIELDS 切列的运动帧，mdp/amp_observations.amp_motion_frame）与 `amp_mask` 观测组
     （env 是否在 amp_terrain_type_names 列上），只供 se3_train.amp 使用，actor/critic 不看它们。
     判别器与数据集在 rl_cfg 的 amp_cfg 里配。
