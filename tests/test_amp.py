@@ -315,7 +315,7 @@ class AmpTaskTests(unittest.TestCase):
         rl = load_rl_cfg(_AMP_TASK)
         self.assertEqual(rl.algorithm.amp_cfg["mask_obs_group"], "amp_mask")
         self.assertEqual(rl.algorithm.class_name, "se3_train.ppo:Se3PPO")
-        self.assertEqual(rl.algorithm.amp_cfg["reward_weight"], 3.0)
+        self.assertEqual(rl.algorithm.amp_cfg["reward_weight"], 15.0)
         self.assertEqual(rl.algorithm.amp_cfg["transition_frames"], 5)
         self.assertEqual(rl.algorithm.amp_cfg["dataset_kwargs"]["fields"], list(AMP_DISCRIMINATOR_FIELDS))
         self.assertEqual(cfg.observations["amp"].terms["motion_frame"].params["fields"], AMP_DISCRIMINATOR_FIELDS)

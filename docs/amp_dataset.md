@@ -44,7 +44,7 @@ annotations: list[dict]（台阶高、指令、接触力标注，不进判别器
 
 ```
 transition_frames 5                    判别器窗口帧数（A1 用 2）
-reward_weight 3.0                      风格奖励每秒系数；每步加 3.0 × 0.02 × r，r∈[0,1]
+reward_weight 15.0                     风格奖励每秒系数；每步加 15 × 0.02 × r = 0.3 r，r∈[0,1]（A1/A2 用 3.0）
 reward_warmup_updates 100              前 100 次判别器更新内线性升高
 discriminator_updates 2                每轮 PPO 更新后的判别器步数
 discriminator_batch_size 4096

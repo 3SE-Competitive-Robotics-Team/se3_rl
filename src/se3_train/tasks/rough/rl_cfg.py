@@ -31,7 +31,8 @@ def amp_cfg_dict(*, dataset_root: str) -> dict:
         "mask_obs_group": "amp_mask",  # 只对上台阶列的 env 给风格奖励/采策略窗口
         # 2026-09-08 A2：窗口 2 帧（40 ms）→ 5 帧（100 ms），判别器能看到一次抬轮/落轮的形状而不只是瞬时速度。
         "transition_frames": 5,
-        "reward_weight": 3.0,
+        # 2026-09-08 A3（用户定）：3.0→15.0。A2 实测台阶列 AMP 每步 +0.035 与机身高度/腿蹭地/碰撞惩罚同量级，净收益≈0。
+        "reward_weight": 15.0,
         "reward_warmup_updates": 100,
         "discriminator_updates": 2,
         "discriminator_batch_size": 4096,
