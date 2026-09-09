@@ -75,9 +75,14 @@ ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT: float | None = FLAT_COMMAND_VELOCITY_ERROR_
 # 而 A5 的策略在台阶上跑不到 2 m/s，误差长期 1.5–2.4，用 0.5 会全程贴封顶——
 # 贴封顶等于常数，梯度又没了（正是这项要解决的问题），而 |weight|×9 = 18/s 的常数负奖励
 # 比全部正项加起来（约 10/s，is_alive 只有 1/s）还大，早终止在数值上严格更优，会教出自杀策略。
-# 1.5 让二次区间一直延伸到误差 4.55 m/s：误差 1.5 → -1.9/s、2.0 → -3.4/s、2.4 → -4.9/s，
-# 全程有梯度且不压过正奖励预算。yaw 尺度不动：台阶列 yaw 指令只有 ±0.2，误差本来就小。
-ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 1.5
+# 1.5 是按 A7 的 vx 0.4–0.8 定的，A8 把台阶列提到 1.0–2.4 之后单 env 罚值涨到 −2.48/s（A9 实测 −2.496），
+# 成了台阶列最大的单项。2026-09-09 用户定（A10）改 3.0：A10 同时把 tracking_ang_vel 在台阶列归零，
+# 台阶列的正项从 3.753 掉到 1.015，若仍留着 −2.50 的罚，净收益就是 −2.69/s——一整段 episode 累计约 −54，
+# 而第一步摔倒终止是 ≈0（catastrophic 是失败终止，PPO 按 0 值 bootstrap），故意撞死在数值上严格占优。
+# 3.0 之后：误差 1.65（A9 实测）→ −0.57/s、2.35（满指令且不动）→ −1.23/s，净收益约 −0.76/s，
+# 仍为负（必须真的往前爬拿到 tracking_lin_vel 才转正，这正是要的梯度方向），但不再诱发自杀。
+# yaw 尺度不动：台阶列 yaw 指令已固定为 0，误差本来就小。
+ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 3.0
 # 机身高度罚（flat_base_height，(clamp(err,±0.15)/0.05)² 无界二次罚，误差 0.15 m 即 36/s）
 # 在台阶列置零：爬升时机身相对脚下地面的高度必然大幅偏离指令，这项罚等于按爬升幅度罚钱。
 # 置零后台阶列的姿态由 AMP 风格奖励和地形感知高度下限管；其余列与 Flat 基线逐位相同。
@@ -111,6 +116,11 @@ ROUGH_TERRAIN_LIN_VEL_X_FOLLOW_CURRICULUM = False
 ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ("stairs_up",)
 ROUGH_STAIR_LIN_VEL_X_RANGE = (1.0, 2.4)
 ROUGH_STAIR_HEIGHT_RANGE = (0.35, 0.38)
+# 台阶列取消「不动的工资」（2026-09-09 用户定，A10）：yaw 指令固定为 0，且该项奖励在台阶列归零。
+# A9 逐项拆分：台阶列 tracking_ang_vel +2.739/s，占该列正奖励 3.753 的 73%，静止即可拿满
+# （yaw 指令 ±0.2、σ=0.25，不动时误差 0.1、核 0.96）；加 is_alive +1.0，站着不动净 +0.053/s 为正。
+ROUGH_STAIR_ANG_VEL_YAW_RANGE = (0.0, 0.0)
+ROUGH_ZERO_TRACKING_ANG_VEL_ON_TERRAIN = True
 # 逐项奖励的分列日志（2026-09-09 用户定，A9）：每步把奖励表每一项在台阶列上的均值记一份，
 # 键名 Rough/rw_<项名>_stairs。A8 只能读出 command_velocity_error 在台阶列是 −2.48/s
 # （因为它本来就只在那列生效），其余罚项被平地列稀释、无从定位。不改奖励数学。
@@ -194,6 +204,8 @@ def env_cfg(
     stair_command_terrain_names: tuple[str, ...] = ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
     stair_lin_vel_x_range: tuple[float, float] = ROUGH_STAIR_LIN_VEL_X_RANGE,
     stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE,
+    stair_ang_vel_yaw_range: tuple[float, float] = ROUGH_STAIR_ANG_VEL_YAW_RANGE,
+    zero_tracking_ang_vel_on_terrain: bool = ROUGH_ZERO_TRACKING_ANG_VEL_ON_TERRAIN,
     reward_split_log: bool = ROUGH_REWARD_SPLIT_LOG_ENABLED,
     command_velocity_error_weight: float | None = ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT,
     zero_base_height_on_terrain: bool = ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN,
@@ -226,7 +238,9 @@ def env_cfg(
     reward_terrain_type_names：下面两项分列定价生效的子地形列名，默认只有上台阶列。
     stair_command_terrain_names：单独发高速/高站姿指令的子地形列名，空元组即关闭
     （这些列退回 terrain_lin_vel_x_range 与全局 height_range）。
-    stair_lin_vel_x_range / stair_height_range：台阶列的 vx 与机身高度指令范围。
+    stair_lin_vel_x_range / stair_height_range / stair_ang_vel_yaw_range：
+    台阶列的 vx、机身高度、yaw 角速度指令范围。
+    zero_tracking_ang_vel_on_terrain：把 tracking_ang_vel 在台阶列置零（取消静止即可拿满的正奖励）。
     reward_split_log：每步记一份奖励表逐项在台阶列上的均值（Rough/rw_*_stairs），纯诊断。
     command_velocity_error_weight：只在这些列生效的速度违令二次罚权重；None 即不加该项
     （退回 Flat 基线，全线都没有它），见 ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT 注释。
@@ -281,6 +295,7 @@ def env_cfg(
         stair_command_terrain_names=tuple(stair_command_terrain_names),
         stair_lin_vel_x_range=tuple(stair_lin_vel_x_range),
         stair_height_range=tuple(stair_height_range),
+        stair_ang_vel_yaw_range=tuple(stair_ang_vel_yaw_range),
         terrain_lin_vel_x_range=tuple(terrain_lin_vel_x_range),
         terrain_ang_vel_yaw_range=tuple(terrain_ang_vel_yaw_range),
         terrain_lin_vel_x_follow_curriculum=terrain_lin_vel_x_follow_curriculum,
@@ -350,6 +365,7 @@ def env_cfg(
         command_velocity_error_weight=command_velocity_error_weight,
         zero_base_height=zero_base_height_on_terrain,
         terrain_vz_weight=terrain_vz_weight,
+        zero_tracking_ang_vel=zero_tracking_ang_vel_on_terrain,
     )
 
     if not play and terrain_curriculum:
@@ -383,6 +399,7 @@ def _apply_terrain_column_rewards(
     command_velocity_error_weight: float | None,
     zero_base_height: bool,
     terrain_vz_weight: float,
+    zero_tracking_ang_vel: bool,
 ) -> None:
     """把台阶列的两处分列定价接进奖励表（见 rewards.py 的模块 docstring）。
 
@@ -409,6 +426,14 @@ def _apply_terrain_column_rewards(
             term,
             func=rewards.base_height_penalty_off_terrain,
             params={**term.params, "terrain_type_names": terrain_type_names},
+        )
+    if zero_tracking_ang_vel:
+        # 同样用 replace：σ / sigma_cmd_scale / ratio_blend / 权重继续跟随 Flat 基线。
+        ang = cfg.rewards["tracking_ang_vel"]
+        cfg.rewards["tracking_ang_vel"] = replace(
+            ang,
+            func=rewards.tracking_ang_vel_off_terrain,
+            params={**ang.params, "terrain_type_names": terrain_type_names},
         )
     # 非平地列的 vz 项：同样用 replace，σ / 死区 / 权重继续跟随 Flat 基线。
     track = cfg.rewards["tracking_lin_vel"]
@@ -542,6 +567,7 @@ __all__ = [
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_REWARD_SPLIT_LOG_ENABLED",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
+    "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
@@ -555,5 +581,6 @@ __all__ = [
     "ROUGH_TERRAIN_VZ_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN",
+    "ROUGH_ZERO_TRACKING_ANG_VEL_ON_TERRAIN",
     "env_cfg",
 ]

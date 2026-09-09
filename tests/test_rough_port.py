@@ -39,6 +39,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_ENERGY_PENALTY_SCALE,
     ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
     ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+    ROUGH_STAIR_ANG_VEL_YAW_RANGE,
     ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
@@ -103,8 +104,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         """rough 相对 Flat 基线只有三处奖励差异，逐处钉住。
 
         1. 能耗三项折价；2. 台阶列加回速度违令罚（Flat 已整项删除）；
-        3. flat_base_height 换成按列置零的包装；4. tracking_lin_vel 换成按列关 vz 的包装。
-        后两处只换函数，权重与核参数逐位不变。
+        3. flat_base_height 换成按列置零的包装；4. tracking_lin_vel 换成按列关 vz 的包装；
+        5. tracking_ang_vel 换成台阶列置零的包装。后三处只换函数，权重与核参数逐位不变。
         """
         self.assertEqual(
             set(self.cfg.rewards) - set(self.flat.rewards), {"command_velocity_error"}
@@ -117,8 +118,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             if name in _ENERGY_REWARDS:
                 expected *= ROUGH_ENERGY_PENALTY_SCALE
             self.assertAlmostEqual(float(term.weight), expected, places=12, msg=name)
-            # 除了两个按列包装，奖励函数本身必须与 Flat 是同一个对象。
-            if name not in ("flat_base_height", "tracking_lin_vel"):
+            # 除了几个按列包装，奖励函数本身必须与 Flat 是同一个对象。
+            if name not in ("flat_base_height", "tracking_lin_vel", "tracking_ang_vel"):
                 self.assertIs(term.func, self.flat.rewards[name].func, msg=name)
         # 折价必须真的生效，否则上面那圈断言会退化成空对照。
         self.assertLess(ROUGH_ENERGY_PENALTY_SCALE, 1.0)
@@ -251,11 +252,12 @@ class TerrainColumnRewardTests(unittest.TestCase):
         term = self.cfg.rewards["command_velocity_error"]
         scale = term.params["lin_vel_scale"]
         self.assertAlmostEqual(scale, ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE)
-        # 台阶列最坏情况：满指令 2.4 m/s 而机器人不动。此时罚值必须仍未顶到 max_penalty。
-        worst_excess = ROUGH_TERRAIN_LIN_VEL_X_RANGE[1] - term.params["lin_deadband"]
+        # 最坏情况取台阶列的指令上界（这一项只在台阶列生效）：满指令而机器人不动。
+        worst_excess = ROUGH_STAIR_LIN_VEL_X_RANGE[1] - term.params["lin_deadband"]
         self.assertLess((worst_excess / scale) ** 2, term.params["max_penalty"])
-        # 且封顶后的量级不能压过正奖励预算（is_alive 1 + 跟踪三项 4/3/2 = 10/s）。
-        self.assertLess(abs(term.weight) * (worst_excess / scale) ** 2, 10.0)
+        # A10：台阶列的 tracking_ang_vel 已归零，正项只剩 is_alive 的 1.0 加上跟踪分。
+        # 这一项在最坏情况下不得超过 1.5/s，否则站着不动的净收益负到「摔死更优」。
+        self.assertLess(abs(term.weight) * (worst_excess / scale) ** 2, 1.5)
 
     def test_base_height_penalty_is_zeroed_on_the_stairs_column(self) -> None:
         term = self.cfg.rewards["flat_base_height"]
@@ -284,6 +286,29 @@ class TerrainColumnRewardTests(unittest.TestCase):
         self.assertLessEqual(ROUGH_STAIR_HEIGHT_RANGE[1], command.height_range[1])
         # 台阶列走高速档，其余地形列仍是 A7 的低速档。
         self.assertGreater(ROUGH_STAIR_LIN_VEL_X_RANGE[0], ROUGH_TERRAIN_LIN_VEL_X_RANGE[1])
+
+    def test_stairs_column_pays_nothing_for_standing_still(self) -> None:
+        """A10：取消台阶列「不动的工资」——yaw 指令固定 0，且该项奖励在台阶列归零。
+
+        A9 逐项拆分：台阶列 tracking_ang_vel +2.739/s，占该列正奖励 3.753 的 73%，
+        而静止即可拿满（yaw 指令 ±0.2、σ=0.25，不动时误差 0.1、核 0.96）。
+        """
+        command = self.cfg.commands["velocity_height"]
+        self.assertEqual(tuple(command.stair_ang_vel_yaw_range), ROUGH_STAIR_ANG_VEL_YAW_RANGE)
+        self.assertEqual(tuple(command.stair_ang_vel_yaw_range), (0.0, 0.0))
+        term = self.cfg.rewards["tracking_ang_vel"]
+        self.assertIs(term.func, rough_rewards.tracking_ang_vel_off_terrain)
+        self.assertEqual(term.params["terrain_type_names"], ROUGH_REWARD_TERRAIN_TYPE_NAMES)
+        # 只改生效范围：权重与核参数继续跟随 Flat 基线。
+        flat_term = flat_env_cfg(
+            wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
+            action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
+        ).rewards["tracking_ang_vel"]
+        self.assertAlmostEqual(float(term.weight), float(flat_term.weight))
+        for key in ("sigma", "sigma_cmd_scale", "ratio_blend", "use_upright_gate"):
+            self.assertEqual(term.params[key], flat_term.params[key], msg=key)
+        off = rough_env_cfg(zero_tracking_ang_vel_on_terrain=False)
+        self.assertIs(off.rewards["tracking_ang_vel"].func, flat_rewards.tracking_ang_vel)
 
     def test_all_three_column_switches_point_at_the_same_column(self) -> None:
         # AMP 掩码、地形感知高度下限、分列定价必须是同一组列，
@@ -847,6 +872,22 @@ class RoughRuntimeTests(unittest.TestCase):
                 self.assertTrue(bool((cmd[:, 1] >= yaw_lo - 1e-6).all()), cmd[:, 1])
                 self.assertTrue(bool((cmd[:, 1] <= yaw_hi + 1e-6).all()), cmd[:, 1])
             self.assertFalse(bool(self.term._standing_mask[non_flat].any()))
+
+    def test_stairs_yaw_command_and_ang_vel_reward_are_both_zero(self) -> None:
+        """指令侧与奖励侧都要归零，缺一份「不动的工资」就还在。"""
+        stair = self.term._stair_mask
+        assert stair is not None
+        flat = ~(self.terrain_types != self.flat_col)
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        for _ in range(20):
+            self.term._resample_command(env_ids)
+            self.assertEqual(float(self.term.command[stair.cpu(), 1].abs().max()), 0.0)
+        manager = self.env.reward_manager
+        index = manager.active_terms.index("tracking_ang_vel")
+        step_reward = manager._step_reward
+        self.assertEqual(float(step_reward[stair.cpu(), index].abs().max()), 0.0)
+        # 平地列照常发钱，否则就是全局关掉了。
+        self.assertGreater(float(step_reward[flat, index].abs().max()), 0.0)
 
     def test_stair_column_gets_its_own_speed_and_height(self) -> None:
         """A8：台阶列 vx 1.0–2.4、机身高度 0.35–0.38；其余地形列与平地列都不受影响。"""

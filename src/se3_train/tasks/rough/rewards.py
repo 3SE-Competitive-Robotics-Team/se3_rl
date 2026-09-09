@@ -39,6 +39,7 @@ from se3_train.tasks.flat.rewards import __all__ as _FLAT_ALL
 from se3_train.tasks.flat.rewards import (
     command_velocity_error,
     flat_base_height_penalty_no_jump,
+    tracking_ang_vel,
     tracking_lin_vel,
 )
 
@@ -106,6 +107,39 @@ def command_velocity_error_on_terrain(
         active = mask.float()
         log["Rough/command_velocity_error_terrain"] = penalty.sum() / active.sum().clamp(min=1.0)
     return penalty
+
+
+def tracking_ang_vel_off_terrain(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float,
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+    sigma_cmd_scale: float = 0.0,
+    ratio_blend: float = 0.0,
+    use_upright_gate: bool = True,
+    tracking_upright_full_cos: float = 0.7,
+) -> torch.Tensor:
+    """yaw 角速度跟踪，在指定子地形列上置零，其余列与 Flat 基线逐位相同。
+
+    2026-09-09 用户定（A10）。A9 的逐项拆分：台阶列 `tracking_ang_vel` = +2.739/s，
+    占该列全部正奖励 3.753 的 73%，而它是**静止就能拿满**的——yaw 指令 ±0.2、σ=0.25，
+    不动时误差约 0.1、核值 0.96。配上 is_alive 的 +1.0，站着不动净收益 +0.053/s 为正，
+    而爬台阶要拿摔倒的风险去换 command_velocity_error 那点梯度，理性选择就是不动。
+    连同 `stair_ang_vel_yaw_range=(0,0)`（指令侧）一起，把这份「不动的工资」彻底取消。
+    """
+    reward = tracking_ang_vel(
+        env,
+        command_name=command_name,
+        sigma=sigma,
+        sigma_cmd_scale=sigma_cmd_scale,
+        ratio_blend=ratio_blend,
+        use_upright_gate=use_upright_gate,
+        tracking_upright_full_cos=tracking_upright_full_cos,
+    )
+    mask = terrain_column_mask(env, terrain_type_names)
+    if mask is None:
+        return reward
+    return reward * (~mask).float()
 
 
 def base_height_penalty_off_terrain(
@@ -217,6 +251,7 @@ def tracking_lin_vel_terrain_vz(
 __all__ = [
     *_FLAT_ALL,
     "base_height_penalty_off_terrain",
+    "tracking_ang_vel_off_terrain",
     "command_velocity_error_on_terrain",
     "non_flat_column_mask",
     "terrain_column_mask",

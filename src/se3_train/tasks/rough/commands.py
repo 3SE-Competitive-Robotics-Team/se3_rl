@@ -74,6 +74,16 @@ class RoughCommandCfg(JumpCommandCfg):
     stair_lin_vel_x_range: tuple[float, float] = (1.0, 2.4)
     """台阶列的 vx 采样范围(m/s)。专家数据（Fudan 12–20 cm 爬升）就在 1.5–2.4 这一段。"""
 
+    stair_ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0)
+    """台阶列的 yaw 角速度指令范围(rad/s)，默认恒 0。
+
+    2026-09-09 用户定（A10）：A9 的逐项拆分显示 `tracking_ang_vel` 在台阶列是 +2.739/s，
+    占该列全部正奖励（3.753）的 73%——yaw 指令只有 ±0.2、σ=0.25，一台**完全静止**的机器人
+    yaw 恒为 0、误差约 0.1、核值 0.96，权重 3.0 几乎拿满。加上 is_alive 的 +1.0，
+    不动就白拿 3.74/s，于是原地不动成了稳定的正收益均衡（净 +0.053/s）。
+    指令固定为 0 是这件事的一半；另一半是把该项在台阶列的权重也归零，见 rough/rewards.py。
+    """
+
     stair_height_range: tuple[float, float] = (0.35, 0.38)
     """台阶列的机身高度指令范围(m)，覆盖 `height_range`。
 
@@ -140,7 +150,7 @@ class RoughCommandTerm(JumpCommandTerm):
             self.set_velocity_ranges(
                 ids,
                 lin_vel_x_range=tuple(self.cfg.stair_lin_vel_x_range),
-                ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
+                ang_vel_yaw_range=tuple(self.cfg.stair_ang_vel_yaw_range),
             )
 
     def _build_column_mask(
