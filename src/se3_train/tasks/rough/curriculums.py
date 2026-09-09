@@ -67,7 +67,14 @@ def flat_warmup(
     if original is None:
         original = terrain.terrain_types.clone()
         setattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, original)
-        setattr(env, FLAT_WARMUP_DONE_ATTR, torch.zeros(env.num_envs, device=env.device, dtype=torch.bool))
+        setattr(
+            env,
+            FLAT_WARMUP_DONE_ATTR,
+            torch.zeros(env.num_envs, device=env.device, dtype=torch.bool),
+        )
+        env._rough_terrain_migrated_step = torch.full(
+            (env.num_envs,), -1, device=env.device, dtype=torch.long
+        )
         # 逐 env 的迁移阈值：把 [0,1) 均匀铺开再随机置换，任何 env 数下比例都严格线性，
         # 且阈值与列号无关（各列同步迁移，不会先把台阶列整列放出去）。
         order = torch.randperm(env.num_envs, device=env.device)
@@ -98,9 +105,13 @@ def flat_warmup(
         terrain.terrain_types[move] = original[move]
         terrain.terrain_levels[move] = 0
         done[move] = True
+        # 同次 reset 仍是旧地形上的机器人位置，不得用它减去新出生点结算升级。
+        env._rough_terrain_migrated_step[move] = int(env.common_step_counter)
         changed = True
     if changed:
-        terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
+        terrain.env_origins[:] = terrain.terrain_origins[
+            terrain.terrain_levels, terrain.terrain_types
+        ]
         _refresh_terrain_dependent_masks(env, command_name)
     return {
         "active": (~done).float().mean(),
@@ -151,6 +162,9 @@ def terrain_levels(
     warmup_done = getattr(env, FLAT_WARMUP_DONE_ATTR, None)
     if isinstance(warmup_done, torch.Tensor):
         move_up = move_up & warmup_done[env_ids]
+    migrated = getattr(env, "_rough_terrain_migrated_step", None)
+    if isinstance(migrated, torch.Tensor):
+        move_up &= migrated[env_ids] != int(env.common_step_counter)
 
     terrain.update_env_origins(env_ids, move_up, move_down)
 

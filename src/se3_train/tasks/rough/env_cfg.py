@@ -25,6 +25,7 @@ from mjlab.sensor import (
     ContactSensorCfg,
     GridPatternCfg,
     ObjRef,
+    RingPatternCfg,
     TerrainHeightSensorCfg,
 )
 from mjlab.terrains import TerrainEntityCfg
@@ -41,7 +42,7 @@ from se3_train.tasks.flat.env_cfg import (
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 from se3_train.tasks.stair import observations as stair_observations
 
-from . import ctbc, curriculums, events, observations, rewards, terminations
+from . import ctbc, curriculums, events, observations, rewards, stair_rewards, terminations
 from .commands import RoughCommandCfg
 from .terrains import rough_terrains_cfg
 
@@ -285,6 +286,43 @@ def env_cfg(
     # 接触力读数不可信）。mjlab 自己的 rough velocity 任务同样取 500。
     # 只动这一个传感器缓冲区，不碰 solver/cone/impratio，避免与 Flat 基线产生物理差异。
     cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
+
+    # 专项奖励使用独立双轮传感器，不改变 Flat 原有高度/接触观测的布局。
+    cfg.scene.sensors = (
+        *cfg.scene.sensors,
+        TerrainHeightSensorCfg(
+            name="stair_reward_height",
+            frame=(
+                ObjRef(type="body", name="l_wheel_Link", entity="robot"),
+                ObjRef(type="body", name="r_wheel_Link", entity="robot"),
+            ),
+            ray_alignment="yaw",
+            pattern=RingPatternCfg.single_ring(radius=0.01, num_samples=4),
+            max_distance=2.0,
+            include_geom_groups=(0,),
+            reduction="min",
+        ),
+        ContactSensorCfg(
+            name="stair_reward_contact",
+            primary=ContactMatch(
+                mode="body", pattern=r"^(l_wheel_Link|r_wheel_Link)$", entity="robot"
+            ),
+            secondary=ContactMatch(mode="body", pattern="terrain"),
+            fields=("found", "force", "normal", "tangent"),
+            reduce="maxforce",
+            num_slots=4,
+            global_frame=True,
+        ),
+    )
+    cfg.events["reset_stair_rewards"] = EventTermCfg(
+        func=stair_rewards.reset_stair_rewards, mode="reset"
+    )
+    cfg.rewards["stair_climb_progress"] = RewardTermCfg(
+        func=stair_rewards.stair_climb_progress, weight=3.0
+    )
+    cfg.rewards["stair_support_height"] = RewardTermCfg(
+        func=stair_rewards.stair_support_height, weight=4.0
+    )
 
     cfg.commands = dict(cfg.commands)
     cfg.commands["velocity_height"] = _to_rough_command_cfg(
