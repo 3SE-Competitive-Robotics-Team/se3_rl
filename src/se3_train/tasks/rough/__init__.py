@@ -16,6 +16,13 @@ TASK_ID = "SE3-WheelLegged-Rough"
 STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # AMP：加 amp 观测组 + 判别器风格奖励（se3_train.amp），专家数据集见 docs/amp_dataset.md。
 AMP_TASK_ID = "SE3-WheelLegged-Rough-AMP"
+# 消融入口（2026-09-09）：A12 实测 AMP 在台阶列贡献 +9.1/秒，占该列奖励信号约 90%，
+# 而判别器只分到 ±0.24、style_reward 长期贴 0.6——疑似发的是常数存活奖金而非姿态信息。
+# C1 只改风格奖励权重 15→3（A2 的值）；C2 只换成时序打乱的专家数据（逐帧分布不变，
+# 跨帧结构破坏，见 scripts/make_shuffled_amp_dataset.py）。其余与 AMP_TASK_ID 逐项相同。
+AMP_ABL_W3_TASK_ID = "SE3-WheelLegged-Rough-AMP-AblW3"
+AMP_ABL_SHUFFLED_TASK_ID = "SE3-WheelLegged-Rough-AMP-AblShuffled"
+AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
 def register() -> None:
@@ -41,9 +48,28 @@ def register() -> None:
         rl_cfg=bind_task_name(amp_rl_cfg(), AMP_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=AMP_ABL_W3_TASK_ID,
+        env_cfg=env_cfg(amp_enabled=True),
+        play_env_cfg=env_cfg(play=True, amp_enabled=True),
+        rl_cfg=bind_task_name(amp_rl_cfg(reward_weight=3.0), AMP_ABL_W3_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
+        task_id=AMP_ABL_SHUFFLED_TASK_ID,
+        env_cfg=env_cfg(amp_enabled=True),
+        play_env_cfg=env_cfg(play=True, amp_enabled=True),
+        rl_cfg=bind_task_name(
+            amp_rl_cfg(dataset_root=AMP_ABL_SHUFFLED_DATASET), AMP_ABL_SHUFFLED_TASK_ID
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "AMP_ABL_SHUFFLED_DATASET",
+    "AMP_ABL_SHUFFLED_TASK_ID",
+    "AMP_ABL_W3_TASK_ID",
     "AMP_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",

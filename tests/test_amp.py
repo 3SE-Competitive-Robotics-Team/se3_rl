@@ -403,5 +403,45 @@ class AmpEndToEndTests(unittest.TestCase):
         self.assertTrue(torch.allclose(flat_after.sort().values, flat_saved.sort().values))
 
 
+
+class AmpAblationTaskTests(unittest.TestCase):
+    """消融入口必须相对 AMP 基线只差一个字段，否则整组对照都不成立。"""
+
+    def _amp_cfg(self, task_id: str) -> dict:
+        return load_rl_cfg(task_id).algorithm.amp_cfg
+
+    def test_w3_variant_only_changes_reward_weight(self) -> None:
+        base = self._amp_cfg("SE3-WheelLegged-Rough-AMP")
+        abl = self._amp_cfg("SE3-WheelLegged-Rough-AMP-AblW3")
+        self.assertEqual(base["reward_weight"], 15.0)
+        self.assertEqual(abl["reward_weight"], 3.0)
+        for key in base:
+            if key != "reward_weight":
+                self.assertEqual(base[key], abl[key], msg=key)
+
+    def test_shuffled_variant_only_changes_dataset_root(self) -> None:
+        base = self._amp_cfg("SE3-WheelLegged-Rough-AMP")
+        abl = self._amp_cfg("SE3-WheelLegged-Rough-AMP-AblShuffled")
+        for key in base:
+            if key != "dataset_kwargs":
+                self.assertEqual(base[key], abl[key], msg=key)
+        bk, ak = base["dataset_kwargs"], abl["dataset_kwargs"]
+        for key in bk:
+            if key != "dataset_root":
+                self.assertEqual(bk[key], ak[key], msg=key)
+        self.assertNotEqual(bk["dataset_root"], ak["dataset_root"])
+        self.assertIn("shuffled", ak["dataset_root"])
+
+    def test_ablation_variants_share_the_baseline_env(self) -> None:
+        base = load_env_cfg("SE3-WheelLegged-Rough-AMP")
+        for task_id in ("SE3-WheelLegged-Rough-AMP-AblW3", "SE3-WheelLegged-Rough-AMP-AblShuffled"):
+            cfg = load_env_cfg(task_id)
+            self.assertEqual(set(cfg.rewards), set(base.rewards), msg=task_id)
+            for name, term in base.rewards.items():
+                self.assertIs(cfg.rewards[name].func, term.func, msg=f"{task_id}/{name}")
+                self.assertAlmostEqual(
+                    float(cfg.rewards[name].weight), float(term.weight), msg=f"{task_id}/{name}"
+                )
+
 if __name__ == "__main__":
     unittest.main()

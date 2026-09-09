@@ -105,14 +105,17 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
 
         1. 能耗三项折价；2. 台阶列加回速度违令罚（Flat 已整项删除）；
         3. flat_base_height 换成按列置零的包装；4. tracking_lin_vel 换成按列关 vz 的包装；
-        5. tracking_ang_vel 换成台阶列置零的包装。后三处只换函数，权重与核参数逐位不变。
+        5. tracking_ang_vel 换成台阶列置零的包装；6. 台阶专项的逐阶进展与踏面支撑两项（6d8b37e）。
+        后三处包装只换函数，权重与核参数逐位不变。
         """
         self.assertEqual(
-            set(self.cfg.rewards) - set(self.flat.rewards), {"command_velocity_error"}
+            set(self.cfg.rewards) - set(self.flat.rewards),
+            {"command_velocity_error", "stair_climb_progress", "stair_support_height"},
         )
         self.assertEqual(set(self.flat.rewards) - set(self.cfg.rewards), set())
+        rough_only = ("command_velocity_error", "stair_climb_progress", "stair_support_height")
         for name, term in self.cfg.rewards.items():
-            if name == "command_velocity_error":
+            if name in rough_only:
                 continue
             expected = float(self.flat.rewards[name].weight)
             if name in _ENERGY_REWARDS:
@@ -475,7 +478,9 @@ class FlatWarmupRuntimeTests(unittest.TestCase):
         self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
         self.assertTrue(torch.equal(self.term._terrain_override_mask, original != self.flat_col))
         self.assertTrue(torch.equal(getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR), original == self.flat_col))
-        # 换列后升级恢复。
+        # 换列后升级恢复。换列**当次**不结算升级（6d8b37e：那一刻机器人还在旧地形上，
+        # 用旧位置减新出生点会白送一级），所以要推进一步再判。
+        self.env.common_step_counter += 24
         pose[:, 0] = self.env.scene.env_origins[:, 0] + 4.1
         robot.write_root_link_pose_to_sim(pose)
         self.env.sim.forward()
@@ -559,6 +564,8 @@ class FlatWarmupRampTests(unittest.TestCase):
             )
             done = getattr(env, curriculums.FLAT_WARMUP_DONE_ATTR).clone()
             self.assertTrue(bool(done.any()) and bool((~done).any()))
+            # 换列当次不结算升级（6d8b37e），推进一步再判。
+            env.common_step_counter += 24
             robot = env.scene["robot"]
             pose = robot.data.root_link_pose_w.clone()
             pose[:, 0] = env.scene.env_origins[:, 0] + 4.1  # 越过清块门槛

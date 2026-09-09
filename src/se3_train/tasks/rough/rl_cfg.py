@@ -24,7 +24,7 @@ ROUGH_MAX_ITERATIONS = 5000
 ROUGH_AMP_DATASET_ROOT = "assets/amp/fudan_stairs20_20260907/amp_training.pkl"
 
 
-def amp_cfg_dict(*, dataset_root: str) -> dict:
+def amp_cfg_dict(*, dataset_root: str, reward_weight: float = 15.0) -> dict:
     """Se3PpoAlgorithmCfg.amp_cfg 的内容（键与 kyber RslRlAmpCfg 一致，数据集走 dataset_kwargs）。"""
     return {
         "obs_group": "amp",
@@ -32,7 +32,7 @@ def amp_cfg_dict(*, dataset_root: str) -> dict:
         # 2026-09-08 A2：窗口 2 帧（40 ms）→ 5 帧（100 ms），判别器能看到一次抬轮/落轮的形状而不只是瞬时速度。
         "transition_frames": 5,
         # 2026-09-08 A3（用户定）：3.0→15.0。A2 实测台阶列 AMP 每步 +0.035 与机身高度/腿蹭地/碰撞惩罚同量级，净收益≈0。
-        "reward_weight": 15.0,
+        "reward_weight": float(reward_weight),
         "reward_warmup_updates": 100,
         "discriminator_updates": 2,
         "discriminator_batch_size": 4096,
@@ -58,7 +58,12 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
-def amp_rl_cfg(smoke: bool = False, *, dataset_root: str | None = None) -> RslRlOnPolicyRunnerCfg:
+def amp_rl_cfg(
+    smoke: bool = False,
+    *,
+    dataset_root: str | None = None,
+    reward_weight: float = 15.0,
+) -> RslRlOnPolicyRunnerCfg:
     """带 AMP 的 PPO 配置：其余与 rl_cfg 逐项相同，算法换成 Se3PPO + amp_cfg。
 
     数据集默认 assets/amp/fudan_stairs20_20260907/amp_training.pkl（export_fudan_amp_pkl.py 产物，目录时按 *.pkl 匹配），
@@ -70,7 +75,9 @@ def amp_rl_cfg(smoke: bool = False, *, dataset_root: str | None = None) -> RslRl
     algorithm.pop("class_name", None)
     algorithm.pop("critic_learning_rate", None)
     algorithm.pop("amp_cfg", None)
-    cfg.algorithm = Se3PpoAlgorithmCfg(**algorithm, amp_cfg=amp_cfg_dict(dataset_root=root))
+    cfg.algorithm = Se3PpoAlgorithmCfg(
+        **algorithm, amp_cfg=amp_cfg_dict(dataset_root=root, reward_weight=reward_weight)
+    )
     return cfg
 
 
