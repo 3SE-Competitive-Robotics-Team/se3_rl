@@ -582,7 +582,7 @@ def upward_arrival(
 def tracking_lin_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
-    sigma_move: float,
+    sigma_move: float | torch.Tensor,
     sigma_stand: float,
     vz_weight: float | torch.Tensor = 2.0,
     use_upright_gate: bool = True,

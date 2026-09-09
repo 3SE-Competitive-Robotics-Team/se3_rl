@@ -200,12 +200,15 @@ def tracking_lin_vel_terrain_vz(
     flat_type_names: tuple[str, ...] = ("flat",),
     use_upright_gate: bool = True,
     tracking_upright_full_cos: float = 0.7,
+    stair_sigma_move: float | None = None,
+    stair_type_names: tuple[str, ...] = ("stairs_up",),
 ) -> torch.Tensor:
     """x 速度跟踪，非平地列把核里的 vz 项换成 `terrain_vz_weight`（默认 0）。
 
     逐 env 的权重张量直接喂给 `tracking_lin_vel`，核里 `vz_weight * vz**2` 按元素广播，
-    所以观测、σ 选择、死区、课程累加、`Locomotion/*` 记账全部与 Flat 基线逐位相同，
-    只有 vz 的系数按列不同。掩码为 None 时退化成标量 `vz_weight`，即 Flat 行为。
+    观测、静站判定、课程累加与 `Locomotion/*` 记账均复用 Flat 基线。
+    台阶列还可通过 stair_sigma_move 单独设置运动核分母，其余列和静站核保持原值。
+    掩码为 None 时退化成 Flat 行为。
     """
     mask = non_flat_column_mask(env, flat_type_names)
     weight: float | torch.Tensor = float(vz_weight)
@@ -215,10 +218,16 @@ def tracking_lin_vel_terrain_vz(
             torch.tensor(float(terrain_vz_weight), device=env.device),
             torch.tensor(float(vz_weight), device=env.device),
         )
+    move_sigma: float | torch.Tensor = sigma_move
+    stair_mask = (
+        terrain_column_mask(env, stair_type_names) if stair_sigma_move is not None else None
+    )
+    if stair_mask is not None:
+        move_sigma = torch.where(stair_mask, float(stair_sigma_move), float(sigma_move))
     reward = tracking_lin_vel(
         env,
         command_name=command_name,
-        sigma_move=sigma_move,
+        sigma_move=move_sigma,
         sigma_stand=sigma_stand,
         vz_weight=weight,
         use_upright_gate=use_upright_gate,

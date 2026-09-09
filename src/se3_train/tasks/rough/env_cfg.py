@@ -63,6 +63,8 @@ ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ("stairs_up",)
 # 台阶列的分列定价（2026-09-08 用户定，A6）：这两项都只改生效范围，不改数值。
 # 生效列与 AMP、地形感知高度下限取同一组，默认只有上台阶列。
 ROUGH_REWARD_TERRAIN_TYPE_NAMES = ("stairs_up",)
+# 台阶运动核分母：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
+ROUGH_STAIR_TRACKING_SIGMA_MOVE = 1.44
 # 速度违令二次罚（rewards.command_velocity_error_on_terrain）只在台阶列加回来。
 # tracking_lin_vel 的高斯核 σ_move=0.08 在误差 >0.4 m/s 处没有梯度；平地上误差小且短暂，
 # 所以 2026-09-06（D7 对 D4）把这一项从 Flat 删掉是对的（它 99% 的代价来自指令阶跃后 1 s 内，
@@ -435,7 +437,7 @@ def _apply_terrain_column_rewards(
             func=rewards.tracking_ang_vel_off_terrain,
             params={**ang.params, "terrain_type_names": terrain_type_names},
         )
-    # 非平地列的 vz 项：同样用 replace，σ / 死区 / 权重继续跟随 Flat 基线。
+    # 非平地列关闭 vz 项；仅上台阶列放宽运动核，其余核参数与权重继续跟随 Flat 基线。
     track = cfg.rewards["tracking_lin_vel"]
     cfg.rewards["tracking_lin_vel"] = replace(
         track,
@@ -443,6 +445,8 @@ def _apply_terrain_column_rewards(
         params={
             **track.params,
             "terrain_vz_weight": float(terrain_vz_weight),
+            "stair_sigma_move": ROUGH_STAIR_TRACKING_SIGMA_MOVE,
+            "stair_type_names": terrain_type_names,
             "flat_type_names": ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES,
         },
     )
