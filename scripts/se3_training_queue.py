@@ -431,10 +431,11 @@ def _external_training_pids(excluded_pgids: set[int] | None = None) -> list[int]
         if not path.name.isdigit():
             continue
         try:
-            command = (path / "cmdline").read_bytes().replace(b"\0", b" ")
+            arguments = (path / "cmdline").read_bytes().split(b"\0")
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
-        if b"se3-train" not in command:
+        # 按独立参数的文件名识别入口，避免把 se3-training-state 目录或 shell 文本误认成训练。
+        if not any(os.path.basename(argument) == b"se3-train" for argument in arguments):
             continue
         pid = int(path.name)
         try:
