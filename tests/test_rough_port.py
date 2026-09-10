@@ -921,6 +921,53 @@ class RoughRuntimeTests(unittest.TestCase):
         # 其余列仍能抽到 Flat 下界附近的矮站姿，说明高度覆盖只作用在台阶列。
         self.assertLess(other_min_h, h_lo)
 
+    def test_stair_height_lower_bound_follows_the_terrain_floor(self) -> None:
+        """台阶列的高度采样下界必须取 stair_height_range[0] 与地形感知下限的较大者。
+
+        `_apply_stair_height` 覆盖的是基类采样结果，而地形感知下限正是基类算的；
+        A8 时 stair_height_range 是 0.35–0.38、高过下限最大值 0.34，盖掉无后果，
+        A13 改回 0.20–0.38 之后就有了：第 9 行台阶 0.20 m，抽到 0.20 的高度指令时
+        机体碰撞盒底面 0.08 m 低于台阶顶面 0.20 m，机身直接撞立面。
+        """
+        stair = self.term._stair_mask
+        assert stair is not None
+        terrain = self.env.scene.terrain
+        cfg = self.term.cfg
+        low, high = (float(v) for v in cfg.stair_height_range)
+        env_ids = torch.arange(self.env.num_envs, device=self.env.device)
+        saved = terrain.terrain_levels.clone()
+        step_low, step_high = _STEP_HEIGHT_RANGE
+        num_rows = int(terrain.terrain_origins.shape[0])
+        try:
+            for row in (0, num_rows - 1):
+                terrain.terrain_levels[stair] = row
+                difficulty = (row + 1.0) / num_rows
+                step = step_low + difficulty * (step_high - step_low)
+                floor = max(
+                    low, step + cfg.terrain_height_clearance - cfg.body_collision_bottom_offset
+                )
+                floor = min(floor, high)
+                seen_min = 1.0
+                for _ in range(20):
+                    self.term._resample_command(env_ids)
+                    h = self.term.command[stair.cpu(), 4]
+                    self.assertGreaterEqual(float(h.min()), floor - 1e-6, msg=f"row={row}")
+                    self.assertLessEqual(float(h.max()), high + 1e-6, msg=f"row={row}")
+                    seen_min = min(seen_min, float(h.min()))
+                # 下界必须真的贴着地板，否则断言会退化成空对照。
+                self.assertLess(seen_min, floor + 0.02, msg=f"row={row}")
+            # 最低难度行保留矮站姿：高站姿 + 静止会起不了步。
+            terrain.terrain_levels[stair] = 0
+            self.term._resample_command(env_ids)
+            self.assertAlmostEqual(
+                max(low, step_low + cfg.terrain_height_clearance
+                    - cfg.body_collision_bottom_offset),
+                low,
+                places=6,
+            )
+        finally:
+            terrain.terrain_levels[:] = saved
+
     def test_stair_height_refreshes_the_policy_default_pose_cache(self) -> None:
         """高度指令改完必须同步刷新高度条件默认腿姿缓存，否则奖励侧用的是旧高度。"""
         from se3_train.mdp.height_default_cache import get_policy_default_from_height_cache

@@ -242,9 +242,20 @@ class RoughCommandTerm(JumpCommandTerm):
     def _apply_stair_height(self, env_ids: torch.Tensor) -> None:
         """把台阶列 env 的高度指令改到 `stair_height_range` 内重新采样。
 
-        写在基类采样之后而不是改基类：基类那一路还要管地形感知下限、静站/运动两个区间与
-        jump 生命周期，绕过去容易漏。改完必须同步刷新高度条件默认腿姿缓存，否则奖励侧
-        用的还是旧高度对应的默认姿态（step_up 状态机时代踩过这个坑）。
+        写在基类采样之后而不是改基类：基类那一路还要管静站/运动两个区间与 jump 生命周期，
+        绕过去容易漏。改完必须同步刷新高度条件默认腿姿缓存，否则奖励侧用的还是旧高度
+        对应的默认姿态（step_up 状态机时代踩过这个坑）。
+
+        **采样下界要取 `stair_height_range[0]` 与地形感知下限的较大者。** 这一句是补票：
+        本方法覆盖的是基类的采样结果，而地形感知下限（`_terrain_aware_min_height`，
+        `台阶高 + terrain_height_clearance − body_collision_bottom_offset`）正是基类算的，
+        直接覆盖就把它整个盖掉了。A8 时 `stair_height_range` 是 0.35–0.38、比下限最高值
+        0.34 还高，盖掉没有后果；A13 把它改回 0.20–0.38 之后就有了——第 9 行台阶 0.20 m，
+        若抽到 0.20 的高度指令，机体碰撞盒底面在 0.20−0.12 = 0.08 m 而台阶顶面在 0.20 m，
+        机身直接撞立面，物理上过不去。
+
+        按行分开之后两个目标不冲突：第 0–2 行下限仍是 0.20，保留矮站姿开局（高站姿 + 静止
+        会起不了步，见 a13_tuned.py）；第 9 行自动收窄到 0.34–0.38，保证几何净空。
         """
         if self._stair_mask is None:
             return
@@ -252,7 +263,13 @@ class RoughCommandTerm(JumpCommandTerm):
         if ids.numel() == 0:
             return
         low, high = (float(v) for v in self.cfg.stair_height_range)
-        self._command[ids, 4] = torch.rand(len(ids), device=self.device) * (high - low) + low
+        lower = torch.full((len(ids),), low, device=self.device, dtype=self._command.dtype)
+        if self.cfg.terrain_aware_height and self.cfg.terrain_height_clearance > 0.0:
+            lower = torch.maximum(lower, self._terrain_aware_min_height(ids, lower))
+        # 下限顶到上界时退化成定值指令，不能让区间变负。
+        lower = torch.clamp(lower, max=high)
+        span = high - lower
+        self._command[ids, 4] = torch.rand(len(ids), device=self.device) * span + lower
         update_policy_default_from_height_cache(
             self._env,
             "velocity_height",
