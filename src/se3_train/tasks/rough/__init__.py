@@ -8,6 +8,7 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .a12_ablation import A12_ABLATIONS, a12_ablation_env_cfg, a12_ablation_rl_cfg
+from .a13_tuned import a13_env_cfg, a13_rl_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -24,11 +25,20 @@ AMP_TASK_ID = "SE3-WheelLegged-Rough-AMP"
 # 跨帧结构破坏，见 scripts/make_shuffled_amp_dataset.py）。其余与 AMP_TASK_ID 逐项相同。
 AMP_ABL_W3_TASK_ID = "SE3-WheelLegged-Rough-AMP-AblW3"
 AMP_ABL_SHUFFLED_TASK_ID = "SE3-WheelLegged-Rough-AMP-AblShuffled"
+# A13：按 A12 十组单因素消融的结论拼出的配置——有利项全开、有害项全关（见 a13_tuned.py）。
+A13_TASK_ID = "SE3-WheelLegged-Rough-A13"
 AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    register_mjlab_task(
+        task_id=A13_TASK_ID,
+        env_cfg=a13_env_cfg(),
+        play_env_cfg=a13_env_cfg(play=True),
+        rl_cfg=bind_task_name(a13_rl_cfg(), A13_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     for variant in A12_ABLATIONS:
         task_id = f"SE3-WheelLegged-Rough-A12Abl-{variant}"
         register_mjlab_task(
@@ -90,6 +100,7 @@ def register() -> None:
 
 
 __all__ = [
+    "A13_TASK_ID",
     "AMP_ABL_SHUFFLED_DATASET",
     "AMP_ABL_SHUFFLED_TASK_ID",
     "AMP_ABL_W3_TASK_ID",
