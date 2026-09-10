@@ -8,6 +8,7 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import env_cfg
+from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
 from .terrains import stair_only_terrains_cfg
 
@@ -27,6 +28,18 @@ AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    for task_id, (progress_weight, support_weight) in REWARD_ABLATIONS.items():
+        register_mjlab_task(
+            task_id=task_id,
+            env_cfg=reward_ablation_env_cfg(
+                progress_weight=progress_weight, support_weight=support_weight
+            ),
+            play_env_cfg=reward_ablation_env_cfg(
+                progress_weight=progress_weight, support_weight=support_weight, play=True
+            ),
+            rl_cfg=bind_task_name(rl_cfg(), task_id),
+            runner_cls=Se3ProfiledOnPolicyRunner,
+        )
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
