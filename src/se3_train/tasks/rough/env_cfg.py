@@ -98,6 +98,61 @@ ROUGH_ZERO_BASE_HEIGHT_ON_TERRAIN = True
 ROUGH_TERRAIN_VZ_WEIGHT = 0.0
 ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES = ("flat",)
 
+ROUGH_ALL_TERRAIN_TYPE_NAMES = (
+    "flat",
+    "stairs_up",
+    "stairs_down",
+    "slope_up",
+    "slope_down",
+    "random_rough",
+)
+"""rough_terrains_cfg() 的全部六列。给 command_velocity_error 放开列门控时用。"""
+
+# 非台阶列的定价修正（2026-09-11 定，A15）。A13b model_1600 在 flat 列上的实测奖励账本
+# （96 env，53 个在走 / 24 个卡住，指令 vx 2.0 / h 0.38，单位每秒）：
+#
+#   奖励项                        走 1.64 m/s   卡 0.11 m/s      差
+#   flat_base_height                  -4.625       -0.473    -4.152
+#   tracking_orientation_l2           -0.743       -0.019    -0.724
+#   bad_tilt                          -0.572       -0.005    -0.567
+#   tracking_lin_vel                  +0.115        0.000    +0.115
+#   tracking_ang_vel                  +2.711       +2.328    +0.383
+#   is_alive                          +1.000       +1.000         0
+#   合计                              -2.932       +2.407    -5.339
+#
+# 站着不动净赚 +2.407/秒，走路净亏 2.932/秒——站着是这个奖励函数在非台阶列上真正的最优解，
+# 死锁、速度天花板、3° 起步基域都是它的表现。根因是「走路必然产生的机身起伏」被罚了三遍：
+# flat_base_height 直接罚（占缺口 78%）、tracking_lin_vel 核里的 vz 项再罚一次（实测核衰减
+# 0.284 里 vz 占 0.154，比速度误差的 0.130 还多）、orientation/bad_tilt 再罚一次姿态。
+# 而 tracking_lin_vel 满分只有 4.0/秒，光高度罚的差额就 4.15/秒——即使速度跟踪做到满分也不划算。
+#
+# 对照 A0（开着 AMP）同一份账本：走 -3.885、卡 +1.879，缺口 5.77 比 A13b 还大，但它照样走。
+# 两者 RewardManager 侧几乎一样，区别只有 AMP 那笔发在管理器之外的 +9.1/秒——AMP 一直是
+# 压住这个反向激励的配重，A13 拿掉它只是让问题显形。修法是把价格改对，不是把配重加回来。
+#
+# 台阶列早就改对了（高度罚置零、σ_move 1.44、vz 项关闭、挂违令罚），A15 把同一套扩到其余五列。
+ROUGH_BASE_HEIGHT_SIGMA = None
+"""非台阶列 flat_base_height 的 σ；None 跟随 Flat 基线的 0.05。A15 用 0.10（收回 +3.11/秒）。"""
+
+ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = None
+"""非台阶列 tracking_lin_vel 的运动核分母；None 跟随 Flat 基线的 0.08。
+
+0.08 是为 Flat 基线 ±1.0 m/s 的指令范围调的，现在课程推到 2.4 m/s，可达误差远超 0.28 m/s，
+核在最需要它的地方是死的：实测走到 1.64/2.0（八成）只拿满分的 2.8%。A15 用 0.5。
+"""
+
+ROUGH_FLAT_VZ_WEIGHT = None
+"""平地列 tracking_lin_vel 核里的 vz 权重；None 跟随 Flat 基线的 2.0。A15 用 0.0。
+
+与 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 合计收回约 +2.97/秒。
+"""
+
+ROUGH_COMMAND_VELOCITY_ERROR_TERRAIN_NAMES = None
+"""command_velocity_error 生效的列；None 表示跟随 reward_terrain_type_names（只有台阶列）。
+
+A15 传全部六列。这是唯一不对称的一项（只打在"不动"那边），按 A10 的定标约 +1.2/秒。
+"""
+
 # 非平地列的速度指令限制：只发前向直行指令，平地列沿用 Flat 的速度课程。
 # 对称随机指令下 20 s 的净位移是随机游走，地形课程的位移判据推不动（R2 平地列也只到 1.6）。
 ROUGH_TERRAIN_COMMAND_OVERRIDE_ENABLED = True
@@ -238,6 +293,12 @@ def env_cfg(
     curriculum_advance_threshold: float = ROUGH_CURRICULUM_ADVANCE_THRESHOLD,
     reset_last_action_range: float = ROUGH_RESET_LAST_ACTION_RANGE,
     reset_last_action_prob: float = ROUGH_RESET_LAST_ACTION_PROB,
+    base_height_sigma: float | None = ROUGH_BASE_HEIGHT_SIGMA,
+    off_stair_tracking_sigma_move: float | None = ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE,
+    flat_vz_weight: float | None = ROUGH_FLAT_VZ_WEIGHT,
+    command_velocity_error_terrain_names: tuple[str, ...] | None = (
+        ROUGH_COMMAND_VELOCITY_ERROR_TERRAIN_NAMES
+    ),
     amp_enabled: bool = False,
     amp_terrain_type_names: tuple[str, ...] = ROUGH_AMP_TERRAIN_TYPE_NAMES,
 ) -> ManagerBasedRlEnvCfg:
@@ -426,6 +487,10 @@ def env_cfg(
         zero_base_height=zero_base_height_on_terrain,
         terrain_vz_weight=terrain_vz_weight,
         zero_tracking_ang_vel=zero_tracking_ang_vel_on_terrain,
+        base_height_sigma=base_height_sigma,
+        off_stair_tracking_sigma_move=off_stair_tracking_sigma_move,
+        flat_vz_weight=flat_vz_weight,
+        command_velocity_error_terrain_names=command_velocity_error_terrain_names,
     )
 
     if not play and terrain_curriculum:
@@ -460,6 +525,10 @@ def _apply_terrain_column_rewards(
     zero_base_height: bool,
     terrain_vz_weight: float,
     zero_tracking_ang_vel: bool,
+    base_height_sigma: float | None = None,
+    off_stair_tracking_sigma_move: float | None = None,
+    flat_vz_weight: float | None = None,
+    command_velocity_error_terrain_names: tuple[str, ...] | None = None,
 ) -> None:
     """把台阶列的两处分列定价接进奖励表（见 rewards.py 的模块 docstring）。
 
@@ -471,7 +540,11 @@ def _apply_terrain_column_rewards(
             weight=float(command_velocity_error_weight),
             params={
                 "command_name": "velocity_height",
-                "terrain_type_names": terrain_type_names,
+                "terrain_type_names": (
+                    terrain_type_names
+                    if command_velocity_error_terrain_names is None
+                    else tuple(command_velocity_error_terrain_names)
+                ),
                 "lin_vel_scale": ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
                 "yaw_vel_scale": 1.0,
                 "lin_deadband": float(FLAT_CMD_VEL_DEADBAND[0]),
@@ -482,10 +555,13 @@ def _apply_terrain_column_rewards(
     if zero_base_height:
         # 用 replace 而不是重建：sigma / max_error / 权重继续跟随 Flat 基线。
         term = cfg.rewards["flat_base_height"]
+        height_params = {**term.params, "terrain_type_names": terrain_type_names}
+        if base_height_sigma is not None:
+            height_params["sigma"] = float(base_height_sigma)
         cfg.rewards["flat_base_height"] = replace(
             term,
             func=rewards.base_height_penalty_off_terrain,
-            params={**term.params, "terrain_type_names": terrain_type_names},
+            params=height_params,
         )
     if zero_tracking_ang_vel:
         # 同样用 replace：σ / sigma_cmd_scale / ratio_blend / 权重继续跟随 Flat 基线。
@@ -497,16 +573,24 @@ def _apply_terrain_column_rewards(
         )
     # 非平地列关闭 vz 项；仅上台阶列放宽运动核，其余核参数与权重继续跟随 Flat 基线。
     track = cfg.rewards["tracking_lin_vel"]
+    track_params = {
+        **track.params,
+        "terrain_vz_weight": float(terrain_vz_weight),
+        "stair_sigma_move": ROUGH_STAIR_TRACKING_SIGMA_MOVE,
+        "stair_type_names": terrain_type_names,
+        "flat_type_names": ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES,
+    }
+    if off_stair_tracking_sigma_move is not None:
+        # sigma_move 在 tracking_lin_vel_terrain_vz 里只作用于台阶列之外的列
+        # （台阶列走 stair_sigma_move），正好是 A15 要改的那五列。
+        track_params["sigma_move"] = float(off_stair_tracking_sigma_move)
+    if flat_vz_weight is not None:
+        # vz_weight 只作用于 flat_type_names 那一列；其余列已由 terrain_vz_weight 管。
+        track_params["vz_weight"] = float(flat_vz_weight)
     cfg.rewards["tracking_lin_vel"] = replace(
         track,
         func=rewards.tracking_lin_vel_terrain_vz,
-        params={
-            **track.params,
-            "terrain_vz_weight": float(terrain_vz_weight),
-            "stair_sigma_move": ROUGH_STAIR_TRACKING_SIGMA_MOVE,
-            "stair_type_names": terrain_type_names,
-            "flat_type_names": ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES,
-        },
+        params=track_params,
     )
 
 
@@ -631,6 +715,11 @@ __all__ = [
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_ALL_TERRAIN_TYPE_NAMES",
+    "ROUGH_BASE_HEIGHT_SIGMA",
+    "ROUGH_COMMAND_VELOCITY_ERROR_TERRAIN_NAMES",
+    "ROUGH_FLAT_VZ_WEIGHT",
+    "ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE",
     "ROUGH_RESET_LAST_ACTION_PROB",
     "ROUGH_RESET_LAST_ACTION_RANGE",
     "ROUGH_STAIR_HEIGHT_RANGE",

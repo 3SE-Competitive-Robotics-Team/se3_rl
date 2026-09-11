@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 
 import torch
@@ -30,7 +31,8 @@ from se3_train.tasks.flat.env_cfg import (
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
-from se3_train.tasks.rough import ctbc, curriculums, events, observations, terminations
+from se3_train.tasks.rough import a13_tuned, a15_pricing, ctbc, curriculums, events
+from se3_train.tasks.rough import observations, terminations
 from se3_train.tasks.rough import rewards as rough_rewards
 from se3_train.tasks.rough.commands import RoughCommandCfg
 from se3_train.tasks.rough.env_cfg import (
@@ -44,6 +46,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
+    ROUGH_STAIR_TRACKING_SIGMA_MOVE,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
@@ -1150,3 +1153,66 @@ class ResetLastActionRandomizationTests(unittest.TestCase):
         env.reset()
         second = getattr(env, shared_events.RESET_LAST_ACTION_BUFFER_ATTR)
         self.assertFalse(bool(torch.allclose(first, second)))
+
+
+class NonStairColumnPricingTests(unittest.TestCase):
+    """A15：台阶列早就改对的四条定价扩到其余五列，且只改这四个数值。
+
+    依据是 2026-09-11 在 A13b model_1600 上、只取 flat 列的实测奖励账本（每秒）：
+    走 1.64 m/s 合计 -2.932，卡住 0.11 m/s 合计 +2.407——站着净赚，走路净亏，缺口 5.339。
+    其中 flat_base_height 一项就占 4.152（78%）。对照 A0（开着 AMP）缺口 5.77 更大却照样走，
+    说明一直是 AMP 的 +9.1/秒在压住它。这里钉住四个数值和"只有三项奖励发生变化"。
+    """
+
+    def setUp(self) -> None:
+        self.a13 = rough_env_cfg(**a13_tuned.A13_ENV_KWARGS)
+        self.a15 = a15_pricing.a15_env_cfg()
+
+    def test_only_three_reward_terms_differ_from_a13(self) -> None:
+        changed = {
+            name
+            for name in self.a13.rewards
+            if self.a13.rewards[name].weight != self.a15.rewards[name].weight
+            or (self.a13.rewards[name].params or {}) != (self.a15.rewards[name].params or {})
+        }
+        self.assertEqual(
+            changed, {"flat_base_height", "tracking_lin_vel", "command_velocity_error"}
+        )
+        self.assertEqual(set(self.a13.events), set(self.a15.events))
+
+    def test_height_penalty_sigma_is_widened_off_the_stairs_column(self) -> None:
+        term = self.a15.rewards["flat_base_height"]
+        self.assertEqual(term.params["sigma"], a15_pricing.A15_BASE_HEIGHT_SIGMA)
+        self.assertEqual(term.params["terrain_type_names"], ROUGH_REWARD_TERRAIN_TYPE_NAMES)
+        # 实测行走高度误差 0.054 m：σ=0.05 时罚 -4.63/s，σ=0.10 时 -1.16/s。
+        weight = float(term.weight)
+        walking_error = 0.054
+        before = weight * (walking_error / 0.05) ** 2
+        after = weight * (walking_error / term.params["sigma"]) ** 2
+        self.assertAlmostEqual(before, -4.67, delta=0.1)
+        self.assertAlmostEqual(after, -1.17, delta=0.1)
+
+    def test_tracking_kernel_is_widened_and_vz_is_off_on_flat(self) -> None:
+        params = self.a15.rewards["tracking_lin_vel"].params
+        self.assertEqual(params["sigma_move"], a15_pricing.A15_OFF_STAIR_TRACKING_SIGMA_MOVE)
+        self.assertEqual(params["vz_weight"], a15_pricing.A15_FLAT_VZ_WEIGHT)
+        # 台阶列不受影响：它走 stair_sigma_move，仍是 A12 定的 1.44。
+        self.assertEqual(params["stair_sigma_move"], ROUGH_STAIR_TRACKING_SIGMA_MOVE)
+        # 实测误差 err_x=0.36、vz=0.28：旧参数核 0.029（满分的 2.9%），新参数 0.771。
+        weight = float(self.a15.rewards["tracking_lin_vel"].weight)
+        err_sq, vz_sq = 0.36**2, 0.28**2
+        before = weight * math.exp(-(err_sq + 2.0 * vz_sq) / 0.08)
+        after = weight * math.exp(-(err_sq + params["vz_weight"] * vz_sq) / params["sigma_move"])
+        self.assertAlmostEqual(before, 0.12, delta=0.05)
+        self.assertAlmostEqual(after, 3.08, delta=0.1)
+
+    def test_velocity_violation_penalty_covers_every_column(self) -> None:
+        names = self.a15.rewards["command_velocity_error"].params["terrain_type_names"]
+        generated = tuple(
+            rough_env_cfg().scene.terrain.terrain_generator.sub_terrains.keys()
+        )
+        self.assertEqual(set(names), set(generated))
+        self.assertEqual(
+            self.a13.rewards["command_velocity_error"].params["terrain_type_names"],
+            ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+        )
