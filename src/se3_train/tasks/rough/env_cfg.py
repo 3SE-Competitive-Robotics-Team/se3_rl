@@ -399,7 +399,7 @@ def env_cfg(
             },
         )
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
-        func=stair_rewards.stair_climb_progress, weight=3.0
+        func=stair_rewards.stair_climb_progress, weight=1.5
     )
     cfg.rewards["stair_support_height"] = RewardTermCfg(
         func=stair_rewards.stair_support_height, weight=4.0
