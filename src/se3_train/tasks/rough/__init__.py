@@ -5,13 +5,14 @@ from __future__ import annotations
 from mjlab.tasks.registry import register_mjlab_task
 
 from se3_train.rl_cfg import bind_task_name
-from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
+from se3_train.tasks.common import Se3ProfiledOnPolicyRunner, Se3WarmStartRunner
 
 from .a12_ablation import A12_ABLATIONS, a12_ablation_env_cfg, a12_ablation_rl_cfg
 from .a13_tuned import a13_env_cfg, a13_rl_cfg
 from .a14_last_action import a14_env_cfg, a14_rl_cfg
 from .a15_pricing import a15_env_cfg, a15_rl_cfg
 from .a16_reward_swap import a16_env_cfg, a16_rl_cfg
+from .a17_flat_stairs_warmstart import flat_stairs_env_cfg, flat_stairs_rl_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -40,6 +41,8 @@ A15_TASK_ID = "SE3-WheelLegged-Rough-A15"
 # A16：stairs_up 整列的奖励换成参考实现（se3_rl_competiition 的 cloud-changes 分支）
 # 那 10 项，一项不改；其余五列保持 A15。对照端是 A15。见 a16_reward_swap.py。
 A16_TASK_ID = "SE3-WheelLegged-Rough-A16"
+# A17：以 A15 model_4999 只加载 actor/critic，从 iteration 0 重跑；stairs_up 奖励逐项对齐 flat。
+A17_TASK_ID = "SE3-WheelLegged-Rough-A15-FlatStairsWarmStart"
 AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
@@ -51,6 +54,13 @@ def register() -> None:
         play_env_cfg=a16_env_cfg(play=True),
         rl_cfg=bind_task_name(a16_rl_cfg(), A16_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
+        task_id=A17_TASK_ID,
+        env_cfg=flat_stairs_env_cfg(),
+        play_env_cfg=flat_stairs_env_cfg(play=True),
+        rl_cfg=bind_task_name(flat_stairs_rl_cfg(), A17_TASK_ID),
+        runner_cls=Se3WarmStartRunner,
     )
     register_mjlab_task(
         task_id=A15_TASK_ID,
@@ -138,6 +148,7 @@ __all__ = [
     "A14_TASK_ID",
     "A15_TASK_ID",
     "A16_TASK_ID",
+    "A17_TASK_ID",
     "AMP_ABL_SHUFFLED_DATASET",
     "AMP_ABL_SHUFFLED_TASK_ID",
     "AMP_ABL_W3_TASK_ID",
