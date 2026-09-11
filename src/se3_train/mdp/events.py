@@ -2734,3 +2734,54 @@ def randomize_default_dof_pos(
     default_joint_pos[env_ids] = selected_joint_pos
 
     asset.data.default_joint_pos[env_ids] = default_joint_pos[env_ids]
+
+
+RESET_LAST_ACTION_BUFFER_ATTR = "_se3_reset_last_action"
+"""`randomize_reset_last_actions` 写入、`observations.last_actions_obs` 读取的缓冲区属性名。"""
+
+
+def randomize_reset_last_actions(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    action_range: float = 3.5,
+    probability: float = 1.0,
+) -> None:
+    """给 reset 后第一帧的 `last_actions` 观测注入随机值，取代恒为 0 的清零结果。
+
+    `ActionManager.reset()` 把 `_action` 清零，所以训练里「reset 帧的 last_actions」永远是
+    全 0。这让策略可以把该观测当成模式开关用：2026-09-10 在 A13b model_1600 上实测，同一条
+    指令（vx 2.0 / h 0.38）干净 reset 后跑 2.15 m/s，而先站 5 秒再切指令只有 0.01 m/s——
+    静止时策略输出一个近似常数动作（六维 std 仅 0.03–0.10），该动作又原样回到下一帧观测里，
+    网络再把它映回自己，形成自洽的静止不动点。单独清 `last_actions`（0.01）或单独清关节姿态
+    （0.04）都出不来，两个一起清才回到 2.15，说明动作历史是其中一把锁。
+
+    本函数只改**策略看到的值**，不碰 `_action`/`_prev_action` 本身——后两者参与动作平滑
+    惩罚的差分，注入进去会污染 reset 帧的 action-rate 罚。
+
+    Args:
+        action_range: 逐维均匀采样区间 ``U(-r, r)``。默认 3.5 覆盖实测原始动作跨度
+            （走路 [-3.62, 3.40]，卡住时各维近似常数）。
+        probability: 每个 env 被注入的概率；其余仍是全 0，保留原分布的一部分。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    if len(env_ids) == 0:
+        return
+
+    buffer = getattr(env, RESET_LAST_ACTION_BUFFER_ATTR, None)
+    if buffer is None:
+        buffer = torch.zeros(
+            (env.num_envs, env.action_manager.total_action_dim),
+            device=env.device,
+        )
+        setattr(env, RESET_LAST_ACTION_BUFFER_ATTR, buffer)
+
+    span = abs(float(action_range))
+    sampled = torch.empty(
+        (len(env_ids), buffer.shape[1]), device=env.device
+    ).uniform_(-span, span)
+    prob = min(max(float(probability), 0.0), 1.0)
+    if prob < 1.0:
+        keep = torch.rand(len(env_ids), device=env.device) < prob
+        sampled = sampled * keep.unsqueeze(-1)
+    buffer[env_ids] = sampled

@@ -20,6 +20,7 @@ from mjlab.terrains import (
 )
 
 import se3_train  # noqa: F401  # 注册任务
+from se3_train.mdp import events as shared_events
 from se3_train.log_filter import keep_log_key
 from se3_train.tasks.flat import rewards as flat_rewards
 from se3_train.tasks.flat.env_cfg import (
@@ -1086,3 +1087,66 @@ class RoughRuntimeTests(unittest.TestCase):
         self._place_offset(0.0, 4.3)
         self.assertTrue(bool(terminations.terrain_cleared(self.env).all()))
         self._place_offset(0.0, 0.0)
+
+
+class ResetLastActionRandomizationTests(unittest.TestCase):
+    """reset 帧的 `last_actions` 由恒 0 改为注入随机值，其余帧仍是真实动作（A14）。
+
+    钉住的是 2026-09-10 在 A13b model_1600 上测到的起步死锁：同一条指令（vx 2.0 / h 0.38）
+    干净 reset 后 2.15 m/s，先站 5 秒再切只有 0.01 m/s；单独清 `last_actions` 得 0.01、
+    单独清关节姿态得 0.04，两个一起清才回到 2.15。「reset 帧 last_actions 恒为全 0」是
+    其中一把锁，这里保证它被打掉、且只在那一帧被打掉。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(reset_last_action_range=3.5)
+        cfg.scene.num_envs = 8
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def test_event_is_off_unless_a_positive_range_is_given(self) -> None:
+        self.assertNotIn("randomize_reset_last_actions", rough_env_cfg().events)
+        term = rough_env_cfg(reset_last_action_range=3.5).events[
+            "randomize_reset_last_actions"
+        ]
+        self.assertEqual(term.mode, "reset")
+        self.assertEqual(term.params["action_range"], 3.5)
+
+    def test_reset_frame_sees_the_injected_value_not_zeros(self) -> None:
+        env = self.env
+        env.reset()  # 同类其余用例会 step，必须自己回到 reset 帧
+        buffer = getattr(env, shared_events.RESET_LAST_ACTION_BUFFER_ATTR)
+        # reset 后 ActionManager 已把 _action 清零，但观测读到的是注入值。
+        self.assertTrue(bool((env.action_manager.action == 0.0).all()))
+        self.assertTrue(bool((env.episode_length_buf == 0).all()))
+        observed = observations.last_actions_obs(env)
+        torch.testing.assert_close(observed, buffer)
+        self.assertGreater(float(observed.abs().max()), 0.0)
+        self.assertLessEqual(float(observed.abs().max()), 3.5)
+
+    def test_later_frames_read_the_real_action_again(self) -> None:
+        env = self.env
+        env.reset()
+        action = torch.full(
+            (env.num_envs, env.action_manager.total_action_dim), 0.25, device=env.device
+        )
+        env.step(action)
+        moved_on = env.episode_length_buf > 0
+        self.assertTrue(bool(moved_on.any()), "至少要有 env 没在这一步被重置")
+        observed = observations.last_actions_obs(env)
+        torch.testing.assert_close(
+            observed[moved_on], env.action_manager.action[moved_on]
+        )
+
+    def test_buffer_is_redrawn_per_reset(self) -> None:
+        env = self.env
+        env.reset()
+        first = getattr(env, shared_events.RESET_LAST_ACTION_BUFFER_ATTR).clone()
+        env.reset()
+        second = getattr(env, shared_events.RESET_LAST_ACTION_BUFFER_ATTR)
+        self.assertFalse(bool(torch.allclose(first, second)))

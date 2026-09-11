@@ -20,6 +20,7 @@ from se3_shared import (
     policy_leg_phase_active_obs_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.mdp import events
 from se3_train.mdp.contact_utils import (
     contact_force_nonfinite_env_mask,
     finite_contact_force_norm,
@@ -107,8 +108,21 @@ def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """上一步的 6 个动作。"""
-    return _finite_clamp(env.action_manager.action)
+    """上一步的 6 个动作；reset 后第一帧可由事件注入随机值取代恒 0。
+
+    `ActionManager.reset()` 把 `_action` 清零，于是「reset 帧的 last_actions 恒为全 0」成了
+    策略可以依赖的模式开关（实测与修法见 `events.randomize_reset_last_actions`）。挂上那个
+    reset 事件后，本函数在刚重置的那一帧改读事件写下的随机值。
+
+    判据用 `episode_length_buf == 0`：`_reset_idx` 把它置零，而计数自增发生在其之前，因此
+    算观测时只有刚重置的 env 是 0。事件没挂时缓冲区不存在，行为与原来逐位相同。
+    """
+    action = env.action_manager.action
+    injected = getattr(env, events.RESET_LAST_ACTION_BUFFER_ATTR, None)
+    if injected is not None:
+        just_reset = (env.episode_length_buf == 0).unsqueeze(-1)
+        action = torch.where(just_reset, injected, action)
+    return _finite_clamp(action)
 
 
 def processed_last_actions_obs(

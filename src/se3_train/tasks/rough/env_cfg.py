@@ -31,6 +31,7 @@ from mjlab.sensor import (
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_train.mdp import events as shared_events
 from se3_train.mdp.amp_observations import build_amp_mask_terms, build_amp_obs_terms
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -124,6 +125,14 @@ ROUGH_STAIR_HEIGHT_RANGE = (0.35, 0.38)
 # （yaw 指令 ±0.2、σ=0.25，不动时误差 0.1、核 0.96）；加 is_alive +1.0，站着不动净 +0.053/s 为正。
 ROUGH_STAIR_ANG_VEL_YAW_RANGE = (0.0, 0.0)
 ROUGH_ZERO_TRACKING_ANG_VEL_ON_TERRAIN = True
+
+# reset 帧 last_actions 随机化（2026-09-10 定，A14）。训练里 `ActionManager.reset()` 把 `_action`
+# 清零，于是「reset 帧 last_actions 恒为全 0」成了策略能依赖的模式开关：A13b model_1600 在
+# vx 2.0 / h 0.38 下干净 reset 后 2.15 m/s，先站 5 秒再切同一条指令只有 0.01 m/s，而单独清
+# last_actions 或单独清关节姿态都出不来（0.01 / 0.04），两个一起清才回到 2.15。默认 0 保持
+# 与历史各线逐位一致，只有显式给正数才启用。范围按实测原始动作跨度（走路 [-3.62, 3.40]）定。
+ROUGH_RESET_LAST_ACTION_RANGE = 0.0
+ROUGH_RESET_LAST_ACTION_PROB = 1.0
 # 逐项奖励的分列日志（2026-09-09 用户定，A9）：每步把奖励表每一项在台阶列上的均值记一份，
 # 键名 Rough/rw_<项名>_stairs。A8 只能读出 command_velocity_error 在台阶列是 −2.48/s
 # （因为它本来就只在那列生效），其余罚项被平地列稀释、无从定位。不改奖励数学。
@@ -227,6 +236,8 @@ def env_cfg(
     flat_warmup_ramp_iterations: int = ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
     terrain_vz_weight: float = ROUGH_TERRAIN_VZ_WEIGHT,
     curriculum_advance_threshold: float = ROUGH_CURRICULUM_ADVANCE_THRESHOLD,
+    reset_last_action_range: float = ROUGH_RESET_LAST_ACTION_RANGE,
+    reset_last_action_prob: float = ROUGH_RESET_LAST_ACTION_PROB,
     amp_enabled: bool = False,
     amp_terrain_type_names: tuple[str, ...] = ROUGH_AMP_TERRAIN_TYPE_NAMES,
 ) -> ManagerBasedRlEnvCfg:
@@ -317,6 +328,15 @@ def env_cfg(
     cfg.events["reset_stair_rewards"] = EventTermCfg(
         func=stair_rewards.reset_stair_rewards, mode="reset"
     )
+    if reset_last_action_range > 0.0:
+        cfg.events["randomize_reset_last_actions"] = EventTermCfg(
+            func=shared_events.randomize_reset_last_actions,
+            mode="reset",
+            params={
+                "action_range": float(reset_last_action_range),
+                "probability": float(reset_last_action_prob),
+            },
+        )
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
         func=stair_rewards.stair_climb_progress, weight=3.0
     )
@@ -611,6 +631,8 @@ __all__ = [
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_RESET_LAST_ACTION_PROB",
+    "ROUGH_RESET_LAST_ACTION_RANGE",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",

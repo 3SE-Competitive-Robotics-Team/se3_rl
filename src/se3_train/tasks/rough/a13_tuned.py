@@ -52,18 +52,23 @@ A13_ENERGY_PENALTY_SCALE = 1.0
 """能耗三项退回 Flat 原价（A6 显示折价无差别）。"""
 
 
+A13_ENV_KWARGS: dict = {
+    # 观测组保留，便于与 A12 逐位对照；AMP 奖励侧由 rl_cfg 关掉。
+    "amp_enabled": True,
+    "terrain_vz_weight": 0.0,
+    "zero_base_height_on_terrain": True,
+    "zero_tracking_ang_vel_on_terrain": True,
+    "command_velocity_error_weight": -2.0,
+    "energy_penalty_scale": A13_ENERGY_PENALTY_SCALE,
+    "stair_height_range": A13_STAIR_HEIGHT_RANGE,
+}
+"""A13 相对 Flat 基线的全部 env 改动。后续单因素组（A14…）在此之上只加自己那一个 key，
+单变量关系由结构保证，不靠人对着抄。"""
+
+
 def a13_env_cfg(*, play: bool = False) -> ManagerBasedRlEnvCfg:
     """有利项全开：进度/支撑奖励、速度违令罚、台阶列置零高度罚、宽速度核、关 yaw 工资、关 vz 项。"""
-    return env_cfg(
-        play=play,
-        amp_enabled=True,  # 观测组保留，便于与 A12 逐位对照；奖励侧由 rl_cfg 关掉
-        terrain_vz_weight=0.0,
-        zero_base_height_on_terrain=True,
-        zero_tracking_ang_vel_on_terrain=True,
-        command_velocity_error_weight=-2.0,
-        energy_penalty_scale=A13_ENERGY_PENALTY_SCALE,
-        stair_height_range=A13_STAIR_HEIGHT_RANGE,
-    )
+    return env_cfg(play=play, **A13_ENV_KWARGS)
 
 
 def a13_rl_cfg() -> RslRlOnPolicyRunnerCfg:
