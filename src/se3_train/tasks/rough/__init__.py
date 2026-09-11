@@ -11,6 +11,7 @@ from .a12_ablation import A12_ABLATIONS, a12_ablation_env_cfg, a12_ablation_rl_c
 from .a13_tuned import a13_env_cfg, a13_rl_cfg
 from .a14_last_action import a14_env_cfg, a14_rl_cfg
 from .a15_pricing import a15_env_cfg, a15_rl_cfg
+from .a16_reward_swap import a16_env_cfg, a16_rl_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -36,11 +37,21 @@ A14_TASK_ID = "SE3-WheelLegged-Rough-A14"
 # 站着不动净赚 2.407/秒、走路净亏 2.932/秒，站着才是该奖励函数的最优解；A15 改四个数值
 # 把符号翻过来。对照端同为 A13_TASK_ID。
 A15_TASK_ID = "SE3-WheelLegged-Rough-A15"
+# A16：stairs_up 整列的奖励换成参考实现（se3_rl_competiition 的 cloud-changes 分支）
+# 那 10 项，一项不改；其余五列保持 A15。对照端是 A15。见 a16_reward_swap.py。
+A16_TASK_ID = "SE3-WheelLegged-Rough-A16"
 AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    register_mjlab_task(
+        task_id=A16_TASK_ID,
+        env_cfg=a16_env_cfg(),
+        play_env_cfg=a16_env_cfg(play=True),
+        rl_cfg=bind_task_name(a16_rl_cfg(), A16_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     register_mjlab_task(
         task_id=A15_TASK_ID,
         env_cfg=a15_env_cfg(),
@@ -126,6 +137,7 @@ __all__ = [
     "A13_TASK_ID",
     "A14_TASK_ID",
     "A15_TASK_ID",
+    "A16_TASK_ID",
     "AMP_ABL_SHUFFLED_DATASET",
     "AMP_ABL_SHUFFLED_TASK_ID",
     "AMP_ABL_W3_TASK_ID",

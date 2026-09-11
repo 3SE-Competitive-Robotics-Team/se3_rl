@@ -31,7 +31,8 @@ from se3_train.tasks.flat.env_cfg import (
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
-from se3_train.tasks.rough import a13_tuned, a15_pricing, ctbc, curriculums, events
+from se3_train.tasks.rough import a13_tuned, a15_pricing, a16_reward_swap, ctbc
+from se3_train.tasks.rough import curriculums, events, stair_column_rewards
 from se3_train.tasks.rough import observations, terminations
 from se3_train.tasks.rough import rewards as rough_rewards
 from se3_train.tasks.rough.commands import RoughCommandCfg
@@ -1216,3 +1217,84 @@ class NonStairColumnPricingTests(unittest.TestCase):
             self.a13.rewards["command_velocity_error"].params["terrain_type_names"],
             ROUGH_REWARD_TERRAIN_TYPE_NAMES,
         )
+
+
+class StairColumnRewardSwapTests(unittest.TestCase):
+    """A16：stairs_up 整列换成参考实现那 10 项，其余五列保持 A15 逐位不变。
+
+    参考来源是 se3_rl_competiition 的 `cloud-changes` 分支 `tasks/stair`。那边 10 项、
+    权重全在 0.01-1.5；我们 A15 是 25 项、跨 0.0002-25 五个数量级。本组做一次整列替换的
+    干净对照，所以这里必须钉死「10 项的权重与参数一个不改」和「两套奖励互不越界」。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.a15 = a15_pricing.a15_env_cfg()
+        cls.a16 = a16_reward_swap.a16_env_cfg()
+
+    def test_reference_weights_are_copied_verbatim(self) -> None:
+        expected = {
+            "ref_tracking_lin_vel": (1.5, {"command_name": "velocity_height", "sigma": 0.245}),
+            "ref_tracking_ang_vel": (1.0, {"command_name": "velocity_height", "sigma": 4.5}),
+            "ref_tracking_height": (1.0, {"command_name": "velocity_height", "sigma": 0.1}),
+            "ref_climb_progress": (1.0, {"command_name": "velocity_height", "scale": 1.0,
+                                         "min_vx": 0.1}),
+            "ref_step_height_progress": (0.5, {"command_name": "velocity_height", "scale": 1.0,
+                                               "min_vx": 0.1, "max_step": 0.05}),
+            "ref_chassis_clearance_penalty": (1.0, {"weight": 1.0, "sigma": 0.1}),
+            "ref_orientation": (-1.0, {"command_name": "velocity_height"}),
+            "ref_action_rate": (-0.01, {}),
+            "ref_is_alive": (0.1, {}),
+        }
+        for name, (weight, params) in expected.items():
+            term = self.a16.rewards[name]
+            self.assertAlmostEqual(float(term.weight), weight, msg=name)
+            self.assertEqual(term.params["params"], params, msg=name)
+        align = self.a16.rewards["ref_leg_alignment_penalty"]
+        self.assertAlmostEqual(float(align.weight), -0.5)
+        self.assertEqual(align.params["params"]["max_fore_aft_offset"], 0.06)
+        self.assertEqual(align.params["params"]["max_penalty"], 4.0)
+
+    def test_a15_terms_survive_with_unchanged_weights(self) -> None:
+        self.assertEqual(len(self.a16.rewards), len(self.a15.rewards) + 10)
+        for name, term in self.a15.rewards.items():
+            swapped = self.a16.rewards[name]
+            self.assertEqual(float(swapped.weight), float(term.weight), msg=name)
+            self.assertIs(swapped.params["inner"], term.func, msg=name)
+            self.assertEqual(swapped.params["params"], dict(term.params or {}), msg=name)
+
+    def test_step_height_cache_is_cleared_on_reset(self) -> None:
+        term = self.a16.events["reset_ref_step_height_cache"]
+        self.assertEqual(term.mode, "reset")
+        self.assertIs(term.func, stair_column_rewards.reset_step_height_cache)
+
+    def test_chassis_offset_is_ours_not_the_reference_value(self) -> None:
+        # 参考实现用的是它那份 MJCF 的 0.1042，几何量不能照搬。
+        self.assertAlmostEqual(stair_column_rewards.CHASSIS_BOTTOM_OFFSET, 0.12)
+        self.assertAlmostEqual(
+            stair_column_rewards.CHASSIS_BOTTOM_OFFSET, -ROUGH_BODY_COLLISION_BOTTOM_OFFSET
+        )
+
+    def test_the_two_reward_sets_do_not_cross_columns(self) -> None:
+        cfg = a16_reward_swap.a16_env_cfg()
+        cfg.scene.num_envs = 24
+        env = ManagerBasedRlEnv(cfg, device="cpu")
+        try:
+            env.reset()
+            terrain = env.scene.terrain
+            col = list(terrain.cfg.terrain_generator.sub_terrains.keys()).index("stairs_up")
+            # 前 500 轮平地热身会把全员按在平地列，直接改写归属来验按列门控本身。
+            terrain.terrain_types[: cfg.scene.num_envs // 2] = col
+            env.step(torch.zeros(env.num_envs, env.action_manager.total_action_dim))
+            names = env.reward_manager.active_terms
+            step = env.reward_manager._step_reward
+            on = terrain.terrain_types == col
+            for i, name in enumerate(names):
+                value = step[:, i]
+                self.assertTrue(bool(torch.isfinite(value).all()), msg=name)
+                if name.startswith("ref_"):
+                    self.assertEqual(float(value[~on].abs().sum()), 0.0, msg=name)
+                else:
+                    self.assertEqual(float(value[on].abs().sum()), 0.0, msg=name)
+        finally:
+            env.close()
