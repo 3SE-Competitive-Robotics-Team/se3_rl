@@ -72,6 +72,7 @@ def _upright(env: ManagerBasedRlEnv) -> torch.Tensor:
 def stair_climb_progress(
     env: ManagerBasedRlEnv,
     terrain_type_names: tuple[str, ...] = ("stairs_up",),
+    movement_command_name: str | None = None,
 ) -> torch.Tensor:
     """只奖励平台外新增的最大切比雪夫进度；后退再走回不会重复收酬。"""
     mask, _, start, length, _ = _geometry(env, terrain_type_names)
@@ -84,6 +85,10 @@ def stair_climb_progress(
     updated = torch.maximum(previous, progress)
     delta = torch.where(initialized & mask, updated - previous, 0.0)
     previous.copy_(updated.detach())
+    # 停车期间仍记录最大进度，恢复运动时不能补领这段距离的奖励。
+    if movement_command_name is not None:
+        moving = env.command_manager.get_command(movement_command_name)[:, 0] > 0.0
+        delta = torch.where(moving, delta, 0.0)
     return delta / env.step_dt * _upright(env)
 
 
@@ -97,6 +102,7 @@ def stair_support_height(
     wheel_clearance_tol_m: float = 0.025,
     height_tolerance_m: float = 0.015,
     hold_time_s: float = 0.10,
+    movement_command_name: str | None = None,
 ) -> torch.Tensor:
     """双轮持续支撑更高踏面后，每阶每 episode 只奖励一次，站住或反复上下不刷分。"""
     mask, step_height, _, _, count = _geometry(env, terrain_type_names)
@@ -141,4 +147,8 @@ def stair_support_height(
     denom = mask.sum().clamp(min=1)
     log["Rough/stair_supported_steps"] = candidate.sum() / denom
     log["Rough/stair_new_supported_steps"] = gain.sum() / denom
+    # 已领奖状态与诊断照常更新，只门控本步发放，避免停车爬阶后重新领分。
+    if movement_command_name is not None:
+        moving = env.command_manager.get_command(movement_command_name)[:, 0] > 0.0
+        gain = torch.where(moving, gain, 0.0)
     return gain / env.step_dt

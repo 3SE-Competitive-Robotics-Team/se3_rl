@@ -20,6 +20,7 @@ from .a18_height_gate import (
 )
 from .a20_high_stand_transition import a20_env_cfg, a20_rl_cfg
 from .a21_full_height import a21_env_cfg, a21_rl_cfg
+from .a22_stair_command import a22_env_cfg, a22_rl_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -57,11 +58,19 @@ A19_HEIGHT_GATE_TASK_ID = "SE3-WheelLegged-Rough-A19-HeightGate"
 A20_HIGH_STAND_TRANSITION_TASK_ID = "SE3-WheelLegged-Rough-A20-HighStandTransition"
 # A21：保留 A20 的启动序列，恢复 A15 完整高度惩罚，验证能否兼得启动与高度跟踪。
 A21_FULL_HEIGHT_TASK_ID = "SE3-WheelLegged-Rough-A21-FullHeight"
+A22_STAIR_COMMAND_TASK_ID = "SE3-WheelLegged-Rough-A22-StairCommand"
 AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    register_mjlab_task(
+        task_id=A22_STAIR_COMMAND_TASK_ID,
+        env_cfg=a22_env_cfg(),
+        play_env_cfg=a22_env_cfg(play=True),
+        rl_cfg=bind_task_name(a22_rl_cfg(), A22_STAIR_COMMAND_TASK_ID),
+        runner_cls=Se3WarmStartRunner,
+    )
     register_mjlab_task(
         task_id=A21_FULL_HEIGHT_TASK_ID,
         env_cfg=a21_env_cfg(),
