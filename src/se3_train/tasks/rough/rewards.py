@@ -152,8 +152,9 @@ def base_height_penalty_off_terrain(
     command_speed_gate_range: tuple[float, float] | None = None,
     min_clearance: float | None = None,
     min_clearance_sigma: float = 0.05,
+    terrain_penalty_scale: float = 0.0,
 ) -> torch.Tensor:
-    """机身高度 L2 罚，在指定的子地形列上置零，其余列与 Flat 基线逐位相同。"""
+    """机身高度 L2 罚，指定地形列按比例缩放（默认关闭），其余列保持原强度。"""
     penalty = flat_base_height_penalty_no_jump(
         env,
         command_name=command_name,
@@ -167,7 +168,7 @@ def base_height_penalty_off_terrain(
     mask = terrain_column_mask(env, terrain_type_names)
     if mask is None:
         return penalty
-    return penalty * (~mask).float()
+    return penalty * torch.where(mask, terrain_penalty_scale, 1.0)
 
 
 def non_flat_column_mask(
