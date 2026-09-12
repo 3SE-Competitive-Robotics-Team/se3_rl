@@ -99,6 +99,18 @@ class RoughCommandCfg(JumpCommandCfg):
     R3 从第 0 轮就给 0.4–2.4，500 轮的策略对 vx ≥ 1.0 的指令原地不动。
     """
 
+    high_stand_transition_prob: float = 0.0
+    """平地每次重采样时生成“高姿态静站→前进”序列的概率；0 表示关闭。"""
+
+    high_stand_height_range: tuple[float, float] = (0.36, 0.38)
+    """高姿态启动序列保持不变的机身高度指令范围(m)。"""
+
+    high_stand_duration_range_s: tuple[float, float] = (1.5, 2.5)
+    """切换到前进指令前的静站时长范围(s)。"""
+
+    high_stand_move_vx_range: tuple[float, float] = (0.8, 2.4)
+    """高姿态静站结束后直接施加的前进速度指令范围(m/s)。"""
+
     def build(self, env: ManagerBasedRlEnv) -> RoughCommandTerm:
         return RoughCommandTerm(self, env)
 
@@ -114,6 +126,13 @@ class RoughCommandTerm(JumpCommandTerm):
         self._terrain_override_mask: torch.Tensor | None = None
         # 单独定价的台阶列掩码（`stair_command_terrain_names`），是上面那个的子集。
         self._stair_mask: torch.Tensor | None = None
+        self._high_stand_selected = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._high_stand_steps_left = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
+        )
+        self._high_stand_target_vx = torch.zeros(
+            self.num_envs, device=self.device, dtype=self._command.dtype
+        )
         if cfg.terrain_command_override_enabled:
             self.refresh_terrain_override()
 
@@ -191,7 +210,9 @@ class RoughCommandTerm(JumpCommandTerm):
         names = list(generator.sub_terrains.keys())
         if not generator.curriculum or terrain_origins.shape[1] != len(names):
             return None
-        flat_cols = [i for i, name in enumerate(names) if name in self.cfg.terrain_command_flat_names]
+        flat_cols = [
+            i for i, name in enumerate(names) if name in self.cfg.terrain_command_flat_names
+        ]
         types = terrain_types.to(device=self.device, dtype=torch.long)
         is_flat = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         for col in flat_cols:
@@ -200,6 +221,7 @@ class RoughCommandTerm(JumpCommandTerm):
 
     def _update_command(self) -> None:
         super()._update_command()
+        self._update_high_stand_transition()
         # 地形感知下限只在重采样时抬高高度指令的采样下界，没有任何逐步状态；
         # 这里只把它的效果记一笔，否则 W&B 上看不出下限有没有真的顶起来
         # （原来这个位置记的是 step_up 状态机的触发率）。
@@ -212,9 +234,31 @@ class RoughCommandTerm(JumpCommandTerm):
             min=1.0
         )
 
+    def _update_high_stand_transition(self) -> None:
+        """保持高姿态静站一段时间，再在不改变高度的情况下切换到前进指令。"""
+        if self.cfg.high_stand_transition_prob <= 0.0:
+            return
+
+        waiting = self._high_stand_selected & (self._high_stand_steps_left > 0)
+        self._high_stand_steps_left[waiting] -= 1
+        start_moving = waiting & (self._high_stand_steps_left == 0)
+        self._command[start_moving, 0] = self._high_stand_target_vx[start_moving]
+        self._command[start_moving, 1:4] = 0.0
+        self._standing_mask[start_moving] = False
+
+        waiting = self._high_stand_selected & (self._high_stand_steps_left > 0)
+        moving = self._high_stand_selected & ~waiting
+        log = self._env.extras.setdefault("log", {})
+        log["Rough/high_stand_transition_waiting"] = waiting.float().mean()
+        log["Rough/high_stand_transition_moving"] = moving.float().mean()
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
+        self._high_stand_selected[env_ids] = False
+        self._high_stand_steps_left[env_ids] = 0
+        self._high_stand_target_vx[env_ids] = 0.0
         if self._terrain_override_mask is None:
             super()._resample_command(env_ids)
+            self._sample_high_stand_transition(env_ids)
             return
         # 非平地列不抽静站样本：vx 下界为正的约束对静站（vx=0）没有意义。
         overridden = self._terrain_override_mask[env_ids]
@@ -222,6 +266,7 @@ class RoughCommandTerm(JumpCommandTerm):
         terrain_ids = env_ids[overridden]
         if flat_ids.numel() > 0:
             super()._resample_command(flat_ids)
+            self._sample_high_stand_transition(flat_ids)
         if terrain_ids.numel() > 0:
             if self.cfg.terrain_lin_vel_x_follow_curriculum:
                 lo, hi = (float(v) for v in self.cfg.terrain_lin_vel_x_range)
@@ -238,6 +283,39 @@ class RoughCommandTerm(JumpCommandTerm):
             finally:
                 self.cfg.standing_ratio = standing_ratio
         self._apply_stair_height(env_ids)
+
+    def _sample_high_stand_transition(self, flat_ids: torch.Tensor) -> None:
+        """在平地样本中注入部署时会遇到的高姿态冷启动指令跳变。"""
+        probability = min(max(float(self.cfg.high_stand_transition_prob), 0.0), 1.0)
+        if probability <= 0.0 or flat_ids.numel() == 0:
+            return
+        selected = torch.rand(len(flat_ids), device=self.device) < probability
+        ids = flat_ids[selected]
+        if ids.numel() == 0:
+            return
+
+        height_low, height_high = (float(v) for v in self.cfg.high_stand_height_range)
+        duration_low, duration_high = (float(v) for v in self.cfg.high_stand_duration_range_s)
+        vx_low, vx_high = (float(v) for v in self.cfg.high_stand_move_vx_range)
+        self._command[ids, 0:4] = 0.0
+        self._command[ids, 4] = (
+            torch.rand(len(ids), device=self.device) * (height_high - height_low) + height_low
+        )
+        duration_s = (
+            torch.rand(len(ids), device=self.device) * (duration_high - duration_low) + duration_low
+        )
+        self._high_stand_steps_left[ids] = torch.ceil(duration_s / self._env.step_dt).long()
+        self._high_stand_target_vx[ids] = (
+            torch.rand(len(ids), device=self.device) * (vx_high - vx_low) + vx_low
+        )
+        self._high_stand_selected[ids] = True
+        self._standing_mask[ids] = True
+        update_policy_default_from_height_cache(
+            self._env,
+            "velocity_height",
+            env_ids=ids,
+            command=self._command,
+        )
 
     def _apply_stair_height(self, env_ids: torch.Tensor) -> None:
         """把台阶列 env 的高度指令改到 `stair_height_range` 内重新采样。

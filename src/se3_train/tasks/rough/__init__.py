@@ -18,6 +18,7 @@ from .a18_height_gate import (
     a18_height_gate_env_cfg,
     a18_warmstart_rl_cfg,
 )
+from .a20_high_stand_transition import a20_env_cfg, a20_rl_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -51,11 +52,20 @@ A17_TASK_ID = "SE3-WheelLegged-Rough-A15-FlatStairsWarmStart"
 # A18：A15 checkpoint 的无重复平地热身对照；A19 只额外门控移动时的目标高度惩罚。
 A18_CONTROL_TASK_ID = "SE3-WheelLegged-Rough-A18-NoWarmupControl"
 A19_HEIGHT_GATE_TASK_ID = "SE3-WheelLegged-Rough-A19-HeightGate"
+# A20：在 A19 上加入平地高姿态静站到前进的显式指令转移分布，针对 sim2x 冷启动死锁。
+A20_HIGH_STAND_TRANSITION_TASK_ID = "SE3-WheelLegged-Rough-A20-HighStandTransition"
 AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    register_mjlab_task(
+        task_id=A20_HIGH_STAND_TRANSITION_TASK_ID,
+        env_cfg=a20_env_cfg(),
+        play_env_cfg=a20_env_cfg(play=True),
+        rl_cfg=bind_task_name(a20_rl_cfg(), A20_HIGH_STAND_TRANSITION_TASK_ID),
+        runner_cls=Se3WarmStartRunner,
+    )
     register_mjlab_task(
         task_id=A18_CONTROL_TASK_ID,
         env_cfg=a18_control_env_cfg(),
