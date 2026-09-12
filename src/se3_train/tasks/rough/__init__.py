@@ -13,6 +13,11 @@ from .a14_last_action import a14_env_cfg, a14_rl_cfg
 from .a15_pricing import a15_env_cfg, a15_rl_cfg
 from .a16_reward_swap import a16_env_cfg, a16_rl_cfg
 from .a17_flat_stairs_warmstart import flat_stairs_env_cfg, flat_stairs_rl_cfg
+from .a18_height_gate import (
+    a18_control_env_cfg,
+    a18_height_gate_env_cfg,
+    a18_warmstart_rl_cfg,
+)
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -43,11 +48,28 @@ A15_TASK_ID = "SE3-WheelLegged-Rough-A15"
 A16_TASK_ID = "SE3-WheelLegged-Rough-A16"
 # A17：以 A15 model_4999 只加载 actor/critic，从 iteration 0 重跑；stairs_up 奖励逐项对齐 flat。
 A17_TASK_ID = "SE3-WheelLegged-Rough-A15-FlatStairsWarmStart"
+# A18：A15 checkpoint 的无重复平地热身对照；A19 只额外门控移动时的目标高度惩罚。
+A18_CONTROL_TASK_ID = "SE3-WheelLegged-Rough-A18-NoWarmupControl"
+A19_HEIGHT_GATE_TASK_ID = "SE3-WheelLegged-Rough-A19-HeightGate"
 AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    register_mjlab_task(
+        task_id=A18_CONTROL_TASK_ID,
+        env_cfg=a18_control_env_cfg(),
+        play_env_cfg=a18_control_env_cfg(play=True),
+        rl_cfg=bind_task_name(a18_warmstart_rl_cfg(), A18_CONTROL_TASK_ID),
+        runner_cls=Se3WarmStartRunner,
+    )
+    register_mjlab_task(
+        task_id=A19_HEIGHT_GATE_TASK_ID,
+        env_cfg=a18_height_gate_env_cfg(),
+        play_env_cfg=a18_height_gate_env_cfg(play=True),
+        rl_cfg=bind_task_name(a18_warmstart_rl_cfg(), A19_HEIGHT_GATE_TASK_ID),
+        runner_cls=Se3WarmStartRunner,
+    )
     register_mjlab_task(
         task_id=A16_TASK_ID,
         env_cfg=a16_env_cfg(),
@@ -149,6 +171,8 @@ __all__ = [
     "A15_TASK_ID",
     "A16_TASK_ID",
     "A17_TASK_ID",
+    "A18_CONTROL_TASK_ID",
+    "A19_HEIGHT_GATE_TASK_ID",
     "AMP_ABL_SHUFFLED_DATASET",
     "AMP_ABL_SHUFFLED_TASK_ID",
     "AMP_ABL_W3_TASK_ID",
