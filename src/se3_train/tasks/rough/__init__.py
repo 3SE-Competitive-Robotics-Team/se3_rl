@@ -23,7 +23,7 @@ from .a21_full_height import a21_env_cfg, a21_rl_cfg
 from .a22_stair_command import a22_env_cfg, a22_rl_cfg
 from .a23_stair_no_gate import a23_env_cfg, a23_rl_cfg
 from .a24_stair_height import a24_env_cfg, a24_rl_cfg, a25_env_cfg
-from .a26_stair_sampling import a26_env_cfg, a27_env_cfg
+from .a26_stair_sampling import a26_env_cfg, a27_env_cfg, a27_warmup_env_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -73,6 +73,7 @@ def register() -> None:
         ("SE3-WheelLegged-Rough-A25-StairHeight", a25_env_cfg),
         ("SE3-WheelLegged-Rough-A26-MixedControl", a26_env_cfg),
         ("SE3-WheelLegged-Rough-A27-StairsOnly", a27_env_cfg),
+        ("SE3-WheelLegged-Rough-A27-Warmup500", a27_warmup_env_cfg),
     ):
         register_mjlab_task(
             task_id=task_id,

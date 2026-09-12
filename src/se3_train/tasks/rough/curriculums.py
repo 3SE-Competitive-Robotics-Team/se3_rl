@@ -40,6 +40,7 @@ def flat_warmup(
     ramp_iterations: int = 0,
     steps_per_policy_iter: int = 24,
     flat_name: str = "flat",
+    target_terrain_name: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """前 `iterations` 轮全部 env 放在平地列、第 0 行，之后逐 env 在 reset 时换回原列、第 0 行。
 
@@ -56,6 +57,7 @@ def flat_warmup(
     （A6 model_500 在 2 m/s 上误差 0.02，model_600 掉到 0.93，且 A5 同型），
     一次性把 75% 的 env 扔进跟不上的指令里，共享 actor 连平地一起退化。
     """
+    # 指定目标列时热身后全员进入该列，默认仍恢复原始分配。
     terrain = env.scene.terrain
     assert terrain is not None and terrain.terrain_origins is not None
     generator = terrain.cfg.terrain_generator
@@ -66,6 +68,8 @@ def flat_warmup(
     original = getattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, None)
     if original is None:
         original = terrain.terrain_types.clone()
+        if target_terrain_name is not None:
+            original.fill_(names.index(target_terrain_name))
         setattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, original)
         setattr(
             env,
