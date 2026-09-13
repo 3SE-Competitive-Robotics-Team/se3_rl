@@ -11,7 +11,8 @@
 - 课程（curriculums.py）：前 500 轮平地热身 + 500 轮 ramp；平地速度课程只看平地列（events.py）。
 
 默认定价取从零训练最好的 A15（W&B h85eljnj）：非台阶列高度 σ 0.10、运动核分母 0.5、平地 vz 项 0、
-违令罚全六列、能耗三项与 Flat 同价。相对 A15 的差别只有课程：升降级换成官方实现。
+违令罚全列、能耗三项与 Flat 同价。相对 A15 的差别：课程换成官方升降级；以及 M2（2026-09-13）的台阶列定价——
+台阶列 is_alive / flat_wheel_contact / collision 置零，加 mjlab `is_terminated` 摔倒罚（见 ROUGH_STAIRS_ZEROED_REWARDS 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -23,6 +24,7 @@ from dataclasses import fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import height_scan
+from mjlab.envs.mdp.rewards import is_terminated
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
@@ -64,7 +66,7 @@ from .commands import (
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
     RoughCommandCfg,
 )
-from .terrains import rough_terrains_cfg
+from .terrains import ROUGH_TERRAIN_PROPORTIONS, rough_terrains_cfg
 
 # mjlab 资产库约定：碰撞 geom group 3、视觉 geom group 2、射线传感器只看 group 0（地形）。
 ROUGH_ROBOT_COLLISION_GEOM_GROUP = 3
@@ -73,6 +75,13 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 # 三个接触传感器的 secondary 都是 pattern="terrain"，生成器地形有几百个 geom，64 个匹配槽会溢出
 # （运行时刷 "contact match overflow"，接触力读数不可信）。mjlab 自己的 rough velocity 任务同样取 500。
 ROUGH_CONTACT_SENSOR_MAXMATCH = 500
+# mjwarp 的约束池 / 接触池按每世界上限分配，求解器 kernel 也按 (nworld, njmax) 起线程，官方文档说这两个值
+# "越小越快，前提是不溢出"。沿用 Flat 的 1040 / 256 时 rough 每轮多 0.13 s。2026-09-13 用 M1 的 model_2400 按训练方式
+# 采样动作、8192 env、起步行 0–9、2000 步压测：每世界约束峰值 54（每步峰值 p99 46）、接触峰值 10、宽相候选 27k；
+# 256 / 64 全程零溢出（scripts/check_sim_overflow.py）。溢出时 mjwarp 会打印 "nefc overflow" 并置 d.overflow，
+# 换机器人或地形后用同一脚本再压一遍。
+ROUGH_NJMAX = 256
+ROUGH_NCONMAX = 64
 # 课程按训练轮次计数用的每轮步数，与 rl_cfg 的 num_steps_per_env 一致（由测试钉住）。
 ROUGH_STEPS_PER_POLICY_ITER = 24
 ROUGH_FLAT_WARMUP_ITERATIONS = 500
@@ -86,14 +95,8 @@ ROUGH_REWARD_TERRAIN_TYPE_NAMES = ("stairs_up",)
 ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
 ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
 ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES = ("flat",)
-ROUGH_ALL_TERRAIN_TYPE_NAMES = (
-    "flat",
-    "stairs_up",
-    "stairs_down",
-    "slope_up",
-    "slope_down",
-    "random_rough",
-)
+# 训练地形的全部列，与 terrains.ROUGH_TERRAIN_PROPORTIONS 的键同源（2026-09-13 起只有 flat 与 stairs_up）。
+ROUGH_ALL_TERRAIN_TYPE_NAMES = tuple(ROUGH_TERRAIN_PROPORTIONS)
 
 # 台阶专项奖励（A12；消融 A7/A8：撤掉任一项台阶列速度归零）。
 ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
@@ -112,6 +115,17 @@ ROUGH_FLAT_VZ_WEIGHT = 0.0
 ROUGH_STAIR_TRACKING_SIGMA_MOVE = 1.44
 # 非平地列 tracking_lin_vel 核里的 vz 系数（A7）：爬台阶和上坡必须有垂直速度。
 ROUGH_TERRAIN_VZ_WEIGHT = 0.0
+# M2（2026-09-13 用户定）：台阶列上置零的三项。M1 hqcn4y2f 的台阶列账本（每秒贡献）显示"冻住不动"净 +0.94/s
+# （is_alive +1.0、零速时跟踪核仍 +0.54、违令罚 −0.60），而"努力爬"在 1600 轮净 −0.4/s：轮离地罚 −0.7、
+# base 碰地形罚 −0.5 正好罚在抬轮跨立面这个动作上，is_alive 则是"站着的工资"（与 A10 删掉 yaw 工资同理）。
+# 官方升降级把台阶 env 堆在成功率约一半的行，按此账本"尝试"要成功率超过约 40% 才划算，去掉工资后约 12%。
+# 确定性回放在 1400 轮长出常数动作不动点（docs/plan/m1_model800_vs_1400_20260913.md）就是这个失衡的产物。
+ROUGH_STAIRS_ZEROED_REWARDS = ("is_alive", "flat_wheel_contact", "collision")
+# 摔倒罚（一次性，按事件计）：工资拿掉后台阶列每秒净值接近 0 甚至为负，非超时终止按 0 自举就等于"免费退出"，
+# 提前摔死会变便宜（A10 的自杀策略）。mjlab `is_terminated` 对所有非 time_out 终止（灾难、倾倒）记 1；
+# RewardManager 按 dt 缩放奖励，所以权重取 −ROUGH_FALL_PENALTY / step_dt，使每次终止恰好扣 ROUGH_FALL_PENALTY。
+# 量级取剩余 episode 可能负值的上界：20 s × 0.5/s = 10。
+ROUGH_FALL_PENALTY = 10.0
 
 # critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
 # 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
@@ -157,6 +171,8 @@ def env_cfg(
         max_init_terrain_level=ROUGH_MAX_INIT_TERRAIN_LEVEL,
     )
     cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
+    cfg.sim.njmax = ROUGH_NJMAX
+    cfg.sim.nconmax = ROUGH_NCONMAX
 
     # 台阶专项奖励用的双轮传感器 + critic 高度扫描；Flat 原有传感器布局不动。
     cfg.scene.sensors = (
@@ -322,6 +338,23 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             "stair_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
         },
     )
+    # M2：台阶列不发工资、不罚爬升动作；权重与原参数逐位沿用 Flat，只在台阶列乘零。
+    for name in ROUGH_STAIRS_ZEROED_REWARDS:
+        term = cfg.rewards[name]
+        cfg.rewards[name] = RewardTermCfg(
+            func=rewards.off_column,
+            weight=float(term.weight),
+            params={
+                "inner": term.func,
+                "params": dict(term.params),
+                "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+            },
+        )
+    # 摔倒罚：非超时终止那一步一次性扣 ROUGH_FALL_PENALTY（权重按 dt 反缩放）。
+    step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
+    cfg.rewards["fall_penalty"] = RewardTermCfg(
+        func=is_terminated, weight=-ROUGH_FALL_PENALTY / step_dt
+    )
 
 
 __all__ = [
@@ -336,13 +369,17 @@ __all__ = [
     "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
+    "ROUGH_FALL_PENALTY",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
+    "ROUGH_NCONMAX",
+    "ROUGH_NJMAX",
     "ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
+    "ROUGH_STAIRS_ZEROED_REWARDS",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",

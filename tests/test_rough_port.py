@@ -13,13 +13,13 @@ import unittest
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.envs.mdp import height_scan
+from mjlab.envs.mdp.rewards import is_terminated
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.tasks.velocity.mdp.curriculums import terrain_levels_vel
 from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain_edge_reached
 from mjlab.terrains import (
     BoxInvertedPyramidStairsTerrainCfg,
     BoxPyramidStairsTerrainCfg,
-    HfPyramidSlopedTerrainCfg,
 )
 
 import se3_train  # noqa: F401  # 注册任务
@@ -39,10 +39,13 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_BASE_HEIGHT_SIGMA,
     ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
     ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+    ROUGH_FALL_PENALTY,
     ROUGH_FLAT_VZ_WEIGHT,
     ROUGH_FLAT_WARMUP_ITERATIONS,
     ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
     ROUGH_MAX_INIT_TERRAIN_LEVEL,
+    ROUGH_NCONMAX,
+    ROUGH_NJMAX,
     ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE,
     ROUGH_REWARD_TERRAIN_TYPE_NAMES,
     ROUGH_ROBOT_COLLISION_GEOM_GROUP,
@@ -51,6 +54,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
     ROUGH_STAIR_TRACKING_SIGMA_MOVE,
+    ROUGH_STAIRS_ZEROED_REWARDS,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
@@ -68,8 +72,18 @@ from se3_train.tasks.rough.terrains import (
 _ROUGH = "SE3-WheelLegged-Rough"
 _STAIR_EVAL = "SE3-WheelLegged-Rough-StairEval"
 _FLAT_MLP = "SE3-WheelLegged-Flat-MLP"
-_WRAPPED = ("flat_base_height", "tracking_lin_vel", "tracking_ang_vel")
-_ROUGH_ONLY = ("command_velocity_error", "stair_climb_progress", "stair_support_height")
+_WRAPPED = (
+    "flat_base_height",
+    "tracking_lin_vel",
+    "tracking_ang_vel",
+    *ROUGH_STAIRS_ZEROED_REWARDS,
+)
+_ROUGH_ONLY = (
+    "command_velocity_error",
+    "stair_climb_progress",
+    "stair_support_height",
+    "fall_penalty",
+)
 
 
 def _all_ids(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -189,6 +203,26 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
     def test_domain_randomization_matches_flat(self) -> None:
         self.assertAlmostEqual(self.cfg.events["com"].params["com_range"], 0.005)
 
+    def test_m2_stairs_column_pricing_and_fall_penalty(self) -> None:
+        """M2：台阶列 is_alive / flat_wheel_contact / collision 置零（权重与原参数沿用 Flat），加一次性摔倒罚。"""
+        for name in ROUGH_STAIRS_ZEROED_REWARDS:
+            term = self.cfg.rewards[name]
+            base = self.flat.rewards[name]
+            self.assertIs(term.func, rough_rewards.off_column, msg=name)
+            self.assertIs(term.params["inner"], base.func, msg=name)
+            self.assertEqual(term.params["params"], base.params, msg=name)
+            self.assertEqual(
+                tuple(term.params["terrain_type_names"]), ROUGH_REWARD_TERRAIN_TYPE_NAMES, msg=name
+            )
+            self.assertAlmostEqual(float(term.weight), float(base.weight), places=12, msg=name)
+        fall = self.cfg.rewards["fall_penalty"]
+        self.assertIs(fall.func, is_terminated)
+        step_dt = float(self.cfg.sim.mujoco.timestep) * int(self.cfg.decimation)
+        # RewardManager 按 dt 缩放，权重反缩放后每次非超时终止恰好扣 ROUGH_FALL_PENALTY。
+        self.assertTrue(self.cfg.scale_rewards_by_dt)
+        self.assertAlmostEqual(float(fall.weight) * step_dt, -ROUGH_FALL_PENALTY, places=9)
+        self.assertNotIn("fall_penalty", self.flat.rewards)
+
     def test_robot_collision_geoms_leave_group_zero_only_in_rough(self) -> None:
         """rough 把碰撞 geom 挪出 group 0，高度射线（只看 group 0）就不会打到自己；Flat 不动。"""
         rough_groups = collections.Counter(
@@ -215,30 +249,45 @@ class RoughTerrainTests(unittest.TestCase):
         assert gen is not None
         self.assertTrue(gen.curriculum)
         self.assertEqual(terrain.max_init_terrain_level, ROUGH_MAX_INIT_TERRAIN_LEVEL)
+        # 2026-09-13：只剩 flat 与 stairs_up 两列。比例为 0 的列不能靠设 0 关掉——mjlab 课程模式
+        # 仍会生成几何并分 1 个 env，之前四个死列白占 160 个 geom、每轮多 0.6 s。
         self.assertEqual(list(gen.sub_terrains), list(ROUGH_ALL_TERRAIN_TYPE_NAMES))
+        self.assertEqual(list(gen.sub_terrains), ["flat", "stairs_up"])
         self.assertEqual(tuple(gen.size), ROUGH_PATCH_SIZE)
         for name, sub in gen.sub_terrains.items():
             self.assertAlmostEqual(sub.proportion, ROUGH_TERRAIN_PROPORTIONS[name], msg=name)
+            self.assertGreater(sub.proportion, 0.0, msg=name)
             self.assertEqual(tuple(sub.size), ROUGH_PATCH_SIZE, msg=name)
-        # 上台阶出生在坑底向外爬升（反金字塔），下台阶相反。
+        # 上台阶出生在坑底向外爬升（反金字塔）。
         self.assertIsInstance(gen.sub_terrains["stairs_up"], BoxInvertedPyramidStairsTerrainCfg)
-        self.assertNotIsInstance(
-            gen.sub_terrains["stairs_down"], BoxInvertedPyramidStairsTerrainCfg
-        )
-        self.assertIsInstance(gen.sub_terrains["stairs_down"], BoxPyramidStairsTerrainCfg)
         self.assertEqual(
             tuple(gen.sub_terrains["stairs_up"].step_height_range), ROUGH_STEP_HEIGHT_RANGE
         )
-        self.assertIsInstance(gen.sub_terrains["slope_up"], HfPyramidSlopedTerrainCfg)
-        self.assertTrue(gen.sub_terrains["slope_up"].inverted)
-        self.assertFalse(gen.sub_terrains["slope_down"].inverted)
         self.assertGreaterEqual(self.cfg.sim.contact_sensor_maxmatch, 500)
+
+    def test_sim_pool_sizes_follow_overflow_measurement(self) -> None:
+        # 2026-09-13 用 M1 的 model_2400 按训练方式采样、8192 env、起步行 0–9、2000 步压测：
+        # 每世界约束峰值 54、接触峰值 10；256 / 64 全程零溢出（scripts/check_sim_overflow.py）。
+        measured_nefc_peak, measured_ncon_peak = 54, 10
+        self.assertEqual(self.cfg.sim.njmax, ROUGH_NJMAX)
+        self.assertEqual(self.cfg.sim.nconmax, ROUGH_NCONMAX)
+        self.assertGreaterEqual(ROUGH_NJMAX, 3 * measured_nefc_peak)
+        self.assertGreaterEqual(ROUGH_NCONMAX, 3 * measured_ncon_peak)
+        # 台阶定向评测共用同一套覆盖层。
+        stair_eval = load_env_cfg(_STAIR_EVAL)
+        self.assertEqual(stair_eval.sim.njmax, ROUGH_NJMAX)
+        self.assertEqual(stair_eval.sim.nconmax, ROUGH_NCONMAX)
 
     def test_stair_eval_variant(self) -> None:
         gen = load_env_cfg(_STAIR_EVAL).scene.terrain.terrain_generator
         assert gen is not None
         self.assertEqual(list(gen.sub_terrains), ["flat", "stairs_up", "stairs_down"])
         self.assertTrue(gen.curriculum)
+        # 下台阶出生在顶部平台向外下行（正金字塔），与上台阶相反。
+        self.assertIsInstance(gen.sub_terrains["stairs_down"], BoxPyramidStairsTerrainCfg)
+        self.assertNotIsInstance(
+            gen.sub_terrains["stairs_down"], BoxInvertedPyramidStairsTerrainCfg
+        )
 
     def test_terrain_curriculum_is_the_official_one_and_runs_before_warmup(self) -> None:
         cur = self.cfg.curriculum
@@ -336,7 +385,7 @@ class RoughRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cfg = rough_env_cfg()
-        # 热身会把首次 reset 的全部 env 放到平地列；这里要六列各占 2 个 env。
+        # 热身会把首次 reset 的全部 env 放到平地列；这里要两列各占 6 个 env。
         cfg.curriculum.pop("flat_warmup")
         cfg.scene.num_envs = 12
         cls.env = ManagerBasedRlEnv(cfg, device="cpu")
@@ -355,7 +404,8 @@ class RoughRuntimeTests(unittest.TestCase):
         cls.env.close()
 
     def test_every_column_is_populated_and_masks_agree(self) -> None:
-        self.assertEqual(sorted(set(self.types.tolist())), list(range(6)))
+        self.assertEqual(sorted(set(self.types.tolist())), list(range(len(self.names))))
+        self.assertEqual(len(self.names), 2)
         self.assertTrue(torch.equal(column_mask(self.env, ("stairs_up",)), self.stairs))
         self.assertTrue(torch.equal(non_flat_column_mask(self.env), ~self.flat))
         self.assertIsNone(column_mask(self.env, ("no_such_column",)))
@@ -365,44 +415,37 @@ class RoughRuntimeTests(unittest.TestCase):
         self.assertTrue(torch.equal(mask, self.flat))
 
     def test_non_flat_columns_only_get_forward_commands(self) -> None:
-        other = ~self.flat & ~self.stairs
-        self.assertTrue(bool(other.any()))
+        # 2026-09-13 起训练地形只有 flat 与 stairs_up：非平地列就是台阶列，通用地形列覆盖
+        # （ROUGH_TERRAIN_*_RANGE）只在以后再加列时才会被用到。
+        self.assertTrue(torch.equal(~self.flat, self.stairs))
         yaw_lo, yaw_hi = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE
+        vx_lo, vx_hi = ROUGH_STAIR_LIN_VEL_X_RANGE
         for _ in range(50):  # 多抽几轮，静站样本（10%）若漏进非平地列一定会被抓到
             self.term._resample_command(_all_ids(self.env))
-            for sel, (vx_lo, vx_hi) in (
-                (other, ROUGH_TERRAIN_LIN_VEL_X_RANGE),
-                (self.stairs, ROUGH_STAIR_LIN_VEL_X_RANGE),
-            ):
-                cmd = self.term.command[sel]
-                self.assertTrue(
-                    bool((cmd[:, 0] >= vx_lo - 1e-6).all())
-                    and bool((cmd[:, 0] <= vx_hi + 1e-6).all())
-                )
-                self.assertTrue(
-                    bool((cmd[:, 1] >= yaw_lo - 1e-6).all())
-                    and bool((cmd[:, 1] <= yaw_hi + 1e-6).all())
-                )
+            cmd = self.term.command[self.stairs]
+            self.assertTrue(
+                bool((cmd[:, 0] >= vx_lo - 1e-6).all()) and bool((cmd[:, 0] <= vx_hi + 1e-6).all())
+            )
+            self.assertTrue(
+                bool((cmd[:, 1] >= yaw_lo - 1e-6).all())
+                and bool((cmd[:, 1] <= yaw_hi + 1e-6).all())
+            )
             self.assertEqual(float(self.term.command[self.stairs, 1].abs().max()), 0.0)
             self.assertFalse(bool(self.term._standing_mask[~self.flat].any()))
         # Flat 速度课程起点 vx=yaw=0，平地列 reset 后指令必须仍是 0。
         self.assertTrue(bool((self.term.command[self.flat][:, :2].abs() < 1e-6).all()))
 
     def test_terrain_vx_is_decoupled_from_the_flat_curriculum(self) -> None:
-        other = ~self.flat & ~self.stairs
+        lo, hi = ROUGH_STAIR_LIN_VEL_X_RANGE
         saved = self.term.cfg.lin_vel_x_range
         try:
             for flat_range in ((0.0, 0.0), (-2.4, 2.4)):
                 self.term.cfg.lin_vel_x_range = flat_range
                 for _ in range(10):
                     self.term._resample_command(_all_ids(self.env))
-                    for sel, (lo, hi) in (
-                        (other, ROUGH_TERRAIN_LIN_VEL_X_RANGE),
-                        (self.stairs, ROUGH_STAIR_LIN_VEL_X_RANGE),
-                    ):
-                        vx = self.term.command[sel][:, 0]
-                        self.assertGreaterEqual(float(vx.min()), lo - 1e-5)
-                        self.assertLessEqual(float(vx.max()), hi + 1e-5)
+                    vx = self.term.command[self.stairs][:, 0]
+                    self.assertGreaterEqual(float(vx.min()), lo - 1e-5)
+                    self.assertLessEqual(float(vx.max()), hi + 1e-5)
         finally:
             self.term.cfg.lin_vel_x_range = saved
 
@@ -582,6 +625,50 @@ class RoughRuntimeTests(unittest.TestCase):
         finally:
             self.env.episode_length_buf[:] = saved
             _place_offset(self.env, 0.0, 0.0)
+
+    def test_jump_metrics_are_host_sync_free(self) -> None:
+        """Jump/* 诊断在行走线默认关闭；打开时也不能有 .item() 之类的主机同步（2026-09-13 每步 184 次）。"""
+        term = self.term
+        self.assertFalse(term.cfg.enable_jump_metrics)
+        term.cfg.enable_jump_metrics = True
+        original_item = torch.Tensor.item
+
+        def _forbidden_item(tensor: torch.Tensor):
+            raise AssertionError("Jump/* 诊断不得调用 .item()")
+
+        try:
+            self.env.extras["log"] = {}
+            torch.Tensor.item = _forbidden_item  # type: ignore[method-assign]
+            term._update_metrics()
+        finally:
+            torch.Tensor.item = original_item  # type: ignore[method-assign]
+            term.cfg.enable_jump_metrics = False
+        log = self.env.extras["log"]
+        self.assertIn("Jump/jump_flag_ratio", log)
+        self.assertIn("Jump/diag_takeoff_vz_progress_ema", log)
+        self.assertIn("Jump/diag_standing_joint_mirror_raw", log)
+        for key, value in log.items():
+            # Jump/diag_leg_contact_* 由 terminations.leg_contact() 写入，不在本函数的改动范围。
+            if key.startswith("Jump/") and not key.startswith("Jump/diag_leg_contact_"):
+                self.assertIsInstance(value, torch.Tensor, key)
+                self.assertEqual(value.dim(), 0, key)
+                self.assertTrue(torch.isfinite(value).all(), key)
+        # 行走线没有跳跃：空中样本为 0 时各项应为 0，而不是 NaN。
+        self.assertEqual(float(log["Jump/diag_max_airborne_vz"]), 0.0)
+        self.assertEqual(float(log["Jump/diag_jump_success_rate"]), 0.0)
+
+    def test_stairs_column_pays_no_wage_and_no_climbing_tax(self) -> None:
+        """M2 运行时：台阶列上三项为 0；平地列 is_alive 照发；摔倒罚项已挂上。"""
+        _step_once(self.env)
+        manager = self.env.reward_manager
+        for name in ROUGH_STAIRS_ZEROED_REWARDS:
+            idx = manager.active_terms.index(name)
+            self.assertEqual(
+                float(manager._step_reward[self.stairs, idx].abs().max()), 0.0, msg=name
+            )
+        alive = manager._step_reward[self.flat, manager.active_terms.index("is_alive")]
+        self.assertGreater(float(alive.min()), 0.0)
+        self.assertIn("fall_penalty", manager.active_terms)
 
 
 class FlatWarmupRuntimeTests(unittest.TestCase):

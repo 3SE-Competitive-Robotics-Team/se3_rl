@@ -11,6 +11,8 @@
    完全静止就能拿满 73% 的正奖励，站着不动是正收益均衡；指令侧归零 + 奖励侧归零缺一不可。
 4. `tracking_lin_vel_terrain_vz`：非平地列关掉核里的 vz 项（A7，爬升必须有垂直速度），台阶列单独
    放宽运动核分母（A11，误差约 1 m/s 时仍有半额奖励）；顺带记按列拆开的速度诊断 `Rough/*_terrain`。
+5. `off_column`：把任意 Flat 奖励项在指定列上置零的通用包装，M2 用它在台阶列关掉 is_alive、
+   flat_wheel_contact、collision（见 env_cfg.py 的 ROUGH_STAIRS_ZEROED_REWARDS 注释）。
 
 掩码为 None（非课程地形、平面地形、列名对不上）时全部退化成 Flat 基线的行为。
 """
@@ -113,6 +115,20 @@ def base_height_penalty_off_terrain(
     return penalty * (~mask).float()
 
 
+def off_column(
+    env: ManagerBasedRlEnv,
+    inner,
+    params: dict,
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+) -> torch.Tensor:
+    """任意奖励项在指定子地形列上置零：`inner` 是原函数，`params` 是它自己的参数；其余列逐位不变。"""
+    value = inner(env, **params)
+    mask = column_mask(env, terrain_type_names)
+    if mask is None:
+        return value
+    return value * (~mask).float()
+
+
 def tracking_lin_vel_terrain_vz(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -179,6 +195,7 @@ def tracking_lin_vel_terrain_vz(
 __all__ = [
     "base_height_penalty_off_terrain",
     "command_velocity_error_on_terrain",
+    "off_column",
     "tracking_ang_vel_off_terrain",
     "tracking_lin_vel_terrain_vz",
 ]
