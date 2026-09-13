@@ -129,6 +129,7 @@ def terrain_levels(
     command_name: str,
     asset_cfg: SceneEntityCfg = _DEFAULT_ROBOT_CFG,
     clear_distance_m: float = ROUGH_TERRAIN_CLEARED_DISTANCE_M,
+    max_level: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """清掉本块全部台阶就升一级；只升不降。
 
@@ -141,6 +142,7 @@ def terrain_levels(
     降级也去掉了：原判据用 episode 末段的 |vx| 反推应走距离，末段静站时永不降、末段高速时几乎必降，
     与地形能力无关；对称随机指令下净位移本身是随机游走，升降各半会把课程钉在低位
     （R2，W&B 32eentyo 的平地列也只到 1.6）。
+    `max_level` 限制可到达的最高行号，保留原地形几何和逐级升级；到上限后留在该行。
     """
     asset = env.scene[asset_cfg.name]
     terrain = env.scene.terrain
@@ -170,6 +172,12 @@ def terrain_levels(
     if isinstance(migrated, torch.Tensor):
         move_up &= migrated[env_ids] != int(env.common_step_counter)
 
+    if max_level is not None:
+        if not 0 <= max_level < terrain_generator.num_rows:
+            raise ValueError("max_level 必须位于地形行号范围内")
+        # 先收回超限行，再阻止上限处升级，避免最高行溢出触发随机重分配。
+        terrain.terrain_levels[env_ids] = terrain.terrain_levels[env_ids].clamp(max=max_level)
+        move_up &= terrain.terrain_levels[env_ids] < max_level
     terrain.update_env_origins(env_ids, move_up, move_down)
 
     levels = terrain.terrain_levels.float()

@@ -12,10 +12,11 @@ from .stair_column_rewards import off_column, on_column
 
 
 def a28_env_cfg(*, play: bool = False) -> ManagerBasedRlEnvCfg:
-    """跳过已完成的热身，保留两列地形几何及原指令、课程、终止配置。"""
+    """跳过已完成的热身，保留地形几何，上台阶课程最多升至第 3 行。"""
     cfg = a27_warmup_env_cfg(play=play)
     if not play:
         cfg.curriculum["flat_warmup"].params["iterations"] = 0
+        cfg.curriculum["terrain_levels"].params["max_level"] = 3
     cfg.rewards = {
         name: RewardTermCfg(
             func=off_column,
