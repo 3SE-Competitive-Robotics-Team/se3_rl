@@ -24,6 +24,7 @@ from .a22_stair_command import a22_env_cfg, a22_rl_cfg
 from .a23_stair_no_gate import a23_env_cfg, a23_rl_cfg
 from .a24_stair_height import a24_env_cfg, a24_rl_cfg, a25_env_cfg
 from .a26_stair_sampling import a26_env_cfg, a27_env_cfg, a27_warmup_env_cfg
+from .a28_fudan_reward import a28_env_cfg, a28_rl_cfg
 from .env_cfg import env_cfg
 from .reward_ablation import REWARD_ABLATIONS, reward_ablation_env_cfg
 from .rl_cfg import amp_rl_cfg, rl_cfg
@@ -68,6 +69,14 @@ AMP_ABL_SHUFFLED_DATASET = "assets/amp/fudan_stairs20_shuffled/amp_training.pkl"
 
 def register() -> None:
     """注册崎岖地形行走任务与定向评测、AMP 两个入口。"""
+    task_id = "SE3-WheelLegged-Rough-A28-FudanReward"
+    register_mjlab_task(
+        task_id=task_id,
+        env_cfg=a28_env_cfg(),
+        play_env_cfg=a28_env_cfg(play=True),
+        rl_cfg=bind_task_name(a28_rl_cfg(), task_id),
+        runner_cls=Se3WarmStartRunner,
+    )
     for task_id, factory in (
         ("SE3-WheelLegged-Rough-A24-HeightControl", a24_env_cfg),
         ("SE3-WheelLegged-Rough-A25-StairHeight", a25_env_cfg),
