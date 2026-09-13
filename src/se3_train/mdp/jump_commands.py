@@ -40,6 +40,7 @@ _G = 9.81
 # 成功起跳阈值：vz > 1.0 m/s，对应约 5cm 以上跳跃。
 _VZ_SUCCESS_THRESHOLD = 1.0
 _TAKEOFF_DIAG_EMA_ATTR = "_jump_takeoff_diag_ema"
+_TAKEOFF_DIAG_EMA_ALPHA = 0.05
 
 
 def ideal_takeoff_vel(target_height: torch.Tensor) -> torch.Tensor:
@@ -50,18 +51,31 @@ def ideal_takeoff_vel(target_height: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(2.0 * _G * torch.clamp(target_height, min=0.01))
 
 
-def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> float:
-    """计算掩码内均值；无样本时返回 0，避免日志出现 NaN。"""
-    if mask.any():
-        return float(value[mask].mean().item())
-    return 0.0
+def _mean_on_mask(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """掩码内均值，返回 0 维张量；无样本时为 0，避免日志出现 NaN。
+
+    全程不做主机同步：诊断每个 policy step 都会执行，逐项 ``.item()`` 会把 GPU 流水线打断
+    （2026-09-13 实测 Jump/* 一步 184 次同步、7.4 ms）。RSL-RL logger 在迭代末统一取均值。
+    """
+    selected = torch.where(mask, value, torch.zeros_like(value)).sum()
+    return selected / mask.float().sum().clamp_min(1.0)
 
 
-def _ema_value(previous: float | None, value: float, alpha: float = 0.05) -> float:
-    """更新诊断 EMA；第一次命中窗口时直接采用当前值。"""
+def _ema_update(
+    previous: tuple[torch.Tensor, torch.Tensor] | None,
+    value: torch.Tensor,
+    has_samples: torch.Tensor,
+    alpha: float = _TAKEOFF_DIAG_EMA_ALPHA,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """无同步的诊断 EMA：只在有样本的步更新，首次命中直接采用当前值。
+
+    返回 (ema, seen)，两者都是 0 维张量；``seen`` 记录是否命中过窗口。
+    """
     if previous is None:
-        return value
-    return (1.0 - alpha) * previous + alpha * value
+        return torch.where(has_samples, value, torch.zeros_like(value)), has_samples
+    ema_prev, seen_prev = previous
+    updated = torch.where(seen_prev, (1.0 - alpha) * ema_prev + alpha * value, value)
+    return torch.where(has_samples, updated, ema_prev), seen_prev | has_samples
 
 
 @dataclass
@@ -431,8 +445,11 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         self,
         jump_flag: torch.Tensor,
         vz_w: torch.Tensor,
-    ) -> dict[str, float]:
-        """诊断蹬地窗口内的奖励稀疏度和惩罚量级。"""
+    ) -> dict[str, torch.Tensor]:
+        """诊断蹬地窗口内的奖励稀疏度和惩罚量级（全部 0 维张量，不做主机同步）。
+
+        ``*_ema`` 键每步都上报：未命中过窗口时为 0，命中后按 EMA 更新。
+        """
         takeoff_window = jump_flag & self.reference_takeoff_active()
 
         h_target = self._command[:, 6]
@@ -485,9 +502,8 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
         takeoff_total = takeoff_window.float().sum().clamp_min(1.0)
         current_metrics = {
-            "Jump/diag_takeoff_positive_vz_ratio": float(
-                ((takeoff_window & (vz_w > 0.0)).float().sum() / takeoff_total).item()
-            ),
+            "Jump/diag_takeoff_positive_vz_ratio": (takeoff_window & (vz_w > 0.0)).float().sum()
+            / takeoff_total,
             "Jump/diag_takeoff_vz_progress": _mean_on_mask(vz_progress, takeoff_window),
             "Jump/diag_takeoff_vz_tracking_reward": _mean_on_mask(
                 vz_tracking_reward,
@@ -524,17 +540,18 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
             "Jump/diag_takeoff_horizontal_penalty": horizontal_active,
             "Jump/diag_takeoff_knee_limit_penalty": takeoff_window,
         }
-        ema_metrics = getattr(self, _TAKEOFF_DIAG_EMA_ATTR, None)
-        if not isinstance(ema_metrics, dict):
-            ema_metrics = {}
+        ema_state = getattr(self, _TAKEOFF_DIAG_EMA_ATTR, None)
+        if not isinstance(ema_state, dict):
+            ema_state = {}
+        ema_metrics: dict[str, torch.Tensor] = {}
         for name, value in current_metrics.items():
-            if sample_masks[name].any():
-                ema_metrics[f"{name}_ema"] = _ema_value(ema_metrics.get(f"{name}_ema"), value)
-        setattr(self, _TAKEOFF_DIAG_EMA_ATTR, ema_metrics)
+            ema_state[name] = _ema_update(ema_state.get(name), value, sample_masks[name].any())
+            ema_metrics[f"{name}_ema"] = ema_state[name][0]
+        setattr(self, _TAKEOFF_DIAG_EMA_ATTR, ema_state)
 
-        return current_metrics | {name: float(value) for name, value in ema_metrics.items()}
+        return current_metrics | ema_metrics
 
-    def _symmetry_diagnostics(self, jump_flag: torch.Tensor) -> dict[str, float]:
+    def _symmetry_diagnostics(self, jump_flag: torch.Tensor) -> dict[str, torch.Tensor]:
         """上报左右腿镜像误差，直接观察静站对称性是否改善。"""
         robot = self._env.scene["robot"]
         cmd_speed = torch.linalg.norm(self._command[:, :2], dim=1)
@@ -555,7 +572,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         yaw_rate_abs = torch.abs(robot.data.root_link_ang_vel_b[:, 2])
 
         return {
-            "Jump/diag_standing_symmetry_sample_ratio": standing_mask.float().mean().item(),
+            "Jump/diag_standing_symmetry_sample_ratio": standing_mask.float().mean(),
             "Jump/diag_flat_pitch_deg": _mean_on_mask(pitch_deg, ~jump_flag),
             "Jump/diag_standing_pitch_deg": _mean_on_mask(pitch_deg, standing_mask),
             "Jump/diag_standing_hip_abs_diff_rad": _mean_on_mask(hip_abs, standing_mask),
@@ -569,6 +586,9 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
 
     def _update_metrics(self) -> None:
         """上报跳跃诊断指标到训练日志（通过 extras['log'] 传递给 tensorboard）。
+
+        所有值都是 0 维 GPU 张量，本函数不做任何主机同步（2026-09-13：原先每步 184 次 .item()
+        占 flat 一步的 18%）；行走线用 ``enable_jump_metrics=False`` 整段跳过。
 
         参考宇树 fzqver 的 diag_* 体系，分两类指标：
 
@@ -605,58 +625,49 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         if not self.cfg.enable_jump_metrics:
             return
 
+        # 全部指标保持 0 维 GPU 张量：不做 .item()、不按数据分支，logger 在迭代末统一取均值。
         jump_flag = self._command[:, 5] > 0.5
+        stage = self._jump_stage
 
-        ref_grounded_ratio = (self._jump_stage == 0).float().mean().item()
-        ref_airborne_ratio = (self._jump_stage == 1).float().mean().item()
-        ref_landing_ratio = (self._jump_stage == 2).float().mean().item()
-        ref_preload_ratio = (jump_flag & self.reference_preload_active()).float().mean().item()
-        ref_takeoff_ratio = (jump_flag & self.reference_takeoff_active()).float().mean().item()
+        ref_grounded_ratio = (stage == 0).float().mean()
+        ref_airborne_ratio = (stage == 1).float().mean()
+        ref_landing_ratio = (stage == 2).float().mean()
+        ref_preload_ratio = (jump_flag & self.reference_preload_active()).float().mean()
+        ref_takeoff_ratio = (jump_flag & self.reference_takeoff_active()).float().mean()
         grounded_ratio = ref_grounded_ratio
         airborne_ratio = ref_airborne_ratio
         landing_ratio = ref_landing_ratio
-        jump_flag_ratio = jump_flag.float().mean().item()
+        jump_flag_ratio = jump_flag.float().mean()
 
         robot = self._env.scene["robot"]
         vz_w = robot.data.root_link_lin_vel_w[:, 2]
-        airborne_mask = jump_flag & (self._jump_stage == 1)
+        airborne_mask = jump_flag & (stage == 1)
+        has_airborne = airborne_mask.any()
 
-        # scale-independent 诊断
-        if airborne_mask.any():
-            vz_air = vz_w[airborne_mask]
-            mean_airborne_vz = vz_air.mean().item()
-            max_airborne_vz = vz_air.max().item()
-            jump_success_rate = (vz_air > _VZ_SUCCESS_THRESHOLD).float().mean().item()
-            # 空中姿态：projected_gravity_z，-1=完全直立，+1=倒置
-            pg = robot.data.projected_gravity_b[airborne_mask]
-            pg_z = pg[:, 2]
-            tilt_rad = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-            tilt_deg_airborne = torch.rad2deg(tilt_rad).mean().item()
-            pitch_airborne = torch.atan2(pg[:, 0], -pg[:, 2])
-            roll_airborne = torch.atan2(-pg[:, 1], -pg[:, 2])
-            pitch_deg_airborne = torch.rad2deg(torch.abs(pitch_airborne)).mean().item()
-            roll_deg_airborne = torch.rad2deg(torch.abs(roll_airborne)).mean().item()
-        else:
-            mean_airborne_vz = 0.0
-            max_airborne_vz = 0.0
-            jump_success_rate = 0.0
-            tilt_deg_airborne = 0.0
-            pitch_deg_airborne = 0.0
-            roll_deg_airborne = 0.0
+        # scale-independent 诊断：无空中样本时全部为 0（与原先的 else 分支一致）
+        mean_airborne_vz = _mean_on_mask(vz_w, airborne_mask)
+        max_airborne_vz = torch.where(
+            has_airborne,
+            torch.where(airborne_mask, vz_w, torch.full_like(vz_w, -torch.inf)).max(),
+            torch.zeros_like(vz_w[0]),
+        )
+        jump_success_rate = _mean_on_mask((vz_w > _VZ_SUCCESS_THRESHOLD).float(), airborne_mask)
+        # 空中姿态：projected_gravity_z，-1=完全直立，+1=倒置
+        pg = robot.data.projected_gravity_b
+        tilt_deg = torch.rad2deg(torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0)))
+        pitch_deg = torch.rad2deg(torch.abs(torch.atan2(pg[:, 0], -pg[:, 2])))
+        roll_deg = torch.rad2deg(torch.abs(torch.atan2(-pg[:, 1], -pg[:, 2])))
+        tilt_deg_airborne = _mean_on_mask(tilt_deg, airborne_mask)
+        pitch_deg_airborne = _mean_on_mask(pitch_deg, airborne_mask)
+        roll_deg_airborne = _mean_on_mask(roll_deg, airborne_mask)
 
         active_takeoff_total = self._active_takeoff_count.float().sum()
         active_success_total = self._active_success_count.float().sum()
-        if active_takeoff_total > 0:
-            active_success_rate = (active_success_total / active_takeoff_total).item()
-        else:
-            active_success_rate = 0.0
+        active_success_rate = active_success_total / active_takeoff_total.clamp_min(1.0)
 
         jump_flag_total = jump_flag.float().sum()
-        if jump_flag_total > 0:
-            active_takeoff_envs = ((self._active_takeoff_count > 0) & jump_flag).float().sum()
-            active_takeoff_ratio_per_jump_flag = (active_takeoff_envs / jump_flag_total).item()
-        else:
-            active_takeoff_ratio_per_jump_flag = 0.0
+        active_takeoff_envs = ((self._active_takeoff_count > 0) & jump_flag).float().sum()
+        active_takeoff_ratio_per_jump_flag = active_takeoff_envs / jump_flag_total.clamp_min(1.0)
 
         # leg_contact 精细拆分指标由 terminations.leg_contact() 在 termination 时序写入
         # （termination 在 reset 之前，传感器数据有效；此处不重复读取）
@@ -683,9 +694,9 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
                     # 完整跳跃流程计数（每 iter 的均值）
                     # diag_complete_jumps：参考轨迹走到末帧的次数
                     # diag_active_takeoffs：参考空中阶段且实际 vz>0 的非 RSI 样本数
-                    "Jump/diag_complete_jumps": self._complete_jump_count.float().mean().item(),
-                    "Jump/diag_active_takeoffs": self._active_takeoff_count.float().mean().item(),
-                    "Jump/diag_rsi_takeoffs": self._rsi_takeoff_count.float().mean().item(),
+                    "Jump/diag_complete_jumps": self._complete_jump_count.float().mean(),
+                    "Jump/diag_active_takeoffs": self._active_takeoff_count.float().mean(),
+                    "Jump/diag_rsi_takeoffs": self._rsi_takeoff_count.float().mean(),
                     "Jump/diag_active_success_rate": active_success_rate,
                     "Jump/diag_active_takeoff_ratio_per_jump_flag": active_takeoff_ratio_per_jump_flag,
                 }
