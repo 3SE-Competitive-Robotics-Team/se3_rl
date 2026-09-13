@@ -53,7 +53,7 @@ def main() -> int:
     parser.add_argument(
         "--task",
         required=True,
-        help="注册的任务 ID，例如 SE3-WheelLegged-Flat-Exp-JointActionWheelPrice",
+        help="注册的任务 ID，例如 SE3-WheelLegged-Flat-MLP",
     )
     parser.add_argument(
         "--output-dir", required=True, type=Path, help="ONNX 输出目录（通常是 <run>/onnx）"

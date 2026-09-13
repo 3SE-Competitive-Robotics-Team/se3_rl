@@ -1094,9 +1094,6 @@ def flat_base_height_penalty_no_jump(
     height_sensor_name: str,
     sigma: float = 0.05,
     max_error: float | None = 0.15,
-    command_speed_gate_range: tuple[float, float] | None = None,
-    min_clearance: float | None = None,
-    min_clearance_sigma: float = 0.05,
 ) -> torch.Tensor:
     """平地段 base 高度 L2 惩罚。
 
@@ -1116,19 +1113,6 @@ def flat_base_height_penalty_no_jump(
     if max_error is not None:
         error = torch.clamp(error, -float(max_error), float(max_error))
     penalty = torch.square(error) / (float(sigma) ** 2)
-
-    if command_speed_gate_range is not None:
-        gate_start, gate_end = (float(value) for value in command_speed_gate_range)
-        if gate_end <= gate_start:
-            raise ValueError("command_speed_gate_range 的终点必须大于起点")
-        # 必须按指令速度门控。若按实际速度，未起步时门控不会退出，反而会固化启动死锁。
-        phase = ((cmd[:, 0].abs() - gate_start) / (gate_end - gate_start)).clamp(0.0, 1.0)
-        smooth = phase * phase * (3.0 - 2.0 * phase)
-        penalty = penalty * (1.0 - smooth)
-
-    if min_clearance is not None:
-        clearance_error = torch.relu(float(min_clearance) - height)
-        penalty = penalty + torch.square(clearance_error) / (float(min_clearance_sigma) ** 2)
 
     if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
         env.extras["log"].update(

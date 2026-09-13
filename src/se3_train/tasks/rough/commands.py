@@ -1,23 +1,15 @@
-"""崎岖地形任务的指令项：按所在地形列限制速度指令。
+"""崎岖地形任务的指令项：在 Flat 的速度/姿态/高度指令之上按地形列改采样范围。
 
-高度指令这一侧不做任何前瞻：台阶前的抬升由 `mdp/commands.py` 的**地形感知抬高下限**
-负责——重采样时按 env 当前所在的地形列与难度行算出这一级台阶需要的最低机身高度
-（`step_height + terrain_height_clearance − body_collision_bottom_offset`），
-把采样区间的下界顶到那个值，上界仍是 `height_range[1]`。
-数值在 rough/env_cfg.py 里配，与 stair 线同一套标定。
+高度这一侧只有**地形感知抬高下限**（基类 `VelocityHeightCommandCfg` 实现）：重采样时按 env 所在列
+与难度行算出这一级台阶需要的最低机身高度 `step_height + terrain_height_clearance −
+body_collision_bottom_offset`，把高度指令采样区间的下界顶到该值，上界仍是 `height_range[1]`。
+它按列按行静态生效、不用传感器、部署端没有额外契约（2026-09-08 用户定，取代原 step_up 前瞻状态机）。
 
-2026-09-08 用户定：删掉原来的 step_up 前瞻状态机（身前 0.5 m 探到 0.06–0.22 m 抬升就把
-高度指令 +0.10 保持 2 s），改用上面这条下限。两者的差别：
+速度这一侧：非平地列只发前向直行指令（对称随机指令下 20 s 的净位移是随机游走，官方地形课程的
+位移判据推不动），台阶列再单独给高速与高站姿（6 cm 轮子靠 0.8 m/s 的动量翻不过 4 cm 立面，A8），
+且台阶列 yaw 指令恒 0（A10，配合奖励侧把 yaw 工资归零）。
 
-* 状态机是**事件触发**的，只在台阶前 0.5 m 内抬高，抬完 2 s 自动落回，且需要一个额外的
-  三射线前向传感器；下限是**按列按行静态生效**的，整条 episode 都不会低于该值，不用传感器。
-* 状态机会随行进方向翻转扫描方向、会把高过机身的障碍判成墙并转 time_out；下限没有这两件事，
-  出块由 `terminations.terrain_cleared` 的距离判据接管。
-* 部署契约上，状态机要求上层控制器复现同一套逻辑才能对齐训练期的高度指令；下限只是
-  改变了训练期高度指令的采样分布，部署端照常自己发高度指令即可，没有额外契约。
-
-保留下来的只有速度指令的分列覆盖：非平地列只发前向直行指令，因为对称随机指令下 20 s 的
-净位移是随机游走，地形课程的位移判据推不动（见 curriculums.py）。
+本文件的模块常量是这些数值的唯一来源；env_cfg 只做转发。
 """
 
 from __future__ import annotations
@@ -31,85 +23,77 @@ from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightComma
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
+from .columns import column_mask, non_flat_column_mask
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+
+# 地形感知高度下限的标定，沿用 stair 线（tasks/stair/env_cfg.py）：机体碰撞网格底面在 base_link 下方
+# 0.12 m（COACD 网格 z 范围 [-0.1376, 0.1118]，取平底面而非最低角点），再留 0.02 m 余量。
+# 台阶 0.02→0.20 m 对应的下限是 0.20（行 0-1 不生效）→0.34 m，始终在 height_range 上界 0.38 之内。
+ROUGH_TERRAIN_HEIGHT_CLEARANCE = 0.02
+ROUGH_BODY_COLLISION_BOTTOM_OFFSET = -0.12
+# 只在上台阶列抬高：下行列的台阶在身后，抬高只是白白升高重心。名字必须是 terrains.rough_terrains_cfg()
+# 里带 step_height_range 的子地形名，对不上时下限静默失效（由测试钉住）。
+ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ("stairs_up",)
+
+# 非平地列的前向指令（A7）：vx 0.4–0.8 与平地课程脱钩。A6 反解出地形列 vx 误差约 1.5 m/s、和指令均值
+# 一样大，核 exp(-1.5²/0.08) 精确为零；收到 0.8 之后踏面上滚到 0.4 就是误差 0.2、核 0.61，梯度回来。
+ROUGH_TERRAIN_COMMAND_FLAT_NAMES = ("flat",)
+ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 0.8)
+ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
+
+# 台阶列单独定价（A8/A10/A13）：vx 1.0–2.4 与专家数据（Fudan 12–20 cm 爬升 1.5–2.4 m/s）同一段；
+# 高度 0.20–0.38 与 Flat 同区间——A13 由 sim2x 定位到 0.35–0.38 会让每个 episode 都从
+# "高站姿 + 够不着的高速指令"开局而训出静止策略，矮站姿开局必须保留；第 9 行由地形感知下限自动收窄到 0.34–0.38。
+ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ("stairs_up",)
+ROUGH_STAIR_LIN_VEL_X_RANGE = (1.0, 2.4)
+ROUGH_STAIR_ANG_VEL_YAW_RANGE = (0.0, 0.0)
+ROUGH_STAIR_HEIGHT_RANGE = (0.20, 0.38)
 
 
 @dataclass
 class RoughCommandCfg(JumpCommandCfg):
-    """在 JumpCommand 之上增加“按地形列限制速度指令”的配置。
+    """在 JumpCommand 之上增加"按地形列限制速度指令"与"高姿静站→前进"转移的配置。
 
-    高度指令的地形感知下限走基类 `VelocityHeightCommandCfg` 的
-    `terrain_aware_height` / `terrain_height_clearance` /
-    `body_collision_bottom_offset` / `terrain_step_height_type_names` 四个字段，
-    本类不再额外定义。
+    高度指令的地形感知下限走基类 `VelocityHeightCommandCfg` 的 `terrain_aware_height` /
+    `terrain_height_clearance` / `body_collision_bottom_offset` / `terrain_step_height_type_names`。
     """
 
-    terrain_command_override_enabled: bool = False
-    """是否按所在地形列限制速度指令。
+    terrain_command_override_enabled: bool = True
+    """是否按所在地形列限制速度指令；关掉即全部列都走 Flat 的对称随机指令。"""
 
-    开启后，`terrain_command_flat_names` 以外的列（台阶、斜坡、起伏）只发前向直行指令：
-    vx 在 `terrain_lin_vel_x_range` 内、yaw 在 `terrain_ang_vel_yaw_range` 内采样，且不抽静站样本；
-    平地列不受影响，仍走 Flat 的速度课程。目的是让机器人正对台阶直冲，而不是在台阶前
-    转圈或倒车（对称随机指令下净位移是随机游走，地形课程无法推进，见 curriculums.py）。
-    """
+    terrain_command_flat_names: tuple[str, ...] = ROUGH_TERRAIN_COMMAND_FLAT_NAMES
+    """沿用 Flat 速度指令与速度课程的子地形名。"""
 
-    terrain_command_flat_names: tuple[str, ...] = ("flat",)
-    """沿用 Flat 速度指令的子地形名（课程模式下列号即子地形名的序号）。"""
+    terrain_lin_vel_x_range: tuple[float, float] = ROUGH_TERRAIN_LIN_VEL_X_RANGE
+    """非平地列的 vx 采样范围(m/s)，下界为正保证一直朝前走。"""
 
-    terrain_lin_vel_x_range: tuple[float, float] = (0.4, 2.4)
-    """非平地列的 vx 采样范围(m/s)。下界为正，保证一直朝前走。"""
-
-    terrain_ang_vel_yaw_range: tuple[float, float] = (-0.2, 0.2)
+    terrain_ang_vel_yaw_range: tuple[float, float] = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE
     """非平地列的 yaw 角速度采样范围(rad/s)。"""
 
-    stair_command_terrain_names: tuple[str, ...] = ()
-    """单独定价的台阶列名；空元组即关闭，这些列沿用上面的通用地形列范围。
+    terrain_lin_vel_x_follow_curriculum: bool = False
+    """非平地列 vx 上限是否跟随平地速度课程的当前上限（R4 曾开，A7 关：平地 350 轮就冲到 2.4）。"""
 
-    2026-09-08 用户定（A8）：A7 把所有非平地列的 vx 收到 (0.4, 0.8) 之后，平地能力和地形列梯度
-    都回来了，但 stairs_up 1500 轮只从 1.09 挪到 1.11——6 cm 轮子靠 0.8 m/s 的动量翻不过 4 cm 立面。
-    所以把台阶列拆出来单独给高速与高站姿，其余地形列（斜坡、起伏）保持 A7 的低速档。
-    """
+    stair_command_terrain_names: tuple[str, ...] = ROUGH_STAIR_COMMAND_TERRAIN_NAMES
+    """单独定价的台阶列名；空元组即这些列沿用通用地形列范围。"""
 
-    stair_lin_vel_x_range: tuple[float, float] = (1.0, 2.4)
-    """台阶列的 vx 采样范围(m/s)。专家数据（Fudan 12–20 cm 爬升）就在 1.5–2.4 这一段。"""
-
-    stair_ang_vel_yaw_range: tuple[float, float] = (0.0, 0.0)
-    """台阶列的 yaw 角速度指令范围(rad/s)，默认恒 0。
-
-    2026-09-09 用户定（A10）：A9 的逐项拆分显示 `tracking_ang_vel` 在台阶列是 +2.739/s，
-    占该列全部正奖励（3.753）的 73%——yaw 指令只有 ±0.2、σ=0.25，一台**完全静止**的机器人
-    yaw 恒为 0、误差约 0.1、核值 0.96，权重 3.0 几乎拿满。加上 is_alive 的 +1.0，
-    不动就白拿 3.74/s，于是原地不动成了稳定的正收益均衡（净 +0.053/s）。
-    指令固定为 0 是这件事的一半；另一半是把该项在台阶列的权重也归零，见 rough/rewards.py。
-    """
-
-    stair_height_range: tuple[float, float] = (0.35, 0.38)
-    """台阶列的机身高度指令范围(m)，覆盖 `height_range`。
-
-    顶到 Flat 上界 0.38 附近，把机身抬高换离地净空；这个区间整体高于地形感知抬高下限
-    在最高难度行算出的 0.34，所以那条下限在台阶列上被完全吞掉，不再起作用。
-    """
-
-    terrain_lin_vel_x_follow_curriculum: bool = True
-    """非平地列 vx 上限是否跟随平地速度课程的当前上限（`cfg.lin_vel_x_range[1]`）。
-
-    开启时每次重采样取 min(terrain_lin_vel_x_range[1], 当前课程上限)，且不低于下界；
-    课程起点 0 时地形列拿到的就是下界 0.4 m/s 的定速指令，随课程一起爬到 2.4。
-    R3 从第 0 轮就给 0.4–2.4，500 轮的策略对 vx ≥ 1.0 的指令原地不动。
-    """
+    stair_lin_vel_x_range: tuple[float, float] = ROUGH_STAIR_LIN_VEL_X_RANGE
+    stair_ang_vel_yaw_range: tuple[float, float] = ROUGH_STAIR_ANG_VEL_YAW_RANGE
+    stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE
+    """台阶列的机身高度指令范围(m)，采样下界再与地形感知下限取较大者。"""
 
     high_stand_transition_prob: float = 0.0
-    """平地每次重采样时生成“高姿态静站→前进”序列的概率；0 表示关闭。"""
+    """平地每次重采样时生成"高姿态静站→前进"序列的概率；0 关闭。
+
+    A20/A21（从 A15 warm-start）：A15 在 0.38 m 静站后给 0.8/1.6/2.4 m/s 只能跑到 0.05 m/s，
+    加入这个转移后 A21 model_999 跑到 0.80/1.55/2.14 m/s；代价是训练内 catastrophic 终止
+    从 0.03–0.08/轮升到 0.12–0.15/轮。默认关，按验收表决定是否打开。
+    """
 
     high_stand_height_range: tuple[float, float] = (0.36, 0.38)
-    """高姿态启动序列保持不变的机身高度指令范围(m)。"""
-
     high_stand_duration_range_s: tuple[float, float] = (1.5, 2.5)
-    """切换到前进指令前的静站时长范围(s)。"""
-
     high_stand_move_vx_range: tuple[float, float] = (0.8, 2.4)
-    """高姿态静站结束后直接施加的前进速度指令范围(m/s)。"""
 
     def build(self, env: ManagerBasedRlEnv) -> RoughCommandTerm:
         return RoughCommandTerm(self, env)
@@ -124,7 +108,7 @@ class RoughCommandTerm(JumpCommandTerm):
         super().__init__(cfg, env)
         # 非平地列的 env 掩码；None 表示没有可用的分列地形或覆盖未启用。
         self._terrain_override_mask: torch.Tensor | None = None
-        # 单独定价的台阶列掩码（`stair_command_terrain_names`），是上面那个的子集。
+        # 单独定价的台阶列掩码，是上面那个的子集。
         self._stair_mask: torch.Tensor | None = None
         self._high_stand_selected = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self._high_stand_steps_left = torch.zeros(
@@ -137,13 +121,15 @@ class RoughCommandTerm(JumpCommandTerm):
             self.refresh_terrain_override()
 
     def refresh_terrain_override(self) -> None:
-        """按当前 terrain_types 重算“非平地列”掩码并刷新逐 env 的速度范围覆盖。
+        """按当前 terrain_types 重算列掩码并刷新逐 env 的速度范围覆盖。
 
-        env 换列（平地热身结束、课程重掷）后必须调用，否则覆盖还按旧列生效。
+        env 换列（平地热身结束、课程升降级）后必须调用，否则覆盖还按旧列生效。
         """
         if not self.cfg.terrain_command_override_enabled:
             return
-        self._terrain_override_mask = self._build_terrain_override_mask(self._env)
+        self._terrain_override_mask = non_flat_column_mask(
+            self._env, self.cfg.terrain_command_flat_names
+        )
         if self._terrain_override_mask is None:
             return
         all_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
@@ -163,7 +149,7 @@ class RoughCommandTerm(JumpCommandTerm):
                 ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
             )
         # 台阶列的覆盖压在通用地形覆盖之上，必须后设。
-        self._stair_mask = self._build_column_mask(self._env, self.cfg.stair_command_terrain_names)
+        self._stair_mask = column_mask(self._env, self.cfg.stair_command_terrain_names)
         if self._stair_mask is not None and bool(self._stair_mask.any()):
             ids = self._stair_mask.nonzero(as_tuple=False).flatten()
             self.set_velocity_ranges(
@@ -172,59 +158,10 @@ class RoughCommandTerm(JumpCommandTerm):
                 ang_vel_yaw_range=tuple(self.cfg.stair_ang_vel_yaw_range),
             )
 
-    def _build_column_mask(
-        self,
-        env: ManagerBasedRlEnv,
-        terrain_type_names: tuple[str, ...],
-    ) -> torch.Tensor | None:
-        """返回“在这些子地形列上”的 env 掩码；列名为空或非课程地形时返回 None。"""
-        if not terrain_type_names:
-            return None
-        terrain = getattr(env.scene, "terrain", None)
-        generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
-        terrain_types = getattr(terrain, "terrain_types", None)
-        if generator is None or terrain_types is None or not generator.curriculum:
-            return None
-        names = list(generator.sub_terrains.keys())
-        cols = [names.index(n) for n in terrain_type_names if n in names]
-        if not cols:
-            return None
-        types = terrain_types.to(device=self.device, dtype=torch.long)
-        mask = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        for col in cols:
-            mask |= types == col
-        return mask
-
-    def _build_terrain_override_mask(self, env: ManagerBasedRlEnv) -> torch.Tensor | None:
-        """返回“不在平地列”的 env 掩码。
-
-        只在课程模式（每种子地形独占一列）下有定义：`terrain_types` 即列号，列号对应
-        `sub_terrains` 的键序。非课程模式或平面地形时返回 None，覆盖静默关闭。
-        """
-        terrain = getattr(env.scene, "terrain", None)
-        generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
-        terrain_types = getattr(terrain, "terrain_types", None)
-        terrain_origins = getattr(terrain, "terrain_origins", None)
-        if generator is None or terrain_types is None or terrain_origins is None:
-            return None
-        names = list(generator.sub_terrains.keys())
-        if not generator.curriculum or terrain_origins.shape[1] != len(names):
-            return None
-        flat_cols = [
-            i for i, name in enumerate(names) if name in self.cfg.terrain_command_flat_names
-        ]
-        types = terrain_types.to(device=self.device, dtype=torch.long)
-        is_flat = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
-        for col in flat_cols:
-            is_flat |= types == col
-        return ~is_flat
-
     def _update_command(self) -> None:
         super()._update_command()
         self._update_high_stand_transition()
-        # 地形感知下限只在重采样时抬高高度指令的采样下界，没有任何逐步状态；
-        # 这里只把它的效果记一笔，否则 W&B 上看不出下限有没有真的顶起来
-        # （原来这个位置记的是 step_up 状态机的触发率）。
+        # 地形感知下限只在重采样时抬高采样下界，没有逐步状态；记一笔均值，否则 W&B 上看不出它有没有顶起来。
         if self._terrain_override_mask is None:
             return
         height_cmd = self._command[:, 4]
@@ -320,20 +257,11 @@ class RoughCommandTerm(JumpCommandTerm):
     def _apply_stair_height(self, env_ids: torch.Tensor) -> None:
         """把台阶列 env 的高度指令改到 `stair_height_range` 内重新采样。
 
-        写在基类采样之后而不是改基类：基类那一路还要管静站/运动两个区间与 jump 生命周期，
-        绕过去容易漏。改完必须同步刷新高度条件默认腿姿缓存，否则奖励侧用的还是旧高度
-        对应的默认姿态（step_up 状态机时代踩过这个坑）。
-
-        **采样下界要取 `stair_height_range[0]` 与地形感知下限的较大者。** 这一句是补票：
-        本方法覆盖的是基类的采样结果，而地形感知下限（`_terrain_aware_min_height`，
-        `台阶高 + terrain_height_clearance − body_collision_bottom_offset`）正是基类算的，
-        直接覆盖就把它整个盖掉了。A8 时 `stair_height_range` 是 0.35–0.38、比下限最高值
-        0.34 还高，盖掉没有后果；A13 把它改回 0.20–0.38 之后就有了——第 9 行台阶 0.20 m，
-        若抽到 0.20 的高度指令，机体碰撞盒底面在 0.20−0.12 = 0.08 m 而台阶顶面在 0.20 m，
-        机身直接撞立面，物理上过不去。
-
-        按行分开之后两个目标不冲突：第 0–2 行下限仍是 0.20，保留矮站姿开局（高站姿 + 静止
-        会起不了步，见 a13_tuned.py）；第 9 行自动收窄到 0.34–0.38，保证几何净空。
+        写在基类采样之后而不是改基类：基类那一路还要管静站/运动两个区间与 jump 生命周期。
+        采样下界取 `stair_height_range[0]` 与地形感知下限的较大者——本方法覆盖的是基类的采样结果，
+        而地形感知下限正是基类算的，直接覆盖会把它整个盖掉（第 9 行台阶 0.20 m 时抽到 0.20 的
+        高度指令，机体碰撞盒底面 0.08 m 低于台阶顶面，机身直接撞立面）。改完必须同步刷新高度条件
+        默认腿姿缓存，否则奖励侧用的还是旧高度对应的默认姿态。
         """
         if self._stair_mask is None:
             return
@@ -357,6 +285,16 @@ class RoughCommandTerm(JumpCommandTerm):
 
 
 __all__ = [
+    "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
+    "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_STAIR_HEIGHT_RANGE",
+    "ROUGH_STAIR_LIN_VEL_X_RANGE",
+    "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
+    "ROUGH_TERRAIN_COMMAND_FLAT_NAMES",
+    "ROUGH_TERRAIN_HEIGHT_CLEARANCE",
+    "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
+    "ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES",
     "JumpCommandCfg",
     "RoughCommandCfg",
     "RoughCommandTerm",

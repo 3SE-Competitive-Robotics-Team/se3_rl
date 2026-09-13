@@ -14,7 +14,7 @@
 | `se3_train.mdp.amp_observations.amp_motion_frame` | 训练端从 mjlab link 运动学取 19 维契约帧再按 `fields` 切列；与复旦导出脚本共用同一个几何函数 |
 | `se3_train.amp.AMP` | 判别器扩展，移植自 BioInnov/rsl_rl_bioin：LSGAN + R1、风格奖励、rollout 采窗口 |
 | `se3_train.ppo.Se3PPO` | 钩子：写 storage 前加风格奖励，清 storage 前更新判别器，`ext_state_dict["amp"]` 存档 |
-| `SE3-WheelLegged-Rough-AMP` | 任务入口：rough 环境 + `amp` 观测组 + AMP 算法配置 |
+| `SE3-WheelLegged-Rough-AMP` | 任务入口（2026-09-13 已移除：A12 消融显示 AMP 有害；接线见 git 历史 `42f808b` 之前的 `tasks/rough`） |
 
 `amp` 观测组只有一项 `motion_frame`（params `fields`），actor/critic 观测与 ONNX 契约不变。
 

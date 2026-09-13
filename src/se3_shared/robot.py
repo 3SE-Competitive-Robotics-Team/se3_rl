@@ -165,7 +165,7 @@ class RobotConfig(BaseModel):
     # 腿部 action 使用 [lf0, active_angle, rf0, active_angle] 语义；active 的零点是机械夹角中点。
     # 注意：recovery 任务族（grouped/ungrouped/expert 主线）的轮 scale 被
     # se3_shared.recovery.RECOVERY_WHEEL_ACTION_SCALE=15 显式覆写（2026-09-01 σ-gate 修复），
-    # Flat 任务（SE3-WheelLegged-Flat-GRU/MLP）自 2026-09-02 起在注册时显式使用 15 并按
+    # Flat 任务（SE3-WheelLegged-Flat-MLP）在注册时显式使用 15 并按
     # (15/45)² 补偿 action_rate / action_smoothness 轮分量（tasks/flat）。此处 45 仅作为
     # rough/stair/jump/flow_match 继承线的旧契约默认值；那些线的动作空间罚项未做补偿，
     # 重启训练前必须先补偿再改 scale。

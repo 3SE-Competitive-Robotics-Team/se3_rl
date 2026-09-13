@@ -49,8 +49,8 @@ uv run prek install
 ```bash
 uv sync
 uv run prek install
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
-uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1024
 ./scripts/run_sim2x.sh
 ```
 
@@ -73,8 +73,8 @@ uv run python -c "import torch; print('CUDA 可用:', torch.cuda.is_available())
 修改训练代码后先跑这个，5 轮训练验证环境不崩溃，不上传 W&B。
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1024
 ```
 
 ### 训练
@@ -82,9 +82,9 @@ SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
 需要 `.env` 以上传指标到 W&B。正式训练前先确认 `.env` 存在。
 
 ```bash
-uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1024
 uv run --env-file .env se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
-uv run --env-file .env se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run --env-file .env se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
 ```
 
 ### Sim2sim Viser
