@@ -15,6 +15,7 @@
 台阶列 is_alive / flat_wheel_contact / collision 置零，加 mjlab `is_terminated` 摔倒罚（见 ROUGH_STAIRS_ZEROED_REWARDS 注释）。
 M3：台阶列加回机身高度罚（ROUGH_BASE_HEIGHT_OFF_COLUMNS 为空，见其注释）。
 M6：非台阶列运动核 0.5 → 1.0，补起步段梯度（见 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 注释）。
+M7：速度跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（见 ROUGH_TRACKING_LIN_VEL_WEIGHT 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -118,6 +119,13 @@ ROUGH_BASE_HEIGHT_SIGMA = 0.10
 # σ=1.0 把这一段增益提到 +1.47（3.9 倍），同时静止净值 −0.16 仍是负的，不会重蹈 A10 的"站着不动是
 # 正收益均衡"；σ≥1.2 静止就转正（1.2 为 +0.21、1.44 为 +0.70），所以不直接取台阶列的 1.44。
 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 1.0
+# M7（2026-09-14 用户定）：速度跟踪权重 4 → 6（Flat 基线是 4）。M6-1200 在真实 env 的全项账本
+# （平地列、去 push，docs/plan/m6_ledger_full_20260914.md）：高姿站着不动 171.25/s、低姿跑 1.7 m/s
+# 156.22/s —— 站着不动是全局最优，不是局部最优。跑起来赚 tracking +111.6，却亏掉轮离地 −36.9、
+# 高度 −25.9、摔倒 −20.8、碰撞 −16.7、腿触地 −12.0 等共 −136，净亏 15。缺口只有 15/s：
+# 权重 4→6 让运动那侧多 +71.7 而静止只多 +15.9，差值 −15 → +41，余量够覆盖策略不成熟期。
+# 只在收益一侧加码，不放松任何安全约束（轮离地、碰撞、摔倒罚都原样保留）。
+ROUGH_TRACKING_LIN_VEL_WEIGHT = 6.0
 ROUGH_FLAT_VZ_WEIGHT = 0.0
 # 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
 ROUGH_STAIR_TRACKING_SIGMA_MOVE = 1.44
@@ -341,6 +349,7 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards["tracking_lin_vel"] = replace(
         track,
         func=rewards.tracking_lin_vel_terrain_vz,
+        weight=ROUGH_TRACKING_LIN_VEL_WEIGHT,
         params={
             **track.params,
             "sigma_move": ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE,
@@ -408,6 +417,7 @@ __all__ = [
     "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
     "ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES",
     "ROUGH_TERRAIN_VZ_WEIGHT",
+    "ROUGH_TRACKING_LIN_VEL_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "env_cfg",
 ]

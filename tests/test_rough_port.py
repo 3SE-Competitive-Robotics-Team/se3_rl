@@ -62,6 +62,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
     ROUGH_TERRAIN_VZ_WEIGHT,
+    ROUGH_TRACKING_LIN_VEL_WEIGHT,
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
@@ -79,6 +80,7 @@ _WRAPPED = (
     "tracking_ang_vel",
     *ROUGH_STAIRS_ZEROED_REWARDS,
 )
+_REWEIGHTED = ("tracking_lin_vel",)
 _ROUGH_ONLY = (
     "command_velocity_error",
     "stair_climb_progress",
@@ -155,6 +157,10 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             if name in _ROUGH_ONLY:
                 continue
             base = self.flat.rewards[name]
+            if name in _REWEIGHTED:
+                # M7：只有这一项相对 Flat 改了权重，具体值由 test_a15_pricing_on_non_stair_columns 钉死。
+                self.assertNotAlmostEqual(float(term.weight), float(base.weight), msg=name)
+                continue
             self.assertAlmostEqual(float(term.weight), float(base.weight), places=12, msg=name)
             if name in _WRAPPED:
                 continue
@@ -176,6 +182,9 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
 
         track = self.cfg.rewards["tracking_lin_vel"]
         self.assertIs(track.func, rough_rewards.tracking_lin_vel_terrain_vz)
+        # M7：跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（m6_ledger_full_20260914.md）。
+        self.assertAlmostEqual(float(track.weight), ROUGH_TRACKING_LIN_VEL_WEIGHT)
+        self.assertGreater(float(track.weight), float(self.flat.rewards["tracking_lin_vel"].weight))
         self.assertAlmostEqual(track.params["sigma_move"], ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE)
         self.assertAlmostEqual(track.params["vz_weight"], ROUGH_FLAT_VZ_WEIGHT)
         self.assertAlmostEqual(track.params["terrain_vz_weight"], ROUGH_TERRAIN_VZ_WEIGHT)
