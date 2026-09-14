@@ -62,6 +62,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
     ROUGH_TERRAIN_VZ_WEIGHT,
+    ROUGH_HIGH_STAND_TRANSITION_PROB,
     ROUGH_TRACKING_LIN_VEL_WEIGHT,
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
@@ -345,6 +346,18 @@ class RoughTerrainTests(unittest.TestCase):
         self.assertAlmostEqual(sensor.pattern.resolution, 0.1)
         self.assertNotIn("height_scan", self.cfg.observations["actor"].terms)
 
+    def test_high_stand_transition_is_enabled_on_flat(self) -> None:
+        """M8：平地列注入高姿起步转移，参数沿用 A20/A21 验证过的那组。"""
+        cmd = self.cfg.commands["velocity_height"]
+        self.assertAlmostEqual(cmd.high_stand_transition_prob, ROUGH_HIGH_STAND_TRANSITION_PROB)
+        self.assertGreater(cmd.high_stand_transition_prob, 0.0)
+        # 静站高度要落在死锁区（>0.34），否则练不到要练的那个状态。
+        self.assertGreaterEqual(cmd.high_stand_height_range[0], 0.34)
+        self.assertLessEqual(cmd.high_stand_height_range[1], cmd.height_range[1])
+        # 切换后的速度要越过跟踪核的零梯度段，下界不能太小。
+        self.assertGreaterEqual(cmd.high_stand_move_vx_range[0], 0.8)
+        self.assertGreater(cmd.high_stand_duration_range_s[0], 0.0)
+
     def test_command_ranges_and_height_floor_are_configured(self) -> None:
         cmd = self.cfg.commands["velocity_height"]
         self.assertTrue(cmd.terrain_command_override_enabled)
@@ -355,7 +368,8 @@ class RoughTerrainTests(unittest.TestCase):
         self.assertEqual(tuple(cmd.stair_lin_vel_x_range), ROUGH_STAIR_LIN_VEL_X_RANGE)
         self.assertEqual(tuple(cmd.stair_ang_vel_yaw_range), ROUGH_STAIR_ANG_VEL_YAW_RANGE)
         self.assertEqual(tuple(cmd.stair_height_range), ROUGH_STAIR_HEIGHT_RANGE)
-        self.assertEqual(cmd.high_stand_transition_prob, 0.0)
+        # M8 起打开（原为 0.0 关闭）；具体值与参数由 test_high_stand_transition_is_enabled_on_flat 钉死。
+        self.assertAlmostEqual(cmd.high_stand_transition_prob, ROUGH_HIGH_STAND_TRANSITION_PROB)
         # 地形感知高度下限：跨完整台阶区间且不撞到高度上界。
         self.assertTrue(cmd.terrain_aware_height)
         self.assertAlmostEqual(cmd.terrain_height_clearance, ROUGH_TERRAIN_HEIGHT_CLEARANCE)

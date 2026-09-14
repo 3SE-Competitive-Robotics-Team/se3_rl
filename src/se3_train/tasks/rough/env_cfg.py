@@ -16,6 +16,7 @@
 M3：台阶列加回机身高度罚（ROUGH_BASE_HEIGHT_OFF_COLUMNS 为空，见其注释）。
 M6：非台阶列运动核 0.5 → 1.0，补起步段梯度（见 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 注释）。
 M7：速度跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（见 ROUGH_TRACKING_LIN_VEL_WEIGHT 注释）。
+M8：平地列注入高姿起步转移，解开探索瓶颈（见 ROUGH_HIGH_STAND_TRANSITION_PROB 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -147,6 +148,16 @@ ROUGH_FALL_PENALTY = 10.0
 # 空元组 = 任何列都不置零：column_mask 对空列名返回 None，包装退化为 Flat 原函数（σ 仍取 ROUGH_BASE_HEIGHT_SIGMA，
 # 误差夹 ±0.15 m，台阶列跨立面时贴封顶约 −9/s）。
 ROUGH_BASE_HEIGHT_OFF_COLUMNS: tuple[str, ...] = ()
+# M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
+# 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
+# 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
+# 梯度为零）；σ 加倍到 0.62 有 11/16 动起来但回报塌到 −50.7（乱动不是行走，优势照样为负）。
+# 同时该状态本身极罕见：平地列 0.30 × 高度>0.34 的 0.22 × 静站 0.10 × 高速 0.67 ≈ 0.44%，
+# 每轮不到一个正样本。转移把命中率提到约 0.30×0.5=15%，正样本从 <1 变约 30 个/轮。
+# 值取 A20/A21 验证过的 0.5（commit 5ec1fd7）：A15 在 0.38 m 静站后给 0.8/1.6/2.4 只能跑 0.05 m/s，
+# 加转移后 A21 model_999 达 0.80/1.55/2.14 m/s；代价是 catastrophic 终止 0.03–0.08 → 0.12–0.15/轮。
+# 高度区间、静站时长、切换后速度沿用 commands.py 的 A20 默认值 (0.36,0.38)/(1.5,2.5)s/(0.8,2.4)。
+ROUGH_HIGH_STAND_TRANSITION_PROB = 0.5
 
 # critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
 # 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
@@ -249,6 +260,7 @@ def env_cfg(
         terrain_height_clearance=ROUGH_TERRAIN_HEIGHT_CLEARANCE,
         body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
         terrain_step_height_type_names=ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
+        high_stand_transition_prob=ROUGH_HIGH_STAND_TRANSITION_PROB,
     )
 
     cfg.events = dict(cfg.events)
@@ -393,6 +405,7 @@ __all__ = [
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_FALL_PENALTY",
+    "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
