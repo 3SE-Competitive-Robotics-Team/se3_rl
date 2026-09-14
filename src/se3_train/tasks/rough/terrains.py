@@ -17,11 +17,11 @@ random_rough 四列自 A9 起比例为 0，mjlab 课程模式仍各分 1 个 env
 覆盖的格子逐格生成三角棱柱、单对上限 50 个三角形，机身最大碰撞块 0.52 m 宽在 0.1 m 格子下要 98 个
 三角形，接触被丢弃、机身穿进地形（R1 崩溃的物理侧诱因）；0.2 m 格子只要 32 个。
 
-尺寸按本机器人标定：轮半径 0.06 m、轮距 0.433 m、base 指令高度 0.20–0.38 m。台阶踏面 0.5 m
-（2026-09-14 用户定，此前 1.5 m：每侧只有 2 级、整车能站在一级踏面上逐级上；0.5 m 后每侧 6 级，
-是连续楼梯，一块地形最高爬 6 × 0.20 = 1.2 m）；台阶高课程 0.02–0.20 m，上界是赛场台阶量级，
-下界让 row 0 近似平地，课程起点不会把策略卡死。踏面变窄后每块 box 数 13 → 29，迭代时间随 geom 数涨
-（docs/plan/rough_iteration_time_20260913.md），M3 1.85 s/轮 → 见 m4 记录。
+尺寸按本机器人标定：轮半径 0.06 m、轮距 0.433 m、base 指令高度 0.20–0.38 m。台阶踏面 0.7 m
+（2026-09-14 用户定；M1–M3 是 1.5 m 每侧 2 级、M4 试过 0.5 m 每侧 6 级但用户判定太窄）。0.7 m 时每侧
+(9 − 1 − 2) / (2 × 0.7) 取整 4 级，一块地形最高爬 4 × 0.20 = 0.8 m；台阶高课程 0.02–0.20 m，上界是赛场
+台阶量级，下界让 row 0 近似平地，课程起点不会把策略卡死。踏面越窄每块 box 越多、迭代越慢
+（1.5 m 13 个 box、M3 1.85 s/轮；0.5 m 29 个、M4 2.20 s/轮），见 docs/plan/rough_iteration_time_20260913.md。
 """
 
 from __future__ import annotations
@@ -29,12 +29,12 @@ from __future__ import annotations
 from mjlab.terrains.config import flat, pyramid_stairs, pyramid_stairs_inv
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
-# 单块地形边长；配 0.5 m 踏面、2.0 m 中央平台、0.5 m 边框时金字塔每侧 (9 − 1 − 2) / (2 × 0.5) = 6 级。
+# 单块地形边长；配 0.7 m 踏面、2.0 m 中央平台、0.5 m 边框时金字塔每侧 (9 − 1 − 2) / (2 × 0.7) 取整 4 级。
 ROUGH_PATCH_SIZE = (9.0, 9.0)
 ROUGH_STEP_HEIGHT_RANGE = (0.02, 0.20)
-# 踏面宽 0.5 m（M4，2026-09-14 用户定；M1–M3 为 1.5 m）。评测场景 serialleg_stairs_1to9.xml 由它生成，改了要重新生成，
-# 旧几何留在 serialleg_stairs_1to9_tread1p5.xml 供 M1–M3 回放。
-ROUGH_STEP_WIDTH = 0.5
+# 踏面宽 0.7 m（M5，2026-09-14 用户定；M1–M3 为 1.5 m，M4 为 0.5 m）。评测场景 serialleg_stairs_1to9.xml 由它生成，
+# 改了要重新生成；旧几何留在 serialleg_stairs_1to9_tread1p5.xml（M1–M3）与 _tread0p5.xml（M4）供回放。
+ROUGH_STEP_WIDTH = 0.7
 ROUGH_PLATFORM_WIDTH = 2.0
 _STAIR_BORDER_WIDTH = 0.5
 
