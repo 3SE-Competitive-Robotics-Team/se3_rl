@@ -14,6 +14,7 @@
 违令罚全列、能耗三项与 Flat 同价。相对 A15 的差别：课程换成官方升降级；以及 M2（2026-09-13）的台阶列定价——
 台阶列 is_alive / flat_wheel_contact / collision 置零，加 mjlab `is_terminated` 摔倒罚（见 ROUGH_STAIRS_ZEROED_REWARDS 注释）。
 M3：台阶列加回机身高度罚（ROUGH_BASE_HEIGHT_OFF_COLUMNS 为空，见其注释）。
+M6：非台阶列运动核 0.5 → 1.0，补起步段梯度（见 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -110,7 +111,13 @@ ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 3.0
 # −2.932/s，走路必然产生的机身起伏被高度罚、核里的 vz 项、姿态罚罚了三遍。σ 0.05→0.10 收回 +3.11/s，
 # 运动核 0.08→0.5 与 vz 2.0→0 合计收回 +2.97/s；违令罚扩到全列只打在"不动"那边。
 ROUGH_BASE_HEIGHT_SIGMA = 0.10
-ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 0.5
+# M6（2026-09-14 用户定）：非台阶列运动核 0.5 → 1.0。M5-1600 的高姿死锁账本（见
+# docs/plan/m5_highstand_deadlock_20260914.md 6b 节）显示"保持高度跑"才是最优（+3.66/s，高度罚≈0），
+# 卡死只有 −0.64/s；锁在起步路上：σ=0.5、指令 1.6 时 vx 0→0.6 跟踪核只从 0.0001 涨到 0.073，
+# 加上违令罚一共才 +0.38 的增益，而同段机身抖 0.05 m 就是 −1.0/s，瞬时代价盖过拉力。
+# σ=1.0 把这一段增益提到 +1.47（3.9 倍），同时静止净值 −0.16 仍是负的，不会重蹈 A10 的"站着不动是
+# 正收益均衡"；σ≥1.2 静止就转正（1.2 为 +0.21、1.44 为 +0.70），所以不直接取台阶列的 1.44。
+ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 1.0
 ROUGH_FLAT_VZ_WEIGHT = 0.0
 # 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
 ROUGH_STAIR_TRACKING_SIGMA_MOVE = 1.44
