@@ -13,6 +13,7 @@
 默认定价取从零训练最好的 A15（W&B h85eljnj）：非台阶列高度 σ 0.10、运动核分母 0.5、平地 vz 项 0、
 违令罚全列、能耗三项与 Flat 同价。相对 A15 的差别：课程换成官方升降级；以及 M2（2026-09-13）的台阶列定价——
 台阶列 is_alive / flat_wheel_contact / collision 置零，加 mjlab `is_terminated` 摔倒罚（见 ROUGH_STAIRS_ZEROED_REWARDS 注释）。
+M3：台阶列加回机身高度罚（ROUGH_BASE_HEIGHT_OFF_COLUMNS 为空，见其注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -126,6 +127,11 @@ ROUGH_STAIRS_ZEROED_REWARDS = ("is_alive", "flat_wheel_contact", "collision")
 # RewardManager 按 dt 缩放奖励，所以权重取 −ROUGH_FALL_PENALTY / step_dt，使每次终止恰好扣 ROUGH_FALL_PENALTY。
 # 量级取剩余 episode 可能负值的上界：20 s × 0.5/s = 10。
 ROUGH_FALL_PENALTY = 10.0
+# M3（2026-09-13 用户定）：台阶列加回机身高度罚。M1/M2 这一项在台阶列置零（值为 ROUGH_REWARD_TERRAIN_TYPE_NAMES），
+# M2-4999 确定性回放在平地中速指令（0.8–2.0）进 0.8 Hz 弹跳极限环（z 极差 20 cm），台阶列高度不受约束是怀疑对象。
+# 空元组 = 任何列都不置零：column_mask 对空列名返回 None，包装退化为 Flat 原函数（σ 仍取 ROUGH_BASE_HEIGHT_SIGMA，
+# 误差夹 ±0.15 m，台阶列跨立面时贴封顶约 −9/s）。
+ROUGH_BASE_HEIGHT_OFF_COLUMNS: tuple[str, ...] = ()
 
 # critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
 # 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
@@ -314,7 +320,7 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         func=rewards.base_height_penalty_off_terrain,
         params={
             **height.params,
-            "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+            "terrain_type_names": ROUGH_BASE_HEIGHT_OFF_COLUMNS,
             "sigma": ROUGH_BASE_HEIGHT_SIGMA,
         },
     )
@@ -359,6 +365,7 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
 
 __all__ = [
     "ROUGH_ALL_TERRAIN_TYPE_NAMES",
+    "ROUGH_BASE_HEIGHT_OFF_COLUMNS",
     "ROUGH_BASE_HEIGHT_SIGMA",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
     "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",

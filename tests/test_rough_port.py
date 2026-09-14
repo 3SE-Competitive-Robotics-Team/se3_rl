@@ -57,6 +57,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_STAIRS_ZEROED_REWARDS,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION,
+    ROUGH_BASE_HEIGHT_OFF_COLUMNS,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
@@ -165,9 +166,9 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         height = self.cfg.rewards["flat_base_height"]
         self.assertIs(height.func, rough_rewards.base_height_penalty_off_terrain)
         self.assertAlmostEqual(height.params["sigma"], ROUGH_BASE_HEIGHT_SIGMA)
-        self.assertEqual(
-            tuple(height.params["terrain_type_names"]), ROUGH_REWARD_TERRAIN_TYPE_NAMES
-        )
+        # M3：高度罚不再在任何列置零（空列名 → 包装退化为 Flat 原函数）。
+        self.assertEqual(tuple(height.params["terrain_type_names"]), ROUGH_BASE_HEIGHT_OFF_COLUMNS)
+        self.assertEqual(ROUGH_BASE_HEIGHT_OFF_COLUMNS, ())
         self.assertEqual(
             height.params.get("max_error"),
             self.flat.rewards["flat_base_height"].params.get("max_error"),
@@ -494,7 +495,7 @@ class RoughRuntimeTests(unittest.TestCase):
             terrain.terrain_levels[:] = saved
 
     def test_column_rewards_only_bite_where_configured(self) -> None:
-        """台阶列不吃高度罚与 yaw 工资；违令罚全列生效（A15）。"""
+        """包装函数点名列时台阶列不吃高度罚；配置里（M3）高度罚全列生效；yaw 工资台阶列为 0；违令罚全列（A15）。"""
         _step_once(self.env)
         cmd = self.env.command_manager.get_command("velocity_height")
         saved = cmd.clone()
@@ -521,6 +522,10 @@ class RoughRuntimeTests(unittest.TestCase):
         self.assertEqual(float(height_pen[self.stairs].abs().max()), 0.0)
         self.assertGreater(float(height_pen[~self.stairs].min()), 0.0)
         manager = self.env.reward_manager
+        # M3：配置里的 flat_base_height 在台阶列真的在扣（reset 后高度指令与实际高度不一致）。
+        h_index = manager.active_terms.index("flat_base_height")
+        self.assertLess(float(manager._step_reward[self.stairs, h_index].min()), 0.0)
+        self.assertLess(float(manager._step_reward[self.flat, h_index].min()), 0.0)
         index = manager.active_terms.index("tracking_ang_vel")
         self.assertEqual(float(manager._step_reward[self.stairs, index].abs().max()), 0.0)
         self.assertGreater(float(manager._step_reward[self.flat, index].abs().max()), 0.0)
