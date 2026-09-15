@@ -37,9 +37,14 @@ ROUGH_BODY_COLLISION_BOTTOM_OFFSET = -0.12
 # 里带 step_height_range 的子地形名，对不上时下限静默失效（由测试钉住）。
 ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ("stairs_up",)
 
-# 非平地列的前向指令（A7）：vx 0.4–0.8 与平地课程脱钩。A6 反解出地形列 vx 误差约 1.5 m/s、和指令均值
-# 一样大，核 exp(-1.5²/0.08) 精确为零；收到 0.8 之后踏面上滚到 0.4 就是误差 0.2、核 0.61，梯度回来。
-ROUGH_TERRAIN_COMMAND_FLAT_NAMES = ("flat",)
+# 哪些列按"平地方式"发指令：速度跟平地课程（最终 ±2.4）、yaw 用平地范围、参与静站与高姿起步转移采样。
+# 2026-09-15 用户定：下台阶与上下坡都按平地发——下台阶需要偏航跟踪，新列速度要 ±2.4 而不是只前向 0.4–0.8。
+# 只有 stairs_up 留在"非平地覆盖"那一路（再被下面的台阶覆盖压一层，最终是 1.0–2.4 前向、yaw 恒 0）。
+# 副作用：新列也会被 _sample_high_stand_transition 采到（它只在这份名单的列上采样），
+# 即坡上与下台阶也会练高姿起步，这是想要的；若发现下台阶因此摔得多，先把 stairs_down 移出这份名单。
+ROUGH_TERRAIN_COMMAND_FLAT_NAMES = ("flat", "stairs_down", "slope_up", "slope_down")
+# A7 留下的"非平地列前向指令"，2026-09-15 起已无列使用（stairs_up 被台阶覆盖压在上面），
+# 保留是为了以后再加"需要限速的列"时有现成档位：vx 0.4–0.8 与平地课程脱钩、yaw ±0.2。
 ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 0.8)
 ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
 

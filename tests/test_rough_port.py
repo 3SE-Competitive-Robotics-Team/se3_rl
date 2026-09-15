@@ -38,6 +38,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_ALL_TERRAIN_TYPE_NAMES,
     ROUGH_BASE_HEIGHT_SIGMA,
     ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
+    ROUGH_CONTACT_TAX_FREE_COLUMNS,
     ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
     ROUGH_FALL_PENALTY,
     ROUGH_FLAT_VZ_WEIGHT,
@@ -56,6 +57,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_STAIR_TRACKING_SIGMA_MOVE,
     ROUGH_STAIRS_ZEROED_REWARDS,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
+    ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
     ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION,
     ROUGH_BASE_HEIGHT_OFF_COLUMNS,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
@@ -223,7 +225,7 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             self.assertIs(term.params["inner"], base.func, msg=name)
             self.assertEqual(term.params["params"], base.params, msg=name)
             self.assertEqual(
-                tuple(term.params["terrain_type_names"]), ROUGH_REWARD_TERRAIN_TYPE_NAMES, msg=name
+                tuple(term.params["terrain_type_names"]), ROUGH_CONTACT_TAX_FREE_COLUMNS, msg=name
             )
             self.assertAlmostEqual(float(term.weight), float(base.weight), places=12, msg=name)
         fall = self.cfg.rewards["fall_penalty"]
@@ -260,10 +262,12 @@ class RoughTerrainTests(unittest.TestCase):
         assert gen is not None
         self.assertTrue(gen.curriculum)
         self.assertEqual(terrain.max_init_terrain_level, ROUGH_MAX_INIT_TERRAIN_LEVEL)
-        # 2026-09-13：只剩 flat 与 stairs_up 两列。比例为 0 的列不能靠设 0 关掉——mjlab 课程模式
-        # 仍会生成几何并分 1 个 env，之前四个死列白占 160 个 geom、每轮多 0.6 s。
+        # 2026-09-15：五列。比例为 0 的列不能靠设 0 关掉——mjlab 课程模式仍会生成几何并分 1 个 env，
+        # 之前四个死列白占 160 个 geom、每轮多 0.6 s；要么给正比例，要么从字典里删掉。
         self.assertEqual(list(gen.sub_terrains), list(ROUGH_ALL_TERRAIN_TYPE_NAMES))
-        self.assertEqual(list(gen.sub_terrains), ["flat", "stairs_up"])
+        self.assertEqual(
+            list(gen.sub_terrains), ["flat", "stairs_up", "stairs_down", "slope_up", "slope_down"]
+        )
         self.assertEqual(tuple(gen.size), ROUGH_PATCH_SIZE)
         for name, sub in gen.sub_terrains.items():
             self.assertAlmostEqual(sub.proportion, ROUGH_TERRAIN_PROPORTIONS[name], msg=name)
@@ -429,19 +433,22 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated_and_masks_agree(self) -> None:
         self.assertEqual(sorted(set(self.types.tolist())), list(range(len(self.names))))
-        self.assertEqual(len(self.names), 2)
+        self.assertEqual(len(self.names), 5)
         self.assertTrue(torch.equal(column_mask(self.env, ("stairs_up",)), self.stairs))
         self.assertTrue(torch.equal(non_flat_column_mask(self.env), ~self.flat))
         self.assertIsNone(column_mask(self.env, ("no_such_column",)))
-        self.assertTrue(torch.equal(self.term._terrain_override_mask, ~self.flat))
+        # M9：指令侧的"非平地覆盖"只剩 stairs_up，其余列按平地方式发指令（±2.4 + yaw）。
+        flat_like = column_mask(self.env, ROUGH_TERRAIN_COMMAND_FLAT_NAMES)
+        self.assertTrue(torch.equal(self.term._terrain_override_mask, ~flat_like))
+        self.assertTrue(torch.equal(self.term._terrain_override_mask, self.stairs))
         self.assertTrue(torch.equal(self.term._stair_mask, self.stairs))
         mask = getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR)
         self.assertTrue(torch.equal(mask, self.flat))
 
     def test_non_flat_columns_only_get_forward_commands(self) -> None:
-        # 2026-09-13 起训练地形只有 flat 与 stairs_up：非平地列就是台阶列，通用地形列覆盖
-        # （ROUGH_TERRAIN_*_RANGE）只在以后再加列时才会被用到。
-        self.assertTrue(torch.equal(~self.flat, self.stairs))
+        # M9：只有 stairs_up 仍走非平地覆盖（再被台阶覆盖压一层 → 1.0–2.4 前向、yaw 恒 0）；
+        # 下台阶与上下坡按平地方式发指令，由 test_new_columns_get_flat_style_commands 钉住。
+        self.assertTrue(torch.equal(self.term._terrain_override_mask, self.stairs))
         yaw_lo, yaw_hi = ROUGH_TERRAIN_ANG_VEL_YAW_RANGE
         vx_lo, vx_hi = ROUGH_STAIR_LIN_VEL_X_RANGE
         for _ in range(50):  # 多抽几轮，静站样本（10%）若漏进非平地列一定会被抓到
@@ -455,9 +462,26 @@ class RoughRuntimeTests(unittest.TestCase):
                 and bool((cmd[:, 1] <= yaw_hi + 1e-6).all())
             )
             self.assertEqual(float(self.term.command[self.stairs, 1].abs().max()), 0.0)
-            self.assertFalse(bool(self.term._standing_mask[~self.flat].any()))
+            self.assertFalse(bool(self.term._standing_mask[self.stairs].any()))
         # Flat 速度课程起点 vx=yaw=0，平地列 reset 后指令必须仍是 0。
         self.assertTrue(bool((self.term.command[self.flat][:, :2].abs() < 1e-6).all()))
+
+    def test_new_columns_get_flat_style_commands(self) -> None:
+        """M9（2026-09-15 用户定）：下台阶与上下坡按平地方式发指令——速度跟平地课程（终值 ±2.4）、有偏航跟踪。"""
+        names = list(self.names)
+        for col in ("stairs_down", "slope_up", "slope_down"):
+            self.assertIn(col, names, msg=col)
+            self.assertIn(col, ROUGH_TERRAIN_COMMAND_FLAT_NAMES, msg=col)
+        # 这三列不能落进"非平地覆盖"（那条路是 0.4–0.8 前向 + yaw ±0.2）。
+        newmask = column_mask(self.env, ("stairs_down", "slope_up", "slope_down"))
+        self.assertFalse(bool((self.term._terrain_override_mask & newmask).any()))
+        # 偏航跟踪奖励只在 stairs_up 置零，新列保留。
+        self.assertNotIn("stairs_down", ROUGH_REWARD_TERRAIN_TYPE_NAMES)
+        # 速度课程终值必须能到 ±2.4。
+        params = dict(self.env.cfg.curriculum["command_vel"].params or {})
+        self.assertAlmostEqual(float(params["max_lin_vel_x"]), 2.4)
+        # 接触税在上下台阶都免，坡面不免。
+        self.assertEqual(ROUGH_CONTACT_TAX_FREE_COLUMNS, ("stairs_up", "stairs_down"))
 
     def test_terrain_vx_is_decoupled_from_the_flat_curriculum(self) -> None:
         lo, hi = ROUGH_STAIR_LIN_VEL_X_RANGE
@@ -734,7 +758,9 @@ class FlatWarmupRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(torch.equal(self.terrain.terrain_types, original))
         self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
-        self.assertTrue(torch.equal(term._terrain_override_mask, original != self.flat_col))
+        # M9：override 只覆盖 stairs_up 这一列，不再是"所有非平地列"。
+        stairs_col = list(self.terrain.cfg.terrain_generator.sub_terrains).index("stairs_up")
+        self.assertTrue(torch.equal(term._terrain_override_mask, original == stairs_col))
         self.assertTrue(
             torch.equal(
                 getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR), original == self.flat_col

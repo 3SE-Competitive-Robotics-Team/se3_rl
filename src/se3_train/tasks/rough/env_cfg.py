@@ -17,6 +17,7 @@ M3：台阶列加回机身高度罚（ROUGH_BASE_HEIGHT_OFF_COLUMNS 为空，见
 M6：非台阶列运动核 0.5 → 1.0，补起步段梯度（见 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 注释）。
 M7：速度跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（见 ROUGH_TRACKING_LIN_VEL_WEIGHT 注释）。
 M8：平地列注入高姿起步转移，解开探索瓶颈（见 ROUGH_HIGH_STAND_TRANSITION_PROB 注释）。
+M9：补下台阶与上下坡三列；新列按平地方式发指令（±2.4 + yaw），接触税置零扩到下台阶。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -65,6 +66,7 @@ from .commands import (
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
+    ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
@@ -138,6 +140,9 @@ ROUGH_TERRAIN_VZ_WEIGHT = 0.0
 # 官方升降级把台阶 env 堆在成功率约一半的行，按此账本"尝试"要成功率超过约 40% 才划算，去掉工资后约 12%。
 # 确定性回放在 1400 轮长出常数动作不动点（docs/plan/m1_model800_vs_1400_20260913.md）就是这个失衡的产物。
 ROUGH_STAIRS_ZEROED_REWARDS = ("is_alive", "flat_wheel_contact", "collision")
+# 三项接触税在哪些列置零（2026-09-15）：上下台阶都会抬轮跨立面、机身也会蹭到台阶，
+# 坡面不给——坡上轮子本来就该一直着地，置零等于放掉唯一的接触约束。
+ROUGH_CONTACT_TAX_FREE_COLUMNS = ("stairs_up", "stairs_down")
 # 摔倒罚（一次性，按事件计）：工资拿掉后台阶列每秒净值接近 0 甚至为负，非超时终止按 0 自举就等于"免费退出"，
 # 提前摔死会变便宜（A10 的自杀策略）。mjlab `is_terminated` 对所有非 time_out 终止（灾难、倾倒）记 1；
 # RewardManager 按 dt 缩放奖励，所以权重取 −ROUGH_FALL_PENALTY / step_dt，使每次终止恰好扣 ROUGH_FALL_PENALTY。
@@ -260,6 +265,7 @@ def env_cfg(
         terrain_height_clearance=ROUGH_TERRAIN_HEIGHT_CLEARANCE,
         body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
         terrain_step_height_type_names=ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
+        terrain_command_flat_names=ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
         high_stand_transition_prob=ROUGH_HIGH_STAND_TRANSITION_PROB,
     )
 
@@ -381,7 +387,7 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             params={
                 "inner": term.func,
                 "params": dict(term.params),
-                "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+                "terrain_type_names": ROUGH_CONTACT_TAX_FREE_COLUMNS,
             },
         )
     # 摔倒罚：非超时终止那一步一次性扣 ROUGH_FALL_PENALTY（权重按 dt 反缩放）。
@@ -397,6 +403,7 @@ __all__ = [
     "ROUGH_BASE_HEIGHT_SIGMA",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
     "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",
+    "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
@@ -425,6 +432,7 @@ __all__ = [
     "ROUGH_STAIR_TRACKING_SIGMA_MOVE",
     "ROUGH_STEPS_PER_POLICY_ITER",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
+    "ROUGH_TERRAIN_COMMAND_FLAT_NAMES",
     "ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION",
     "ROUGH_TERRAIN_HEIGHT_CLEARANCE",
     "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
