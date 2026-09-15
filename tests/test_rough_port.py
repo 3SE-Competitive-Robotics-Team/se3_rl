@@ -284,12 +284,18 @@ class RoughTerrainTests(unittest.TestCase):
         self.assertGreaterEqual(self.cfg.sim.contact_sensor_maxmatch, 500)
 
     def test_sim_pool_sizes_follow_overflow_measurement(self) -> None:
-        # 2026-09-13 用 M1 的 model_2400 按训练方式采样、8192 env、起步行 0–9、2000 步压测：
-        # 每世界约束峰值 54、接触峰值 10；256 / 64 全程零溢出（scripts/check_sim_overflow.py）。
-        measured_nefc_peak, measured_ncon_peak = 54, 10
+        """池容量按**真实训练日志**里的 nefc overflow 定，不是按压测峰值。
+
+        2026-09-15 的教训：两列地形时压测（4096 env × 2000 步）峰值 54/10，据此定的 256/64
+        在五列地形下一直溢出——M9/M10/M11 的 train.log 里 "increase njmax to N" 刷了
+        3900/32433/10892 次，N 实测 294–402，M11 从 754 轮（热身一结束踩上五列）就开始。
+        压测规模和时长都远小于训练，只能证伪不能证明够用。
+        """
+        # 五列地形下训练日志实测的约束需求上界（M9–M11）与压测的接触峰值。
+        measured_nefc_peak, measured_ncon_peak = 402 / 3, 10
         self.assertEqual(self.cfg.sim.njmax, ROUGH_NJMAX)
         self.assertEqual(self.cfg.sim.nconmax, ROUGH_NCONMAX)
-        self.assertGreaterEqual(ROUGH_NJMAX, 3 * measured_nefc_peak)
+        self.assertGreaterEqual(ROUGH_NJMAX, 3 * measured_nefc_peak)  # ≥ 402，训练实测上界
         self.assertGreaterEqual(ROUGH_NCONMAX, 3 * measured_ncon_peak)
         # 台阶定向评测共用同一套覆盖层。
         stair_eval = load_env_cfg(_STAIR_EVAL)

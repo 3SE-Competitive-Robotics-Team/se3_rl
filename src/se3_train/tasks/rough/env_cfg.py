@@ -21,6 +21,7 @@ M9：补下台阶与上下坡三列；新列按平地方式发指令（±2.4 + y
 M10：修 M9 的 bug——下行地形正常往下走会跌破 catastrophic_state 的 −0.5 m 下限被判物理发散
 （见 ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT 注释）。
 M11：非台阶列运动核退回 0.5，找回中高速段的分辨率（见 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 注释）。
+M12：njmax 256 → 512，五列地形下 256 一直在溢出丢约束（见 ROUGH_NJMAX 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -85,11 +86,18 @@ ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
 # （运行时刷 "contact match overflow"，接触力读数不可信）。mjlab 自己的 rough velocity 任务同样取 500。
 ROUGH_CONTACT_SENSOR_MAXMATCH = 500
 # mjwarp 的约束池 / 接触池按每世界上限分配，求解器 kernel 也按 (nworld, njmax) 起线程，官方文档说这两个值
-# "越小越快，前提是不溢出"。沿用 Flat 的 1040 / 256 时 rough 每轮多 0.13 s。2026-09-13 用 M1 的 model_2400 按训练方式
-# 采样动作、8192 env、起步行 0–9、2000 步压测：每世界约束峰值 54（每步峰值 p99 46）、接触峰值 10、宽相候选 27k；
-# 256 / 64 全程零溢出（scripts/check_sim_overflow.py）。溢出时 mjwarp 会打印 "nefc overflow" 并置 d.overflow，
-# 换机器人或地形后用同一脚本再压一遍。
-ROUGH_NJMAX = 256
+# "越小越快，前提是不溢出"。沿用 Flat 的 1040 / 256 时 rough 每轮多 0.13 s。
+# 2026-09-13（两列地形）用 M1 的 model_2400 压测得 256 / 64 零溢出。
+#
+# **2026-09-15 五列地形后 njmax 256 不够**：M9 / M10 / M11 的 train.log 里 "nefc overflow - please
+# increase njmax to N" 分别刷了 3900 / 32433 / 10892 次，N 实测 294–402。M11 从 754 轮（平地热身一结束、
+# 第一次踩上五列地形）就开始溢出。溢出时约束被丢弃，接触力不可信，那三轮的物理与结论都要打折。
+# 取 512 覆盖实测最大 402 并留余量；nconmax 那一路从未报过溢出，维持 64。
+#
+# **压测方法的教训**：4096 env × 1000–2000 步的 check_sim_overflow.py 峰值只有 45–68，据此判断"够用"是错的——
+# 训练是 8192 env × 4 卡跑几千轮，撞到的极端情况远多于压测；而且脚本报的 overflow_worlds 即使在放大池后
+# 仍出现，当时被误判成"与池无关"。**换地形后以真实训练日志里的 nefc overflow 为准**，压测只能证伪不能证明够用。
+ROUGH_NJMAX = 512
 ROUGH_NCONMAX = 64
 # 课程按训练轮次计数用的每轮步数，与 rl_cfg 的 num_steps_per_env 一致（由测试钉住）。
 ROUGH_STEPS_PER_POLICY_ITER = 24
