@@ -37,6 +37,7 @@ from se3_train.tasks.rough.commands import RoughCommandCfg
 from se3_train.tasks.rough.env_cfg import (
     ROUGH_ALL_TERRAIN_TYPE_NAMES,
     ROUGH_BASE_HEIGHT_SIGMA,
+    ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
     ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
     ROUGH_CONTACT_TAX_FREE_COLUMNS,
     ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
@@ -70,7 +71,9 @@ from se3_train.tasks.rough.env_cfg import (
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
     ROUGH_PATCH_SIZE,
+    ROUGH_PLATFORM_WIDTH,
     ROUGH_STEP_HEIGHT_RANGE,
+    ROUGH_STEP_WIDTH,
     ROUGH_TERRAIN_PROPORTIONS,
 )
 
@@ -322,6 +325,41 @@ class RoughTerrainTests(unittest.TestCase):
         self.assertEqual(self.cfg.events["set_curriculum_env_mask"].mode, "startup")
         # play 模式沿用 Flat：没有任何课程项。
         self.assertEqual(rough_env_cfg(play=True).curriculum, {})
+
+    def test_catastrophic_height_floor_clears_every_descending_column(self) -> None:
+        """M10：下行地形的出生点在顶部平台，正常往下走不能被 catastrophic_state 判成物理发散。
+
+        M9 就栽在这：Flat 的 −0.5 m 下限让 stairs_down / slope_down 一走下去就终止，
+        1697 轮时 catastrophic 2.63/轮、回报从 34 掉到 8，而课程照升（升级只看水平位移）。
+        """
+        term = self.cfg.terminations["catastrophic_state"]
+        floor = float(term.params["min_base_height"])
+        self.assertAlmostEqual(floor, ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT)
+        self.assertLess(floor, -0.5)  # 必须比 Flat 基线更深
+
+        gen = self.cfg.scene.terrain.terrain_generator
+        assert gen is not None
+        half = (min(ROUGH_PATCH_SIZE) - 2 * 0.5 - ROUGH_PLATFORM_WIDTH) / 2
+        n_steps = int(half / ROUGH_STEP_WIDTH)
+
+        def extent(sub) -> float:
+            step_range = getattr(sub, "step_height_range", None)
+            if step_range is not None:
+                return float(step_range[1]) * n_steps
+            slope_range = getattr(sub, "slope_range", None)
+            if slope_range is not None:
+                return float(slope_range[1]) * half
+            return 0.0
+
+        deepest = max(
+            (extent(sub) for name, sub in gen.sub_terrains.items() if "down" in name), default=0.0
+        )
+        highest = max(
+            (extent(sub) for name, sub in gen.sub_terrains.items() if "up" in name), default=0.0
+        )
+        self.assertGreater(deepest, 0.0, "没有下行列？此用例要跟着地形一起更新")
+        self.assertLess(deepest, abs(floor), f"最深下行 {deepest:.2f} m 超过下限 {floor} m")
+        self.assertLess(highest, float(term.params["max_base_height"]))
 
     def test_terminations_are_official_truncations(self) -> None:
         edge = self.cfg.terminations["terrain_edge_reached"]

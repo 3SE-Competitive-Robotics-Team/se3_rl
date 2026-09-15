@@ -18,6 +18,8 @@ M6：非台阶列运动核 0.5 → 1.0，补起步段梯度（见 ROUGH_OFF_STAI
 M7：速度跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（见 ROUGH_TRACKING_LIN_VEL_WEIGHT 注释）。
 M8：平地列注入高姿起步转移，解开探索瓶颈（见 ROUGH_HIGH_STAND_TRANSITION_PROB 注释）。
 M9：补下台阶与上下坡三列；新列按平地方式发指令（±2.4 + yaw），接触税置零扩到下台阶。
+M10：修 M9 的 bug——下行地形正常往下走会跌破 catastrophic_state 的 −0.5 m 下限被判物理发散
+（见 ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -143,6 +145,18 @@ ROUGH_STAIRS_ZEROED_REWARDS = ("is_alive", "flat_wheel_contact", "collision")
 # 三项接触税在哪些列置零（2026-09-15）：上下台阶都会抬轮跨立面、机身也会蹭到台阶，
 # 坡面不给——坡上轮子本来就该一直着地，置零等于放掉唯一的接触约束。
 ROUGH_CONTACT_TAX_FREE_COLUMNS = ("stairs_up", "stairs_down")
+
+# catastrophic_state 的机身高度下限（2026-09-15 修 M9 的 bug）。Flat 基线取 −0.5 m，判据是
+# 世界 z 减 env 原点，本意是"掉出地图或物理发散"。但下行地形的出生点在**顶部平台**
+# （pyramid_stairs 与 hf_pyramid_slope 都是正金字塔），机器人正常往下走就会跌破 −0.5 被判发散：
+# M9（W&B upidjdsa）1697 轮时 catastrophic 2.63/轮、平均回报从 34 掉到 8，而课程等级照升
+# （升级看水平位移），就是这个误判。按当前几何，可用半径 3.0 m、每侧 4 级台阶：
+#   stairs_down 最难级底 −0.80 m（7 级时下完 3 级就触发）
+#   slope_down  最难级底 −1.05 m（6 级时离中心 2.1 m 就触发）
+# 取 −1.5 m 覆盖最深的 −1.05 并留 0.45 m 余量；平地与上行地形行为不变。
+# 上限 3.0 m 不动：slope_up 最高 +1.2、stairs_up 最高 +0.8，都在内。
+# **以后再加下行地形，先按 (每侧级数 × 最大阶高) 或 (最大坡度 × 可用半径) 核这条下限。**
+ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT = -1.5
 # 摔倒罚（一次性，按事件计）：工资拿掉后台阶列每秒净值接近 0 甚至为负，非超时终止按 0 自举就等于"免费退出"，
 # 提前摔死会变便宜（A10 的自杀策略）。mjlab `is_terminated` 对所有非 time_out 终止（灾难、倾倒）记 1；
 # RewardManager 按 dt 缩放奖励，所以权重取 −ROUGH_FALL_PENALTY / step_dt，使每次终止恰好扣 ROUGH_FALL_PENALTY。
@@ -288,6 +302,14 @@ def env_cfg(
     _apply_rough_rewards(cfg)
 
     cfg.terminations = dict(cfg.terminations)
+    catastrophic = cfg.terminations["catastrophic_state"]
+    cfg.terminations["catastrophic_state"] = replace(
+        catastrophic,
+        params={
+            **catastrophic.params,
+            "min_base_height": ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
+        },
+    )
     cfg.terminations["terrain_edge_reached"] = TerminationTermCfg(
         func=terrain_edge_reached,
         params={"threshold_fraction": ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION},
@@ -402,6 +424,7 @@ __all__ = [
     "ROUGH_BASE_HEIGHT_OFF_COLUMNS",
     "ROUGH_BASE_HEIGHT_SIGMA",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT",
     "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",
     "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT",
