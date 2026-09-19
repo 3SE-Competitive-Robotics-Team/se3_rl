@@ -141,6 +141,9 @@ ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 0.5
 # 权重 4→6 让运动那侧多 +71.7 而静止只多 +15.9，差值 −15 → +41，余量够覆盖策略不成熟期。
 # 只在收益一侧加码，不放松任何安全约束（轮离地、碰撞、摔倒罚都原样保留）。
 ROUGH_TRACKING_LIN_VEL_WEIGHT = 6.0
+# 叠加精细速度跟踪，静站与运动均生效；0.04 对应 0.2 m/s 误差尺度。
+ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT = 1.0
+ROUGH_TRACKING_LIN_VEL_NARROW_SIGMA = 0.04
 ROUGH_FLAT_VZ_WEIGHT = 0.0
 # 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
 ROUGH_STAIR_TRACKING_SIGMA_MOVE = 1.44
@@ -408,6 +411,14 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             "flat_type_names": ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES,
             "stair_sigma_move": ROUGH_STAIR_TRACKING_SIGMA_MOVE,
             "stair_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+        },
+    )
+    cfg.rewards["tracking_lin_vel_narrow"] = RewardTermCfg(
+        func=rewards.tracking_lin_vel_narrow,
+        weight=ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT,
+        params={
+            "command_name": "velocity_height",
+            "sigma": ROUGH_TRACKING_LIN_VEL_NARROW_SIGMA,
         },
     )
     # M2：台阶列不发工资、不罚爬升动作；权重与原参数逐位沿用 Flat，只在台阶列乘零。

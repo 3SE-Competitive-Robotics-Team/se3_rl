@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_train.mdp.rewards import _tracking_upright_gate
 from se3_train.tasks.flat.rewards import (
     command_velocity_error,
     flat_base_height_penalty_no_jump,
@@ -34,6 +35,20 @@ from .columns import column_mask, non_flat_column_mask
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+
+
+def tracking_lin_vel_narrow(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float,
+    tracking_upright_full_cos: float = 0.7,
+) -> torch.Tensor:
+    """全地形、全速度指令的窄核奖励；sigma 为指数分母，不重复更新宽核课程指标。"""
+    robot = env.scene["robot"]
+    command = env.command_manager.get_command(command_name)
+    error = robot.data.root_link_lin_vel_b[:, 0] - command[:, 0]
+    gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], tracking_upright_full_cos)
+    return torch.exp(-error.square() / sigma) * gate
 
 
 def command_velocity_error_on_terrain(
@@ -197,5 +212,6 @@ __all__ = [
     "command_velocity_error_on_terrain",
     "off_column",
     "tracking_ang_vel_off_terrain",
+    "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
 ]
