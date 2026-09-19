@@ -5,7 +5,7 @@
 `terrain_edge_reached` 与出网格截断 `out_of_terrain_bounds`、critic 的高度扫描 `height_scan`。
 本仓库自己的部分只剩有实验证据的几项（证据见 docs/plan/stair_training_wandb_review_20260913.md）：
 
-- 指令（commands.py）：机身高度指令 + 地形感知高度下限；台阶列只发前向高速指令，其余地形列低速前向。
+- 指令（commands.py）：机身高度指令 + 地形感知高度下限；上台阶列独立采样前进与偏航速度，其余列沿用平地指令。
 - 奖励（stair_rewards.py / rewards.py）：台阶进度与双轮支撑两项专项奖励；台阶列置零高度罚与 yaw 工资、
   放宽运动核；速度违令罚；非平地列关 vz 项。A12 十组消融证明前四项缺一即不上台阶。
 - 课程（curriculums.py）：前 500 轮平地热身 + 500 轮 ramp；平地速度课程只看平地列（events.py）。
@@ -436,19 +436,19 @@ __all__ = [
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
     "ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT",
     "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",
-    "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
+    "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
     "ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME",
     "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_FALL_PENALTY",
-    "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
+    "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
