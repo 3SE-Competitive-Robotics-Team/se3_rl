@@ -8,16 +8,18 @@
 
 当前所有注册的 `SE3-WheelLegged-*` 训练任务和 sim2sim 都固定使用真实闭链 OBB 模型，保持 policy 的 `[LF, LB, RF, RB, l_wheel, r_wheel]` 主动杆语义。MJCF 目录只保留 `serialleg_closed_chain_v3_train_obb_trim.xml`；旧高保真模型和两个四连杆 surrogate 均已删除。
 
-policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.50954 rad`（`129.95° - 43.46° = 86.49°`），对应腿长下限约 `0.135 m`；当前默认夹角为 `1.31668 rad`，不是后主动杆的绝对角。
+policy 动作顺序固定为 `[LF, LB, RF, RB, l_wheel, r_wheel]`，其中 `LB/RB` 对应 `l_drive_bar_Joint/r_drive_bar_Joint`。闭链限位语义是同侧两根主动杆夹角；当前装配分支下左腿为 `LF-LB`，右腿为 `RB-RF`，允许范围为 `0.0~1.50954 rad`（`129.95° - 43.46° = 86.49°`），对应腿长下限约 `0.135 m`；当前默认夹角为 `1.29991 rad`，不是后主动杆的绝对角。
 
-当前无气弹簧默认站姿按“腿长 0.16 m、base_link 距地约 0.22 m、轮心落在整机质心投影下、base/腿部几何离地”的几何平衡点重标定：
+默认站姿（2026-09-05 重标定）按“base_link 距地 0.22 m、轮心落地、整机质心（含腿与轮）正对轮轴”的静平衡点求得，机身水平时不需要前倾就能站住。此前的默认站姿只对齐了 base_link 质心，整机质心落后轮轴 17.2 mm，策略必须前倾约 8° 才能配平：
 
 ```text
-default_dof_pos = [-0.275422946189, -1.592100148957, 0.275422946189, 1.592100148957, 0.0, 0.0]
-default_output_knee_pos = [-1.242259649307, 1.242259649307]
-default_coupler_pos = [1.401266340000, -1.401269410000]
+default_dof_pos = [-0.172440681279, -1.472348626559, 0.172440681279, 1.472348626559, 0.0, 0.0]
+default_output_knee_pos = [-1.228738430820, 1.228738430820]
+default_coupler_pos = [1.383008518072, -1.383008518072]
 default_base_height = 0.22 m
 ```
+
+随高度指令变化的默认腿姿（`se3_shared.height_default`，算法 `serialleg_height_conditioned_policy_default.v2`）用同一个轮心 x 目标（−29.59 mm）反解，0.22 m 处与 `default_dof_pos` 一致，0.20–0.38 m 内质心残差在 −0.14 … +5.2 mm（0.38 m 处约 1.1°，腿距完全伸直仅 5°）。部署端 `se3_runtime` 同时保留 v1（只对齐 base 质心）供 2026-09-05 之前导出的 artifact 回放，由 ONNX metadata 的 `policy_io.action.height_default_strategy` 选择；sim2x reset 的关节零点以 artifact 自己的 metadata 为准，MJCF 的 `standing` keyframe 只提供 base 位姿。`tests/test_default_pose_balance.py` 守护这些数值的一致性。
 
 这只是两轮倒立系统的 reset 几何基点；零轮速开环 PD 仍不能替代策略的轮子平衡反馈。
 
@@ -114,7 +116,7 @@ uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1 --gpu-ids None
 轮数和保存间隔在对应任务的 `src/se3_train/tasks/<task>/rl_cfg.py` 里配置：
 
 ```python
-max_iterations=5000,  # 默认 5000 轮
+max_iterations=3500,  # Flat 基线默认 3500 轮；其余线仍为 5000
 save_interval=100,    # 每 100 轮保存一次 checkpoint
 ```
 

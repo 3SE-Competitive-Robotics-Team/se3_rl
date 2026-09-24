@@ -7,6 +7,15 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from mjlab.rl import RslRlOnPolicyRunnerCfg as MjlabRslRlOnPolicyRunnerCfg
+from mjlab.rl import RslRlPpoAlgorithmCfg
+
+
+@dataclass
+class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+    """PPO 算法配置：可选固定 critic 学习率（见 se3_train.ppo）。"""
+
+    critic_learning_rate: float | None = None
+    class_name: str = "se3_train.ppo:Se3PPO"
 
 
 @dataclass

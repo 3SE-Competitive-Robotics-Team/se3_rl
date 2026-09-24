@@ -28,6 +28,7 @@ from se3_runtime import (
 )
 from se3_shared import (
     DM8009P,
+    HEIGHT_CONDITIONED_DEFAULT_STRATEGY,
     M3508_C620_14,
     RobotConfig,
     build_policy_observation_np,
@@ -139,6 +140,7 @@ class _FakeActionManager:
             action_delay_min_s=0.004,
             action_delay_max_s=0.006,
             height_conditioned_action_default=True,
+            leg_action_semantics="active_rod",
             action_default_command_name="velocity_height",
             active_rod_lower_target_overdrive=0.2,
             knee_gas_spring_force=300.0,
@@ -370,7 +372,7 @@ class OnnxMetadataTests(unittest.TestCase):
             {"velocity_height": {"dimension": 8}},
         )
         self.assertNotIn("ranges", metadata["commands"]["velocity_height"])
-        self.assertEqual(metadata["robot"]["KD"][4:6], [0.08, 0.08])
+        self.assertEqual(metadata["robot"]["KD"][4:6], [RobotConfig().wheel_kd] * 2)
         self.assertEqual(metadata["robot"]["armature"], [0.01] * 4 + [0.005] * 2)
         self.assertEqual(metadata["robot"]["saturation_effort"][:4], [40.0] * 4)
         self.assertEqual(
@@ -450,7 +452,7 @@ class OnnxMetadataTests(unittest.TestCase):
     def test_action_default_semantics_reach_runtime_contract(self) -> None:
         """B18：hcad 必须写入 metadata 并驱动 runtime 的 default strategy。"""
         for flag, expected_mode in (
-            (True, "serialleg_height_conditioned_policy_default.v1"),
+            (True, HEIGHT_CONDITIONED_DEFAULT_STRATEGY),
             (False, "entity_default_joint_position"),
         ):
             env = _fake_env()
@@ -462,6 +464,10 @@ class OnnxMetadataTests(unittest.TestCase):
             self.assertIs(
                 metadata["policy_io"]["action"]["height_conditioned_action_default"],
                 flag,
+            )
+            self.assertEqual(
+                metadata["policy_io"]["action"]["height_default_strategy"],
+                "serialleg_height_conditioned_policy_default.v2",
             )
             with TemporaryDirectory() as temp_dir:
                 model_path = Path(temp_dir) / f"hcad_{flag}.onnx"
@@ -482,13 +488,15 @@ class OnnxMetadataTests(unittest.TestCase):
                 )
 
     def test_legacy_v2_without_action_default_flag_keeps_height_conditioned(self) -> None:
-        """旧 v2 artifact 不带 hcad 字段时，runtime 必须保持高度条件语义。"""
+        """旧 v2 artifact 不带 hcad 字段时，runtime 必须保持高度条件语义（v1 算法）。"""
         env = _fake_env()
         metadata = build_deployment_onnx_metadata(
             env,
             observation_group_names=("actor",),
         )
         del metadata["policy_io"]["action"]["height_conditioned_action_default"]
+        # B18 之前的 artifact 同样没有 height_default_strategy 字段。
+        del metadata["policy_io"]["action"]["height_default_strategy"]
         with TemporaryDirectory() as temp_dir:
             model_path = Path(temp_dir) / "legacy_no_flag.onnx"
             _write_test_model(model_path, 34, recurrent=False)
@@ -501,6 +509,62 @@ class OnnxMetadataTests(unittest.TestCase):
             strategy = PolicyBundle.load(model_path).contract.action.default_strategy
 
         self.assertEqual(strategy.mode, "serialleg_height_conditioned_policy_default.v1")
+
+    def test_height_conditioned_artifact_without_strategy_key_falls_back_to_v1(self) -> None:
+        """2026-09-05 之前导出的 hcad=True artifact 不带 height_default_strategy，必须继续按 v1 解码。"""
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        self.assertTrue(metadata["policy_io"]["action"]["height_conditioned_action_default"])
+        del metadata["policy_io"]["action"]["height_default_strategy"]
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_hcad_no_strategy.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+            contract = PolicyBundle.load(model_path).contract
+
+        self.assertEqual(
+            contract.action.default_strategy.mode,
+            "serialleg_height_conditioned_policy_default.v1",
+        )
+        # v1 与 v2 在 0.22 m 的腿部零点相差约 3.8°，两者不得混用。
+        commands = {"velocity_height": np.asarray((0.0, 0.0, 0.0, 0.0, 0.22, 0.0, 0.0, 0.0))}
+        legacy_default = PolicyActionDecoder(contract).policy_default(commands)
+        np.testing.assert_allclose(
+            legacy_default,
+            (-0.237981949227, -1.550423887933, 0.237981949227, 1.550423887933),
+            rtol=0.0,
+            atol=1.0e-9,
+        )
+        self.assertGreater(abs(float(legacy_default[0]) - RobotConfig().default_dof_pos[0]), 0.05)
+
+    def test_unknown_height_default_strategy_is_rejected(self) -> None:
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        metadata["policy_io"]["action"]["height_default_strategy"] = (
+            "serialleg_height_conditioned_policy_default.v3"
+        )
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "bad_height_default_strategy.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            with self.assertRaisesRegex(PolicyContractError, "height_default_strategy"):
+                embed_onnx_metadata(
+                    model_path,
+                    metadata,
+                    policy_iteration=4999,
+                    is_rnn=False,
+                )
+                PolicyBundle.load(model_path)
 
     def test_legacy_v2_without_command_ranges_uses_compat_bounds(self) -> None:
         """旧 v2 artifact 不带 ranges 时，runtime 继续使用兼容边界。"""
@@ -964,6 +1028,100 @@ class PolicyRuntimeTests(unittest.TestCase):
             expected.wheel_vel_target,
             atol=1.0e-12,
         )
+
+    def test_leg_action_semantics_reaches_runtime_contract(self) -> None:
+        """腿部 action 语义必须写入 metadata 并选出对应的 runtime decoder。"""
+        for semantics, expected_decoder in (
+            ("active_rod", "serialleg_active_rod.v1"),
+            ("joint", "serialleg_joint.v1"),
+        ):
+            env = _fake_env()
+            env.action_manager.cfg.leg_action_semantics = semantics
+            metadata = build_deployment_onnx_metadata(
+                env,
+                observation_group_names=("actor",),
+            )
+            self.assertEqual(
+                metadata["policy_io"]["action"]["leg_action_semantics"],
+                semantics,
+            )
+            with TemporaryDirectory() as temp_dir:
+                model_path = Path(temp_dir) / f"semantics_{semantics}.onnx"
+                _write_test_model(model_path, 34, recurrent=False)
+                embed_onnx_metadata(
+                    model_path,
+                    metadata,
+                    policy_iteration=4999,
+                    is_rnn=False,
+                )
+                action_contract = PolicyBundle.load(model_path).contract.action
+
+            self.assertEqual(action_contract.decoder, expected_decoder)
+            self.assertEqual(action_contract.leg_action_semantics, semantics)
+            # 通道名与 decoder 的对应关系由 _validate_action 强制：descriptor 若发错
+            # 通道表，上面的 PolicyBundle.load 会直接抛 PolicyContractError。
+
+    def test_legacy_artifact_without_semantics_keeps_active_rod(self) -> None:
+        """旧 artifact 不带 leg_action_semantics 时必须回落到 active_rod。"""
+        env = _fake_env()
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        del metadata["policy_io"]["action"]["leg_action_semantics"]
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "legacy_no_semantics.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=4999,
+                is_rnn=False,
+            )
+            action_contract = PolicyBundle.load(model_path).contract.action
+        self.assertEqual(action_contract.decoder, "serialleg_active_rod.v1")
+        self.assertEqual(action_contract.leg_action_semantics, "active_rod")
+
+    def test_joint_semantics_decoders_agree_and_are_invertible(self) -> None:
+        """joint 语义下 sim2x 与共享解码器必须逐元素一致，且 action<->target 互逆。"""
+        env = _fake_env()
+        env.action_manager.cfg.leg_action_semantics = "joint"
+        metadata = build_deployment_onnx_metadata(
+            env,
+            observation_group_names=("actor",),
+        )
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "joint_decoder.onnx"
+            _write_test_model(model_path, 34, recurrent=False)
+            embed_onnx_metadata(
+                model_path,
+                metadata,
+                policy_iteration=13,
+                is_rnn=False,
+            )
+            contract = PolicyBundle.load(model_path).contract
+
+        action = np.asarray((0.4, -0.8, -0.3, 0.7, 0.25, -0.35))
+        commands = _policy_input().commands
+        actual = PolicyActionDecoder(contract).decode(action, commands=commands)
+        shared = SharedPolicyActionDecoder(
+            action_scale=np.asarray(contract.action.scale),
+            height_conditioned_action_default=True,
+            leg_action_semantics="joint",
+            active_rod_target_lower_preload_margin=contract.action.lower_target_overdrive,
+        ).decode(
+            action,
+            command_height=float(np.asarray(commands["velocity_height"])[4]),
+        )
+        np.testing.assert_allclose(
+            actual.leg_position_target,
+            shared.leg_target,
+            atol=1.0e-12,
+        )
+        # joint 语义就是 default + action * scale，因此可以精确反解
+        leg_scale = np.asarray(contract.action.scale)[:4]
+        recovered = (actual.leg_position_target - actual.policy_leg_default) / leg_scale
+        np.testing.assert_allclose(recovered, action[:4], atol=1.0e-12)
 
     def test_gru_hidden_state_advances_and_resets_to_zero(self) -> None:
         metadata = build_deployment_onnx_metadata(
