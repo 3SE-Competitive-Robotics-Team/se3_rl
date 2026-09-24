@@ -16,8 +16,6 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 import se3_train  # noqa: F401  # 注册任务
 
 _MLP = "SE3-WheelLegged-Flat-MLP"
-_HISTORY = "SE3-WheelLegged-Flat-History-MLP"
-_GRU = "SE3-WheelLegged-Flat-GRU"
 
 # PPO：2026-09-06 对齐 BioInnov/kyber_rl_lab 的 locomotion 基线（commit f8057ab）。
 _ALGORITHM = {
@@ -66,7 +64,7 @@ _REMOVED_REWARDS = ("command_velocity_error",)
 
 class FlatBaselineAlgorithmTests(unittest.TestCase):
     def test_ppo_hyperparameters_are_frozen(self) -> None:
-        for task in (_MLP, _HISTORY, _GRU):
+        for task in (_MLP,):
             algorithm = load_rl_cfg(task).algorithm
             for key, expected in _ALGORITHM.items():
                 actual = getattr(algorithm, key)
@@ -78,11 +76,9 @@ class FlatBaselineAlgorithmTests(unittest.TestCase):
                     )
 
     def test_rollout_length_and_iterations(self) -> None:
-        # D 系列全部用 24 步；GRU 的该值同时是 BPTT 窗口，保留 64。
+        # 保留的 D11 单帧 MLP 每轮采样 24 步。
         self.assertEqual(load_rl_cfg(_MLP).num_steps_per_env, 24)
-        self.assertEqual(load_rl_cfg(_HISTORY).num_steps_per_env, 24)
-        self.assertEqual(load_rl_cfg(_GRU).num_steps_per_env, 64)
-        for task in (_MLP, _HISTORY, _GRU):
+        for task in (_MLP,):
             cfg = load_rl_cfg(task)
             self.assertEqual(cfg.max_iterations, 3500, msg=task)
             self.assertEqual(cfg.save_interval, 100, msg=task)

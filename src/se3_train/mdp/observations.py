@@ -31,6 +31,7 @@ from se3_train.mdp.joint_indices import (
     wheel_actuator_ids,
     wheel_joint_ids,
 )
+from se3_train.mdp.terrain_height import frame_height_above_terrain
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -105,7 +106,7 @@ def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """上一步的 6 个动作。"""
+    """上一步的 6 个动作（reset 后第一帧是 `ActionManager.reset()` 清零后的全 0）。"""
     return _finite_clamp(env.action_manager.action)
 
 
@@ -319,11 +320,13 @@ def _record_wheel_contact_force_nonfinite(env: ManagerBasedRlEnv, force: torch.T
 
 
 def base_height_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
-    """底盘离地高度（多射线取均值），标量（特权信息，critic 专用）。"""
-    from mjlab.sensor import TerrainHeightSensor
+    """底盘离地高度，标量（特权信息，critic 专用）。
 
-    sensor: TerrainHeightSensor = env.scene[sensor_name]
-    return torch.nan_to_num(sensor.data.heights, nan=0.0, posinf=0.0, neginf=0.0)
+    走 terrain_height 的稳健口径：地面高度取有效射线的均值，全无效时退回地形原点高度。
+    直接读 `sensor.data.heights` 会在机身陷进地形时拿到 0、射线打空时拿到 max_distance，
+    两个都是合法浮点数，会把 critic 的输入分布污染掉（见 se3_train/mdp/terrain_height.py）。
+    """
+    return frame_height_above_terrain(env, sensor_name).unsqueeze(-1)
 
 
 def jump_commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

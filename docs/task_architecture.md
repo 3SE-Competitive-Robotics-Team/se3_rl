@@ -8,17 +8,8 @@
 
 | 目录 | task id | 用途 |
 | --- | --- | --- |
-| `rough/` | `SE3-WheelLegged-Rough` | 崎岖地形行走任务 |
-| `flat/` | `SE3-WheelLegged-Flat-GRU` / `SE3-WheelLegged-Flat-MLP` / `SE3-WheelLegged-Flat-History-MLP` | 平地行走基模：GRU、单帧 MLP、五帧展平历史 MLP 三个入口共享环境与 PPO 配置，仅网络/观测历史不同。2026-09-06 合并 D2–D8 已验证的改动为默认：腿动作语义 `joint`、动作罚轮分量按归一化单位计价（`action_rate` 轮 1.0、`action_smoothness` 轮 2.0）、删除 `command_velocity_error`、整机质心正对轮轴的静平衡默认站姿与高度默认 v2、高度指令 0.20–0.38、PPO 超参数对齐 kyber_rl_lab（lr 1e-3、entropy_coef 0.01、epochs 5、clip 0.2）。合并后 `Flat-MLP` 的环境与 `Exp-JointActionWheelPriceNoCmdErr` 逐项相同 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-CmdDeadband` / `-Exp-WheelContact` / `-Exp-TiltBarrier` / `-Exp-ActionDelay` / `-Exp-YawCurriculum` | 2026-09-03 抖动对照实验入口：网络与 PPO 完全同 `Flat-MLP`，各自只改一个旋钮（速度违令死区 0.15/0.30、轮离地罚 -30、bad_tilt 6°/25°、动作延迟 20-60 ms、yaw 课程上限 6 rad/s）；基线用 `Flat-MLP` 换随机种子重跑 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-YawGate` / `-Exp-CurriculumRetreat` / `-Exp-YawStep` / `-Exp-AdvanceThreshold` / `-Exp-DeadbandTilt` | 2026-09-04 课程对照实验入口：yaw 上限一律保持 12 rad/s，只改爬升方式（yaw 由 yaw 跟踪 EMA 独立门控、课程可回退滞回、yaw 步长 0.25、推进阈值 0.75），外加把已确证的速度死区与 bad_tilt barrier 两个改动合并的入口 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointAction` | 2026-09-04 动作语义改动：4 维 action 直接是四根主动杆的绝对目标角（`target = default + action × scale`），去掉夹角中间量与解码器夹紧；隐含夹角越界交给 MJCF 的 `active_rod` tendon 限位承接。ONNX 契约 decoder 变为 `serialleg_joint.v1`，必须从头重训，旧 checkpoint 与新 sim2x 不可混用 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointActionWheelPrice` | 2026-09-05 σ 平衡点实验：在 `Exp-JointAction` 之上只改动作罚项轮分量的定价，撤销 (15/45)² 折价（`action_rate` 轮 1.0、`action_smoothness` 轮 2.0）。诊断：σ 与 entropy_coef 都按归一化动作维度计，折价后一单位轮噪声的代价只剩腿的 1/6.3，平衡点 σ_wheel≈0.85-0.9，且收敛后两项动作罚 72-104% 是纯探索噪声地板；同一定价下 4gs3te0p 曾把 σ 退火到 0.23。预测改后轮 σ 平衡点≈0.28 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointActionWheelPriceCriticLr` | 2026-09-05 critic 学习率解耦实验：在 `Exp-JointActionWheelPrice` 之上只把 critic 的 LR 固定为 actor 的初始学习率 `FLAT_LEARNING_RATE`（`se3_train.ppo.Se3PPO`，两 param group 的 Adam，每次 step 前恢复 critic lr），actor 仍走 KL 自适应。诊断：D4 σ 缩到 0.25 以下后共用 LR 被压到 1e-5 地板，critic 一起冻住，Loss/value 出现尖峰 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointActionWheelPriceOrient` | 2026-09-05 腿部摆动实验：在 `Exp-JointActionWheelPrice` 之上只把 `tracking_orientation_l2` 权重 -12 → -120。诊断：D4 确定性策略站立时有 0.67 Hz 极限环（腿峰峰 24°、俯仰 rms 2.2°），训练 rollout 里被探索噪声淹没，-12 下这段慢摆只花 0.03/s；-120 时 0.31/s 与动作罚项同量级，安静站立与行进俯仰不受影响 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointActionWheelPricePoseHold` | 2026-09-05 腿部摆动实验（选定方案）：在 `Exp-JointActionWheelPrice` 之上只加 `joint_pos_penalty` -1.0（腿关节偏离高度条件默认姿态的 L2 范数，静止 ×5，与 recovery 线同参数）。量级：D4 确定性站立慢摆 1.6/s、D2 式安静站立 0.18/s、行进 0.3 到 0.5/s |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointActionWheelPriceNoCmdErrCriticLr` | 2026-09-06 critic 学习率解耦复测：在 `Exp-JointActionWheelPriceNoCmdErr` 之上只把 critic 的 LR 固定为 `FLAT_LEARNING_RATE`（`se3_train.ppo.Se3PPO`）。诊断：D8 从 2750 轮起共用 LR 贴 1e-5 地板，此后 `Loss/value` 尾部指数发散（分段最大 0.6 → 1151，中位数始终约 0.5，尖峰为单轮脉冲且下一轮即恢复，故权重未损坏，是估值在新访问状态上失准），确定性站立腿峰峰从 1300 轮的 4.7° 退回 7.4°，reward 峰值 123 → 终点 113。横向对照：贴地板的 D4/D8 最大 `Loss/value` 27.5/991，不贴地板的 D5/D6/D7 仅 4.1/3.7/1.0。D5 在旧基线（仍带 `command_velocity_error`）测过同一改动但结论模糊，故复测 |
-| `flat/` | `SE3-WheelLegged-Flat-Exp-JointActionWheelPriceNoCmdErr` | 2026-09-05 速度违令罚实验：在 `Exp-JointActionWheelPrice` 之上只删除 `command_velocity_error`。诊断：该项 99% 的代价来自指令阶跃后 1 s 内物理上跟不上的瞬态（训练平均 -1.44/s，最大单项罚），稳态只有 0.003/s，实际效果是奖励指令跳变后猛冲；高斯核 σ=0.08 在稳态误差处梯度是它的 7 倍 |
+| `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认定价取 A15，见 `docs/plan/stair_training_wandb_review_20260913.md` 与 `rough_official_base_survey_20260913.md`。历史实验用对应 Git commit 复现。 |
+| `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
 | `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-MLP` / `SE3-WheelLegged-Recovery-Discovery-Ungrouped-MLP` | 唯一倒地自启任务；五个入口共享奖励、课程和 PPO 配置，Recovery-Loco-Grouped-MLP 使用 loco/recover 分组与五帧历史观测 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
@@ -26,11 +17,11 @@
 
 **Flat 基线已于 2026-09-06 冻结**，取 D11 的配置（W&B `mher9vfk`，commit `236666c`）：不带任何命令行覆盖直接跑
 `SE3-WheelLegged-Flat-MLP` 即可复现。除已合并的奖励与动作改动外，`num_steps_per_env` 由 64 改为 24（D 系列
-全部实验的实际取值；GRU 线的该值同时是 BPTT 窗口，保留 64），`max_iterations` 由 5000 改为 3500（逐轮曲线显示
+全部实验的实际取值），`max_iterations` 由 5000 改为 3500（逐轮曲线显示
 有信息量的窗口在 3500 轮以内），`randomize_com` 由 ±20 mm 收到 ±5 mm。全部数值由
 `tests/test_flat_baseline.py` 逐项守护，改基线必须同步改该测试并在提交信息里写明对照实验编号。
 
-2026-09-06 起 Flat 基线默认值已合并 D2–D8 的已验证改动，早于该日期的 `Flat-Exp-*` 入口（A/B/C 批课程与抖动对照）当时是相对旧基线的单变量，现在跑会落在新基线上；复现旧实验请切到该实验的 commit。其中 `Exp-CmdDeadband` 与 `Exp-DeadbandTilt` 调的是已被删除的 `command_velocity_error` 死区，已显式钉回旧权重以保留对照含义。
+Flat 基线已合并 D2–D8 的已验证改动。2026-09-13 清理后，GRU、History-MLP 和全部 Flat-Exp 注册入口已删除；复现历史实验请使用对应 Git commit。
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 

@@ -49,13 +49,13 @@ uv run ruff check . --fix
 uv run prek run --all-files
 
 # Smoke 验证（5 轮，不上传 W&B）
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1024
 
 # 训练（需要 NVIDIA GPU + CUDA 12.4+，macOS 不支持训练）
-uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1024
+uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1024
 uv run se3-train SE3-WheelLegged-Rough --env.scene.num-envs 1024
-uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
 
 # 交互式 sim2sim（纯 MuJoCo CPU + Viser）
 ./scripts/run_sim2x.sh
@@ -82,7 +82,7 @@ uv run se3-jump-to --height 0.6 --output assets/trajectories/jump_0.6m.npz
 **每次修改训练相关代码后，必须先运行 smoke 模式验证环境不会崩溃：**
 
 ```bash
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
 # 修改了跳跃相关代码时用这条：
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1 --gpu-ids None
 ```
@@ -189,7 +189,7 @@ se3_train/
 ├── cli.py           # 命令行入口
 ├── tasks/           # 每个训练任务的最小独立单元
 │   ├── rough/       # SE3-WheelLegged-Rough
-│   ├── flat/        # SE3-WheelLegged-Flat-GRU
+│   ├── flat/        # SE3-WheelLegged-Flat-MLP
 │   ├── stair/       # SE3-WheelLegged-Stair-GRU（爬楼梯）
 │   ├── recovery/    # Recovery 任务共享环境、奖励和课程实现
 │   ├── recovery_discovery/  # Recovery-Discovery GRU/MLP/History-MLP（倒地自启）

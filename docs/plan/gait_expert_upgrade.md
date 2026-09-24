@@ -29,7 +29,6 @@
 
 - `gait_conditioned_rl_multi_phase_curriculum_2505.20619.pdf`：gait ID、reward routing、多阶段 curriculum。
 - `phase_guided_controller_free_gait_transition_2201.00206.pdf`：相位引导和 controller-free transition。
-- `unified_walking_running_recovery_state_dependent_amp_2605.18611.pdf`：按状态切换 locomotion / recovery 奖励。
 - `seamless_multi_skill_learning_frontiers_2025.pdf`：多技能统一策略的 reward gating 和技能路由。
 - `omnixtreme_breaking_generality_barrier_high_dynamic_humanoid_control_2602.23843.pdf`：specialist-to-unified、强随机化和后训练。
 
