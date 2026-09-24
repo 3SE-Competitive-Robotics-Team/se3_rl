@@ -120,6 +120,8 @@ class FlatBaselineEnvTests(unittest.TestCase):
     def test_command_ranges(self) -> None:
         command = self.cfg.commands["velocity_height"]
         self.assertEqual(tuple(command.height_range), (0.20, 0.38))
+        # 行走线不写 Jump/* 诊断：开着时每步 184 次 .item() 占一步的 18%（2026-09-13 实测）。
+        self.assertFalse(command.enable_jump_metrics)
         self.assertEqual(tuple(command.standing_height_range), (0.20, 0.38))
         self.assertEqual(tuple(command.deployment_ranges["height"]), (0.20, 0.38))
         self.assertEqual(tuple(command.deployment_ranges["lin_vel_x"]), (-2.4, 2.4))

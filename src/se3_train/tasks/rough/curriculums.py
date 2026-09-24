@@ -1,4 +1,4 @@
-"""本任务的课程：平地热身。地形难度的升降级用 mjlab 官方 `terrain_levels_vel`（见 env_cfg.py）。"""
+"""本任务的课程：平地热身 + 二级台阶门控。地形难度的升降级用 mjlab 官方 `terrain_levels_vel`（见 env_cfg.py）。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from .events import set_curriculum_env_mask
 FLAT_WARMUP_ORIGINAL_TYPES_ATTR = "_se3_flat_warmup_original_types"
 FLAT_WARMUP_DONE_ATTR = "_se3_flat_warmup_done"
 FLAT_WARMUP_THRESHOLD_ATTR = "_se3_flat_warmup_threshold"
+# 二级台阶门控状态。
+TWO_STEP_GATE_ORIGINAL_TYPES_ATTR = "_se3_two_step_gate_original_types"
+TWO_STEP_GATE_OPENED_ATTR = "_se3_two_step_gate_opened"
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -104,4 +107,82 @@ def flat_warmup(
     }
 
 
-__all__ = ["flat_warmup"]
+def two_step_gate(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    gate_terrain_name: str = "stairs_up",
+    gate_level: float = 5.0,
+    gated_columns: tuple[tuple[str, str], ...] = (
+        ("stairs_two_step_up", "stairs_up"),
+        ("stairs_two_step_down", "flat"),
+    ),
+) -> dict[str, torch.Tensor]:
+    """`gate_terrain_name` 的平均难度等级达到 `gate_level` 之前，把被门控的列的 env 暂放到各自的"母列"。
+
+    M24（2026-09-21 用户定）：二级台阶（那道 0.15 m 窄棱）比普通台阶难一档，一开始就放出来会让策略
+    在还不会爬普通台阶时就被它拖住。所以等 `stairs_up` 均级到 5（9 级里的中段、约 11 cm 阶高）再开放。
+    `gated_columns` 的每一项是 (被门控的列, 门控期去哪一列)：上行那列去 stairs_up（它本来就该练台阶），
+    下行那列去 flat（它按平地待遇）。
+
+    **一次性放开、不再回收**：等级会随策略波动，反复迁移会让这些 env 的 episode 统计与课程等级来回重置。
+
+    与 `flat_warmup` 的配合：本项必须排在它**之后**，且只处理已经结束热身的 env——热身期全体都在平地列，
+    此时迁移会把还在热身的 env 提前拽到 stairs_up。原始列名也优先复用热身记下的那份，
+    否则本项第一次运行时 clone 到的是"热身把大家都改成 flat 之后"的快照。
+    """
+    terrain = env.scene.terrain
+    assert terrain is not None and terrain.terrain_origins is not None
+    generator = terrain.cfg.terrain_generator
+    assert generator is not None
+    names = list(generator.sub_terrains.keys())
+
+    original = getattr(env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, None)
+    if original is None:
+        original = getattr(env, TWO_STEP_GATE_ORIGINAL_TYPES_ATTR, None)
+        if original is None:
+            original = terrain.terrain_types.clone()
+            setattr(env, TWO_STEP_GATE_ORIGINAL_TYPES_ATTR, original)
+    opened = getattr(env, TWO_STEP_GATE_OPENED_ATTR, None)
+    if opened is None:
+        opened = torch.zeros((), dtype=torch.bool, device=env.device)
+        setattr(env, TWO_STEP_GATE_OPENED_ATTR, opened)
+
+    # 门控判据只看"本来就属于 gate 列"的 env，不受门控期迁进来的样本影响。
+    level = torch.zeros((), device=env.device)
+    if gate_terrain_name in names:
+        gate_mask = original == names.index(gate_terrain_name)
+        if bool(gate_mask.any()):
+            level = terrain.terrain_levels[gate_mask].float().mean()
+    if not bool(opened) and float(level) >= float(gate_level):
+        opened.fill_(True)
+
+    pairs = [
+        (names.index(gated), names.index(fallback))
+        for gated, fallback in gated_columns
+        if gated in names and fallback in names
+    ]
+    warmup_done = getattr(env, FLAT_WARMUP_DONE_ATTR, None)
+    ids = env_ids if warmup_done is None else env_ids[warmup_done[env_ids]]
+
+    changed = False
+    if ids.numel() > 0:
+        for gated_col, fallback_col in pairs:
+            owned = ids[original[ids] == gated_col]
+            if owned.numel() == 0:
+                continue
+            target = gated_col if bool(opened) else fallback_col
+            move = owned[terrain.terrain_types[owned] != target]
+            if move.numel() > 0:
+                terrain.terrain_types[move] = target
+                terrain.terrain_levels[move] = 0
+                changed = True
+    if changed:
+        terrain.env_origins[:] = terrain.terrain_origins[
+            terrain.terrain_levels, terrain.terrain_types
+        ]
+        _refresh_terrain_dependent_masks(env, command_name)
+    return {"opened": opened.float(), "gate_level": level}
+
+
+__all__ = ["flat_warmup", "two_step_gate"]
