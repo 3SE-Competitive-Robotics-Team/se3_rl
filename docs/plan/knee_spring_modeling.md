@@ -63,8 +63,11 @@ SerialLeg 膝关节（lf1/rf1）安装有物理弹簧，用于补偿重力力矩
          biastype="affine" biasprm="300 0 0" forcelimited="true" forcerange="0 300" />
 ```
 
-`gainprm=0` + `biasprm[0]=300` 使 actuator 力恒为 300 N，与 tendon 长度、速度、ctrl 均无关，
-所以它是**恒力气弹簧**而不是线性弹簧。MuJoCo 的 actuator 约定为
+上述 MJCF 名义配置中，`gainprm=0` + `biasprm[0]=300` 使 actuator 力恒为 300 N，
+与 tendon 长度、速度、ctrl 均无关，所以它是**恒力气弹簧**而不是线性弹簧。
+训练启用 `randomize_knee_spring_force` 时，startup 会为每个环境的左右腿独立采样
+270–330 N，并改写 bias 与力上限；采样后各弹簧的力仍恒定，300 N 只是名义值。
+MuJoCo 的 actuator 约定为
 `qfrc_actuator = +force · ∂L/∂q`（已用 `qfrc_actuator[lf1] / (300·∂L/∂q_lf1) = 1.000000` 实测确认），
 正力**推长** tendon。
 
@@ -363,7 +366,7 @@ F_reaction_at_D = 小腿对大腿在 D 处的约束力（由牛顿第三定律�
 | 铰接偏移 1 | δ₀ | 0.004 | m | 驱动杆侧球头长度 |
 | 铰接偏移 2 | δ₁ | 0.0095 | m | 小腿侧球头长度 |
 
-### 域随机化（未实现）
+### 线性刚度域随机化（历史方案，未实现）
 
 线性弹簧方案曾计划对刚度 k 做域随机化：
 
@@ -371,8 +374,10 @@ F_reaction_at_D = 小腿对大腿在 D 处的约束力（由牛顿第三定律�
 - 左右腿独立采样，shape `(num_envs, 2)`
 - 可选 curriculum：前 N 步线性缩放力矩从 0→1，避免初始策略被大弹簧力干扰
 
-恒力方案下对应的随机化对象应是力值 F 而不是刚度 k，当前**没有任何气弹簧域随机化**：
-MJCF 的 300 N 与 `RobotConfig.knee_gas_spring_force` 都是固定值。
+当前恒力方案已实现力值 F 的域随机化：`randomize_knee_spring_force` 在 startup 时，
+为每个环境的左右腿独立采样 `U[0.9, 1.1]×300 N`（270–330 N），并同步写入
+`actuator_biasprm[..., 0]` 和 `actuator_forcerange` 上限。它不是上述每次 reset 重采样
+刚度的方案。MJCF 的 300 N 是名义力，不能据此把启用该事件后的训练分布理解为固定 300 N。
 
 ## 实现计划（原设计，未按此执行）
 
@@ -479,7 +484,9 @@ class SpringConfig:
   实现，只改一边会直接产生 sim2sim gap。回归用例
   `tests/test_runtime_mujoco.py::KneeGasSpringCompensationTests` 会挡住这种情况。
 - **弹簧参数来源于 CAD 设计图或实测**，实际装配后可能有偏差，需要 system identification 校准。
-- **没有域随机化**：F 固定 300 N，真机装配差异不在训练分布内。
+- **域随机化覆盖有限**：启用恒力 DR 的训练配置在 startup 时为每个环境的左右腿独立采样
+  270–330 N；未启用该事件时保持 MJCF 名义值 300 N。超出此范围的真机力值偏差，以及
+  挂点几何等装配差异，不能视为已被这项力值随机化覆盖，仍需实测校准。
 - **旧 ONNX 不带 `robot.knee_gas_spring`**，sim2sim 会按无前馈解释；混跑新旧 artifact 时要注意
   这不是同一个 plant。
 
