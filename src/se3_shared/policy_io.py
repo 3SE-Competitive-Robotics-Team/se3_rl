@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -13,6 +14,12 @@ from .robot import JointGroup, RobotConfig
 
 _ROBOT_CFG = RobotConfig()
 _OBS_CFG = ObservationConfig()
+
+
+# 腿部 action 语义。三处解码器（训练 mdp/actions、共享 policy_io、sim2x policy_action）
+# 必须用同一套取值，并由 ONNX 元数据 policy_io.action.leg_action_semantics 声明。
+LegActionSemantics = Literal["active_rod", "joint"]
+LEG_ACTION_SEMANTICS: tuple[LegActionSemantics, ...] = ("active_rod", "joint")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +49,7 @@ class PolicyActionDecoder:
         robot_cfg: RobotConfig | None = None,
         action_scale: tuple[float, ...] | np.ndarray | None = None,
         height_conditioned_action_default: bool = False,
-        active_rod_semantics: bool = True,
+        leg_action_semantics: LegActionSemantics = "active_rod",
         active_rod_target_lower_preload_margin: float | None = None,
         active_rod_target_upper_preload_margin: float = 0.0,
         dtype: np.dtype | type = np.float64,
@@ -55,7 +62,11 @@ class PolicyActionDecoder:
         ).reshape(6)
         self.action_clip = self.robot_cfg.action_clip
         self.height_conditioned_action_default = bool(height_conditioned_action_default)
-        self.active_rod_semantics = bool(active_rod_semantics)
+        if leg_action_semantics not in LEG_ACTION_SEMANTICS:
+            raise ValueError(
+                f"leg_action_semantics 必须是 {sorted(LEG_ACTION_SEMANTICS)}，收到 {leg_action_semantics!r}"
+            )
+        self.leg_action_semantics = leg_action_semantics
         lower, upper = self.robot_cfg.active_rod_angle_limits
         lower_margin = (
             self.robot_cfg.active_rod_lower_target_overdrive
@@ -132,11 +143,16 @@ class PolicyActionDecoder:
         )
 
     def leg_target(self, leg_action: np.ndarray, policy_default: np.ndarray) -> np.ndarray:
-        """解码 4D 腿部 action。"""
+        """解码 4D 腿部 action。
+
+        "joint" 语义下四维直接是四根主动杆的绝对目标角，没有夹紧也没有反解；
+        "active_rod" 语义下第 2/4 维是夹角，按机械行程夹紧后反解出后杆目标。
+        两者都不影响 PD 误差的算法（见 se3_shared.leg_policy）。
+        """
         leg_action = np.asarray(leg_action, dtype=self.dtype).reshape(4)
         default = np.asarray(policy_default, dtype=self.dtype).reshape(4)
         leg_scale = self.action_scale[JointGroup.LEG_ACTUATORS]
-        if not self.active_rod_semantics:
+        if self.leg_action_semantics == "joint":
             return (default + leg_action * leg_scale).astype(self.dtype, copy=False)
 
         target = np.empty(4, dtype=self.dtype)

@@ -1609,6 +1609,7 @@ dependencies = [
     { name = "onnx" },
     { name = "onnxruntime" },
     { name = "viser" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -1624,6 +1625,7 @@ requires-dist = [
     { name = "onnx", specifier = ">=1.22.0" },
     { name = "onnxruntime", specifier = ">=1.27.0" },
     { name = "viser", specifier = "==1.0.30" },
+    { name = "websockets", specifier = "==16.0" },
 ]
 
 [package.metadata.requires-dev]

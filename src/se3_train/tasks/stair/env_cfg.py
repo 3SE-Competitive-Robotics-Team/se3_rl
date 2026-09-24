@@ -43,7 +43,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 _STAIR_RECOVERY_STATE_CACHE_PATH = (
     _PROJECT_ROOT / "assets" / "recovery_states" / "serialleg_closedchain_stair_v3_40k.npz"
 )
-_STAIR_WHEEL_KD = 0.08
+_STAIR_WHEEL_KD = 0.2  # 2026-09-02 0.08 → 0.2，与 se3_shared.RobotConfig.wheel_kd 同步
 _STAIR_COMMAND_WHEEL_RADIUS = 0.060
 _STAIR_COMMAND_HALF_TRACK = 0.200725
 _STAIR_COMMAND_WHEEL_SPEED_FRACTION = 0.70

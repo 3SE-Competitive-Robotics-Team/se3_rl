@@ -121,7 +121,12 @@ class RobotConfig(BaseModel):
 
     leg_kp: float = 60.0
     leg_kd: float = 3.0
-    wheel_kd: float = 0.08
+    # 轮子速度环增益（N·m·s/rad，输出轴级）：力矩 = wheel_kd × (目标轮速 − 实际轮速)。
+    # 2026-09-02 0.08 → 0.2：按 M3508 Kt 0.3 N·m/A（19.2:1）折算 14:1 输出轴 0.219 N·m/A，
+    # C620 ±16384 ↔ ±20 A，kd_sim ≈ 0.0357 × 固件速度环 Kp[count/rpm]，0.2 ↔ Kp≈5.6。
+    # 0.2 使满幅动作（scale 15 rad/s）≈ 堵转力矩 3.3 N·m，库仑死区 0.15 N·m 对应 0.75 rad/s。
+    # 再高需同时降轮 scale，否则探索噪声力矩顶到额定限幅。
+    wheel_kd: float = 0.2
     knee_gas_spring_force: float = 300.0
     # 关闭前馈，让策略直接面对带弹簧的 plant 并学会利用这份抗重力力矩；
     # 开启则电机自己抵消弹簧，等于放弃硬件收益还多占 10-18 N·m 包络。
@@ -134,16 +139,21 @@ class RobotConfig(BaseModel):
         M3508_C620_14.rated_torque,
         M3508_C620_14.rated_torque,
     )
+    # 默认站姿（2026-09-05 重标定）：base_link 距地 0.22 m、轮心落地、整机质心（含腿与轮）正对轮轴，
+    # 机身水平时静平衡。旧值 (-0.275423, -1.592100, ...) 只对齐了 base_link 质心，整机质心落后轮轴
+    # 17.2 mm，策略必须前倾约 8° 才能站住。数值 = se3_shared.height_default 在 0.22 m 处的 v2 高度默认
+    # （两者必须一致），被动关节由 fourbar.policy_to_closedchain_passive_pos_np 求得；MJCF 的
+    # standing keyframe 与 docs/train.md 同步维护，tests/test_default_pose_balance.py 守护。
     default_dof_pos: tuple[float, ...] = (
-        -0.275422946189,
-        -1.592100148957,
-        0.275422946189,
-        1.592100148957,
+        -0.172440681279,
+        -1.472348626559,
+        0.172440681279,
+        1.472348626559,
         0.0,
         0.0,
     )
-    default_output_knee_pos: tuple[float, float] = (-1.242259649307, 1.242259649307)
-    default_coupler_pos: tuple[float, float] = (1.401266340000, -1.401269410000)
+    default_output_knee_pos: tuple[float, float] = (-1.228738430820, 1.228738430820)
+    default_coupler_pos: tuple[float, float] = (1.383008518072, -1.383008518072)
     active_rod_angle_limits: tuple[float, float] = _ACTIVE_ROD_ANGLE_LIMITS
     active_rod_lower_target_overdrive: float = 0.20
     active_rod_soft_limit_factor: float = 1.0
@@ -153,6 +163,7 @@ class RobotConfig(BaseModel):
     )
     default_base_height: float = 0.22
     # 腿部 action 使用 [lf0, active_angle, rf0, active_angle] 语义；active 的零点是机械夹角中点。
+    # Flat 任务显式使用轮动作缩放 15；其余任务沿用各自的动作与奖励配置。
     action_scale: tuple[float, ...] = (
         0.25,
         0.25,

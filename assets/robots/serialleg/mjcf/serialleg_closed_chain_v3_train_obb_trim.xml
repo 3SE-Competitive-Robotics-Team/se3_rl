@@ -257,6 +257,6 @@
     <general name="r_knee_gas_spring" tendon="r_knee_spring" gaintype="fixed" gainprm="0" biastype="affine" biasprm="300 0 0" forcelimited="true" forcerange="0 300" />
   </actuator>
   <keyframe>
-    <key name="standing" qpos="0 0 0.22 1 0 0 0 -0.275422946189 -1.242259649307 0 -1.592100148957 1.401266340000 0.275422946189 1.242259649307 0 1.592100148957 -1.401269410000" />
+    <key name="standing" qpos="0 0 0.22 1 0 0 0 -0.172440681279 -1.228738430820 0 -1.472348626559 1.383008518072 0.172440681279 1.228738430820 0 1.472348626559 -1.383008518072" />
   </keyframe>
 </mujoco>
