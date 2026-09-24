@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 
 import mujoco
@@ -135,17 +134,21 @@ def main() -> int:
     model, data = adapter.model, adapter.data
     base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, runtime.contract.robot.base_link)
     policy_dt = float(runtime.contract.timing.policy_dt_s)
-    steps = int(round(args.duration / policy_dt))
-    resample_every = max(1, int(round(RESAMPLE_S / policy_dt)))
+    steps = round(args.duration / policy_dt)
+    resample_every = max(1, round(RESAMPLE_S / policy_dt))
     rng = np.random.default_rng(args.seed)
-    warmup_steps = 0 if args.warmup_height is None else int(round(args.warmup_s / policy_dt))
+    warmup_steps = 0 if args.warmup_height is None else round(args.warmup_s / policy_dt)
 
-    print(f"策略 {args.onnx.name}   每级 {args.trials} 次 × {args.duration:g}s"
-          f"   清块判据 L∞ ≥ {CLEAR_DISTANCE_M} m")
+    print(
+        f"策略 {args.onnx.name}   每级 {args.trials} 次 × {args.duration:g}s"
+        f"   清块判据 L∞ ≥ {CLEAR_DISTANCE_M} m"
+    )
     if warmup_steps:
         print(f"助跑：前 {args.warmup_s:g}s 高度指令锁 {args.warmup_height:.2f} m，之后按抽样值")
-    print(f"{'级':>3}{'台阶高':>8}{'高度下限':>9}{'成功率':>9}{'平均最远':>10}{'最好':>8}"
-          f"{'平均爬升':>10}{'摔倒率':>8}")
+    print(
+        f"{'级':>3}{'台阶高':>8}{'高度下限':>9}{'成功率':>9}{'平均最远':>10}{'最好':>8}"
+        f"{'平均爬升':>10}{'摔倒率':>8}"
+    )
     records: list[dict] = []
     for level in args.levels:
         height_range = (
@@ -215,9 +218,11 @@ def main() -> int:
             if best >= CLEAR_DISTANCE_M:
                 cleared += 1
         rate = cleared / max(args.trials, 1)
-        print(f"{level:>3}{_step_height(level):>8.3f}{height_range[0]:>9.3f}"
-              f"{rate:>8.0%}{np.mean(far):>10.2f}"
-              f"{max(far):>8.2f}{np.mean(climb):>10.3f}{fell / max(args.trials, 1):>8.0%}")
+        print(
+            f"{level:>3}{_step_height(level):>8.3f}{height_range[0]:>9.3f}"
+            f"{rate:>8.0%}{np.mean(far):>10.2f}"
+            f"{max(far):>8.2f}{np.mean(climb):>10.3f}{fell / max(args.trials, 1):>8.0%}"
+        )
     if args.dump:
         args.dump.parent.mkdir(parents=True, exist_ok=True)
         args.dump.write_text(json.dumps(records, indent=1), encoding="utf-8")

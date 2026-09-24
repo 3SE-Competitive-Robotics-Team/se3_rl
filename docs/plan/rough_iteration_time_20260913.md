@@ -196,7 +196,7 @@ njmax 256 是峰值的 4.7 倍，nconmax 64 是每世界接触峰值的 6 倍、
 3. **Jump/* 诊断**：[jump_commands.py](../../src/se3_train/mdp/jump_commands.py) 的 `_update_metrics`、`_takeoff_reward_diagnostics`、
    `_symmetry_diagnostics`、`_mean_on_mask` 全部改成 0 维张量、无 `.item()`、无按数据分支（掩码均值用 clamp 分母，空中最大 vz 用 where），
    EMA 改成 (ema, seen) 张量对（`*_ema` 键改为每步都报，未命中前为 0）；跳跃线沿用。行走线 [flat/env_cfg.py](../../src/se3_train/tasks/flat/env_cfg.py)
-   的 JumpCommandCfg 设 `enable_jump_metrics=False`（recovery / stair 线早已如此；log_filter 本来就裁掉 Jump/*，rough 通过字段拷贝继承）。
+   的 JumpCommandCfg 设 `enable_jump_metrics=False`（recovery / stair 线早已如此；rough 通过字段拷贝继承）。
    `Jump/diag_leg_contact_*` 由终止项写入、仍有 `.item()`，不在本次范围（0.3 ms）。
 
 测试：`tests/test_rough_port.py` 改六列断言为两列、新增 `test_sim_pool_sizes_follow_overflow_measurement`（钉 256 / 64 且不低于实测峰值 3 倍）和

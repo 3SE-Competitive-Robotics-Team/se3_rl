@@ -511,7 +511,8 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
                 "sigma": ROUGH_TRACKING_LIN_VEL_NARROW_SIGMA,
             },
             "terrain_type_names": ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS,
-            "scale": ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT / ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT,
+            "scale": ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT
+            / ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT,
         },
     )
     cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(

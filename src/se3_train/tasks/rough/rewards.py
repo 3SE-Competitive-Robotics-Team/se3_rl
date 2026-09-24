@@ -95,9 +95,9 @@ def wheel_fore_aft_offset(
         if mask is not None:
             keep = mask.float()
             log["Rough/wheel_dx_abs_flat"] = (dx.abs() * keep).sum() / keep.sum().clamp(min=1.0)
-            log["Rough/wheel_dx_abs_off_flat"] = (dx.abs() * (1.0 - keep)).sum() / (1.0 - keep).sum().clamp(
-                min=1.0
-            )
+            log["Rough/wheel_dx_abs_off_flat"] = (dx.abs() * (1.0 - keep)).sum() / (
+                1.0 - keep
+            ).sum().clamp(min=1.0)
     if mask is None:
         return penalty
     return penalty * mask.float()

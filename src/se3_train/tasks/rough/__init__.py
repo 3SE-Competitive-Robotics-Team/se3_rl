@@ -40,4 +40,12 @@ def register() -> None:
     )
 
 
-__all__ = ["GRU_TASK_ID", "STAIR_EVAL_TASK_ID", "TASK_ID", "env_cfg", "gru_rl_cfg", "register", "rl_cfg"]
+__all__ = [
+    "GRU_TASK_ID",
+    "STAIR_EVAL_TASK_ID",
+    "TASK_ID",
+    "env_cfg",
+    "gru_rl_cfg",
+    "register",
+    "rl_cfg",
+]

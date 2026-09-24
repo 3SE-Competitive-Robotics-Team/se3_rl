@@ -382,7 +382,7 @@ def env_cfg(
         "velocity_height": commands.JumpCommandCfg(
             resampling_time_range=(5.0, 5.0),
             jump_prob=0.0,  # 行走任务不触发跳跃
-            # 行走线不看 Jump/* 诊断（log_filter 本就裁掉），开着时每步 184 次 .item() 占一步的 18%
+            # 行走线不看 Jump/* 诊断，开着时每步 184 次 .item() 占一步的 18%
             # （2026-09-13 实测 7.4 ms）；recovery / stair 线早已关闭。要看时再开，实现已改成无主机同步。
             enable_jump_metrics=False,
             lin_vel_x_range=_FLAT_INITIAL_LIN_VEL_X_RANGE,
