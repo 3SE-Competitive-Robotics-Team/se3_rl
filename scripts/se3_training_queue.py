@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 _ACTIVE_STATUSES = ("starting", "running", "cancelling")
 _GPU_COUNT_CHOICES = (1, 2, 4)
 _QUEUE_ENV_NAMES = {
+    "CUDA_DEVICE_ORDER",
     "CUDA_VISIBLE_DEVICES",
     "SE3_LOGGER",
     "SE3_SMOKE",
@@ -287,13 +288,23 @@ def _job(settings: Settings, job_id: int) -> sqlite3.Row:
     return row
 
 
-def _update_job(settings: Settings, job_id: int, **fields: object) -> None:
+def _update_job(
+    settings: Settings,
+    job_id: int,
+    *,
+    expected: sqlite3.Row | None = None,
+    **fields: object,
+) -> None:
     if not fields:
         return
     assignments = ", ".join(f"{name} = ?" for name in fields)
     values = [*fields.values(), job_id]
+    condition = "id = ?"
+    if expected is not None:
+        condition += " AND status = ? AND pid IS ? AND cancel_requested = ?"
+        values.extend([expected["status"], expected["pid"], expected["cancel_requested"]])
     with _connect(settings) as connection:
-        connection.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", values)
+        connection.execute(f"UPDATE jobs SET {assignments} WHERE {condition}", values)
 
 
 def _cmd_submit(args: argparse.Namespace, settings: Settings) -> None:
@@ -382,7 +393,7 @@ def _cmd_tail(args: argparse.Namespace, settings: Settings) -> None:
 def _cmd_resources(_args: argparse.Namespace, settings: Settings) -> None:
     """显示 worker 当前可调度资源与活动租约。"""
     managed_gpu_ids = settings.gpu_ids or _discover_gpu_ids()
-    active_rows = _recover_active_jobs(settings)
+    active_rows = _active_jobs(settings)
     leased_gpu_ids = _leased_gpu_ids(active_rows, managed_gpu_ids)
     active_pgids = {int(row["pgid"]) for row in active_rows if row["pgid"] is not None}
     external_pids = _external_training_pids(active_pgids)
@@ -564,6 +575,7 @@ def _clean_environment(settings: Settings, row: sqlite3.Row) -> dict[str, str]:
     environment.update(json.loads(row["extra_env_json"]))
     environment.update(
         {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             "CUDA_VISIBLE_DEVICES": ",".join(str(value) for value in assigned_gpu_ids),
             "PYTHONUNBUFFERED": "1",
             "WANDB_DIR": str(settings.wandb_root),
@@ -733,24 +745,26 @@ def _seconds_since(timestamp: str | None) -> float:
     return max(0.0, (datetime.now(UTC) - datetime.fromisoformat(timestamp)).total_seconds())
 
 
-def _recover_active_jobs(settings: Settings) -> list[sqlite3.Row]:
-    """恢复 worker 状态，并返回仍占用 GPU 租约的任务。"""
+def _active_jobs(settings: Settings) -> list[sqlite3.Row]:
+    """读取活动任务，不触发状态恢复。"""
     with _connect(settings) as connection:
-        rows = connection.execute(
+        return connection.execute(
             "SELECT * FROM jobs WHERE status IN ('starting', 'running', 'cancelling') ORDER BY id"
         ).fetchall()
-    live_rows: list[sqlite3.Row] = []
-    for row in rows:
+
+
+def _recover_active_jobs(settings: Settings) -> list[sqlite3.Row]:
+    """恢复 worker 状态，并返回仍占用 GPU 租约的任务。"""
+    for row in _active_jobs(settings):
         if _process_alive(row["pid"]):
-            live_rows.append(row)
             continue
         if row["status"] == "starting" and row["pid"] is None:
             if _seconds_since(row["started_at"]) < 30.0:
-                live_rows.append(row)
                 continue
             _update_job(
                 settings,
                 int(row["id"]),
+                expected=row,
                 status="queued",
                 started_at=None,
                 assigned_gpu_ids_json=None,
@@ -761,12 +775,13 @@ def _recover_active_jobs(settings: Settings) -> list[sqlite3.Row]:
         _update_job(
             settings,
             int(row["id"]),
+            expected=row,
             status="cancelled" if cancelled else "failed",
             finished_at=_now(),
             exit_code=130 if cancelled else 1,
             message="取消后执行器已退出" if cancelled else "执行器消失且没有写入最终状态",
         )
-    return live_rows
+    return _active_jobs(settings)
 
 
 def _leased_gpu_ids(
@@ -902,11 +917,16 @@ def _cmd_worker(args: argparse.Namespace, settings: Settings) -> None:
                     )
                     continue
                 if gpu_count > len(managed_gpu_ids):
-                    reason = (
-                        f"队首任务 {row['id']} 请求 {gpu_count} GPU，"
-                        f"worker 仅管理 {managed_gpu_ids}"
+                    _update_job(
+                        settings,
+                        int(row["id"]),
+                        expected=row,
+                        status="failed",
+                        finished_at=_now(),
+                        exit_code=2,
+                        message=(f"任务请求 {gpu_count} GPU，worker 仅管理 {managed_gpu_ids}"),
                     )
-                    break
+                    continue
                 assigned_gpu_ids = _allocate_gpu_ids(
                     managed_gpu_ids,
                     free_gpu_ids,

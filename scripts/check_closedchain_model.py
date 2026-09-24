@@ -205,7 +205,7 @@ def _check_passive_joint_ranges(model: mujoco.MjModel) -> None:
     for joint_name, expected_range in PASSIVE_JOINT_RANGES.items():
         joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         if joint_id < 0:
-            continue
+            raise SystemExit(f"缺少必需的被动关节: {joint_name}")
         if not bool(model.jnt_limited[joint_id]):
             raise SystemExit(f"{joint_name} 必须启用限位以阻止闭链装配分支穿越")
         actual_range = np.asarray(model.jnt_range[joint_id], dtype=np.float64)
