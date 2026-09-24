@@ -4,7 +4,7 @@
 独立的 reset、reward 和 termination，但所有组共享同一个 PPO actor/critic 与优化器。
 
 该实现参考 `BioInnov/rsl_rl_bioin` 的 grouped PPO 数据契约，只迁移纯 RL 分组需要的
-环境能力。AMP、多专家蒸馏和 RL/distill 混合 loss 不属于当前迁移范围。
+环境能力。多专家蒸馏和 RL/distill 混合 loss 不属于当前迁移范围。
 
 ## 1. 分配环境组
 

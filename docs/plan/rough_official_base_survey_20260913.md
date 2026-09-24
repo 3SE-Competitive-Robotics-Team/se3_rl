@@ -74,4 +74,4 @@
 - 分列奖励诊断仍走 interval 事件：`MetricsManager` 只对全部 reset 的 env 求均值，做不出"只看台阶列"的均值。
 - 官方 `terrain_levels_vel` 的降级判据读 `command[:, :2]`，在本仓库指令布局里是 (vx, yaw)：台阶列 yaw 恒 0 不受影响，平地列 yaw 会抬高应走距离，但平地列各行几何相同、升降无意义。
 - 默认定价取 A15；相对 A15 的唯一差别是课程从只升不降改成官方升降级。这个默认没有 W&B run 对应，第一次训练要当新基线看。
-- 验证：`tests/test_rough_port.py` 重写（24 用例）与 `test_terrain_height` / `test_amp` / `test_flat_baseline` / `test_critic_learning_rate` / `test_training_queue` 全过；Rough 与 Flat-MLP 的 CPU smoke（1 env、5 轮）各导出 model_4.onnx；ruff 通过。
+- 验证：`tests/test_rough_port.py` 重写（24 用例）与 `test_terrain_height` / `test_flat_baseline` / `test_critic_learning_rate` / `test_training_queue` 全过；Rough 与 Flat-MLP 的 CPU smoke（1 env、5 轮）各导出 model_4.onnx；ruff 通过。
