@@ -586,7 +586,7 @@ class OnnxMetadataTests(unittest.TestCase):
             command = PolicyBundle.load(model_path).contract.command("velocity_height")
 
         by_name = {field.name: field for field in command.fields}
-        self.assertEqual(by_name["height"].value_range, (0.20, 0.32))
+        self.assertEqual(by_name["height"].value_range, (0.195, 0.39))
         self.assertEqual(by_name["height"].default_value, 0.22)
 
     def test_embed_mlp_preserves_properties_and_does_not_mutate_builder_output(self) -> None:
