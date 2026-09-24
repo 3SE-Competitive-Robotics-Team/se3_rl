@@ -15,6 +15,8 @@ class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     """PPO 算法配置：可选固定 critic 学习率（见 se3_train.ppo）。"""
 
     critic_learning_rate: float | None = None
+    amp_cfg: dict | None = None
+    """AMP 配置（se3_train.amp.AmpCfg 的字段，dict 形式）；None 关闭。"""
     class_name: str = "se3_train.ppo:Se3PPO"
 
 

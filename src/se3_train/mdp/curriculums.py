@@ -375,8 +375,12 @@ def commands_vel_adaptive(
     yaw_advance_threshold: float = 0.5,
     retreat_enabled: bool = False,
     retreat_threshold: float = 0.35,
+    tracking_log_key: str = "Locomotion/tracking_lin_vel_reward_all",
 ) -> dict[str, torch.Tensor]:
     """ETH 风格的自适应速度指令课程：用小步长丝滑推进速度范围。
+
+    tracking_log_key：推进判据读哪个日志键。默认全体 env 的跟踪分；rough 线传
+    `Locomotion/tracking_lin_vel_reward_curriculum`，只看平地列（见 rewards.tracking_lin_vel）。
 
     从 vx=0（纯静站）起步，用 Locomotion/tracking_lin_vel_reward_all 的 EMA
     评估策略是否适应了当前速度。EMA > advance_threshold 时小步扩大速度范围。
@@ -441,7 +445,7 @@ def commands_vel_adaptive(
     # 所以必须用 None 兜底区分“没有新样本”和“样本值真的是 0”，否则会被
     # 未刷新的 step 稀释，EMA 永远追不上 threshold。
     log = getattr(env, "extras", {}).get("log", {})
-    tracking_lin_vel = log.get("Locomotion/tracking_lin_vel_reward_all", None)
+    tracking_lin_vel = log.get(str(tracking_log_key), None)
 
     # advance 判定必须和 EMA 刷新绑在一起，不能每次 compute() 调用都判一次。
     # commands_vel_adaptive 由 _reset_idx 触发，2048 个并行 env 几乎每个

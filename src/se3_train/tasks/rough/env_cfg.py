@@ -1,26 +1,362 @@
-"""崎岖地形行走任务环境配置。"""
+"""崎岖地形行走任务环境配置：冻结的 Flat 基线 + 一层薄的 rough 覆盖。
+
+覆盖层里能用 mjlab 官方件的都用官方件：地形 preset 与课程模式生成器（terrains.py）、地形难度升降级
+`terrain_levels_vel`（走过半块升级、走不到指令距离一半降级、到顶后随机回级）、出块截断
+`terrain_edge_reached` 与出网格截断 `out_of_terrain_bounds`、critic 的高度扫描 `height_scan`。
+本仓库自己的部分只剩有实验证据的几项（证据见 docs/plan/stair_training_wandb_review_20260913.md）：
+
+- 指令（commands.py）：机身高度指令 + 地形感知高度下限；台阶列只发前向高速指令，其余地形列低速前向。
+- 奖励（stair_rewards.py / rewards.py）：台阶进度与双轮支撑两项专项奖励；台阶列置零高度罚与 yaw 工资、
+  放宽运动核；速度违令罚；非平地列关 vz 项。A12 十组消融证明前四项缺一即不上台阶。
+- 课程（curriculums.py）：前 500 轮平地热身 + 500 轮 ramp；平地速度课程只看平地列（events.py）。
+
+默认定价取从零训练最好的 A15（W&B h85eljnj）：非台阶列高度 σ 0.10、运动核分母 0.5、平地 vz 项 0、
+违令罚全六列、能耗三项与 Flat 同价。相对 A15 的差别只有课程：升降级换成官方实现。
+
+机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
+让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
+"""
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.envs.mdp import height_scan
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
+from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
+from mjlab.sensor import (
+    ContactMatch,
+    ContactSensorCfg,
+    GridPatternCfg,
+    ObjRef,
+    RayCastSensorCfg,
+    RingPatternCfg,
+    TerrainHeightSensorCfg,
+)
+from mjlab.tasks.velocity.mdp.curriculums import terrain_levels_vel
+from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain_edge_reached
 from mjlab.terrains import TerrainEntityCfg
+from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.tasks.flat.env_cfg import (
+    FLAT_ACTION_SMOOTHNESS_SPRING,
+    FLAT_CMD_VEL_DEADBAND,
+    FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
+    FLAT_WHEEL_ACTION_SCALE,
+)
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
+from . import curriculums, events, rewards, stair_rewards
+from .commands import (
+    ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
+    ROUGH_STAIR_ANG_VEL_YAW_RANGE,
+    ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
+    ROUGH_STAIR_HEIGHT_RANGE,
+    ROUGH_STAIR_LIN_VEL_X_RANGE,
+    ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
+    ROUGH_TERRAIN_HEIGHT_CLEARANCE,
+    ROUGH_TERRAIN_LIN_VEL_X_RANGE,
+    ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
+    RoughCommandCfg,
+)
+from .terrains import rough_terrains_cfg
 
-def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """带地形课程的崎岖地形环境配置。"""
+# mjlab 资产库约定：碰撞 geom group 3、视觉 geom group 2、射线传感器只看 group 0（地形）。
+ROUGH_ROBOT_COLLISION_GEOM_GROUP = 3
+# 全部 env 从最简单一行起步，难度由官方课程逐级放开（它到顶后会随机回级，起点不必随机）。
+ROUGH_MAX_INIT_TERRAIN_LEVEL = 0
+# 三个接触传感器的 secondary 都是 pattern="terrain"，生成器地形有几百个 geom，64 个匹配槽会溢出
+# （运行时刷 "contact match overflow"，接触力读数不可信）。mjlab 自己的 rough velocity 任务同样取 500。
+ROUGH_CONTACT_SENSOR_MAXMATCH = 500
+# 课程按训练轮次计数用的每轮步数，与 rl_cfg 的 num_steps_per_env 一致（由测试钉住）。
+ROUGH_STEPS_PER_POLICY_ITER = 24
+ROUGH_FLAT_WARMUP_ITERATIONS = 500
+ROUGH_FLAT_WARMUP_RAMP_ITERATIONS = 500
+# 出块截断的门槛：块半边长的比例。官方升级判据是"到出生点的欧氏距离 > 块半边长"，截断门槛不能低于它，
+# 否则永远升不了级；取 1.0 时直行到块边缘的那一步同时满足截断与升级。
+ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION = 1.0
 
-    from mjlab.terrains.config import ROUGH_TERRAINS_CFG
+# 分列定价生效的列、平地速度课程读的列。
+ROUGH_REWARD_TERRAIN_TYPE_NAMES = ("stairs_up",)
+ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
+ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
+ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES = ("flat",)
+ROUGH_ALL_TERRAIN_TYPE_NAMES = (
+    "flat",
+    "stairs_up",
+    "stairs_down",
+    "slope_up",
+    "slope_down",
+    "random_rough",
+)
 
-    cfg = flat_env_cfg(play=play)
+# 台阶专项奖励（A12；消融 A7/A8：撤掉任一项台阶列速度归零）。
+ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
+ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
+# 速度违令二次罚（A6 起台阶列，A15 起全六列）。误差归一化尺度 3.0：0.5 时台阶列全程贴封顶 9、
+# 梯度没了且 −18/s 的常数负奖励会教出自杀策略（A10）；3.0 时误差 1.65 → −0.57/s、2.35 → −1.23/s。
+ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT = FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY
+ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 3.0
+# A15 非台阶列定价。A13b flat 列账本（96 env，指令 vx 2.0 / h 0.38）：站着不动净 +2.407/s、走路净
+# −2.932/s，走路必然产生的机身起伏被高度罚、核里的 vz 项、姿态罚罚了三遍。σ 0.05→0.10 收回 +3.11/s，
+# 运动核 0.08→0.5 与 vz 2.0→0 合计收回 +2.97/s；违令罚扩到全列只打在"不动"那边。
+ROUGH_BASE_HEIGHT_SIGMA = 0.10
+ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 0.5
+ROUGH_FLAT_VZ_WEIGHT = 0.0
+# 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
+ROUGH_STAIR_TRACKING_SIGMA_MOVE = 1.44
+# 非平地列 tracking_lin_vel 核里的 vz 系数（A7）：爬台阶和上坡必须有垂直速度。
+ROUGH_TERRAIN_VZ_WEIGHT = 0.0
 
-    cfg.scene.terrain = TerrainEntityCfg(
-        terrain_type="generator",
-        terrain_generator=replace(ROUGH_TERRAINS_CFG),
-        max_init_terrain_level=5,
+# critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
+# 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
+ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME = "critic_height_scan"
+ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M = (1.0, 0.6)
+ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M = 0.1
+
+
+def _to_rough_command_cfg(command_cfg, **overrides) -> RoughCommandCfg:
+    """把 Flat 的 JumpCommandCfg 逐字段搬进 RoughCommandCfg，再覆盖 rough 要改的基类字段。
+
+    逐字段搬运而不是重新构造，是为了让 Flat 基线以后改指令参数时 rough 自动跟随；
+    RoughCommandCfg 自己新增的字段取它的默认值（commands.py 的模块常量）。
+    """
+    base = {f.name: getattr(command_cfg, f.name) for f in fields(command_cfg) if f.init}
+    base.update(overrides)
+    return RoughCommandCfg(**base)
+
+
+def env_cfg(
+    play: bool = False,
+    *,
+    terrain_generator: TerrainGeneratorCfg | None = None,
+) -> ManagerBasedRlEnvCfg:
+    """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
+
+    terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
+    """
+    cfg = flat_env_cfg(
+        play=play,
+        wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
+        action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
     )
 
+    cfg.scene.entities = {
+        "robot": get_serialleg_closedchain_cfg(
+            collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP
+        )
+    }
+    cfg.scene.terrain = TerrainEntityCfg(
+        terrain_type="generator",
+        terrain_generator=terrain_generator or rough_terrains_cfg(),
+        max_init_terrain_level=ROUGH_MAX_INIT_TERRAIN_LEVEL,
+    )
+    cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
+
+    # 台阶专项奖励用的双轮传感器 + critic 高度扫描；Flat 原有传感器布局不动。
+    cfg.scene.sensors = (
+        *cfg.scene.sensors,
+        TerrainHeightSensorCfg(
+            name="stair_reward_height",
+            frame=(
+                ObjRef(type="body", name="l_wheel_Link", entity="robot"),
+                ObjRef(type="body", name="r_wheel_Link", entity="robot"),
+            ),
+            ray_alignment="yaw",
+            pattern=RingPatternCfg.single_ring(radius=0.01, num_samples=4),
+            max_distance=2.0,
+            include_geom_groups=(0,),
+            reduction="min",
+        ),
+        ContactSensorCfg(
+            name="stair_reward_contact",
+            primary=ContactMatch(
+                mode="body", pattern=r"^(l_wheel_Link|r_wheel_Link)$", entity="robot"
+            ),
+            secondary=ContactMatch(mode="body", pattern="terrain"),
+            fields=("found", "force", "normal", "tangent"),
+            reduce="maxforce",
+            num_slots=4,
+            global_frame=True,
+        ),
+        RayCastSensorCfg(
+            name=ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+            frame=ObjRef(type="body", name="base_link", entity="robot"),
+            ray_alignment="yaw",
+            pattern=GridPatternCfg(
+                size=ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M,
+                resolution=ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M,
+            ),
+            max_distance=2.0,
+            include_geom_groups=(0,),
+        ),
+    )
+    cfg.observations = dict(cfg.observations)
+    critic = cfg.observations["critic"]
+    critic_terms = dict(critic.terms)
+    critic_terms["height_scan"] = ObservationTermCfg(
+        func=height_scan,
+        params={"sensor_name": ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME},
+    )
+    cfg.observations["critic"] = replace(critic, terms=critic_terms)
+
+    cfg.commands = dict(cfg.commands)
+    cfg.commands["velocity_height"] = _to_rough_command_cfg(
+        cfg.commands["velocity_height"],
+        terrain_aware_height=True,
+        terrain_height_clearance=ROUGH_TERRAIN_HEIGHT_CLEARANCE,
+        body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
+        terrain_step_height_type_names=ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
+    )
+
+    cfg.events = dict(cfg.events)
+    cfg.events["reset_stair_rewards"] = EventTermCfg(
+        func=stair_rewards.reset_stair_rewards, mode="reset"
+    )
+    cfg.events["set_curriculum_env_mask"] = EventTermCfg(
+        func=events.set_curriculum_env_mask,
+        mode="startup",
+        params={"terrain_type_names": ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES},
+    )
+    cfg.events["log_reward_split"] = EventTermCfg(
+        func=events.log_reward_split_by_column,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
+    )
+
+    _apply_rough_rewards(cfg)
+
+    cfg.terminations = dict(cfg.terminations)
+    cfg.terminations["terrain_edge_reached"] = TerminationTermCfg(
+        func=terrain_edge_reached,
+        params={"threshold_fraction": ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION},
+        time_out=True,
+    )
+    cfg.terminations["out_of_terrain_bounds"] = TerminationTermCfg(
+        func=out_of_terrain_bounds, time_out=True
+    )
+
+    if not play:
+        cfg.curriculum = dict(cfg.curriculum)
+        if "command_vel" in cfg.curriculum:
+            params = dict(cfg.curriculum["command_vel"].params or {})
+            params["tracking_log_key"] = ROUGH_CURRICULUM_TRACKING_LOG_KEY
+            cfg.curriculum["command_vel"] = replace(cfg.curriculum["command_vel"], params=params)
+        # 顺序有意义：先结算升降级，再由热身换列（见 curriculums.flat_warmup）。
+        cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
+            func=terrain_levels_vel,
+            params={"command_name": "velocity_height"},
+        )
+        cfg.curriculum["flat_warmup"] = CurriculumTermCfg(
+            func=curriculums.flat_warmup,
+            params={
+                "command_name": "velocity_height",
+                "iterations": ROUGH_FLAT_WARMUP_ITERATIONS,
+                "ramp_iterations": ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
+                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+            },
+        )
+
     return cfg
+
+
+def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+    """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
+    cfg.rewards = dict(cfg.rewards)
+    cfg.rewards["stair_climb_progress"] = RewardTermCfg(
+        func=stair_rewards.stair_climb_progress,
+        weight=ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
+        params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
+    )
+    cfg.rewards["stair_support_height"] = RewardTermCfg(
+        func=stair_rewards.stair_support_height,
+        weight=ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT,
+        params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
+    )
+    cfg.rewards["command_velocity_error"] = RewardTermCfg(
+        func=rewards.command_velocity_error_on_terrain,
+        weight=float(ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT),
+        params={
+            "command_name": "velocity_height",
+            "terrain_type_names": ROUGH_ALL_TERRAIN_TYPE_NAMES,
+            "lin_vel_scale": ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
+            "yaw_vel_scale": 1.0,
+            "lin_deadband": float(FLAT_CMD_VEL_DEADBAND[0]),
+            "yaw_deadband": float(FLAT_CMD_VEL_DEADBAND[1]),
+            "max_penalty": 9.0,
+        },
+    )
+    height = cfg.rewards["flat_base_height"]
+    cfg.rewards["flat_base_height"] = replace(
+        height,
+        func=rewards.base_height_penalty_off_terrain,
+        params={
+            **height.params,
+            "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+            "sigma": ROUGH_BASE_HEIGHT_SIGMA,
+        },
+    )
+    ang = cfg.rewards["tracking_ang_vel"]
+    cfg.rewards["tracking_ang_vel"] = replace(
+        ang,
+        func=rewards.tracking_ang_vel_off_terrain,
+        params={**ang.params, "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
+    )
+    track = cfg.rewards["tracking_lin_vel"]
+    cfg.rewards["tracking_lin_vel"] = replace(
+        track,
+        func=rewards.tracking_lin_vel_terrain_vz,
+        params={
+            **track.params,
+            "sigma_move": ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE,
+            "vz_weight": ROUGH_FLAT_VZ_WEIGHT,
+            "terrain_vz_weight": ROUGH_TERRAIN_VZ_WEIGHT,
+            "flat_type_names": ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES,
+            "stair_sigma_move": ROUGH_STAIR_TRACKING_SIGMA_MOVE,
+            "stair_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+        },
+    )
+
+
+__all__ = [
+    "ROUGH_ALL_TERRAIN_TYPE_NAMES",
+    "ROUGH_BASE_HEIGHT_SIGMA",
+    "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",
+    "ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT",
+    "ROUGH_CONTACT_SENSOR_MAXMATCH",
+    "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
+    "ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME",
+    "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
+    "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
+    "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
+    "ROUGH_FLAT_VZ_WEIGHT",
+    "ROUGH_FLAT_WARMUP_ITERATIONS",
+    "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
+    "ROUGH_MAX_INIT_TERRAIN_LEVEL",
+    "ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
+    "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
+    "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
+    "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
+    "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_STAIR_HEIGHT_RANGE",
+    "ROUGH_STAIR_LIN_VEL_X_RANGE",
+    "ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT",
+    "ROUGH_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_STEPS_PER_POLICY_ITER",
+    "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
+    "ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION",
+    "ROUGH_TERRAIN_HEIGHT_CLEARANCE",
+    "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
+    "ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES",
+    "ROUGH_TERRAIN_VZ_WEIGHT",
+    "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
+    "env_cfg",
+]
