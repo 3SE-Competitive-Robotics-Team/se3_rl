@@ -14,6 +14,7 @@ import mujoco
 import numpy as np
 import torch
 from mjlab.entity import Entity
+from mjlab.managers.event_manager import RecomputeLevel, requires_model_fields
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import (
     euler_xyz_from_quat,
@@ -36,6 +37,7 @@ from se3_shared import (
 from se3_train.mdp import recovery_state
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
+    actuator_ids,
     joint_ids,
     policy_leg_joint_ids,
     tensor_ids,
@@ -2375,13 +2377,18 @@ def push_robots(
     )
 
 
+@requires_model_fields("geom_friction")
 def randomize_friction(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
     friction_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """随机化几何体摩擦系数。"""
+    """随机化几何体摩擦系数。
+
+    MJLab 1.5.3 起 model field 默认是共享 world 的 size-1 数组，必须用
+    requires_model_fields 申报展开，否则逐 env 写入会静默塌缩成单一共享值。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -2404,6 +2411,7 @@ def randomize_friction(
             env.sim.model.geom_friction[env_ids, gid, 0] = friction.squeeze(-1)
 
 
+@requires_model_fields("geom_margin")
 def randomize_restitution(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2435,6 +2443,29 @@ def randomize_restitution(
             env.sim.model.geom_margin[env_ids, gid] = 0.0
 
 
+def _asset_root_body_id(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> int:
+    """按实体根 body 名解析全局 body id，按 env 缓存。
+
+    历史 bug：旧实现硬编码 body 0，而编译后 body 0 是 world（质量 0），
+    base_link 的 DR 写入自 mjlab 移植起全部无效。名称带 'robot/' 前缀，按后缀匹配。
+    """
+    attr = f"_root_body_id_{asset_cfg.name}"
+    cached = getattr(env, attr, None)
+    if isinstance(cached, int):
+        return cached
+
+    asset: Entity = env.scene[asset_cfg.name]
+    root_name = str(asset.root_body.name).split("/")[-1]
+    mj_model = env.sim.mj_model
+    for bid in range(mj_model.nbody):
+        full = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, bid)
+        if full and full.split("/")[-1] == root_name:
+            setattr(env, attr, bid)
+            return bid
+    raise ValueError(f"模型缺少实体 {asset_cfg.name} 的根 body {root_name}")
+
+
+@requires_model_fields("body_mass", recompute=RecomputeLevel.set_const)
 def randomize_base_mass(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2445,11 +2476,10 @@ def randomize_base_mass(
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
-    _ = env.scene[asset_cfg.name]
     n = len(env_ids)
 
     default_mass = env.sim.get_default_field("body_mass")
-    base_body_idx = 0  # base_link 是第 0 个 body。
+    base_body_idx = _asset_root_body_id(env, asset_cfg)
 
     added_mass = sample_uniform(
         torch.tensor(mass_range[0], device=env.device),
@@ -2461,6 +2491,7 @@ def randomize_base_mass(
     env.sim.model.body_mass[env_ids, base_body_idx] = default_mass[base_body_idx] + added_mass
 
 
+@requires_model_fields("body_inertia", recompute=RecomputeLevel.set_const_0)
 def randomize_inertia(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2473,7 +2504,7 @@ def randomize_inertia(
 
     n = len(env_ids)
     default_inertia = env.sim.get_default_field("body_inertia")
-    base_body_idx = 0
+    base_body_idx = _asset_root_body_id(env, asset_cfg)
 
     scale = sample_uniform(
         torch.tensor(inertia_range[0], device=env.device),
@@ -2485,6 +2516,7 @@ def randomize_inertia(
     env.sim.model.body_inertia[env_ids, base_body_idx] = default_inertia[base_body_idx] * scale
 
 
+@requires_model_fields("body_ipos", recompute=RecomputeLevel.set_const)
 def randomize_com(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2497,7 +2529,7 @@ def randomize_com(
 
     n = len(env_ids)
     default_ipos = env.sim.get_default_field("body_ipos")
-    base_body_idx = 0
+    base_body_idx = _asset_root_body_id(env, asset_cfg)
 
     offset = sample_uniform(
         torch.tensor(-com_range, device=env.device),
@@ -2509,6 +2541,7 @@ def randomize_com(
     env.sim.model.body_ipos[env_ids, base_body_idx] = default_ipos[base_body_idx] + offset
 
 
+@requires_model_fields("actuator_gainprm", "actuator_biasprm")
 def randomize_pd_gains(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor | None,
@@ -2556,6 +2589,117 @@ def randomize_pd_gains(
             env.sim.model.actuator_biasprm[env_ids, aid, 2] = default_biasprm[
                 aid, 2
             ] * kd_scale.squeeze(-1)
+
+
+@requires_model_fields("actuator_biasprm", "actuator_forcerange")
+def randomize_knee_spring_force(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    force_scale_range: tuple[float, float] = (0.9, 1.1),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """随机化膝关节气弹簧恒力（左右腿独立采样），模拟充气压差与装配公差。
+
+    弹簧在 MJCF 里是恒力 tendon actuator（gain=0、biasprm[0]=F），逐 env 改写
+    biasprm[0] 即改弹簧力；forcerange 上限同步抬到采样值，避免 DR 上尾被
+    MJCF 静态 forcerange 截断。采样值缓存在 env._knee_spring_force，
+    供 critic 特权观测与诊断日志读取。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    asset: Entity = env.scene[asset_cfg.name]
+    spring_ids = actuator_ids(asset, JointGroup.KNEE_SPRING_ACTUATOR_NAMES)
+    n = len(env_ids)
+
+    default_biasprm = env.sim.get_default_field("actuator_biasprm")
+    nominal = default_biasprm[list(spring_ids), 0]
+    if not torch.all(nominal > 0.0):
+        raise ValueError(f"气弹簧 actuator 默认恒力必须为正，实际为 {nominal.tolist()}")
+
+    scale = sample_uniform(
+        torch.tensor(float(force_scale_range[0]), device=env.device),
+        torch.tensor(float(force_scale_range[1]), device=env.device),
+        (n, len(spring_ids)),
+        env.device,
+    )
+    force = nominal.unsqueeze(0) * scale
+
+    buffer = getattr(env, "_knee_spring_force", None)
+    if not isinstance(buffer, torch.Tensor) or buffer.shape != (env.num_envs, len(spring_ids)):
+        buffer = torch.zeros(env.num_envs, len(spring_ids), device=env.device)
+        env._knee_spring_force = buffer
+    buffer[env_ids] = force
+
+    for column, aid in enumerate(spring_ids):
+        env.sim.model.actuator_biasprm[env_ids, aid, 0] = force[:, column]
+        env.sim.model.actuator_forcerange[env_ids, aid, 1] = force[:, column]
+
+    if hasattr(env, "extras"):
+        env.extras.setdefault("log", {}).update(
+            {
+                "Spring/force_mean": force.mean().item(),
+                "Spring/force_min": force.min().item(),
+                "Spring/force_max": force.max().item(),
+            }
+        )
+
+
+@requires_model_fields(
+    "dof_armature", "dof_damping", "dof_frictionloss", recompute=RecomputeLevel.set_const_0
+)
+def randomize_motor_passive_params(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    armature_scale_range: tuple[float, float] = (0.6, 1.5),
+    damping_scale_range: tuple[float, float] = (0.5, 2.5),
+    frictionloss_scale_range: tuple[float, float] = (0.5, 2.0),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """随机化 6 个电机关节的被动参数（armature/damping/frictionloss），逐关节独立采样。
+
+    名义值以 MJCF 为单一来源（armature=反射转子惯量、damping=粘性损耗、
+    frictionloss=库仑摩擦），量级依据与待辨识项见 docs/plan/motor_passive_params.md。
+    DR 相对名义值缩放，覆盖个体差异与辨识误差；名义值为 0 的项缩放后仍为 0。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+    _ = env.scene[asset_cfg.name]
+    mj_model = env.sim.mj_model
+    dof_adr = []
+    for name in (*JointGroup.POLICY_LEG_NAMES, *JointGroup.WHEEL_NAMES):
+        joint_id = None
+        for jid in range(mj_model.njnt):
+            joint_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+            if joint_name and joint_name.split("/")[-1] == name:
+                joint_id = jid
+                break
+        if joint_id is None:
+            raise ValueError(f"模型缺少电机关节 {name}")
+        dof_adr.append(int(mj_model.jnt_dofadr[joint_id]))
+
+    n = len(env_ids)
+
+    def _scale(value_range: tuple[float, float]) -> torch.Tensor:
+        return sample_uniform(
+            torch.tensor(float(value_range[0]), device=env.device),
+            torch.tensor(float(value_range[1]), device=env.device),
+            (n,),
+            env.device,
+        )
+
+    default_armature = env.sim.get_default_field("dof_armature")
+    default_damping = env.sim.get_default_field("dof_damping")
+    default_frictionloss = env.sim.get_default_field("dof_frictionloss")
+    for adr in dof_adr:
+        env.sim.model.dof_armature[env_ids, adr] = default_armature[adr] * _scale(
+            armature_scale_range
+        )
+        env.sim.model.dof_damping[env_ids, adr] = default_damping[adr] * _scale(damping_scale_range)
+        env.sim.model.dof_frictionloss[env_ids, adr] = default_frictionloss[adr] * _scale(
+            frictionloss_scale_range
+        )
 
 
 def randomize_default_dof_pos(

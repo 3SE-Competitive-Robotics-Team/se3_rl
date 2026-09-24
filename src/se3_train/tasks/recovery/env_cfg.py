@@ -378,6 +378,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["action_smoothness"] = RewardTermCfg(
         func=rewards.action_smoothness,
         weight=0.0,
+        # 注意：此处 weight=0 为惰性占位，S1 实际生效的定义在
+        # recovery_discovery/env_cfg.py（weight/-gate/cap 以那份为准）。
         params={
             "command_name": "velocity_height",
             "gate_start_deg": 90.0,

@@ -141,6 +141,8 @@ class _FakeActionManager:
             height_conditioned_action_default=True,
             action_default_command_name="velocity_height",
             active_rod_lower_target_overdrive=0.2,
+            knee_gas_spring_force=300.0,
+            knee_gas_spring_compensation_enabled=True,
         )
         self._term = SimpleNamespace(cfg=self.cfg)
 
@@ -377,6 +379,10 @@ class OnnxMetadataTests(unittest.TestCase):
         )
         self.assertEqual(metadata["robot"]["effort_limit"][:4], [20.0] * 4)
         self.assertEqual(metadata["robot"]["torque_speed_curve"], [None] * 6)
+        self.assertEqual(
+            metadata["robot"]["knee_gas_spring"],
+            {"force": 300.0, "compensation_enabled": True},
+        )
         self.assertAlmostEqual(
             metadata["robot"]["velocity_limit"][4],
             482.0 * 19.0 / 14.0 * 2.0 * np.pi / 60.0,

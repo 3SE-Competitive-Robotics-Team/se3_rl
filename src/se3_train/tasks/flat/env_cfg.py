@@ -172,6 +172,21 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=observations.base_height_obs,
             params={"sensor_name": "critic_height_sensor"},
         ),
+        "knee_gas_spring_force": ObservationTermCfg(
+            func=observations.knee_gas_spring_force_obs,
+        ),
+        # ---- critic 特权包 v2（CTS RA-L 2024 特权集合 + 本仓库 DR 参数回读）----
+        "motor_torques": ObservationTermCfg(func=observations.motor_torque_obs),
+        "joint_acc": ObservationTermCfg(func=observations.joint_acc_obs),
+        "leg_contact_forces": ObservationTermCfg(
+            func=observations.contact_force_norm_obs,
+            params={"sensor_name": "leg_contact_sensor"},
+        ),
+        "base_collision_force": ObservationTermCfg(
+            func=observations.contact_force_norm_obs,
+            params={"sensor_name": "collision_sensor"},
+        ),
+        "dr_model_params": ObservationTermCfg(func=observations.dr_model_params_obs),
     }
 
     cfg.observations = {
@@ -510,6 +525,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 mode="startup",
                 params={"restitution_range": (0.0, 0.5), "asset_cfg": SceneEntityCfg("robot")},
             ),
+            # 2026-08-30 发现并修复：这三个事件曾因 body id 硬编码 0（world）自 mjlab
+            # 移植起从未生效（4gs3te0p 及更早 run 的 plant 均无这三项 DR）。id 解析修复后
+            # 按用户决定恢复原范围启用（2026-08-31 critic v2 实验起生效）。
             "base_mass": EventTermCfg(
                 func=events.randomize_base_mass,
                 mode="startup",
@@ -523,7 +541,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             "com": EventTermCfg(
                 func=events.randomize_com,
                 mode="startup",
-                params={"com_range": 0.05, "asset_cfg": SceneEntityCfg("robot")},
+                # ±5cm 对 7kg/40cm 级机身占比过大，7lxhzb64 学出原地摆腿探测质心的
+                # 习惯（zero_hold 前杆摆动 7 倍于基线）；收到 ±2cm 保留鲁棒性、压掉探测摆。
+                params={"com_range": 0.02, "asset_cfg": SceneEntityCfg("robot")},
             ),
             "pd_gains": EventTermCfg(
                 func=events.randomize_pd_gains,
@@ -531,6 +551,27 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 params={
                     "kp_range": (0.9, 1.1),  # 收窄:配合 stall_torque 上限,避免 kp 偏软时振荡跪地
                     "kd_range": (0.9, 1.1),
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+            ),
+            "knee_spring_force": EventTermCfg(
+                func=events.randomize_knee_spring_force,
+                mode="startup",
+                params={
+                    # 左右腿独立 ±10%：气弹簧充气压差与装配公差（ETH PEA 论文同量级）
+                    "force_scale_range": (0.9, 1.1),
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+            ),
+            "motor_passive_params": EventTermCfg(
+                func=events.randomize_motor_passive_params,
+                mode="startup",
+                params={
+                    # 名义值待真机辨识回填，先用宽 DR 覆盖估计区间
+                    # （来源见 docs/plan/motor_passive_params.md）
+                    "armature_scale_range": (0.6, 1.5),
+                    "damping_scale_range": (0.5, 2.5),
+                    "frictionloss_scale_range": (0.5, 2.0),
                     "asset_cfg": SceneEntityCfg("robot"),
                 },
             ),

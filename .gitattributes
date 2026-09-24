@@ -1,1 +1,5 @@
 *.sh text eol=lf
+# MJCF 参与 recovery cache 的 source_mjcf_sha256 逐字节校验，
+# 必须在所有平台检出完全相同的字节（禁止 autocrlf 换行转换）。
+*.xml text eol=lf
+*.npz binary

@@ -126,14 +126,18 @@ SerialLeg 是轮腿机器人，腿部结构（lf0_Link、lf1_Link 及对应右�
 
 **物理依据**
 
-膝关节安装气弹簧（MJCF `stiffness=2000 N/m`，`damping=5 N·s/m`），弹簧挂点在驱动杆和小腿上。弹簧储能公式：
+膝关节安装气弹簧。当前 MJCF 建模为 **300 N 恒力** tendon actuator（`l_knee_spring` /
+`r_knee_spring`，`gainprm=0` + `biasprm="300 0 0"`），挂点 `*_spring_p1` 在大腿 `lf0_Link`、
+`*_spring_p2` 在小腿 `lf1_Link`。恒力弹簧做功不是 `0.5kΔx²`，而是：
 
 ```
-E_spring = 0.5 × k × Δx²
-Δx = r_arm × Δq（杠杆臂 r_arm ≈ 0.04m，压缩量 Δq = q_current - q_default）
+W_spring = F × ΔL（F = 300 N 恒定，ΔL 为 tendon 长度变化）
 ```
 
-从默认姿态（lf1=0.207）到 RSI 收腿姿态（lf1=0.4），双侧弹性储能约 0.27 J，仅占 0.8m 跳跃所需 99 J 的 0.3%。**弹簧对跳跃高度贡献可忽略不计，不是调优重点。**
+实测 tendon 长度在主动杆夹角全行程内从 0.2273 m 变到 0.1435 m（ΔL = 0.0838 m），
+单腿全行程做功 25.2 J、双腿 50.3 J，与 0.8 m 跳跃所需的约 99 J 同量级。
+**弹簧在能量预算里不可忽略**，等效关节力矩 `|τ_α|` 为 10.3–18.6 N·m，对 DM8009P 额定
+20 N·m 是量级相当的一项。详见 [`plan/knee_spring_modeling.md`](plan/knee_spring_modeling.md)。
 
 跳跃能量主要来源是腿部关节做功（DM8009P stall_torque=40 N·m，全行程可用功约 104 J）。
 

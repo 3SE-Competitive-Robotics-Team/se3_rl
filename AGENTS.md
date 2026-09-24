@@ -154,7 +154,8 @@ Smoke 模式特点：
 SerialLeg 的传动不是简单串联链，实际结构为：
 - 所有电机在**机身内部**，通过**共轴链轮**传动
 - 膝关节通过**四连杆机构**（驱动杆 AB → 连杆 BC → 小腿上段 CD）传动
-- 膝关节安装有**气弹簧**，P₁ 在驱动杆对侧（A 下方），P₂ 在小腿对侧（D 下方）
+- 膝关节安装有**气弹簧**，MJCF 里建模为 300 N **恒力** tendon actuator，挂点 P₁ 在大腿 `lf0_Link`、P₂ 在小腿 `lf1_Link`（跨过膝轴，不接驱动杆）
+- 电机侧保留一份气弹簧等效力矩前馈 `-F·dL/dα`（抵消弹簧，使策略面对无弹簧 plant）：`se3_shared.fourbar.knee_gas_spring_compensation_torque_{torch,np}`，训练端与 sim2sim 都在 PD 之后、T-N 限幅之前叠加，**默认关闭**（策略直面带弹簧 plant，见 `docs/plan/knee_spring_modeling.md`）。sim2sim 侧是 `se3_runtime/_serialleg_v1.py` 的独立复刻，**两份实现的符号与算法必须同步改**
 
 运行 `scripts/plot_spring_geometry.py` 可生成带真实 MuJoCo FK 的机构示意图，理解四连杆拓扑和弹簧挂点位置关系。详细方案见 `docs/plan/knee_spring_modeling.md`。
 
@@ -238,7 +239,11 @@ se3_jump_to/
                         jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
 
-critic 在 actor 观测基础上额外包含 base 线速度、轮子接触力和 base height 特权观测。
+critic 在 actor 观测基础上额外包含特权信息（actor 34 维部署契约不受影响）：base 线速度、
+轮子接触力、base height、膝气弹簧采样力，以及特权包 v2（CTS RA-L 2024 特权集合 +
+本仓库 DR 参数回读）——六电机实测力矩、六关节角加速度、腿部/机身接触力、
+28 维域随机化模型参数回读（摩擦/质量/质心/惯量/PD 缩放/电机被动参数比值），
+定义见 `se3_train/mdp/observations.py` 各 `*_obs` 的 docstring。
 
 ### 动作空间（6 维）
 ```
@@ -317,6 +322,8 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 
 当前条目：
 - [1. 关节轴方向：MJCF 中 6 个受控关节的物理约束](docs/common_mistakes.md#1-关节轴方向mjcf-中-6-个受控关节的物理约束)
+- [2. 闭链后不能按 MJCF qpos 顺序猜 policy 关节](docs/common_mistakes.md#2-闭链后不能按-mjcf-qpos-顺序猜-policy-关节)
+- [3. MJLab 1.5.3 起逐 env 写 model field 必须先申报展开](docs/common_mistakes.md#3-mjlab-153-起逐-env-写-model-field-必须先申报展开)
 
 ## 文件结构
 
