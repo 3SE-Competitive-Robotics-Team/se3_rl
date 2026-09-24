@@ -15,7 +15,11 @@ from se3_train.motion_loader import MotionLoader
 
 
 def _resolve_and_validate_fields(fields: Sequence[str] | None) -> list[str]:
-    resolved = MotionLoader.supported_fields() if fields is None else [str(field).strip() for field in fields]
+    resolved = (
+        MotionLoader.supported_fields()
+        if fields is None
+        else [str(field).strip() for field in fields]
+    )
     if not resolved:
         raise ValueError("AMP fields must not be empty.")
     seen: set[str] = set()
@@ -25,7 +29,9 @@ def _resolve_and_validate_fields(fields: Sequence[str] | None) -> list[str]:
     supported = set(MotionLoader.supported_fields())
     invalid = sorted(name for name in resolved if name not in supported)
     if invalid:
-        raise ValueError(f"Unsupported AMP fields: {invalid}. Supported: {MotionLoader.supported_fields()}")
+        raise ValueError(
+            f"Unsupported AMP fields: {invalid}. Supported: {MotionLoader.supported_fields()}"
+        )
     return resolved
 
 
@@ -40,7 +46,9 @@ def _validate_env_dataset_layout(env: Any, obs_group: str, obs_dim: int) -> None
     except (KeyError, AttributeError, TypeError):
         return
     if group_dim != obs_dim:
-        raise ValueError(f"AMP obs dim mismatch: env '{obs_group}' is {group_dim}, dataset is {obs_dim}.")
+        raise ValueError(
+            f"AMP obs dim mismatch: env '{obs_group}' is {group_dim}, dataset is {obs_dim}."
+        )
 
 
 def build_amp_dataset(
@@ -67,7 +75,9 @@ def build_amp_dataset(
         simulation_dt: 训练控制周期；None 时从 env.step_dt 取.
     """
     if env is None and simulation_dt is None:
-        raise ValueError("simulation_dt must be provided when building a dataset without an env object.")
+        raise ValueError(
+            "simulation_dt must be provided when building a dataset without an env object."
+        )
     resolved_fields = _resolve_and_validate_fields(fields)
     if not dataset_root:
         raise ValueError("AMP dataset_root is not configured.")

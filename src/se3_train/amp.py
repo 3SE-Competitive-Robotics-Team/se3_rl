@@ -49,7 +49,9 @@ def default_dataset_root(fallback: str) -> str:
 class MotionDiscriminator(nn.Module):
     """AMP 判别器：输入 [N, frames×19]，可选按单帧共享统计量归一化 + MLP，输出标量分数。"""
 
-    def __init__(self, transition_frames: int, frame_dim: int, model_cfg: Mapping[str, Any], device: str) -> None:
+    def __init__(
+        self, transition_frames: int, frame_dim: int, model_cfg: Mapping[str, Any], device: str
+    ) -> None:
         super().__init__()
         self.device = torch.device(device)
         self.transition_frames = int(transition_frames)
@@ -104,7 +106,9 @@ class MotionDiscriminator(nn.Module):
         """R1：专家样本上判别器输入梯度的平方范数。"""
         expert_in = expert_sequences.detach().requires_grad_(True)
         expert_scores = self.forward(expert_in)
-        expert_grad = torch.autograd.grad(outputs=expert_scores.sum(), inputs=expert_in, create_graph=True)[0]
+        expert_grad = torch.autograd.grad(
+            outputs=expert_scores.sum(), inputs=expert_in, create_graph=True
+        )[0]
         return expert_grad.square().sum(dim=-1).mean()
 
     def predict_reward(self, sequences: torch.Tensor) -> torch.Tensor:
@@ -127,7 +131,9 @@ class AMP(nn.Module):
 
     amp_update_counter: torch.Tensor
 
-    def __init__(self, num_envs: int, step_dt: float, obs: TensorDict, cfg: Mapping[str, Any], device: str) -> None:
+    def __init__(
+        self, num_envs: int, step_dt: float, obs: TensorDict, cfg: Mapping[str, Any], device: str
+    ) -> None:
         super().__init__()
         self.device = torch.device(device)
         self.obs_group = str(cfg.get("obs_group", "amp"))
@@ -136,7 +142,9 @@ class AMP(nn.Module):
         # 可选的逐 env 启用掩码观测组（[B,1]，>0.5 为启用），对应 fork 的 enabled_group_mask。
         self.mask_obs_group: str | None = cfg.get("mask_obs_group") or None
         if self.mask_obs_group is not None and self.mask_obs_group not in obs:
-            raise ValueError(f"AMP 掩码观测组 '{self.mask_obs_group}' 不存在，可用：{list(obs.keys())}")
+            raise ValueError(
+                f"AMP 掩码观测组 '{self.mask_obs_group}' 不存在，可用：{list(obs.keys())}"
+            )
         self.step_dt = float(step_dt)
         self.transition_frames = int(cfg.get("transition_frames", 2))
         if self.transition_frames < 2:
@@ -145,7 +153,9 @@ class AMP(nn.Module):
         self.reward_warmup_updates = int(cfg.get("reward_warmup_updates", 50))
         self.discriminator_updates = int(cfg.get("discriminator_updates", 4))
         self.discriminator_batch_size = int(cfg.get("discriminator_batch_size", 256))
-        self.discriminator_grad_penalty_weight = float(cfg.get("discriminator_grad_penalty_weight", 5.0))
+        self.discriminator_grad_penalty_weight = float(
+            cfg.get("discriminator_grad_penalty_weight", 5.0)
+        )
         self.max_grad_norm = cfg.get("max_grad_norm")
         self.resume_checkpoint = bool(cfg.get("resume_checkpoint", True))
         self.resume_optimizer = bool(cfg.get("resume_optimizer", False))
@@ -170,15 +180,20 @@ class AMP(nn.Module):
         self._warmup_normalization_from_offline_data()
         self.optimizer = optim.Adam(self.discriminator.parameters(), lr=self.learning_rate)
 
-        self.frame_buffer = torch.zeros(num_envs, self.transition_frames, self.amp_obs_dim, device=self.device)
+        self.frame_buffer = torch.zeros(
+            num_envs, self.transition_frames, self.amp_obs_dim, device=self.device
+        )
         self.frame_count = torch.zeros(num_envs, dtype=torch.long, device=self.device)
         self.write_idx = 0
         order = torch.arange(self.transition_frames, device=self.device)
         self.order_lut = torch.stack(
-            [torch.roll(order, shifts=-(idx + 1), dims=0) for idx in range(self.transition_frames)], dim=0
+            [torch.roll(order, shifts=-(idx + 1), dims=0) for idx in range(self.transition_frames)],
+            dim=0,
         )
         self.window_offsets = torch.arange(self.transition_frames, device=self.device).unsqueeze(0)
-        self.register_buffer("amp_update_counter", torch.zeros((), dtype=torch.long, device=self.device))
+        self.register_buffer(
+            "amp_update_counter", torch.zeros((), dtype=torch.long, device=self.device)
+        )
         self._style_sum = 0.0
         self._style_count = 0
 
@@ -198,7 +213,9 @@ class AMP(nn.Module):
         lengths = torch.as_tensor(dataset["lengths"], dtype=torch.long, device=self.device)
         dataset_obs_dim = int(sequences[0].shape[-1])
         if dataset_obs_dim != self.amp_obs_dim:
-            raise ValueError(f"AMP obs dim mismatch: env '{self.obs_group}' 是 {self.amp_obs_dim}，数据集是 {dataset_obs_dim}")
+            raise ValueError(
+                f"AMP obs dim mismatch: env '{self.obs_group}' 是 {self.amp_obs_dim}，数据集是 {dataset_obs_dim}"
+            )
         eligible_idx = torch.nonzero(lengths >= self.transition_frames, as_tuple=False).squeeze(-1)
         if eligible_idx.numel() == 0:
             raise ValueError(f"没有专家序列长到 transition_frames={self.transition_frames}")
@@ -228,7 +245,9 @@ class AMP(nn.Module):
             warmup = min(1.0, float(self.amp_update_counter.item()) / self.reward_warmup_updates)
         return self.reward_weight * self.step_dt * warmup
 
-    def process_env_step(self, obs: TensorDict, transition: RolloutStorage.Transition, extras: dict[str, Any]) -> None:
+    def process_env_step(
+        self, obs: TensorDict, transition: RolloutStorage.Transition, extras: dict[str, Any]
+    ) -> None:
         """把风格奖励加到 transition.rewards 上；done 的 env 清帧缓冲，本步不给风格奖励。"""
         rewards = transition.rewards
         dones = transition.dones
@@ -241,10 +260,16 @@ class AMP(nn.Module):
         self.frame_count[dones_bool | ~amp_mask] = 0
         write_mask = amp_mask & ~dones_bool
         self.frame_buffer[write_mask, self.write_idx] = frames[write_mask]
-        self.frame_count[write_mask] = torch.clamp(self.frame_count[write_mask] + 1, max=self.transition_frames)
+        self.frame_count[write_mask] = torch.clamp(
+            self.frame_count[write_mask] + 1, max=self.transition_frames
+        )
 
         amp_rewards = frames.new_zeros(frames.shape[0])
-        valid_idx = (write_mask & (self.frame_count >= self.transition_frames)).nonzero(as_tuple=False).flatten()
+        valid_idx = (
+            (write_mask & (self.frame_count >= self.transition_frames))
+            .nonzero(as_tuple=False)
+            .flatten()
+        )
         if valid_idx.numel() > 0:
             order = self.order_lut[self.write_idx]
             sequences = self.frame_buffer[valid_idx][:, order, :].reshape(-1, self.sequence_dim)
@@ -288,7 +313,9 @@ class AMP(nn.Module):
         for _ in range(self.discriminator_updates):
             policy = self._sample_policy_batch(rollout_frames, valid_idx, batch)
             expert = self._sample_expert_sequences(batch)
-            loss, step_metrics = self.discriminator.compute_loss(expert_sequences=expert, policy_sequences=policy)
+            loss, step_metrics = self.discriminator.compute_loss(
+                expert_sequences=expert, policy_sequences=policy
+            )
             grad_penalty = torch.tensor(0.0, device=self.device)
             if self.discriminator_grad_penalty_weight > 0.0:
                 grad_penalty = self.discriminator.gradient_penalty(expert_sequences=expert)
@@ -310,11 +337,17 @@ class AMP(nn.Module):
         pick = torch.multinomial(self.eligible_probs, batch_size, replacement=True)
         seq_ids = self.eligible_idx[pick]
         max_starts = self.lengths[seq_ids] - self.transition_frames
-        starts = torch.floor(torch.rand(batch_size, device=self.device) * (max_starts + 1).float()).long()
-        time_idx = self.sequence_offsets[seq_ids].unsqueeze(1) + starts.unsqueeze(1) + self.window_offsets
+        starts = torch.floor(
+            torch.rand(batch_size, device=self.device) * (max_starts + 1).float()
+        ).long()
+        time_idx = (
+            self.sequence_offsets[seq_ids].unsqueeze(1) + starts.unsqueeze(1) + self.window_offsets
+        )
         return self.flat_sequences[time_idx].reshape(batch_size, self.sequence_dim)
 
-    def _sample_policy_batch(self, rollout_frames: torch.Tensor, valid_idx: torch.Tensor, batch_size: int) -> torch.Tensor:
+    def _sample_policy_batch(
+        self, rollout_frames: torch.Tensor, valid_idx: torch.Tensor, batch_size: int
+    ) -> torch.Tensor:
         pick = valid_idx[torch.randint(0, valid_idx.numel(), (batch_size,), device=self.device)]
         num_envs = rollout_frames.shape[1]
         end_t = torch.div(pick, num_envs, rounding_mode="floor")
@@ -328,7 +361,10 @@ class AMP(nn.Module):
             return torch.empty(0, dtype=torch.long, device=self.device)
         step_valid = ~storage.dones[: storage.step].squeeze(-1).bool()
         if self.mask_obs_group is not None:
-            step_valid &= storage.observations[self.mask_obs_group][: storage.step].reshape(step_valid.shape) > 0.5
+            step_valid &= (
+                storage.observations[self.mask_obs_group][: storage.step].reshape(step_valid.shape)
+                > 0.5
+            )
         window_valid = step_valid.clone()
         for offset in range(1, self.transition_frames):
             shifted = torch.zeros_like(step_valid)

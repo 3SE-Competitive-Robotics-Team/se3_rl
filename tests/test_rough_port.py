@@ -23,7 +23,6 @@ from mjlab.terrains import (
 )
 
 import se3_train  # noqa: F401  # 注册任务
-from se3_train.log_filter import keep_log_key
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_CMD_VEL_DEADBAND,
@@ -316,18 +315,6 @@ class RoughTerrainTests(unittest.TestCase):
         # 高度下限、分列奖励与台阶指令指向同一列。
         self.assertEqual(ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES, ROUGH_REWARD_TERRAIN_TYPE_NAMES)
         self.assertEqual(ROUGH_STAIR_COMMAND_TERRAIN_NAMES, ROUGH_REWARD_TERRAIN_TYPE_NAMES)
-
-    def test_column_diagnostics_survive_log_filter(self) -> None:
-        for key in (
-            "Rough/height_cmd_terrain_mean",
-            "Rough/base_vx_terrain",
-            "Rough/stair_supported_steps",
-            f"{events.REWARD_SPLIT_LOG_PREFIX}tracking_lin_vel_stairs",
-            "Curriculum/terrain_levels/stairs_up",
-            "Curriculum/flat_warmup/active",
-            "Episode_Termination/terrain_edge_reached",
-        ):
-            self.assertTrue(keep_log_key(key), key)
 
 
 class RoughRuntimeTests(unittest.TestCase):

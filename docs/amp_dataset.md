@@ -2,6 +2,11 @@
 
 运动输入契约（19 维单帧、38 维相邻帧、20 ms）见 [amp_input.md](amp_input.md)，本文只讲训练侧怎么用。
 
+当前状态：保留 AMP 组件与测试，但没有注册 AMP 训练任务，默认 Rough 不启用 AMP。
+下文的观测组、地形掩码和 env_cfg 旋钮描述历史任务的接线方式，不是当前 Rough 的可用配置。
+复旦原始数据与采集、导出脚本不在本批提交范围内；文中相关路径是历史实验路径。
+本批只包含打乱时序的对照数据 `assets/amp/fudan_stairs20_shuffled/amp_training.pkl`。
+
 **判别器实际输入（2026-09-08 起，A2）**：契约帧按 `se3_train.mdp.amp_observations.AMP_DISCRIMINATOR_FIELDS` 切列，
 去掉 `left/right_wheel_spin`（专家数据的轮速是打滑/悬空读数，判别器仅凭它就能分开两边），剩 17 维；
 窗口 `transition_frames=5`（100 ms），判别器输入 5×17=85 维。env 的 `amp` 观测组与数据集 `dataset_kwargs.fields` 用同一份字段表。

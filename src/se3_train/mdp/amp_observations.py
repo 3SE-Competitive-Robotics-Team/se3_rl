@@ -31,7 +31,9 @@ AMP_HIP_BODY_SUFFIXES = ("lf0_Link", "rf0_Link")
 AMP_WHEEL_SPIN_SIGNS = (1.0, -1.0)
 # 判别器实际看的字段（2026-09-08 用户定，A2）：去掉左右轮自转——专家数据里轮速是打滑/悬空时的读数
 # （22±41 rad/s，策略 0.8±4.5），判别器仅凭它就能分开两边、风格信号无梯度；几何/速度字段两车同尺寸可直接比。
-AMP_DISCRIMINATOR_FIELDS: tuple[str, ...] = tuple(n for n in AMP_FEATURE_NAMES if not n.endswith("_spin"))
+AMP_DISCRIMINATOR_FIELDS: tuple[str, ...] = tuple(
+    n for n in AMP_FEATURE_NAMES if not n.endswith("_spin")
+)
 _IDS_ATTR = "_se3_amp_body_ids"
 _FIELD_IDX_ATTR = "_se3_amp_field_idx"
 
@@ -55,14 +57,20 @@ def _body_ids(env: ManagerBasedRlEnv, suffixes: tuple[str, ...], names: list[str
     return found
 
 
-def _amp_ids(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def _amp_ids(
+    env: ManagerBasedRlEnv,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """(轮 body ids[2], 髋 body ids[2], 轮关节 ids[2], 轮速符号[2])，按 env 缓存。"""
     cached = getattr(env, _IDS_ATTR, None)
     if cached is None:
         robot = env.scene["robot"]
         names = list(robot.body_names)
-        wheels = torch.tensor(_body_ids(env, AMP_WHEEL_BODY_SUFFIXES, names), device=env.device, dtype=torch.long)
-        hips = torch.tensor(_body_ids(env, AMP_HIP_BODY_SUFFIXES, names), device=env.device, dtype=torch.long)
+        wheels = torch.tensor(
+            _body_ids(env, AMP_WHEEL_BODY_SUFFIXES, names), device=env.device, dtype=torch.long
+        )
+        hips = torch.tensor(
+            _body_ids(env, AMP_HIP_BODY_SUFFIXES, names), device=env.device, dtype=torch.long
+        )
         joint_ids = list(wheel_joint_ids(robot))
         joint_names = [robot.joint_names[i] for i in joint_ids]
         if joint_names != ["l_wheel_Joint", "r_wheel_Joint"]:
@@ -104,7 +112,9 @@ def amp_motion_frame(
     return frame[:, idx]
 
 
-def amp_terrain_mask(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...] = ("stairs_up",)) -> torch.Tensor:
+def amp_terrain_mask(
+    env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...] = ("stairs_up",)
+) -> torch.Tensor:
     """[B, 1]：env 是否在允许 AMP 生效的子地形列上（1/0）。非课程地形（无分列）时全 1。
 
     照 kyber fork 的 enabled_group_mask：只有这些 env 拿风格奖励、进判别器的策略窗口。
@@ -113,7 +123,12 @@ def amp_terrain_mask(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]
     terrain = getattr(env.scene, "terrain", None)
     generator = getattr(getattr(terrain, "cfg", None), "terrain_generator", None)
     terrain_types = getattr(terrain, "terrain_types", None)
-    if not terrain_type_names or generator is None or terrain_types is None or not generator.curriculum:
+    if (
+        not terrain_type_names
+        or generator is None
+        or terrain_types is None
+        or not generator.curriculum
+    ):
         return torch.ones(env.num_envs, 1, device=env.device)
     names = list(generator.sub_terrains.keys())
     allowed = [names.index(n) for n in terrain_type_names if n in names]
@@ -128,10 +143,14 @@ def amp_obs_dim(fields: tuple[str, ...] = AMP_DISCRIMINATOR_FIELDS) -> int:
     return len(amp_field_indices(tuple(fields)))
 
 
-def build_amp_obs_terms(fields: tuple[str, ...] = AMP_DISCRIMINATOR_FIELDS) -> dict[str, ObservationTermCfg]:
+def build_amp_obs_terms(
+    fields: tuple[str, ...] = AMP_DISCRIMINATOR_FIELDS,
+) -> dict[str, ObservationTermCfg]:
     """AMP 观测组唯一一项：按 fields 切列的运动帧（无噪声、无缩放）；数据集侧必须传同一个 fields。"""
     amp_field_indices(tuple(fields))
-    return {"motion_frame": ObservationTermCfg(func=amp_motion_frame, params={"fields": tuple(fields)})}
+    return {
+        "motion_frame": ObservationTermCfg(func=amp_motion_frame, params={"fields": tuple(fields)})
+    }
 
 
 def build_amp_mask_terms(terrain_type_names: tuple[str, ...]) -> dict[str, ObservationTermCfg]:

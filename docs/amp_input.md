@@ -60,4 +60,5 @@ discriminator_input = normalize_amp_frame(frames, mean19, std19).flatten(-2)
 元数据明确标记 `retargeted_to_serialleg=false`、`ready_for_discriminator_training=false`。
 这些数据验证坐标和输入口径，仍需把源运动重定向到 SerialLeg 的几何与可达范围。
 
-本阶段没有添加判别器、AMP reward、经验池或 PPO 更新逻辑，也没有启用新的训练任务。
+本文描述 AMP 输入契约的初始阶段。当前仓库已保留判别器、AMP reward、数据加载与 PPO
+更新代码，详见 [amp_dataset.md](amp_dataset.md)；AMP 训练任务入口已移除，默认 Rough 不启用 AMP。

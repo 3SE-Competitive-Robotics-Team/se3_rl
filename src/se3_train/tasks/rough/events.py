@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 CURRICULUM_ENV_MASK_ATTR = "_se3_curriculum_env_mask"
 
-# 逐项奖励分列日志的键前缀；走 Rough/ 命名空间，log_filter 整段白名单。
+# 逐项奖励分列日志的键前缀，统一使用 Rough/ 命名空间。
 REWARD_SPLIT_LOG_PREFIX = "Rough/rw_"
 
 

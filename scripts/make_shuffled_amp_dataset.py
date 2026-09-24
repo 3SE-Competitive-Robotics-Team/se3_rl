@@ -52,8 +52,7 @@ def main() -> int:
     # 但留着会误导后来的人，所以按新顺序重建。
     if isinstance(data.get("transitions"), list):
         data["transitions"] = [
-            np.concatenate([s[:-1], s[1:]], axis=1) if s.shape[0] > 1 else s[:0]
-            for s in shuffled
+            np.concatenate([s[:-1], s[1:]], axis=1) if s.shape[0] > 1 else s[:0] for s in shuffled
         ]
     data["shuffled_from"] = str(args.src).replace("\\", "/")
     data["shuffle_seed"] = int(args.seed)
@@ -65,12 +64,16 @@ def main() -> int:
     dst_all = np.concatenate(shuffled, axis=0)
     print(f"写出 {args.dst}")
     print(f"  序列 {len(shuffled)} 条，帧 {dst_all.shape[0]}，维度 {dst_all.shape[1]}")
-    print(f"  逐帧分布必须不变：均值最大差 {np.abs(src_all.mean(0) - dst_all.mean(0)).max():.3e}"
-          f"，标准差最大差 {np.abs(src_all.std(0) - dst_all.std(0)).max():.3e}")
+    print(
+        f"  逐帧分布必须不变：均值最大差 {np.abs(src_all.mean(0) - dst_all.mean(0)).max():.3e}"
+        f"，标准差最大差 {np.abs(src_all.std(0) - dst_all.std(0)).max():.3e}"
+    )
     d_src = np.concatenate([np.diff(np.asarray(s), axis=0) for s in sequences], axis=0)
     d_dst = np.concatenate([np.diff(s, axis=0) for s in shuffled], axis=0)
-    print(f"  时序必须被破坏：相邻帧差分的标准差 {np.abs(d_src).std():.4f} -> {np.abs(d_dst).std():.4f}"
-          f"（放大 {np.abs(d_dst).std() / max(np.abs(d_src).std(), 1e-9):.1f} 倍）")
+    print(
+        f"  时序必须被破坏：相邻帧差分的标准差 {np.abs(d_src).std():.4f} -> {np.abs(d_dst).std():.4f}"
+        f"（放大 {np.abs(d_dst).std() / max(np.abs(d_src).std(), 1e-9):.1f} 倍）"
+    )
     return 0
 
 

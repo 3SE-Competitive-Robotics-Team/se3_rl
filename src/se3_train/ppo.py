@@ -70,7 +70,9 @@ class Se3PPO(PPO):
             amp_cfg = dict(amp_cfg)
             step_dt = amp_cfg.pop("step_dt", None)
             if step_dt is None:
-                raise ValueError("amp_cfg 缺少 step_dt；应由 Se3PPO.construct_algorithm 从 env 填入")
+                raise ValueError(
+                    "amp_cfg 缺少 step_dt；应由 Se3PPO.construct_algorithm 从 env 填入"
+                )
             self.amp = AMP(
                 num_envs=int(self.storage.observations.shape[1]),
                 step_dt=float(step_dt),
@@ -104,7 +106,9 @@ class Se3PPO(PPO):
             amp.setdefault("step_dt", float(unwrapped.step_dt))
         return PPO.construct_algorithm(obs, env, cfg, device)
 
-    def process_env_step(self, obs: Any, rewards: torch.Tensor, dones: torch.Tensor, extras: dict) -> None:
+    def process_env_step(
+        self, obs: Any, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
+    ) -> None:
         if self.amp is None:
             super().process_env_step(obs, rewards, dones, extras)
             return
