@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Literal
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -75,8 +74,7 @@ _FLAT_COMMAND_WHEEL_RADIUS = 0.06
 _FLAT_COMMAND_HALF_TRACK = 0.20
 _FLAT_COMMAND_WHEEL_SPEED_FRACTION = 0.9
 # 2026-09-03 抖动对照实验的单变量旋钮。默认值 = 实验前基线（commit 9dbfe11），
-# 只有 flat/__init__.py 里显式注册的 SE3-WheelLegged-Flat-Exp-* 任务传非默认值，
-# Flat-GRU / Flat-MLP / Flat-History-MLP 与 rough/stair/jump/flow_match 继承线契约不变。
+# 旧 Flat-Exp 注册入口已移除，保留共享配置旋钮供继承任务使用。
 # 诊断依据：日志逐项预算里 command_velocity_error 是最大单项罚（占总罚 38%）且 2k 后不再下降，
 # flat_wheel_contact 是唯一越训越差的项（轮离地率 3%→6.6%），bad_tilt soft 10° 起价太晚
 # （实测平均倾角已在 12° 附近），action delay 只有 4-6 ms 不到一个控制步，yaw 课程顶到 12 rad/s。
@@ -827,29 +825,4 @@ def env_cfg(
     )
     cfg.viewer = ViewerConfig()
 
-    return cfg
-
-
-def history_env_cfg(
-    play: bool = False,
-    *,
-    wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
-    history_length: int = FLAT_HISTORY_LENGTH,
-    action_smoothness: tuple[float, float, float] = FLAT_ACTION_SMOOTHNESS_LEGACY,
-) -> ManagerBasedRlEnvCfg:
-    """把 actor 观测换成多帧展平历史的平地环境配置；critic 与其余契约保持不变。
-
-    与 recovery_discovery 的 History-MLP 做法一致：仅改 actor 观测组的 history_length /
-    flatten_history_dim，各 term 的噪声、缩放与 critic 特权观测都不动。
-    """
-    cfg = env_cfg(
-        play=play,
-        wheel_action_scale=wheel_action_scale,
-        action_smoothness=action_smoothness,
-    )
-    cfg.observations["actor"] = replace(
-        cfg.observations["actor"],
-        history_length=int(history_length),
-        flatten_history_dim=True,
-    )
     return cfg
