@@ -9,7 +9,7 @@
 - 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
 
-交互式 sim2sim 必须使用纯 Python [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x) submodule，不以 Rust runtime 为目标。真机 adapter 暂未搭建，不得恢复已删除的旧 NX runtime。
+交互式 sim2sim 必须使用纯 Python [`se3-sim2x`](https://github.com/3SE-Competitive-Robotics-Team/se3-sim2x) submodule，不以 Rust runtime 为目标。真机 adapter 是 `se3_runtime_nx`（USB CDC 接 serialleg2026 下位机），不得恢复已删除的旧 NX runtime。
 
 ## 术语表 (Glossary)
 

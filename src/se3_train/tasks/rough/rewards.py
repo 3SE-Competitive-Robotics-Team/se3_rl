@@ -360,12 +360,12 @@ def tracking_lin_vel_terrain_vz(
 __all__ = [
     "base_height_penalty_off_terrain",
     "base_height_penalty_support_on_terrain",
-    "wheel_fore_aft_offset",
-    "wheel_height_diff",
     "column_scaled",
     "command_velocity_error_on_terrain",
     "off_column",
     "tracking_ang_vel_off_terrain",
     "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
+    "wheel_fore_aft_offset",
+    "wheel_height_diff",
 ]

@@ -26,6 +26,9 @@ M15：全程叠加窄核速度跟踪（w=1、σ=0.04）；M17：窄核权重 1 �
 M18：左右轮前后错位罚 w·Δx²，台阶列置零；M19：改成只罚平地列 + 10 cm 死区（见 ROUGH_WHEEL_OFFSET_WEIGHT 注释）。
 M20：窄核速度跟踪在上台阶列置零；M22：台阶列恢复到 w=1（见 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT 注释）。
 M23：上台阶列新增左右轮高度差罚，堵死走梯（见 ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT 注释）。
+M24：新增二级台阶上行/下行两列（复旦那道凸棱），上行列按 stairs_up 待遇、下行列按平地待遇；
+八处台阶开关统一引用 terrains.ROUGH_STAIR_LIKE_COLUMNS；两列由 curriculums.two_step_gate 门控，
+stairs_up 均级到 5 才开放（见 ROUGH_TWO_STEP_GATE_LEVEL）。
 M21：上台阶列机身高度罚的地面参考改为轮子支撑面（见 ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS 注释）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
@@ -81,7 +84,14 @@ from .commands import (
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
     RoughCommandCfg,
 )
-from .terrains import ROUGH_TERRAIN_PROPORTIONS, rough_terrains_cfg
+from .terrains import (
+    ROUGH_STAIR_LIKE_COLUMNS,
+    ROUGH_TERRAIN_PROPORTIONS,
+    ROUGH_TWO_STEP_DOWN_COLUMN,
+    ROUGH_TWO_STEP_GATE_LEVEL,
+    ROUGH_TWO_STEP_UP_COLUMN,
+    rough_terrains_cfg,
+)
 
 # mjlab 资产库约定：碰撞 geom group 3、视觉 geom group 2、射线传感器只看 group 0（地形）。
 ROUGH_ROBOT_COLLISION_GEOM_GROUP = 3
@@ -113,7 +123,7 @@ ROUGH_FLAT_WARMUP_RAMP_ITERATIONS = 500
 ROUGH_TERRAIN_EDGE_THRESHOLD_FRACTION = 1.0
 
 # 分列定价生效的列、平地速度课程读的列。
-ROUGH_REWARD_TERRAIN_TYPE_NAMES = ("stairs_up",)
+ROUGH_REWARD_TERRAIN_TYPE_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES = ("flat",)
 ROUGH_CURRICULUM_TRACKING_LOG_KEY = "Locomotion/tracking_lin_vel_reward_curriculum"
 ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES = ("flat",)
@@ -166,7 +176,7 @@ ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT = 3.0
 # 轮子动作指令只有一半、前倾深 4–8°），M18/M20 都没有这个退化。
 # 取 1 不取 3：M15（w=1 全列）是唯一同时具备目标流形与高速的模型，M17 的 w=3 才把策略推向走梯/起跳。
 # 分列权重靠 rewards.column_scaled 实现（RewardTermCfg 只有一个 weight）。
-ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS: tuple[str, ...] = ("stairs_up",)
+ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT = 1.0
 # M18（2026-09-21 用户定）：左右轮前后错位罚。M17-7999 评测（docs/plan/m17_narrow_w3_20260920.md 附录）：
 # 前进时左右轮心在机身系里错开 +20…+29 cm（跨立步态，轮心距 0.433 → 0.49–0.52 m），38 cm 静站 −26 cm，
@@ -193,7 +203,7 @@ ROUGH_WHEEL_OFFSET_COLUMNS: tuple[str, ...] = ("flat",)
 # 18 cm 0.40/s、22 cm 0.78/s，与台阶列窄核收益（0.125/s）同量级，够抵消"错开省速度"的好处。
 ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT = 40.0
 ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M = 0.08
-ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS: tuple[str, ...] = ("stairs_up",)
+ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_TRACKING_LIN_VEL_NARROW_SIGMA = 0.04
 ROUGH_FLAT_VZ_WEIGHT = 0.0
 # 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
@@ -208,7 +218,11 @@ ROUGH_TERRAIN_VZ_WEIGHT = 0.0
 ROUGH_STAIRS_ZEROED_REWARDS = ("is_alive", "flat_wheel_contact", "collision")
 # 三项接触税在哪些列置零（2026-09-15）：上下台阶都会抬轮跨立面、机身也会蹭到台阶，
 # 坡面不给——坡上轮子本来就该一直着地，置零等于放掉唯一的接触约束。
-ROUGH_CONTACT_TAX_FREE_COLUMNS = ("stairs_up", "stairs_down")
+ROUGH_CONTACT_TAX_FREE_COLUMNS = (
+    *ROUGH_STAIR_LIKE_COLUMNS,
+    "stairs_down",
+    ROUGH_TWO_STEP_DOWN_COLUMN,
+)
 
 # catastrophic_state 的机身高度下限（2026-09-15 修 M9 的 bug）。Flat 基线取 −0.5 m，判据是
 # 世界 z 减 env 原点，本意是"掉出地图或物理发散"。但下行地形的出生点在**顶部平台**
@@ -236,7 +250,7 @@ ROUGH_FALL_PENALTY = 10.0
 # 它把用户要的"机身先过沿、轮子随后收腿提上来"的过渡期按最高费率罚，过渡越慢罚越多，奖励天然偏向缩短过渡的
 # 起跳（M18）/走梯（M17）。支撑面口径：轮子还在下一阶时参考不跳，机身前倾压紧时误差只是几厘米，轮子过沿时机身已随之升起。
 # 平地上两种口径逐位相同；其余四列仍用原口径。σ、夹紧、权重 −4 不变，不加死区（单变量）。
-ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS: tuple[str, ...] = ("stairs_up",)
+ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_BASE_HEIGHT_SUPPORT_SENSOR = "stair_reward_height"
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
@@ -408,6 +422,19 @@ def env_cfg(
                 "iterations": ROUGH_FLAT_WARMUP_ITERATIONS,
                 "ramp_iterations": ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
                 "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+            },
+        )
+        # M24：二级台阶要等 stairs_up 均级到 5 才开放；必须排在 flat_warmup 之后（见 two_step_gate 文档）。
+        cfg.curriculum["two_step_gate"] = CurriculumTermCfg(
+            func=curriculums.two_step_gate,
+            params={
+                "command_name": "velocity_height",
+                "gate_terrain_name": "stairs_up",
+                "gate_level": ROUGH_TWO_STEP_GATE_LEVEL,
+                "gated_columns": (
+                    (ROUGH_TWO_STEP_UP_COLUMN, "stairs_up"),
+                    (ROUGH_TWO_STEP_DOWN_COLUMN, "flat"),
+                ),
             },
         )
 

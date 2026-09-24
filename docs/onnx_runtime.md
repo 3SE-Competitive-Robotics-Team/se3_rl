@@ -12,7 +12,7 @@
 → PolicyBundle 从 ONNX graph 推断 MLP/GRU 与 I/O shape
 → v2 descriptor 归一化为 SerialLeg runtime contract
 → PolicyRuntime + PolicyControlLoop
-→ MuJoCo/Viser adapter（真机 adapter 暂缓）
+→ MuJoCo/Viser adapter 或 NX 真机 adapter
 ```
 
 ## v2 descriptor
