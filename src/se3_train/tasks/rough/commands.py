@@ -24,6 +24,7 @@ from se3_train.mdp.height_default_cache import update_policy_default_from_height
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
 from .columns import column_mask, non_flat_column_mask
+from .terrains import ROUGH_STAIR_LIKE_COLUMNS, ROUGH_TWO_STEP_DOWN_COLUMN
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -34,15 +35,23 @@ if TYPE_CHECKING:
 ROUGH_TERRAIN_HEIGHT_CLEARANCE = 0.02
 ROUGH_BODY_COLLISION_BOTTOM_OFFSET = -0.12
 # 只在上台阶列抬高：下行列的台阶在身后，抬高只是白白升高重心。名字必须是 terrains.rough_terrains_cfg()
-# 里带 step_height_range 的子地形名，对不上时下限静默失效（由测试钉住）。
-ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ("stairs_up",)
+# 里带 step_height_range 的子地形名，对不上时下限静默失效（由测试钉住）。二级台阶列（M24）用它的**第一级**
+# 高度（0.05–0.20）作为下限依据——两级里更高的那一级才安全。
+ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 
 # 哪些列按"平地方式"发指令：速度跟平地课程（最终 ±2.4）、yaw 用平地范围、参与静站与高姿起步转移采样。
 # 2026-09-15 用户定：下台阶与上下坡都按平地发——下台阶需要偏航跟踪，新列速度要 ±2.4 而不是只前向 0.4–0.8。
-# 只有 stairs_up 留在"非平地覆盖"那一路（再被下面的台阶覆盖压一层，最终是 0.4–2.4 前向、yaw ±0.3）。
+# 只有上台阶类列留在"非平地覆盖"那一路（再被下面的台阶覆盖压一层，最终是 0.4–2.4 前向、yaw ±0.3）。
+# M24（用户定）：二级台阶的**下行**列按平地待遇（指令与 flat 同），只有上行列算台阶。
 # 副作用：新列也会被 _sample_high_stand_transition 采到（它只在这份名单的列上采样），
 # 即坡上与下台阶也会练高姿起步，这是想要的；若发现下台阶因此摔得多，先把 stairs_down 移出这份名单。
-ROUGH_TERRAIN_COMMAND_FLAT_NAMES = ("flat", "stairs_down", "slope_up", "slope_down")
+ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
+    "flat",
+    "stairs_down",
+    ROUGH_TWO_STEP_DOWN_COLUMN,
+    "slope_up",
+    "slope_down",
+)
 # A7 留下的"非平地列前向指令"，2026-09-15 起已无列使用（stairs_up 被台阶覆盖压在上面），
 # 保留是为了以后再加"需要限速的列"时有现成档位：vx 0.4–0.8 与平地课程脱钩、yaw ±0.2。
 ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 0.8)
@@ -51,7 +60,7 @@ ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
 # 上台阶列独立采样前进速度 0.4–2.4 m/s、偏航角速度 −0.3–0.3 rad/s。
 # 高度 0.20–0.38 与 Flat 同区间——A13 由 sim2x 定位到 0.35–0.38 会让每个 episode 都从
 # "高站姿 + 够不着的高速指令"开局而训出静止策略，矮站姿开局必须保留；第 9 行由地形感知下限自动收窄到 0.34–0.38。
-ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ("stairs_up",)
+ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_STAIR_LIN_VEL_X_RANGE = (0.4, 2.4)
 ROUGH_STAIR_ANG_VEL_YAW_RANGE = (-0.3, 0.3)
 ROUGH_STAIR_HEIGHT_RANGE = (0.20, 0.38)

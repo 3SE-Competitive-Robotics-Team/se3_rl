@@ -49,6 +49,15 @@ def _geometry(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]):
         if name not in terrain_type_names:
             continue
         selected = terrain.terrain_types == index
+        # 子地形可以自报等效几何（TwoStepStairsTerrainCfg 这种两级不等高的，默认公式算不对）。
+        custom = getattr(cfg, "se3_stair_geometry", None)
+        if callable(custom):
+            step_h, step_start, step_len, step_count = custom(alpha[selected])
+            height[selected] = step_h
+            start[selected] = step_start
+            length[selected] = step_len
+            count[selected] = step_count
+            continue
         n = max(
             0,
             int((min(cfg.size) - 2 * cfg.border_width - cfg.platform_width) / (2 * cfg.step_width)),
