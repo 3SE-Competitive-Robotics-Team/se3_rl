@@ -1,6 +1,7 @@
 """终版 checkpoint 的原生 MuJoCo 分姿态验收（sim2x runtime，2026-07-18 协议镜像）。
 
-镜像 evaluate_recovery_discovery_fixed_poses.py 的口径：
+沿用训练端固定姿态评测的口径（原 evaluate_recovery_discovery_fixed_poses.py，
+已随 Recovery-Discovery 任务删除）：
 - 五姿态（standing/left_side/right_side/prone/supine），stage-0 抖动（roll/pitch ±5 度、
   全角 yaw、clearance 1-5 mm、height offset 0-20 mm、零初速、关节标称）。
 - 成功判据：tilt < 15 度 且 |height-0.26| < 0.02，连续保持 0.5 s；episode 5 s。

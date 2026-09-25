@@ -24,15 +24,6 @@ def ensure_bool_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
     return values
 
 
-def ensure_float_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
-    """创建或读取 float 缓存。"""
-    values = getattr(env, name, None)
-    if not isinstance(values, torch.Tensor) or values.shape[0] != env.num_envs:
-        values = torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
-        setattr(env, name, values)
-    return values
-
-
 def ensure_long_buffer(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
     """创建或读取 long 缓存。"""
     values = getattr(env, name, None)

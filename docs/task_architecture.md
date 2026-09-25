@@ -10,7 +10,6 @@
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-GRU` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认定价取 A15，见 `docs/plan/stair_training_wandb_review_20260913.md` 与 `rough_official_base_survey_20260913.md`。`-GRU` 入口（M16，2026-09-20）与 MLP 共用同一份 env_cfg，只把 actor/critic 换成单层 GRU 512、rollout 仍 24 步（`rough/rl_cfg.py`）。历史实验用对应 Git commit 复现。 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
-| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-MLP` / `SE3-WheelLegged-Recovery-Discovery-Ungrouped-MLP` | 唯一倒地自启任务；五个入口共享奖励、课程和 PPO 配置，Recovery-Loco-Grouped-MLP 使用 loco/recover 分组与五帧历史观测 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
@@ -25,8 +24,9 @@ Flat 基线已合并 D2–D8 的已验证改动。2026-09-13 清理后，GRU、H
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
-`tasks/recovery/` 仅保留 Recovery-Discovery 使用的环境基配置、奖励、事件和课程实现，
-不注册独立 task；所有倒地自启训练必须从 `recovery_discovery/` 的三个正式入口启动。
+倒地自启的 Recovery-Discovery 任务族（含 `tasks/recovery/` 共享实现）已于 2026-09-25 删除；
+复现历史实验请使用对应 Git commit。stair 的 recovery rehearsal 仍复用 `mdp/` 下的 recovery
+复位、奖励与状态掩码。
 
 ## 台阶任务
 
@@ -140,7 +140,6 @@ from se3_train.tasks import (
     flat,
     jump_finetune,
     jump_pretrain,
-    recovery_discovery,
     rough,
     stair,
 )
@@ -148,7 +147,6 @@ from se3_train.tasks import (
 for module in (
     rough,
     flat,
-    recovery_discovery,
     stair,
     jump_pretrain,
     jump_finetune,

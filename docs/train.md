@@ -89,12 +89,12 @@ MJLab 多卡训练使用 `--gpu-ids all`。多卡时 `--env.scene.num-envs` 是�
 
 ```bash
 # 多卡：每张卡的环境数由 machine profile 给出
-uv run se3-train SE3-WheelLegged-Recovery-Discovery-GRU \
+uv run se3-train SE3-WheelLegged-Rough \
   --gpu-ids all \
   --env.scene.num-envs <envs-per-gpu>
 ```
 
-Recovery-Discovery 的默认训练长度为 `5000` 轮，确保能够覆盖延伸到第 `4200` 轮的状态缓存、速度指令和 push disturbance（推搡扰动）课程。需要短训时显式传 `--agent.max-iterations`，不要把短训轮数写回正式默认配置。
+需要短训时显式传 `--agent.max-iterations`，不要把短训轮数写回正式默认配置。
 
 若 profile 要求 CUDA Forward Compatibility，按该 profile 的路径和验证条件执行，
 不要把某台机器的 driver、compat 目录或 `LD_LIBRARY_PATH` 写入本公用文档。
