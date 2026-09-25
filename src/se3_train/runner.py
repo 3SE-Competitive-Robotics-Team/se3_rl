@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 
@@ -47,6 +48,39 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def validate_iteration_schedules(env_cfg: object, num_steps_per_env: int) -> None:
+    """按 PPO 轮次推进的课程/事件必须用 runner 实际的 rollout 长度换算轮次。
+
+    这类项把 `common_step_counter // steps_per_policy_iter` 当作轮次，参数与 `num_steps_per_env`
+    不一致时课程时钟会被悄悄拉伸或压缩：推力课程曾漏传该参数、落到默认 64，而 Flat/Rough 的
+    rollout 是 24，首档推力推迟到 2.67 倍轮次才出现。命令行覆盖 rollout 长度时同样会错位，所以启动时直接报错。
+    """
+    mismatches: list[str] = []
+    for group in ("curriculum", "events"):
+        for name, term in (getattr(env_cfg, group, None) or {}).items():
+            func = getattr(term, "func", None)
+            if not callable(func) or inspect.isclass(func):
+                continue
+            parameters = inspect.signature(func).parameters
+            if "steps_per_policy_iter" not in parameters:
+                continue
+            params = dict(term.params or {})
+            if "use_iterations" in parameters and not params.get(
+                "use_iterations", parameters["use_iterations"].default
+            ):
+                continue
+            steps = int(
+                params.get("steps_per_policy_iter", parameters["steps_per_policy_iter"].default)
+            )
+            if steps != int(num_steps_per_env):
+                mismatches.append(f"{group}.{name}: steps_per_policy_iter={steps}")
+    if mismatches:
+        raise ValueError(
+            f"按轮次推进的课程/事件与 runner num_steps_per_env={num_steps_per_env} 不一致："
+            + "；".join(mismatches)
+        )
+
+
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
     """带 SE3 运行时画像的 MJLab on-policy runner。"""
 
@@ -58,6 +92,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
     def __init__(self, *args, **kwargs) -> None:
         """初始化 runner，并采集一次训练运行时资源快照。"""
         super().__init__(*args, **kwargs)
+        validate_iteration_schedules(self.env.cfg, int(self.cfg["num_steps_per_env"]))
         self._se3_runtime_info = detect_training_runtime()
         self._se3_runtime_info_logged = False
         self._se3_async_host_logger_enabled = async_host_logger_enabled()

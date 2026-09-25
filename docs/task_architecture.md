@@ -20,6 +20,12 @@
 有信息量的窗口在 3500 轮以内），`randomize_com` 由 ±20 mm 收到 ±5 mm。全部数值由
 `tests/test_flat_baseline.py` 逐项守护，改基线必须同步改该测试并在提交信息里写明对照实验编号。
 
+**2026-09-25 修正推力课程的轮次换算**：推力课程按 PPO 轮次分档，但一直没传 `steps_per_policy_iter`，
+落到默认 64；rollout 改成 24 之后课程时钟慢了 2.67 倍，首档（2000 轮、±0.3 m/s）实际要到 5333 轮才出现，
+所以 D11 冻结的 Flat 基线与之后的 Rough 5000 轮训练都**从未推过**。修正后 Flat 在第 2000 轮开始推、Rough 在第 5000 轮升到
+±0.5 m/s。复现修正前的 D11 用 commit `236666c`。runner 启动时会校验所有按轮次推进的课程/事件与
+`num_steps_per_env` 一致，不一致直接报错。
+
 Flat 基线已合并 D2–D8 的已验证改动。2026-09-13 清理后，GRU、History-MLP 和全部 Flat-Exp 注册入口已删除；复现历史实验请使用对应 Git commit。
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。

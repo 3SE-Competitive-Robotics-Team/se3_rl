@@ -28,6 +28,7 @@ from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 
 from . import commands, curriculums, events, observations, rewards, terminations
+from .rl_cfg import FLAT_NUM_STEPS_PER_ENV
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _OBS_DEFAULTS = ObservationConfig()
@@ -655,6 +656,10 @@ def env_cfg(
                 func=curriculums.push_disturbance,
                 params={
                     "use_iterations": True,
+                    # 阶段阈值按 PPO 轮次计，必须用本任务 rollout 长度换算。此前漏传、落到函数默认的 64，
+                    # D11 把 rollout 改成 24 之后课程时钟慢了 2.67 倍：2000 轮的首档推力实际要到 5333 轮，
+                    # 3500 轮的 Flat 与 5000 轮的 Rough 从未推过（2026-09-25 修正）。
+                    "steps_per_policy_iter": FLAT_NUM_STEPS_PER_ENV,
                     "push_stages": [
                         {
                             "step": 0,
