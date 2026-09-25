@@ -9,6 +9,7 @@
 | 目录 | task id | 用途 |
 | --- | --- | --- |
 | `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-GRU` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认定价取 A15，见 `docs/plan/stair_training_wandb_review_20260913.md` 与 `rough_official_base_survey_20260913.md`。`-GRU` 入口（M16，2026-09-20）与 MLP 共用同一份 env_cfg，只把 actor/critic 换成单层 GRU 512、rollout 仍 24 步（`rough/rl_cfg.py`）。历史实验用对应 Git commit 复现。 |
+| `rough/`（临时） | `SE3-WheelLegged-Rough-Exp-StairSpeedCap` / `SE3-WheelLegged-Rough-Exp-HeightWindow` | M26/M27 与 M25 并发对照，各只翻一个开关（见 `docs/plan/m25_m27_pushfix_speedcap_heightwindow_20260925.md`）；对照结束后删除 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
