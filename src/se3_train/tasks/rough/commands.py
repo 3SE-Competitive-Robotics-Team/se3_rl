@@ -14,6 +14,7 @@ body_collision_bottom_offset`，把高度指令采样区间的下界顶到该值
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -65,6 +66,22 @@ ROUGH_STAIR_LIN_VEL_X_RANGE = (0.4, 2.4)
 ROUGH_STAIR_ANG_VEL_YAW_RANGE = (-0.3, 0.3)
 ROUGH_STAIR_HEIGHT_RANGE = (0.20, 0.38)
 
+# 台阶列逐 env 速度上限（2026-09-25 用户定做对照，参考 yly-true/fudan_rl_wheel_leg 的逐 env 指令课程）。
+# 每个 env 记一个 vx 上限，台阶列按 [ROUGH_STAIR_LIN_VEL_X_RANGE[0], 上限] 采样；每个 episode 结束时按
+# 速度达成率 r = Σmax(vx, 0) / Σ指令 vx 调整：r < 0.4 降 0.25、r ≥ 0.7 升 0.1，夹在 [1.0, 2.4]。
+# 0.4 / 0.7 沿用复旦的降级线（跟踪分 < 40%）与指令扩张线（> 70%），降幅 0.25 与下限 1.0 同复旦。
+# 复旦只在"第 0 级失败 / 最高级通关"时调速度；我们的官方升降级只看 20 s 内是否走到地块边缘
+# （平均 0.225 m/s 就够），管不到速度跟踪，所以改成每个 episode 按达成率连续调。
+# 初值取区间上界，开局分布与关闭时相同。默认关，实验时单独翻这个开关。
+ROUGH_STAIR_SPEED_CAP_ENABLED = False
+ROUGH_STAIR_SPEED_CAP_MIN = 1.0
+ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW = 0.4
+ROUGH_STAIR_SPEED_CAP_GROW_ABOVE = 0.7
+ROUGH_STAIR_SPEED_CAP_SHRINK_STEP = 0.25
+ROUGH_STAIR_SPEED_CAP_GROW_STEP = 0.1
+# episode 内在台阶列上不足这么久（如刚迁进来就摔）不调，样本太短的达成率只是噪声。
+ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S = 1.0
+
 
 @dataclass
 class RoughCommandCfg(JumpCommandCfg):
@@ -96,6 +113,15 @@ class RoughCommandCfg(JumpCommandCfg):
     stair_ang_vel_yaw_range: tuple[float, float] = ROUGH_STAIR_ANG_VEL_YAW_RANGE
     stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE
     """台阶列的机身高度指令范围(m)，采样下界再与地形感知下限取较大者。"""
+
+    stair_speed_cap_enabled: bool = ROUGH_STAIR_SPEED_CAP_ENABLED
+    """台阶列是否按 env 自适应 vx 上限；打开时还要注册课程项 `curriculums.stair_speed_cap`。"""
+    stair_speed_cap_min: float = ROUGH_STAIR_SPEED_CAP_MIN
+    stair_speed_cap_shrink_below: float = ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW
+    stair_speed_cap_grow_above: float = ROUGH_STAIR_SPEED_CAP_GROW_ABOVE
+    stair_speed_cap_shrink_step: float = ROUGH_STAIR_SPEED_CAP_SHRINK_STEP
+    stair_speed_cap_grow_step: float = ROUGH_STAIR_SPEED_CAP_GROW_STEP
+    stair_speed_cap_min_episode_s: float = ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S
 
     high_stand_transition_prob: float = 0.0
     """平地每次重采样时生成"高姿态静站→前进"序列的概率；0 关闭。
@@ -131,6 +157,18 @@ class RoughCommandTerm(JumpCommandTerm):
         self._high_stand_target_vx = torch.zeros(
             self.num_envs, device=self.device, dtype=self._command.dtype
         )
+        # 台阶列逐 env vx 上限与本 episode 的速度累计（stair_speed_cap_enabled 时才用）。
+        self._stair_speed_cap = torch.full(
+            (self.num_envs,),
+            float(cfg.stair_lin_vel_x_range[1]),
+            device=self.device,
+            dtype=self._command.dtype,
+        )
+        self._stair_vx_sum = torch.zeros(
+            self.num_envs, device=self.device, dtype=self._command.dtype
+        )
+        self._stair_cmd_sum = torch.zeros_like(self._stair_vx_sum)
+        self._stair_steps = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         if cfg.terrain_command_override_enabled:
             self.refresh_terrain_override()
 
@@ -171,10 +209,73 @@ class RoughCommandTerm(JumpCommandTerm):
                 lin_vel_x_range=tuple(self.cfg.stair_lin_vel_x_range),
                 ang_vel_yaw_range=tuple(self.cfg.stair_ang_vel_yaw_range),
             )
+            if self.cfg.stair_speed_cap_enabled:
+                assert self._lin_vel_x_range_override is not None
+                low = float(self.cfg.stair_lin_vel_x_range[0])
+                self._lin_vel_x_range_override[ids, 1] = torch.clamp(
+                    self._stair_speed_cap[ids], min=low
+                )
+
+    def update_stair_speed_caps(self, env_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+        """按刚结束 episode 的台阶速度达成率调整这些 env 的 vx 上限，写回采样范围并清空累计。
+
+        由课程项 `curriculums.stair_speed_cap` 在 reset 时调用：此时下一 episode 的指令还没采样
+        （reset 事件里的预采样也在课程之后），新上限当场生效。只调 episode 内在台阶列上待够
+        `stair_speed_cap_min_episode_s` 的 env；全程用掩码不做布尔索引，避免每步 reset 引入主机同步。
+        """
+        cfg = self.cfg
+        cap_max = float(cfg.stair_lin_vel_x_range[1])
+        cap_min = min(float(cfg.stair_speed_cap_min), cap_max)
+        min_steps = max(1, math.ceil(float(cfg.stair_speed_cap_min_episode_s) / self._env.step_dt))
+
+        ids = env_ids.to(device=self.device, dtype=torch.long).reshape(-1)
+        counted = self._stair_steps[ids] >= min_steps
+        ratio = self._stair_vx_sum[ids] / self._stair_cmd_sum[ids].clamp(min=1e-6)
+        shrink = counted & (ratio < float(cfg.stair_speed_cap_shrink_below))
+        grow = counted & (ratio >= float(cfg.stair_speed_cap_grow_above))
+        cap = self._stair_speed_cap[ids]
+        cap = torch.where(
+            shrink, torch.clamp(cap - float(cfg.stair_speed_cap_shrink_step), min=cap_min), cap
+        )
+        cap = torch.where(
+            grow, torch.clamp(cap + float(cfg.stair_speed_cap_grow_step), max=cap_max), cap
+        )
+        self._stair_speed_cap[ids] = cap
+        self._stair_vx_sum[ids] = 0.0
+        self._stair_cmd_sum[ids] = 0.0
+        self._stair_steps[ids] = 0
+
+        zero = torch.zeros((), device=self.device)
+        if self._stair_mask is None or self._lin_vel_x_range_override is None:
+            return {"cap_mean": zero, "ratio_mean": zero}
+        on_stairs = self._stair_mask[ids]
+        low = float(cfg.stair_lin_vel_x_range[0])
+        self._lin_vel_x_range_override[ids, 1] = torch.where(
+            on_stairs, torch.clamp(cap, min=low), self._lin_vel_x_range_override[ids, 1]
+        )
+
+        stairs = self._stair_mask.float()
+        n_stairs = stairs.sum().clamp(min=1.0)
+        n_counted = counted.float().sum().clamp(min=1.0)
+        return {
+            "cap_mean": (self._stair_speed_cap * stairs).sum() / n_stairs,
+            "cap_at_min": ((self._stair_speed_cap <= cap_min + 1e-6).float() * stairs).sum()
+            / n_stairs,
+            "ratio_mean": (ratio.clamp(max=2.0) * counted.float()).sum() / n_counted,
+            "shrink_rate": shrink.float().sum() / n_counted,
+            "grow_rate": grow.float().sum() / n_counted,
+        }
 
     def _update_command(self) -> None:
         super()._update_command()
         self._update_high_stand_transition()
+        if self.cfg.stair_speed_cap_enabled and self._stair_mask is not None:
+            # 台阶列逐步累计实速与指令，episode 结束时由 update_stair_speed_caps 结算。
+            on_stairs = self._stair_mask
+            base_vx = self._env.scene["robot"].data.root_link_lin_vel_b[:, 0]
+            self._stair_vx_sum += torch.clamp(base_vx, min=0.0) * on_stairs
+            self._stair_cmd_sum += self._command[:, 0] * on_stairs
+            self._stair_steps += on_stairs.long()
         # 地形感知下限只在重采样时抬高采样下界，没有逐步状态；记一笔均值，否则 W&B 上看不出它有没有顶起来。
         if self._terrain_override_mask is None:
             return
@@ -304,6 +405,13 @@ __all__ = [
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
+    "ROUGH_STAIR_SPEED_CAP_ENABLED",
+    "ROUGH_STAIR_SPEED_CAP_GROW_ABOVE",
+    "ROUGH_STAIR_SPEED_CAP_GROW_STEP",
+    "ROUGH_STAIR_SPEED_CAP_MIN",
+    "ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S",
+    "ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW",
+    "ROUGH_STAIR_SPEED_CAP_SHRINK_STEP",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
     "ROUGH_TERRAIN_COMMAND_FLAT_NAMES",
     "ROUGH_TERRAIN_HEIGHT_CLEARANCE",

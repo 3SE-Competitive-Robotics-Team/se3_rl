@@ -77,6 +77,7 @@ from .commands import (
     ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
+    ROUGH_STAIR_SPEED_CAP_ENABLED,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
@@ -252,6 +253,11 @@ ROUGH_FALL_PENALTY = 10.0
 # 平地上两种口径逐位相同；其余四列仍用原口径。σ、夹紧、权重 −4 不变，不加死区（单变量）。
 ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_BASE_HEIGHT_SUPPORT_SENSOR = "stair_reward_height"
+# 上台阶列高度罚的地面参考口径（2026-09-25 用户定做对照）：
+#   "support" = M21 两轮支撑面 + 夹 ±0.15 m 的二次罚（现行默认）；
+#   "window"  = 复旦口径：机身周围 77 点窗口均值（复用 critic 高度扫描）+ 有界罚 1 − exp(−e²/σ²)，
+#               见 rewards.base_height_penalty_window_on_terrain。σ、权重 −4、生效列与 support 相同。
+ROUGH_STAIR_HEIGHT_REFERENCE = "support"
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
 # 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
@@ -285,11 +291,18 @@ def env_cfg(
     play: bool = False,
     *,
     terrain_generator: TerrainGeneratorCfg | None = None,
+    stair_speed_cap: bool = ROUGH_STAIR_SPEED_CAP_ENABLED,
+    stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
+    stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
     """
+    if stair_height_reference not in ("support", "window"):
+        raise ValueError(
+            f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
+        )
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -366,6 +379,8 @@ def env_cfg(
         terrain_step_height_type_names=ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
         terrain_command_flat_names=ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
         high_stand_transition_prob=ROUGH_HIGH_STAND_TRANSITION_PROB,
+        # 上限只由训练期课程项结算；play 时没有课程，打开只会空累计。
+        stair_speed_cap_enabled=bool(stair_speed_cap) and not play,
     )
 
     cfg.events = dict(cfg.events)
@@ -384,7 +399,7 @@ def env_cfg(
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
     )
 
-    _apply_rough_rewards(cfg)
+    _apply_rough_rewards(cfg, stair_height_reference=stair_height_reference)
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -437,11 +452,19 @@ def env_cfg(
                 ),
             },
         )
+        # 台阶列逐 env 速度上限；必须排在 flat_warmup / two_step_gate 之后（它们会给 env 换列）。
+        if stair_speed_cap:
+            cfg.curriculum["stair_speed_cap"] = CurriculumTermCfg(
+                func=curriculums.stair_speed_cap,
+                params={"command_name": "velocity_height"},
+            )
 
     return cfg
 
 
-def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_rough_rewards(
+    cfg: ManagerBasedRlEnvCfg, *, stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE
+) -> None:
     """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
     cfg.rewards = dict(cfg.rewards)
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
@@ -468,17 +491,20 @@ def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         },
     )
     # M21：上台阶列高度参考改为轮子支撑面，其余列与 Flat 原函数逐位相同（σ 取 A15 的 0.10）。
+    # "window" 口径换成机身周围 77 点窗口均值 + 有界罚，其余参数不变（见 ROUGH_STAIR_HEIGHT_REFERENCE）。
     height = cfg.rewards["flat_base_height"]
-    cfg.rewards["flat_base_height"] = replace(
-        height,
-        func=rewards.base_height_penalty_support_on_terrain,
-        params={
-            **height.params,
-            "sigma": ROUGH_BASE_HEIGHT_SIGMA,
-            "support_sensor_name": ROUGH_BASE_HEIGHT_SUPPORT_SENSOR,
-            "terrain_type_names": ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS,
-        },
-    )
+    height_params = {
+        **height.params,
+        "sigma": ROUGH_BASE_HEIGHT_SIGMA,
+        "support_sensor_name": ROUGH_BASE_HEIGHT_SUPPORT_SENSOR,
+        "terrain_type_names": ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS,
+    }
+    if stair_height_reference == "window":
+        height_func = rewards.base_height_penalty_window_on_terrain
+        height_params["window_sensor_name"] = ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME
+    else:
+        height_func = rewards.base_height_penalty_support_on_terrain
+    cfg.rewards["flat_base_height"] = replace(height, func=height_func, params=height_params)
     ang = cfg.rewards["tracking_ang_vel"]
     cfg.rewards["tracking_ang_vel"] = replace(
         ang,
@@ -583,7 +609,9 @@ __all__ = [
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",
+    "ROUGH_STAIR_HEIGHT_REFERENCE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
+    "ROUGH_STAIR_SPEED_CAP_ENABLED",
     "ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT",
     "ROUGH_STAIR_TRACKING_SIGMA_MOVE",
     "ROUGH_STEPS_PER_POLICY_ITER",

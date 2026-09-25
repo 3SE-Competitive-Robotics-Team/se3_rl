@@ -8,6 +8,7 @@ rough = 冻结的 Flat 基线 + 一层薄覆盖：地形/升降级课程/截断/
 from __future__ import annotations
 
 import collections
+import math
 import unittest
 
 import torch
@@ -1336,6 +1337,127 @@ class FlatWarmupRuntimeTests(unittest.TestCase):
             )
         )
         self.assertTrue(bool(getattr(self.env, curriculums.FLAT_WARMUP_DONE_ATTR).all()))
+
+
+class StairSpeedCapRuntimeTests(unittest.TestCase):
+    """台阶列逐 env 速度上限：按 episode 速度达成率升降、夹在区间内，并写进台阶列的采样上界。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(stair_speed_cap=True)
+        cfg.curriculum.pop("flat_warmup")  # 热身会把所有 env 压到平地列，台阶列就没有 env
+        cfg.scene.num_envs = 14
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+        cls.term = cls.env.command_manager.get_term("velocity_height")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def test_registered_only_when_enabled(self) -> None:
+        self.assertNotIn("stair_speed_cap", rough_env_cfg().curriculum)
+        self.assertFalse(rough_env_cfg().commands["velocity_height"].stair_speed_cap_enabled)
+        order = list(rough_env_cfg(stair_speed_cap=True).curriculum)
+        self.assertGreater(order.index("stair_speed_cap"), order.index("two_step_gate"))
+        play = rough_env_cfg(play=True, stair_speed_cap=True)
+        self.assertFalse(play.commands["velocity_height"].stair_speed_cap_enabled)
+
+    def _fill(self, ids: torch.Tensor, ratio: float, steps: int) -> None:
+        self.term._stair_cmd_sum[ids] = float(steps)
+        self.term._stair_vx_sum[ids] = float(ratio) * steps
+        self.term._stair_steps[ids] = steps
+
+    def test_caps_follow_speed_ratio_and_stay_in_range(self) -> None:
+        term, cfg = self.term, self.term.cfg
+        stairs = term._stair_mask.nonzero(as_tuple=False).flatten()
+        self.assertGreaterEqual(len(stairs), 3)
+        slow, fast, short = stairs[0:1], stairs[1:2], stairs[2:3]
+        min_steps = math.ceil(cfg.stair_speed_cap_min_episode_s / self.env.step_dt)
+        term._stair_speed_cap[:] = 1.5
+        self._fill(slow, 0.2, min_steps)
+        self._fill(fast, 0.9, min_steps)
+        self._fill(short, 0.2, min_steps - 1)  # 在台阶列上待得太短，不调
+        ids = torch.cat((slow, fast, short))
+        curriculums.stair_speed_cap(self.env, ids, command_name="velocity_height")
+
+        cap = term._stair_speed_cap
+        self.assertAlmostEqual(float(cap[slow]), 1.5 - cfg.stair_speed_cap_shrink_step, places=5)
+        self.assertAlmostEqual(float(cap[fast]), 1.5 + cfg.stair_speed_cap_grow_step, places=5)
+        self.assertAlmostEqual(float(cap[short]), 1.5, places=5)
+        self.assertEqual(int(term._stair_steps[ids].sum()), 0)
+        ranges = term._lin_vel_x_range_override
+        self.assertTrue(torch.allclose(ranges[ids, 1], cap[ids]))
+        self.assertTrue(bool((ranges[ids, 0] == cfg.stair_lin_vel_x_range[0]).all()))
+
+        for _ in range(20):
+            self._fill(slow, 0.0, min_steps)
+            self._fill(fast, 1.0, min_steps)
+            curriculums.stair_speed_cap(self.env, torch.cat((slow, fast)), "velocity_height")
+        self.assertAlmostEqual(float(cap[slow]), cfg.stair_speed_cap_min, places=5)
+        self.assertAlmostEqual(float(cap[fast]), cfg.stair_lin_vel_x_range[1], places=5)
+
+    def test_refresh_reapplies_caps_only_on_stairs(self) -> None:
+        term = self.term
+        term._stair_speed_cap[:] = 1.2
+        term.refresh_terrain_override()
+        stairs = term._stair_mask
+        ids = torch.arange(self.env.num_envs, device=self.env.device)
+        _, lin_high, _, _ = term._velocity_ranges(ids)
+        self.assertTrue(torch.allclose(lin_high[stairs], torch.full_like(lin_high[stairs], 1.2)))
+        self.assertTrue(bool((lin_high[~stairs] != 1.2).all()))
+
+
+class StairHeightWindowRuntimeTests(unittest.TestCase):
+    """复旦口径的上台阶列高度罚：窗口均值参考 + 有界形状；其余列与 Flat 原函数逐位相同。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(stair_height_reference="window")
+        cfg.curriculum.pop("flat_warmup")
+        cfg.scene.num_envs = 14
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+        _step_once(cls.env)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def test_default_stays_support(self) -> None:
+        default = rough_env_cfg().rewards["flat_base_height"]
+        self.assertIs(default.func, rough_rewards.base_height_penalty_support_on_terrain)
+        self.assertIs(
+            self.env.cfg.rewards["flat_base_height"].func,
+            rough_rewards.base_height_penalty_window_on_terrain,
+        )
+        with self.assertRaises(ValueError):
+            rough_env_cfg(stair_height_reference="ray")
+
+    def test_window_is_bounded_and_other_columns_match_flat(self) -> None:
+        from se3_train.mdp.terrain_height import ground_height_estimate
+        from se3_train.tasks.flat.rewards import flat_base_height_penalty_no_jump
+
+        params = dict(self.env.cfg.rewards["flat_base_height"].params)
+        got = rough_rewards.base_height_penalty_window_on_terrain(self.env, **params)
+        flat = flat_base_height_penalty_no_jump(
+            self.env,
+            command_name=params["command_name"],
+            height_sensor_name=params["height_sensor_name"],
+            sigma=params["sigma"],
+            max_error=params.get("max_error", 0.15),
+        )
+        stairs = column_mask(self.env, params["terrain_type_names"])
+        self.assertTrue(bool(stairs.any()) and bool((~stairs).any()))
+        self.assertTrue(torch.equal(got[~stairs], flat[~stairs]))
+        self.assertTrue(bool((got[stairs] >= 0.0).all()) and bool((got[stairs] < 1.0).all()))
+
+        cmd = self.env.command_manager.get_command("velocity_height")
+        frame_z = self.env.scene[params["height_sensor_name"]].data.frame_pos_w[:, 0, 2]
+        ground = ground_height_estimate(self.env, params["window_sensor_name"])
+        error = frame_z - ground - cmd[:, 4]
+        expected = 1.0 - torch.exp(-error.square() / params["sigma"] ** 2)
+        self.assertTrue(torch.allclose(got[stairs], expected[stairs], atol=1e-6))
 
 
 if __name__ == "__main__":

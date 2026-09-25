@@ -187,4 +187,18 @@ def two_step_gate(
     return {"opened": opened.float(), "gate_level": level}
 
 
-__all__ = ["flat_warmup", "two_step_gate"]
+def stair_speed_cap(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+) -> dict[str, torch.Tensor]:
+    """台阶列逐 env vx 上限：按刚结束 episode 的速度达成率升降（规则见 commands.py 的模块常量）。
+
+    必须排在 `flat_warmup` 与 `two_step_gate` 之后：它们会给 env 换列，本项按换列后的列决定
+    是否把上限写进采样范围。实现放在指令项里，因为累计量和采样范围都归它管。
+    """
+    term = env.command_manager.get_term(command_name)
+    return term.update_stair_speed_caps(env_ids)
+
+
+__all__ = ["flat_warmup", "stair_speed_cap", "two_step_gate"]

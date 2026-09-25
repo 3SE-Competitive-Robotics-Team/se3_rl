@@ -9,6 +9,8 @@
    参考地面瞬间抬一阶，误差夹满 0.15 就按封顶 −9/s 罚到机身升完这一阶，把"机身先过沿、轮子随后收腿提上来"
    的过渡期罚成了起跳/走梯（见 env_cfg 的 ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS 注释）。
    `base_height_penalty_off_terrain` 是 M1/M2 用过的按列置零包装（M3 起全列生效、不再挂在配置里，留作对照工具）。
+2b. `base_height_penalty_window_on_terrain`（2026-09-25 对照 M21）：上台阶列的地面参考改成机身周围 77 点窗口均值
+   （复旦口径），罚改成有界的 1 − exp(−e²/σ²)；由 env_cfg 的 ROUGH_STAIR_HEIGHT_REFERENCE 选择口径。
 3. `tracking_ang_vel_off_terrain`：yaw 跟踪在台阶列置零（A10）。台阶列 yaw 指令恒 0、σ=0.25，
    完全静止就能拿满 73% 的正奖励，站着不动是正收益均衡；指令侧归零 + 奖励侧归零缺一不可。
 4. `tracking_lin_vel_terrain_vz`：非平地列关掉核里的 vz 项（A7，爬升必须有垂直速度），台阶列单独
@@ -262,6 +264,51 @@ def base_height_penalty_support_on_terrain(
     return torch.where(mask, support, penalty)
 
 
+def base_height_penalty_window_on_terrain(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    window_sensor_name: str,
+    support_sensor_name: str = "stair_reward_height",
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+    sigma: float = 0.05,
+    max_error: float | None = 0.15,
+) -> torch.Tensor:
+    """机身高度罚：指定列改用机身周围窗口的地面均值作参考、罚改成有界形状，其余列与 Flat 原函数逐位相同。
+
+    对照 M21 的支撑面口径（2026-09-25 用户定）。参考来自 yly-true/fudan_rl_wheel_leg 上台阶 v3：
+    高度 = 机身 z − 机身周围 11×7 点（x ±0.5、y ±0.3 m，yaw 对齐）的地面均值，这里直接复用 critic 的
+    同尺寸高度扫描（`window_sensor_name`）。机身接近台阶时窗口前沿先扫到上一阶，参考提前抬高、过沿时
+    平滑过渡，等于奖励"机身先过沿"；M21 的支撑面在机身过沿时参考不动，这份激励也没了。
+    罚取 1 − exp(−e²/σ²)：小误差时与原二次罚 e²/σ² 曲率相同，大误差封顶 1（乘权重 −4 即每秒最多 −4），
+    原口径夹 ±0.15 m 时峰值是 (0.15/σ)² = 2.25。`max_error` 只作用于其余列的 Flat 原函数。
+    顺带记台阶列窗口与支撑面两种口径的 |误差| 均值。
+    """
+    penalty = flat_base_height_penalty_no_jump(
+        env,
+        command_name=command_name,
+        height_sensor_name=height_sensor_name,
+        sigma=sigma,
+        max_error=max_error,
+    )
+    mask = column_mask(env, terrain_type_names)
+    if mask is None:
+        return penalty
+    cmd = env.command_manager.get_command(command_name)
+    active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
+    frame_z = env.scene[height_sensor_name].data.frame_pos_w[:, 0, 2]
+    error = frame_z - ground_height_estimate(env, window_sensor_name) - cmd[:, 4]
+    window = (1.0 - torch.exp(-error.square() / (float(sigma) ** 2))) * active.float()
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        keep = (mask & active).float()
+        n = keep.sum().clamp(min=1.0)
+        support_error = frame_z - ground_height_estimate(env, support_sensor_name) - cmd[:, 4]
+        log["Rough/base_height_err_window_stairs"] = (error.abs() * keep).sum() / n
+        log["Rough/base_height_err_support_stairs"] = (support_error.abs() * keep).sum() / n
+    return torch.where(mask, window, penalty)
+
+
 def off_column(
     env: ManagerBasedRlEnv,
     inner,
@@ -354,12 +401,26 @@ def tracking_lin_vel_terrain_vz(
                 "Rough/base_vx_error_terrain": ((cmd_vx - base_vx).abs() * terrain).sum() / n_t,
             }
         )
+        # `*_terrain` 是全部非平地列，M9 起混进了按平地方式发 ±2.4 对称指令的下台阶与坡道列，
+        # 看不出上台阶列本身跟不跟得上；单独记一份只看上台阶列的。
+        stairs_mask = column_mask(env, stair_type_names)
+        if stairs_mask is not None:
+            stairs = stairs_mask.float()
+            n_s = stairs.sum().clamp(min=1.0)
+            log.update(
+                {
+                    "Rough/cmd_vx_stairs": (cmd_vx * stairs).sum() / n_s,
+                    "Rough/base_vx_stairs": (base_vx * stairs).sum() / n_s,
+                    "Rough/base_vx_error_stairs": ((cmd_vx - base_vx).abs() * stairs).sum() / n_s,
+                }
+            )
     return reward
 
 
 __all__ = [
     "base_height_penalty_off_terrain",
     "base_height_penalty_support_on_terrain",
+    "base_height_penalty_window_on_terrain",
     "column_scaled",
     "command_velocity_error_on_terrain",
     "off_column",
