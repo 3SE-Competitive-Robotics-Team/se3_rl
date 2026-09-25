@@ -1253,8 +1253,18 @@ class TwoStepGateRuntimeTests(unittest.TestCase):
         self.assertTrue(bool((types[original == up_col] == stairs_col).all()))
         self.assertTrue(bool((types[original == down_col] == flat_col).all()))
 
-        # 把 stairs_up 的原生 env 抬到 5 级：门控打开，两列拿回自己的 env 且从第 0 行起步。
-        self.terrain.terrain_levels[original == stairs_col] = 5
+        # 热身期原生 stairs_up env 在平地列上被官方升降级抬到高等级：不算台阶难度，门控不能开（M24 的 bug）。
+        native = original == stairs_col
+        self.terrain.terrain_types[native] = flat_col
+        self.terrain.terrain_levels[native] = 6
+        out = self._run()
+        self.assertEqual(float(out["opened"]), 0.0)
+        self.terrain.terrain_types[native] = stairs_col
+        self.terrain.terrain_levels[:] = 0
+
+        # stairs_up 列当前的 env（原生 + 门控期迁入的二级上行）均级到 5：门控打开，
+        # 两列拿回自己的 env 且从第 0 行起步。
+        self.terrain.terrain_levels[self.terrain.terrain_types == stairs_col] = 5
         out = self._run()
         self.assertEqual(float(out["opened"]), 1.0)
         self.assertGreaterEqual(float(out["gate_level"]), ROUGH_TWO_STEP_GATE_LEVEL)
