@@ -296,6 +296,7 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     reward_set: str = "se3",
     fudan_scale_overrides: Mapping[str, float] | None = None,
+    flat_warmup: bool = True,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -304,6 +305,8 @@ def env_cfg(
     reward_set："se3" 为本仓库奖励；"fudan_v3" 把整张奖励表换成复旦 v3 的全地形统一奖励（M28 对照，
     见 `_apply_fudan_v3_rewards`），指令、课程、终止、观测与域随机化不变。
     fudan_scale_overrides：只在 "fudan_v3" 下生效，按项名覆盖复旦权重（M29 把 orientation 改回 −10）。
+    flat_warmup：False 时不注册平地热身课程，env 从第 0 轮起就在各自地形列的第 0 级（M31）；
+    two_step_gate 在没有热身状态时处理全部 env。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -446,15 +449,16 @@ def env_cfg(
             func=terrain_levels_vel,
             params={"command_name": "velocity_height"},
         )
-        cfg.curriculum["flat_warmup"] = CurriculumTermCfg(
-            func=curriculums.flat_warmup,
-            params={
-                "command_name": "velocity_height",
-                "iterations": ROUGH_FLAT_WARMUP_ITERATIONS,
-                "ramp_iterations": ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
-                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
-            },
-        )
+        if flat_warmup:
+            cfg.curriculum["flat_warmup"] = CurriculumTermCfg(
+                func=curriculums.flat_warmup,
+                params={
+                    "command_name": "velocity_height",
+                    "iterations": ROUGH_FLAT_WARMUP_ITERATIONS,
+                    "ramp_iterations": ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
+                    "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+                },
+            )
         # M24：二级台阶要等 stairs_up 均级到 5 才开放；必须排在 flat_warmup 之后（见 two_step_gate 文档）。
         cfg.curriculum["two_step_gate"] = CurriculumTermCfg(
             func=curriculums.two_step_gate,

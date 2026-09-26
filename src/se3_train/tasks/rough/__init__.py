@@ -25,6 +25,10 @@ EXP_FUDAN_REWARD_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanReward"
 EXP_FUDAN_REWARD_ORI10_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10"
 # M30（2026-09-26 用户定）：M29 + actor 初始 std 0.5 → 1.5（只改 PPO 配置，env 与 M29 相同）。同为临时入口。
 EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15"
+# M31（2026-09-26 用户定）：M30 + 去掉平地热身，第 0 轮起就上各自地形列（大噪声期落在台阶上）。同为临时入口。
+EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15NoWarmup"
+)
 _FUDAN_ORI10 = {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}}
 # (task id, env_cfg 覆盖, rl_cfg 覆盖)
 _EXP_VARIANTS = (
@@ -33,11 +37,16 @@ _EXP_VARIANTS = (
     (EXP_FUDAN_REWARD_TASK_ID, {"reward_set": "fudan_v3"}, {}),
     (EXP_FUDAN_REWARD_ORI10_TASK_ID, _FUDAN_ORI10, {}),
     (EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID, _FUDAN_ORI10, {"init_std": 1.5}),
+    (
+        EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID,
+        {**_FUDAN_ORI10, "flat_warmup": False},
+        {"init_std": 1.5},
+    ),
 )
 
 
 def register() -> None:
-    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M30 临时对照入口。"""
+    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M31 临时对照入口。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -70,6 +79,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_TASK_ID",
     "EXP_FUDAN_REWARD_TASK_ID",
