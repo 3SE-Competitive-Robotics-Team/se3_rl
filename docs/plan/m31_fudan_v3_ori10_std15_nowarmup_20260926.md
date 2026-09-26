@@ -31,4 +31,11 @@ nulltask1 六卡 × 8192 envs、8000 轮、保存间隔 200、seed 42，W&B proj
 
 ## 启动记录
 
-（启动后补）
+2026-09-26 18:58（Pod 时区）启动，commit `8b37cc8`（子模块 `e753ce6`），启动器 DryRun 通过；启动前 M30 在 4000 轮 SIGINT 停止。
+
+| 标签 | run | W&B | PGID | state dir |
+|---|---|---|---|---|
+| M31 | `2026-09-26_18-58-02_rough-M31-fudanv3-ori10-std15-nowarmup-seed42-6x8192-8k` | `izovijb7` | 572758 | `20260926T105755Z-13382` |
+
+首轮核验：第 13 轮在迭代、无报错，日志里没有 `flat_warmup` 键、`terrain_levels/stairs_up` 从第 0 级起算；
+3.40 s/轮（env 一开始就分在七列，比热身期的 2.98 s 慢），六卡 12.9–13.3 GB、利用率 86–88%；std 1.50 → 第 13 轮 1.34。
