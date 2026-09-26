@@ -18,9 +18,12 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 所以用任务入口而不是逐实验 commit 区分。临时入口：对照结束、定下默认值后删除（复现用对应 commit）。
 EXP_STAIR_SPEED_CAP_TASK_ID = "SE3-WheelLegged-Rough-Exp-StairSpeedCap"
 EXP_HEIGHT_WINDOW_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindow"
+# M28（2026-09-26 用户定）：整张奖励表换成复旦 v3 的全地形统一奖励，其余与 TASK_ID 相同。同为临时入口。
+EXP_FUDAN_REWARD_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanReward"
 _EXP_VARIANTS = (
     (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}),
     (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
+    (EXP_FUDAN_REWARD_TASK_ID, {"reward_set": "fudan_v3"}),
 )
 
 
@@ -58,6 +61,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_FUDAN_REWARD_TASK_ID",
     "EXP_HEIGHT_WINDOW_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",
     "GRU_TASK_ID",

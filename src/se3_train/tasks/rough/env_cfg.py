@@ -70,7 +70,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, rewards, stair_rewards
+from . import curriculums, events, fudan_rewards, rewards, stair_rewards
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
@@ -293,16 +293,21 @@ def env_cfg(
     terrain_generator: TerrainGeneratorCfg | None = None,
     stair_speed_cap: bool = ROUGH_STAIR_SPEED_CAP_ENABLED,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
+    reward_set: str = "se3",
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
+    reward_set："se3" 为本仓库奖励；"fudan_v3" 把整张奖励表换成复旦 v3 的全地形统一奖励（M28 对照，
+    见 `_apply_fudan_v3_rewards`），指令、课程、终止、观测与域随机化不变。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
         )
+    if reward_set not in ("se3", "fudan_v3"):
+        raise ValueError(f"reward_set 只能是 'se3' 或 'fudan_v3'，实际为 {reward_set!r}")
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -400,6 +405,8 @@ def env_cfg(
     )
 
     _apply_rough_rewards(cfg, stair_height_reference=stair_height_reference)
+    if reward_set == "fudan_v3":
+        _apply_fudan_v3_rewards(cfg)
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -575,6 +582,51 @@ def _apply_rough_rewards(
     cfg.rewards["fall_penalty"] = RewardTermCfg(
         func=is_terminated, weight=-ROUGH_FALL_PENALTY / step_dt
     )
+
+
+def _apply_fudan_v3_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+    """把整张奖励表换成复旦 v3 的全地形统一奖励（口径与已知差异见 fudan_rewards 模块说明）。
+
+    M28（2026-09-26 用户定）：复旦的奖励不分地形列、逐项限幅到每秒 ±1、没有存活奖励与终止罚；
+    我们的 29 项里有 11 项按列生效或改参数。这里整张换掉，每项权重固定 1，复旦权重作为 `scale` 传入函数内限幅。
+    原 tracking_lin_vel 只作 shadow 调用保留日志：速度课程读它写的 `Locomotion/tracking_lin_vel_reward_curriculum`，
+    删掉速度上限会永远停在 0；它的返回值不计入奖励。
+    """
+    track = cfg.rewards["tracking_lin_vel"]
+    scales = fudan_rewards.FUDAN_V3_SCALES
+    command = {"command_name": "velocity_height"}
+    window = {"window_sensor_name": ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME}
+
+    def term(name: str, func, **params) -> RewardTermCfg:
+        return RewardTermCfg(func=func, weight=1.0, params={"scale": scales[name], **params})
+
+    cfg.rewards = {
+        "tracking_lin_vel": term(
+            "tracking_lin_vel",
+            fudan_rewards.tracking_lin_vel,
+            **command,
+            shadow_func=track.func,
+            shadow_params=dict(track.params),
+        ),
+        "tracking_lin_vel_enhance": term(
+            "tracking_lin_vel_enhance", fudan_rewards.tracking_lin_vel_enhance, **command
+        ),
+        "tracking_ang_vel": term("tracking_ang_vel", fudan_rewards.tracking_ang_vel, **command),
+        "base_height": term("base_height", fudan_rewards.base_height, **command, **window),
+        "base_height_enhance": term(
+            "base_height_enhance", fudan_rewards.base_height_enhance, **command, **window
+        ),
+        "nominal_state": term("nominal_state", fudan_rewards.nominal_state),
+        "lin_vel_z": term("lin_vel_z", fudan_rewards.lin_vel_z),
+        "ang_vel_xy": term("ang_vel_xy", fudan_rewards.ang_vel_xy),
+        "orientation": term("orientation", fudan_rewards.orientation),
+        "dof_vel": term("dof_vel", fudan_rewards.dof_vel),
+        "dof_acc": term("dof_acc", fudan_rewards.dof_acc),
+        "torques": term("torques", fudan_rewards.torques),
+        "action_rate": term("action_rate", fudan_rewards.action_rate),
+        "action_smooth": term("action_smooth", fudan_rewards.ActionSmooth),
+        "dof_pos_limits": term("dof_pos_limits", fudan_rewards.dof_pos_limits_clipped),
+    }
 
 
 __all__ = [
