@@ -60,4 +60,15 @@ nulltask1 六卡 × 8192 envs、8000 轮、保存间隔 200、seed 42，W&B proj
 
 ## 启动记录
 
-（启动后补）
+2026-09-26 10:46（Pod 时区）启动，commit `6f25ca9`（Pod 仓库 `xyh/925`，子模块 `e753ce6`：外部提交 `079cc8d` 的子模块更新
+一并以 bundle 同步，Pod 工作树干净），启动器 DryRun 通过。启动前本地 114 个 unittest 通过、Fudan 入口 CLI smoke 5/5，
+真实 env 核对：15 项、注册权重全 1、逐项每秒贡献 |·| ≤ 1、课程日志键在写。
+
+| 标签 | run | W&B | PGID | state dir |
+|---|---|---|---|---|
+| M28 | `2026-09-26_10-46-35_rough-M28-fudanv3reward-seed42-6x8192-8k` | `ayrbsbfy` | 562939 | `20260926T024628Z-17473` |
+
+首轮核验：在迭代、无报错、无 nefc overflow，热身期 2.94–3.00 s/轮；GPU0 13.3 GB / 59%，GPU1–5 12.9 GB / 87–91%。
+36 轮时 `Rough/tracking_lin_vel_flat` 0.70、速度课程 `vel_ema` 0.38 在涨（shadow 调用写的课程键在刷新；
+`vel_tracking_lin_vel` 显示 nan 是当步没有新样本的占位，既有行为）。热身结束 env 分到七列后按 `7c29rmkd` 的经验
+升到约 3.8 s/轮，8000 轮约 8 h。
