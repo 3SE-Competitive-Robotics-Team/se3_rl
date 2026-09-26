@@ -23,19 +23,21 @@ EXP_FUDAN_REWARD_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanReward"
 # M29（2026-09-26 用户定）：M28 + 姿态罚 −20 → −10（复旦学会上台阶那几段的取值）；高度参考同时改成复旦格点口径，
 # 对 M28 入口一并生效（M28 的 run 用 commit 6f25ca9 复现）。同为临时入口。
 EXP_FUDAN_REWARD_ORI10_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10"
+# M30（2026-09-26 用户定）：M29 + actor 初始 std 0.5 → 1.5（只改 PPO 配置，env 与 M29 相同）。同为临时入口。
+EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15"
+_FUDAN_ORI10 = {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}}
+# (task id, env_cfg 覆盖, rl_cfg 覆盖)
 _EXP_VARIANTS = (
-    (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}),
-    (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
-    (EXP_FUDAN_REWARD_TASK_ID, {"reward_set": "fudan_v3"}),
-    (
-        EXP_FUDAN_REWARD_ORI10_TASK_ID,
-        {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}},
-    ),
+    (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}, {}),
+    (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}, {}),
+    (EXP_FUDAN_REWARD_TASK_ID, {"reward_set": "fudan_v3"}, {}),
+    (EXP_FUDAN_REWARD_ORI10_TASK_ID, _FUDAN_ORI10, {}),
+    (EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID, _FUDAN_ORI10, {"init_std": 1.5}),
 )
 
 
 def register() -> None:
-    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M29 临时对照入口。"""
+    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M30 临时对照入口。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -57,17 +59,18 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
-    for task_id, overrides in _EXP_VARIANTS:
+    for task_id, overrides, rl_overrides in _EXP_VARIANTS:
         register_mjlab_task(
             task_id=task_id,
             env_cfg=env_cfg(**overrides),
             play_env_cfg=env_cfg(play=True, **overrides),
-            rl_cfg=bind_task_name(rl_cfg(), task_id),
+            rl_cfg=bind_task_name(rl_cfg(**rl_overrides), task_id),
             runner_cls=Se3ProfiledOnPolicyRunner,
         )
 
 
 __all__ = [
+    "EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_TASK_ID",
     "EXP_FUDAN_REWARD_TASK_ID",
     "EXP_HEIGHT_WINDOW_TASK_ID",

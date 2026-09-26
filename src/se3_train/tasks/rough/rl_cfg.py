@@ -29,9 +29,15 @@ def _is_smoke(smoke: bool) -> bool:
     return smoke or os.environ.get("SE3_SMOKE", "0") == "1"
 
 
-def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """生成 MLP PPO 训练配置（超参数与 Flat 基线逐项相同）。"""
+def rl_cfg(smoke: bool = False, *, init_std: float | None = None) -> RslRlOnPolicyRunnerCfg:
+    """生成 MLP PPO 训练配置（超参数与 Flat 基线逐项相同）。
+
+    init_std：覆盖 actor 高斯分布的初始 std（每个动作维一个可学习标量），None 沿用 Flat 基线的 0.5。
+    M30（2026-09-26 用户定）取 1.5，对照复旦 init_noise_std=1.0 × 腿 0.5 rad 的大探索噪声。
+    """
     cfg = mlp_rl_cfg(smoke=smoke)
+    if init_std is not None:
+        cfg.actor.distribution_cfg = {**cfg.actor.distribution_cfg, "init_std": float(init_std)}
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
     return cfg
