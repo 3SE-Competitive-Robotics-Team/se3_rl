@@ -20,15 +20,22 @@ EXP_STAIR_SPEED_CAP_TASK_ID = "SE3-WheelLegged-Rough-Exp-StairSpeedCap"
 EXP_HEIGHT_WINDOW_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindow"
 # M28（2026-09-26 用户定）：整张奖励表换成复旦 v3 的全地形统一奖励，其余与 TASK_ID 相同。同为临时入口。
 EXP_FUDAN_REWARD_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanReward"
+# M29（2026-09-26 用户定）：M28 + 姿态罚 −20 → −10（复旦学会上台阶那几段的取值）；高度参考同时改成复旦格点口径，
+# 对 M28 入口一并生效（M28 的 run 用 commit 6f25ca9 复现）。同为临时入口。
+EXP_FUDAN_REWARD_ORI10_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10"
 _EXP_VARIANTS = (
     (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}),
     (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
     (EXP_FUDAN_REWARD_TASK_ID, {"reward_set": "fudan_v3"}),
+    (
+        EXP_FUDAN_REWARD_ORI10_TASK_ID,
+        {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}},
+    ),
 )
 
 
 def register() -> None:
-    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26/M27 临时对照入口。"""
+    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M29 临时对照入口。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -61,6 +68,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_FUDAN_REWARD_ORI10_TASK_ID",
     "EXP_FUDAN_REWARD_TASK_ID",
     "EXP_HEIGHT_WINDOW_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",

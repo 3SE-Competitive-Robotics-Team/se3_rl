@@ -1482,6 +1482,24 @@ class FudanRewardRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rough_env_cfg(reward_set="kami")
 
+    def test_scale_overrides(self) -> None:
+        cfg = rough_env_cfg(reward_set="fudan_v3", fudan_scale_overrides={"orientation": -10.0})
+        self.assertEqual(cfg.rewards["orientation"].params["scale"], -10.0)
+        with self.assertRaises(ValueError):
+            rough_env_cfg(reward_set="fudan_v3", fudan_scale_overrides={"orientaton": -10.0})
+        with self.assertRaises(ValueError):
+            rough_env_cfg(fudan_scale_overrides={"orientation": -10.0})
+
+    def test_lattice_ground_on_spawn_platform(self) -> None:
+        from se3_train.tasks.rough.fudan_rewards import fudan_ground_height
+
+        # reset 后都站在各地块的出生平台上，77 点窗口落在平台内，均值应等于地块原点高度；
+        # 最平的 hfield 斜坡块表面比原点低 5 mm（生成器的最小厚度），故容差取 6 mm。
+        self.env.reset()
+        ground = fudan_ground_height(self.env)
+        origin_z = self.env.scene.env_origins[:, 2]
+        self.assertLessEqual(float((ground - origin_z).abs().max()), 6e-3)
+
     def test_terms_are_uniform_and_clipped(self) -> None:
         from se3_train.tasks.rough.fudan_rewards import FUDAN_V3_SCALES
 

@@ -37,6 +37,7 @@ M21：上台阶列机身高度罚的地面参考改为轮子支撑面（见 ROUG
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -294,6 +295,7 @@ def env_cfg(
     stair_speed_cap: bool = ROUGH_STAIR_SPEED_CAP_ENABLED,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     reward_set: str = "se3",
+    fudan_scale_overrides: Mapping[str, float] | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -301,6 +303,7 @@ def env_cfg(
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
     reward_set："se3" 为本仓库奖励；"fudan_v3" 把整张奖励表换成复旦 v3 的全地形统一奖励（M28 对照，
     见 `_apply_fudan_v3_rewards`），指令、课程、终止、观测与域随机化不变。
+    fudan_scale_overrides：只在 "fudan_v3" 下生效，按项名覆盖复旦权重（M29 把 orientation 改回 −10）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -308,6 +311,12 @@ def env_cfg(
         )
     if reward_set not in ("se3", "fudan_v3"):
         raise ValueError(f"reward_set 只能是 'se3' 或 'fudan_v3'，实际为 {reward_set!r}")
+    fudan_scale_overrides = dict(fudan_scale_overrides or {})
+    if fudan_scale_overrides and reward_set != "fudan_v3":
+        raise ValueError("fudan_scale_overrides 只能配合 reward_set='fudan_v3' 使用")
+    unknown = set(fudan_scale_overrides) - set(fudan_rewards.FUDAN_V3_SCALES)
+    if unknown:
+        raise ValueError(f"fudan_scale_overrides 含未知奖励项：{sorted(unknown)}")
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -406,7 +415,7 @@ def env_cfg(
 
     _apply_rough_rewards(cfg, stair_height_reference=stair_height_reference)
     if reward_set == "fudan_v3":
-        _apply_fudan_v3_rewards(cfg)
+        _apply_fudan_v3_rewards(cfg, scale_overrides=fudan_scale_overrides)
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -584,18 +593,20 @@ def _apply_rough_rewards(
     )
 
 
-def _apply_fudan_v3_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_fudan_v3_rewards(
+    cfg: ManagerBasedRlEnvCfg, *, scale_overrides: Mapping[str, float] | None = None
+) -> None:
     """把整张奖励表换成复旦 v3 的全地形统一奖励（口径与已知差异见 fudan_rewards 模块说明）。
 
     M28（2026-09-26 用户定）：复旦的奖励不分地形列、逐项限幅到每秒 ±1、没有存活奖励与终止罚；
     我们的 29 项里有 11 项按列生效或改参数。这里整张换掉，每项权重固定 1，复旦权重作为 `scale` 传入函数内限幅。
     原 tracking_lin_vel 只作 shadow 调用保留日志：速度课程读它写的 `Locomotion/tracking_lin_vel_reward_curriculum`，
     删掉速度上限会永远停在 0；它的返回值不计入奖励。
+    scale_overrides：按项名覆盖复旦权重，调用方已校验项名。
     """
     track = cfg.rewards["tracking_lin_vel"]
-    scales = fudan_rewards.FUDAN_V3_SCALES
+    scales = {**fudan_rewards.FUDAN_V3_SCALES, **(scale_overrides or {})}
     command = {"command_name": "velocity_height"}
-    window = {"window_sensor_name": ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME}
 
     def term(name: str, func, **params) -> RewardTermCfg:
         return RewardTermCfg(func=func, weight=1.0, params={"scale": scales[name], **params})
@@ -612,9 +623,9 @@ def _apply_fudan_v3_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
             "tracking_lin_vel_enhance", fudan_rewards.tracking_lin_vel_enhance, **command
         ),
         "tracking_ang_vel": term("tracking_ang_vel", fudan_rewards.tracking_ang_vel, **command),
-        "base_height": term("base_height", fudan_rewards.base_height, **command, **window),
+        "base_height": term("base_height", fudan_rewards.base_height, **command),
         "base_height_enhance": term(
-            "base_height_enhance", fudan_rewards.base_height_enhance, **command, **window
+            "base_height_enhance", fudan_rewards.base_height_enhance, **command
         ),
         "nominal_state": term("nominal_state", fudan_rewards.nominal_state),
         "lin_vel_z": term("lin_vel_z", fudan_rewards.lin_vel_z),
