@@ -29,6 +29,10 @@ EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri
 EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15NoWarmup"
 )
+# M32（2026-09-26 用户定）：M31 + 上台阶列最低一级 2 cm → 5 cm（上限 20 cm 不变，下台阶列不动）。同为临时入口。
+EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15NoWarmupStep5"
+)
 _FUDAN_ORI10 = {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}}
 # (task id, env_cfg 覆盖, rl_cfg 覆盖)
 _EXP_VARIANTS = (
@@ -42,11 +46,16 @@ _EXP_VARIANTS = (
         {**_FUDAN_ORI10, "flat_warmup": False},
         {"init_std": 1.5},
     ),
+    (
+        EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID,
+        {**_FUDAN_ORI10, "flat_warmup": False, "stairs_up_step_height_range": (0.05, 0.20)},
+        {"init_std": 1.5},
+    ),
 )
 
 
 def register() -> None:
-    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M31 临时对照入口。"""
+    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M32 临时对照入口。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -79,6 +88,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_TASK_ID",

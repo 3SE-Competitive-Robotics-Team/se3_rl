@@ -297,6 +297,7 @@ def env_cfg(
     reward_set: str = "se3",
     fudan_scale_overrides: Mapping[str, float] | None = None,
     flat_warmup: bool = True,
+    stairs_up_step_height_range: tuple[float, float] | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -307,6 +308,8 @@ def env_cfg(
     fudan_scale_overrides：只在 "fudan_v3" 下生效，按项名覆盖复旦权重（M29 把 orientation 改回 −10）。
     flat_warmup：False 时不注册平地热身课程，env 从第 0 轮起就在各自地形列的第 0 级（M31）；
     two_step_gate 在没有热身状态时处理全部 env。
+    stairs_up_step_height_range：只改上台阶列阶高范围（M32 取 5–20 cm），None 沿用 ROUGH_STEP_HEIGHT_RANGE；
+    只能与默认地形集一起用，地形感知高度下限按新范围自动计算。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -320,6 +323,16 @@ def env_cfg(
     unknown = set(fudan_scale_overrides) - set(fudan_rewards.FUDAN_V3_SCALES)
     if unknown:
         raise ValueError(f"fudan_scale_overrides 含未知奖励项：{sorted(unknown)}")
+    if stairs_up_step_height_range is not None and terrain_generator is not None:
+        raise ValueError(
+            "stairs_up_step_height_range 只能配合默认地形集，不能与 terrain_generator 同时给"
+        )
+    if terrain_generator is None:
+        terrain_generator = (
+            rough_terrains_cfg()
+            if stairs_up_step_height_range is None
+            else rough_terrains_cfg(stairs_up_step_height_range=stairs_up_step_height_range)
+        )
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -333,7 +346,7 @@ def env_cfg(
     }
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=terrain_generator or rough_terrains_cfg(),
+        terrain_generator=terrain_generator,
         max_init_terrain_level=ROUGH_MAX_INIT_TERRAIN_LEVEL,
     )
     cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
