@@ -18,52 +18,23 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 所以用任务入口而不是逐实验 commit 区分。临时入口：对照结束、定下默认值后删除（复现用对应 commit）。
 EXP_STAIR_SPEED_CAP_TASK_ID = "SE3-WheelLegged-Rough-Exp-StairSpeedCap"
 EXP_HEIGHT_WINDOW_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindow"
-# M28（2026-09-26 用户定）：整张奖励表换成复旦 v3 的全地形统一奖励，其余与 TASK_ID 相同。同为临时入口。
-EXP_FUDAN_REWARD_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanReward"
-# M29（2026-09-26 用户定）：M28 + 姿态罚 −20 → −10（复旦学会上台阶那几段的取值）；高度参考同时改成复旦格点口径，
-# 对 M28 入口一并生效（M28 的 run 用 commit 6f25ca9 复现）。同为临时入口。
-EXP_FUDAN_REWARD_ORI10_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10"
-# M30（2026-09-26 用户定）：M29 + actor 初始 std 0.5 → 1.5（只改 PPO 配置，env 与 M29 相同）。同为临时入口。
-EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15"
-# M31（2026-09-26 用户定）：M30 + 去掉平地热身，第 0 轮起就上各自地形列（大噪声期落在台阶上）。同为临时入口。
-EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID = (
-    "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15NoWarmup"
-)
-# M32（2026-09-26 用户定）：M31 + 上台阶列最低一级 2 cm → 5 cm（上限 20 cm 不变，下台阶列不动）。同为临时入口。
-EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID = (
-    "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15NoWarmupStep5"
-)
-# M33（2026-09-26 用户定）：M32 + 加回本仓库两项台阶专项奖励（进度与双轮支撑，原权重不限幅）。同为临时入口。
-EXP_FUDAN_REWARD_STEP5_STAIRREW_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardStep5StairRew"
-_FUDAN_ORI10 = {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}}
-_FUDAN_M32 = {**_FUDAN_ORI10, "flat_warmup": False, "stairs_up_step_height_range": (0.05, 0.20)}
-# (task id, env_cfg 覆盖, rl_cfg 覆盖)
+EXP_NO_WHEEL_DEADZONE_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowNoWheelDeadzone"
 _EXP_VARIANTS = (
-    (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}, {}),
-    (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}, {}),
-    (EXP_FUDAN_REWARD_TASK_ID, {"reward_set": "fudan_v3"}, {}),
-    (EXP_FUDAN_REWARD_ORI10_TASK_ID, _FUDAN_ORI10, {}),
-    (EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID, _FUDAN_ORI10, {"init_std": 1.5}),
+    (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}),
+    (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
     (
-        EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID,
-        {**_FUDAN_ORI10, "flat_warmup": False},
-        {"init_std": 1.5},
-    ),
-    (
-        EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID,
-        _FUDAN_M32,
-        {"init_std": 1.5},
-    ),
-    (
-        EXP_FUDAN_REWARD_STEP5_STAIRREW_TASK_ID,
-        {**_FUDAN_M32, "fudan_stair_rewards": True},
-        {"init_std": 1.5},
+        EXP_NO_WHEEL_DEADZONE_TASK_ID,
+        {
+            "stair_height_reference": "window",
+            "wheel_offset_dead_zone_m": 0.0,
+            "wheel_height_diff_dead_zone_m": 0.0,
+        },
     ),
 )
 
 
 def register() -> None:
-    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M33 临时对照入口。"""
+    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与临时对照入口。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -85,24 +56,19 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
-    for task_id, overrides, rl_overrides in _EXP_VARIANTS:
+    for task_id, overrides in _EXP_VARIANTS:
         register_mjlab_task(
             task_id=task_id,
             env_cfg=env_cfg(**overrides),
             play_env_cfg=env_cfg(play=True, **overrides),
-            rl_cfg=bind_task_name(rl_cfg(**rl_overrides), task_id),
+            rl_cfg=bind_task_name(rl_cfg(), task_id),
             runner_cls=Se3ProfiledOnPolicyRunner,
         )
 
 
 __all__ = [
-    "EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID",
-    "EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID",
-    "EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID",
-    "EXP_FUDAN_REWARD_ORI10_TASK_ID",
-    "EXP_FUDAN_REWARD_STEP5_STAIRREW_TASK_ID",
-    "EXP_FUDAN_REWARD_TASK_ID",
     "EXP_HEIGHT_WINDOW_TASK_ID",
+    "EXP_NO_WHEEL_DEADZONE_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

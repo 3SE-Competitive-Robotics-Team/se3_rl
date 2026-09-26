@@ -37,7 +37,6 @@ M21：上台阶列机身高度罚的地面参考改为轮子支撑面（见 ROUG
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -71,7 +70,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, fudan_rewards, rewards, stair_rewards
+from . import curriculums, events, rewards, stair_rewards
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
@@ -135,8 +134,6 @@ ROUGH_ALL_TERRAIN_TYPE_NAMES = tuple(ROUGH_TERRAIN_PROPORTIONS)
 # 台阶专项奖励（A12；消融 A7/A8：撤掉任一项台阶列速度归零）。
 ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
 ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
-# M33：加回复旦奖励表的两项台阶专项奖励，名字即 `_apply_rough_rewards` 里注册的键（权重取上面两个常量）。
-ROUGH_FUDAN_STAIR_REWARDS: tuple[str, ...] = ("stair_climb_progress", "stair_support_height")
 # 速度违令二次罚（A6 起台阶列，A15 起全六列）。误差归一化尺度 3.0：0.5 时台阶列全程贴封顶 9、
 # 梯度没了且 −18/s 的常数负奖励会教出自杀策略（A10）；3.0 时误差 1.65 → −0.57/s、2.35 → −1.23/s。
 ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT = FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY
@@ -296,49 +293,17 @@ def env_cfg(
     terrain_generator: TerrainGeneratorCfg | None = None,
     stair_speed_cap: bool = ROUGH_STAIR_SPEED_CAP_ENABLED,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
-    reward_set: str = "se3",
-    fudan_scale_overrides: Mapping[str, float] | None = None,
-    flat_warmup: bool = True,
-    stairs_up_step_height_range: tuple[float, float] | None = None,
-    fudan_stair_rewards: bool = False,
+    wheel_offset_dead_zone_m: float = ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
+    wheel_height_diff_dead_zone_m: float = ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
-    reward_set："se3" 为本仓库奖励；"fudan_v3" 把整张奖励表换成复旦 v3 的全地形统一奖励（M28 对照，
-    见 `_apply_fudan_v3_rewards`），指令、课程、终止、观测与域随机化不变。
-    fudan_scale_overrides：只在 "fudan_v3" 下生效，按项名覆盖复旦权重（M29 把 orientation 改回 −10）。
-    flat_warmup：False 时不注册平地热身课程，env 从第 0 轮起就在各自地形列的第 0 级（M31）；
-    two_step_gate 在没有热身状态时处理全部 env。
-    stairs_up_step_height_range：只改上台阶列阶高范围（M32 取 5–20 cm），None 沿用 ROUGH_STEP_HEIGHT_RANGE；
-    只能与默认地形集一起用，地形感知高度下限按新范围自动计算。
-    fudan_stair_rewards：只在 "fudan_v3" 下生效，把本仓库的 stair_climb_progress / stair_support_height 原样
-    （权重、参数不变，不走复旦逐项限幅）加回复旦奖励表（M33）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
-        )
-    if reward_set not in ("se3", "fudan_v3"):
-        raise ValueError(f"reward_set 只能是 'se3' 或 'fudan_v3'，实际为 {reward_set!r}")
-    fudan_scale_overrides = dict(fudan_scale_overrides or {})
-    if fudan_scale_overrides and reward_set != "fudan_v3":
-        raise ValueError("fudan_scale_overrides 只能配合 reward_set='fudan_v3' 使用")
-    unknown = set(fudan_scale_overrides) - set(fudan_rewards.FUDAN_V3_SCALES)
-    if unknown:
-        raise ValueError(f"fudan_scale_overrides 含未知奖励项：{sorted(unknown)}")
-    if fudan_stair_rewards and reward_set != "fudan_v3":
-        raise ValueError("fudan_stair_rewards 只能配合 reward_set='fudan_v3' 使用")
-    if stairs_up_step_height_range is not None and terrain_generator is not None:
-        raise ValueError(
-            "stairs_up_step_height_range 只能配合默认地形集，不能与 terrain_generator 同时给"
-        )
-    if terrain_generator is None:
-        terrain_generator = (
-            rough_terrains_cfg()
-            if stairs_up_step_height_range is None
-            else rough_terrains_cfg(stairs_up_step_height_range=stairs_up_step_height_range)
         )
     cfg = flat_env_cfg(
         play=play,
@@ -353,7 +318,7 @@ def env_cfg(
     }
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=terrain_generator,
+        terrain_generator=terrain_generator or rough_terrains_cfg(),
         max_init_terrain_level=ROUGH_MAX_INIT_TERRAIN_LEVEL,
     )
     cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
@@ -437,10 +402,9 @@ def env_cfg(
     )
 
     _apply_rough_rewards(cfg, stair_height_reference=stair_height_reference)
-    if reward_set == "fudan_v3":
-        _apply_fudan_v3_rewards(
-            cfg, scale_overrides=fudan_scale_overrides, stair_rewards=fudan_stair_rewards
-        )
+    # M34：允许单独关闭轮子几何罚的死区，保留 M25–M27 的原始配置以供对照。
+    cfg.rewards["wheel_fore_aft_offset"].params["dead_zone_m"] = wheel_offset_dead_zone_m
+    cfg.rewards["wheel_height_diff"].params["dead_zone_m"] = wheel_height_diff_dead_zone_m
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -471,16 +435,15 @@ def env_cfg(
             func=terrain_levels_vel,
             params={"command_name": "velocity_height"},
         )
-        if flat_warmup:
-            cfg.curriculum["flat_warmup"] = CurriculumTermCfg(
-                func=curriculums.flat_warmup,
-                params={
-                    "command_name": "velocity_height",
-                    "iterations": ROUGH_FLAT_WARMUP_ITERATIONS,
-                    "ramp_iterations": ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
-                    "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
-                },
-            )
+        cfg.curriculum["flat_warmup"] = CurriculumTermCfg(
+            func=curriculums.flat_warmup,
+            params={
+                "command_name": "velocity_height",
+                "iterations": ROUGH_FLAT_WARMUP_ITERATIONS,
+                "ramp_iterations": ROUGH_FLAT_WARMUP_RAMP_ITERATIONS,
+                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+            },
+        )
         # M24：二级台阶要等 stairs_up 均级到 5 才开放；必须排在 flat_warmup 之后（见 two_step_gate 文档）。
         cfg.curriculum["two_step_gate"] = CurriculumTermCfg(
             func=curriculums.two_step_gate,
@@ -619,60 +582,6 @@ def _apply_rough_rewards(
     )
 
 
-def _apply_fudan_v3_rewards(
-    cfg: ManagerBasedRlEnvCfg,
-    *,
-    scale_overrides: Mapping[str, float] | None = None,
-    stair_rewards: bool = False,
-) -> None:
-    """把整张奖励表换成复旦 v3 的全地形统一奖励（口径与已知差异见 fudan_rewards 模块说明）。
-
-    M28（2026-09-26 用户定）：复旦的奖励不分地形列、逐项限幅到每秒 ±1、没有存活奖励与终止罚；
-    我们的 29 项里有 11 项按列生效或改参数。这里整张换掉，每项权重固定 1，复旦权重作为 `scale` 传入函数内限幅。
-    原 tracking_lin_vel 只作 shadow 调用保留日志：速度课程读它写的 `Locomotion/tracking_lin_vel_reward_curriculum`，
-    删掉速度上限会永远停在 0；它的返回值不计入奖励。
-    scale_overrides：按项名覆盖复旦权重，调用方已校验项名。
-    stair_rewards：把 `_apply_rough_rewards` 刚注册的两项台阶专项奖励原样留下（M33）。它们是一次性计酬
-    （按新增进度、每阶一次），套复旦的每秒 ±1 限幅会把支撑奖励的脉冲削掉，所以不限幅。
-    """
-    track = cfg.rewards["tracking_lin_vel"]
-    kept = {name: cfg.rewards[name] for name in ROUGH_FUDAN_STAIR_REWARDS} if stair_rewards else {}
-    scales = {**fudan_rewards.FUDAN_V3_SCALES, **(scale_overrides or {})}
-    command = {"command_name": "velocity_height"}
-
-    def term(name: str, func, **params) -> RewardTermCfg:
-        return RewardTermCfg(func=func, weight=1.0, params={"scale": scales[name], **params})
-
-    cfg.rewards = {
-        "tracking_lin_vel": term(
-            "tracking_lin_vel",
-            fudan_rewards.tracking_lin_vel,
-            **command,
-            shadow_func=track.func,
-            shadow_params=dict(track.params),
-        ),
-        "tracking_lin_vel_enhance": term(
-            "tracking_lin_vel_enhance", fudan_rewards.tracking_lin_vel_enhance, **command
-        ),
-        "tracking_ang_vel": term("tracking_ang_vel", fudan_rewards.tracking_ang_vel, **command),
-        "base_height": term("base_height", fudan_rewards.base_height, **command),
-        "base_height_enhance": term(
-            "base_height_enhance", fudan_rewards.base_height_enhance, **command
-        ),
-        "nominal_state": term("nominal_state", fudan_rewards.nominal_state),
-        "lin_vel_z": term("lin_vel_z", fudan_rewards.lin_vel_z),
-        "ang_vel_xy": term("ang_vel_xy", fudan_rewards.ang_vel_xy),
-        "orientation": term("orientation", fudan_rewards.orientation),
-        "dof_vel": term("dof_vel", fudan_rewards.dof_vel),
-        "dof_acc": term("dof_acc", fudan_rewards.dof_acc),
-        "torques": term("torques", fudan_rewards.torques),
-        "action_rate": term("action_rate", fudan_rewards.action_rate),
-        "action_smooth": term("action_smooth", fudan_rewards.ActionSmooth),
-        "dof_pos_limits": term("dof_pos_limits", fudan_rewards.dof_pos_limits_clipped),
-        **kept,
-    }
-
-
 __all__ = [
     "ROUGH_ALL_TERRAIN_TYPE_NAMES",
     "ROUGH_BASE_HEIGHT_SIGMA",
@@ -693,7 +602,6 @@ __all__ = [
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
-    "ROUGH_FUDAN_STAIR_REWARDS",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",

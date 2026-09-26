@@ -270,16 +270,11 @@ def _slope(preset, *, proportion: float, slope_range: tuple[float, float]):
     )
 
 
-def _stairs(
-    preset,
-    *,
-    proportion: float,
-    step_height_range: tuple[float, float] = ROUGH_STEP_HEIGHT_RANGE,
-):
+def _stairs(preset, *, proportion: float):
     return preset(
         proportion=proportion,
         size=ROUGH_PATCH_SIZE,
-        step_height_range=step_height_range,
+        step_height_range=ROUGH_STEP_HEIGHT_RANGE,
         step_width=ROUGH_STEP_WIDTH,
         platform_width=ROUGH_PLATFORM_WIDTH,
         border_width=_STAIR_BORDER_WIDTH,
@@ -301,16 +296,8 @@ def _two_step(*, proportion: float, descending: bool = False) -> TwoStepStairsTe
     )
 
 
-def rough_terrains_cfg(
-    *,
-    num_rows: int = 10,
-    stairs_up_step_height_range: tuple[float, float] = ROUGH_STEP_HEIGHT_RANGE,
-) -> TerrainGeneratorCfg:
-    """训练地形集：七列地形，env 按 ROUGH_TERRAIN_PROPORTIONS 分配。
-
-    stairs_up_step_height_range：只改上台阶列的阶高范围（第 0 级取下限、第 9 级取上限），下台阶列不变。
-    M32（2026-09-26 用户定）把下限从 2 cm 提到 5 cm，对齐复旦台阶最低一级（5 cm，轮半径 6 cm）。
-    """
+def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
+    """训练地形集：平地与上台阶各一列，env 按 ROUGH_TERRAIN_PROPORTIONS 分配。"""
     p = ROUGH_TERRAIN_PROPORTIONS
     return TerrainGeneratorCfg(
         size=ROUGH_PATCH_SIZE,
@@ -324,11 +311,7 @@ def rough_terrains_cfg(
         color_scheme="none",
         sub_terrains={
             "flat": flat(proportion=p["flat"], size=ROUGH_PATCH_SIZE),
-            "stairs_up": _stairs(
-                pyramid_stairs_inv,
-                proportion=p["stairs_up"],
-                step_height_range=stairs_up_step_height_range,
-            ),
+            "stairs_up": _stairs(pyramid_stairs_inv, proportion=p["stairs_up"]),
             ROUGH_TWO_STEP_UP_COLUMN: _two_step(proportion=p[ROUGH_TWO_STEP_UP_COLUMN]),
             ROUGH_TWO_STEP_DOWN_COLUMN: _two_step(
                 proportion=p[ROUGH_TWO_STEP_DOWN_COLUMN], descending=True
