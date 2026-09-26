@@ -45,4 +45,11 @@ nulltask1 六卡 × 8192 envs、8000 轮、保存间隔 200、seed 42，W&B proj
 
 ## 启动记录
 
-（启动后补）
+2026-09-26 21:56（Pod 时区）启动，commit `79fff6f`（子模块 `e753ce6`），启动器 DryRun 通过；启动前 M32 在 1609 轮 SIGINT 停止。
+
+| 标签 | run | W&B | PGID | state dir |
+|---|---|---|---|---|
+| M33 | `2026-09-26_21-56-35_rough-M33-fudanv3-step5-stairrew-seed42-6x8192-8k` | `rsdpowno` | 578852 | `20260926T135627Z-27979` |
+
+首轮核验：第 12 轮在迭代、无报错、无平地热身键，3.49 s/轮，六卡 12.9–13.3 GB、利用率 85–90%；std 1.50 → 第 12 轮 1.35。
+本地 smoke 的奖励表第 15、16 项为 stair_climb_progress（3.0）、stair_support_height（4.0）。
