@@ -33,7 +33,10 @@ EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID = (
 EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-FudanRewardOri10Std15NoWarmupStep5"
 )
+# M33（2026-09-26 用户定）：M32 + 加回本仓库两项台阶专项奖励（进度与双轮支撑，原权重不限幅）。同为临时入口。
+EXP_FUDAN_REWARD_STEP5_STAIRREW_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanRewardStep5StairRew"
 _FUDAN_ORI10 = {"reward_set": "fudan_v3", "fudan_scale_overrides": {"orientation": -10.0}}
+_FUDAN_M32 = {**_FUDAN_ORI10, "flat_warmup": False, "stairs_up_step_height_range": (0.05, 0.20)}
 # (task id, env_cfg 覆盖, rl_cfg 覆盖)
 _EXP_VARIANTS = (
     (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}, {}),
@@ -48,14 +51,19 @@ _EXP_VARIANTS = (
     ),
     (
         EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_STEP5_TASK_ID,
-        {**_FUDAN_ORI10, "flat_warmup": False, "stairs_up_step_height_range": (0.05, 0.20)},
+        _FUDAN_M32,
+        {"init_std": 1.5},
+    ),
+    (
+        EXP_FUDAN_REWARD_STEP5_STAIRREW_TASK_ID,
+        {**_FUDAN_M32, "fudan_stair_rewards": True},
         {"init_std": 1.5},
     ),
 )
 
 
 def register() -> None:
-    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M32 临时对照入口。"""
+    """注册原始 Rough（MLP）、Rough-GRU、台阶定向评测任务与 M26–M33 临时对照入口。"""
     register_mjlab_task(
         task_id=TASK_ID,
         env_cfg=env_cfg(),
@@ -92,6 +100,7 @@ __all__ = [
     "EXP_FUDAN_REWARD_ORI10_STD15_NOWARMUP_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_STD15_TASK_ID",
     "EXP_FUDAN_REWARD_ORI10_TASK_ID",
+    "EXP_FUDAN_REWARD_STEP5_STAIRREW_TASK_ID",
     "EXP_FUDAN_REWARD_TASK_ID",
     "EXP_HEIGHT_WINDOW_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",

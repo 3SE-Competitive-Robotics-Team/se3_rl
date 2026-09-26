@@ -135,6 +135,8 @@ ROUGH_ALL_TERRAIN_TYPE_NAMES = tuple(ROUGH_TERRAIN_PROPORTIONS)
 # 台阶专项奖励（A12；消融 A7/A8：撤掉任一项台阶列速度归零）。
 ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
 ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
+# M33：加回复旦奖励表的两项台阶专项奖励，名字即 `_apply_rough_rewards` 里注册的键（权重取上面两个常量）。
+ROUGH_FUDAN_STAIR_REWARDS: tuple[str, ...] = ("stair_climb_progress", "stair_support_height")
 # 速度违令二次罚（A6 起台阶列，A15 起全六列）。误差归一化尺度 3.0：0.5 时台阶列全程贴封顶 9、
 # 梯度没了且 −18/s 的常数负奖励会教出自杀策略（A10）；3.0 时误差 1.65 → −0.57/s、2.35 → −1.23/s。
 ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT = FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY
@@ -298,6 +300,7 @@ def env_cfg(
     fudan_scale_overrides: Mapping[str, float] | None = None,
     flat_warmup: bool = True,
     stairs_up_step_height_range: tuple[float, float] | None = None,
+    fudan_stair_rewards: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -310,6 +313,8 @@ def env_cfg(
     two_step_gate 在没有热身状态时处理全部 env。
     stairs_up_step_height_range：只改上台阶列阶高范围（M32 取 5–20 cm），None 沿用 ROUGH_STEP_HEIGHT_RANGE；
     只能与默认地形集一起用，地形感知高度下限按新范围自动计算。
+    fudan_stair_rewards：只在 "fudan_v3" 下生效，把本仓库的 stair_climb_progress / stair_support_height 原样
+    （权重、参数不变，不走复旦逐项限幅）加回复旦奖励表（M33）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -323,6 +328,8 @@ def env_cfg(
     unknown = set(fudan_scale_overrides) - set(fudan_rewards.FUDAN_V3_SCALES)
     if unknown:
         raise ValueError(f"fudan_scale_overrides 含未知奖励项：{sorted(unknown)}")
+    if fudan_stair_rewards and reward_set != "fudan_v3":
+        raise ValueError("fudan_stair_rewards 只能配合 reward_set='fudan_v3' 使用")
     if stairs_up_step_height_range is not None and terrain_generator is not None:
         raise ValueError(
             "stairs_up_step_height_range 只能配合默认地形集，不能与 terrain_generator 同时给"
@@ -431,7 +438,9 @@ def env_cfg(
 
     _apply_rough_rewards(cfg, stair_height_reference=stair_height_reference)
     if reward_set == "fudan_v3":
-        _apply_fudan_v3_rewards(cfg, scale_overrides=fudan_scale_overrides)
+        _apply_fudan_v3_rewards(
+            cfg, scale_overrides=fudan_scale_overrides, stair_rewards=fudan_stair_rewards
+        )
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -611,7 +620,10 @@ def _apply_rough_rewards(
 
 
 def _apply_fudan_v3_rewards(
-    cfg: ManagerBasedRlEnvCfg, *, scale_overrides: Mapping[str, float] | None = None
+    cfg: ManagerBasedRlEnvCfg,
+    *,
+    scale_overrides: Mapping[str, float] | None = None,
+    stair_rewards: bool = False,
 ) -> None:
     """把整张奖励表换成复旦 v3 的全地形统一奖励（口径与已知差异见 fudan_rewards 模块说明）。
 
@@ -620,8 +632,11 @@ def _apply_fudan_v3_rewards(
     原 tracking_lin_vel 只作 shadow 调用保留日志：速度课程读它写的 `Locomotion/tracking_lin_vel_reward_curriculum`，
     删掉速度上限会永远停在 0；它的返回值不计入奖励。
     scale_overrides：按项名覆盖复旦权重，调用方已校验项名。
+    stair_rewards：把 `_apply_rough_rewards` 刚注册的两项台阶专项奖励原样留下（M33）。它们是一次性计酬
+    （按新增进度、每阶一次），套复旦的每秒 ±1 限幅会把支撑奖励的脉冲削掉，所以不限幅。
     """
     track = cfg.rewards["tracking_lin_vel"]
+    kept = {name: cfg.rewards[name] for name in ROUGH_FUDAN_STAIR_REWARDS} if stair_rewards else {}
     scales = {**fudan_rewards.FUDAN_V3_SCALES, **(scale_overrides or {})}
     command = {"command_name": "velocity_height"}
 
@@ -654,6 +669,7 @@ def _apply_fudan_v3_rewards(
         "action_rate": term("action_rate", fudan_rewards.action_rate),
         "action_smooth": term("action_smooth", fudan_rewards.ActionSmooth),
         "dof_pos_limits": term("dof_pos_limits", fudan_rewards.dof_pos_limits_clipped),
+        **kept,
     }
 
 
@@ -677,6 +693,7 @@ __all__ = [
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
+    "ROUGH_FUDAN_STAIR_REWARDS",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
