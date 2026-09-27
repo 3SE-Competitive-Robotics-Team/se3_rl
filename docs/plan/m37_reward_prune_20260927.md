@@ -61,3 +61,15 @@ nulltask1 三卡（GPU 0–2）× 8192 envs、4000 轮、保存间隔 200、seed
 - 首轮核验：第 21 轮在迭代、无 Traceback、无 nefc overflow，3.11 s/轮，三卡 11.6–12.0 GB、利用率 84–85%，已导出 `model_0.onnx`。
   远端 `params/env.yaml` 奖励表 24 项，五项已不在表中，`flat_base_height.dead_zone_m: 0.05`。
 - 启动前 W&B 网关计划任务处于 Ready（M35/M36 停止后自行退出），`schtasks /Run` 后网关就绪、Pod 经代理可达 api.wandb.ai。
+
+### 改到 nulltask-5c45cdd89b-whtws 七卡（2026-09-27 用户定）
+
+- nulltask1 上的三卡 run（8bmlcdk4）按用户指令在 230 轮 SIGINT 停止，作废。
+- 新容器 `nulltask-5c45cdd89b-whtws`（profile 见 `.agents/skills/remote-dev-se3/machines/`）：仓库从 5af0d00 bundle 快进到 `448c7e4`；
+  GPU 0、16 环境 smoke 5 轮通过、奖励表 24 项、`model_4.onnx` 导出。
+- 启动：2026-09-27 22:18（UTC 14:18），七卡 `--gpu-ids all` × 8192 envs、5000 轮、保存 200、seed 42，`WANDB_MODE=disabled`
+  （该容器未配 W&B 在线链路，指标看 run 目录下的 TensorBoard 事件文件）。
+- run：`2026-09-27_14-18-53_rough-M37-dz5-prune5-seed42-7x8192-5k`，PID/PGID `1810096`，
+  state `/workspace/.se3-training-state/whtws/20260927T141846Z`（`train.log`、`pid`、`run_dir`）。
+- 首轮核验：第 12 轮在迭代、无 Traceback、无 nefc overflow，3.14 s/轮，七卡 13.0–13.5 GB、利用率 82–88%，已导出 `model_0.onnx`，
+  `params/env.yaml` 奖励表 24 项、num_envs 8192。每轮样本量是 M35 的 2.3 倍，按同 iteration 对比 M35 带批量混杂。
