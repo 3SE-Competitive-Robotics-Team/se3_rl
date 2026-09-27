@@ -300,13 +300,12 @@ def env_cfg(
     wheel_offset_dead_zone_m: float = ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
     wheel_height_diff_dead_zone_m: float = ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
-    stair_climb_progress_weight: float = ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
-    stair_height_dead_zone_m（M35）/ stair_climb_progress_weight（M36）：台阶提速对照的两个单变量开关。
+    stair_height_dead_zone_m（M35）：上台阶列窗口高度罚死区，台阶提速对照的单变量开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -414,7 +413,6 @@ def env_cfg(
         cfg,
         stair_height_reference=stair_height_reference,
         stair_height_dead_zone_m=stair_height_dead_zone_m,
-        stair_climb_progress_weight=stair_climb_progress_weight,
     )
     # M34：允许单独关闭轮子几何罚的死区，保留 M25–M27 的原始配置以供对照。
     cfg.rewards["wheel_fore_aft_offset"].params["dead_zone_m"] = wheel_offset_dead_zone_m
@@ -486,17 +484,12 @@ def _apply_rough_rewards(
     *,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
-    stair_climb_progress_weight: float = ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
 ) -> None:
-    """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。
-
-    stair_climb_progress_weight（M36，2026-09-26 用户定）：进度奖励与爬升速度成正比、整块总量封顶，
-    是账本里唯一"提速即多赚、不碰姿态流形"的正项；默认 3.0，M36 对照取 6.0。
-    """
+    """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
     cfg.rewards = dict(cfg.rewards)
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
         func=stair_rewards.stair_climb_progress,
-        weight=float(stair_climb_progress_weight),
+        weight=ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
     )
     cfg.rewards["stair_support_height"] = RewardTermCfg(
