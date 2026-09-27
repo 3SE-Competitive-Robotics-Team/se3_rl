@@ -52,4 +52,12 @@ nulltask1 三卡（GPU 0–2）× 8192 envs、4000 轮、保存间隔 200、seed
 
 ## 启动记录
 
-（启动后补）
+代码 commit `9e07b44`（子模块 `e753ce6`），Pod 已 ff 到同一 commit；本地入口 CPU smoke 5 轮通过；DryRun 通过。
+
+- 启动时间：2026-09-27 22:02（Pod 时区），GPU 0–2，三卡 × 8192、4000 轮、保存 200、seed 42。
+- run：`2026-09-27_22-02-50_rough-M37-dz5-prune5-seed42-3x8192-4k`，
+  W&B [8bmlcdk4](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/8bmlcdk4)，PGID 591544，
+  state `/workspace/.se3-training-state/nulltask1/20260927T140244Z-29981`。
+- 首轮核验：第 21 轮在迭代、无 Traceback、无 nefc overflow，3.11 s/轮，三卡 11.6–12.0 GB、利用率 84–85%，已导出 `model_0.onnx`。
+  远端 `params/env.yaml` 奖励表 24 项，五项已不在表中，`flat_base_height.dead_zone_m: 0.05`。
+- 启动前 W&B 网关计划任务处于 Ready（M35/M36 停止后自行退出），`schtasks /Run` 后网关就绪、Pod 经代理可达 api.wandb.ai。
