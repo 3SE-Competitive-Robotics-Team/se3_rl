@@ -61,6 +61,7 @@ from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -268,6 +269,11 @@ ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.0
 #   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令 ±0.3 永远开不了，与 tracking_ang_vel 重复计酬；
 #   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线，30° 以上已由 bad_orientation 终止接手；
 #   wheel_fore_aft_offset / wheel_height_diff  用户决定对称只保留 joint_mirror 一条关节空间定价。
+# M38（2026-09-28 用户定）：M37 + 全局向上奖励 `mdp.rewards.upward`（(1 − pg_z)²，直立 4、侧躺 1、倒置 0）权重 1.0。
+# 形状：0–20° 内几乎是 +4/s 常数工资（18° 只少 0.2/s，是 orientation_l2 同角度的 1/6），45° 以上才有量；
+# 它不受列掩码，等于给台阶列重新发 4 倍 is_alive 的工资（M2 曾把 is_alive 在台阶列置零），判据里要盯台阶列低速冻住。
+# None = 不加（M37 及之前）。
+ROUGH_UPWARD_WEIGHT: float | None = None
 ROUGH_M37_DROPPED_REWARDS: tuple[str, ...] = (
     "command_velocity_error",
     "tracking_lin_yaw_joint",
@@ -314,6 +320,7 @@ def env_cfg(
     wheel_height_diff_dead_zone_m: float = ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     dropped_rewards: tuple[str, ...] = (),
+    upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -321,6 +328,7 @@ def env_cfg(
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
     stair_height_dead_zone_m（M35）：上台阶列窗口高度罚死区，台阶提速对照的单变量开关。
     dropped_rewards（M37）：组装完成后整项删除的奖励名，名字必须存在；用于删重叠定价的对照。
+    upward_weight（M38）：不为 None 时加全局向上奖励 `upward`，全列生效、无门控。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -437,6 +445,9 @@ def env_cfg(
         if name not in cfg.rewards:
             raise KeyError(f"dropped_rewards 里的 {name!r} 不在奖励表中：{sorted(cfg.rewards)}")
         del cfg.rewards[name]
+    # M38：全局向上奖励，放在删除之后，避免被 dropped_rewards 误删。
+    if upward_weight is not None:
+        cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -668,6 +679,7 @@ __all__ = [
     "ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS",
     "ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT",
     "ROUGH_TRACKING_LIN_VEL_WEIGHT",
+    "ROUGH_UPWARD_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS",
     "ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M",

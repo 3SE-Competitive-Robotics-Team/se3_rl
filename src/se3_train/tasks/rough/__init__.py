@@ -26,20 +26,21 @@ EXP_STAIR_HEIGHT_DZ5_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowDz5NoWheel
 # M37（2026-09-27 用户定）：M35 + 整组删掉五项重叠定价（ROUGH_M37_DROPPED_REWARDS），
 # 见 docs/plan/m37_reward_prune_20260927.md。同为临时入口。
 EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowDz5Prune5"
+# M38（2026-09-28 用户定）：M37 + upward 权重 1.0（docs/plan/m38_upward_20260928.md）。同为临时入口。
+EXP_STAIR_HEIGHT_DZ5_PRUNE_UPWARD_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowDz5Prune5Upward1"
 _M34 = {
     "stair_height_reference": "window",
     "wheel_offset_dead_zone_m": 0.0,
     "wheel_height_diff_dead_zone_m": 0.0,
 }
+_M37 = {**_M34, "stair_height_dead_zone_m": 0.05, "dropped_rewards": ROUGH_M37_DROPPED_REWARDS}
 _EXP_VARIANTS = (
     (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}),
     (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
     (EXP_NO_WHEEL_DEADZONE_TASK_ID, _M34),
     (EXP_STAIR_HEIGHT_DZ5_TASK_ID, {**_M34, "stair_height_dead_zone_m": 0.05}),
-    (
-        EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID,
-        {**_M34, "stair_height_dead_zone_m": 0.05, "dropped_rewards": ROUGH_M37_DROPPED_REWARDS},
-    ),
+    (EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID, _M37),
+    (EXP_STAIR_HEIGHT_DZ5_PRUNE_UPWARD_TASK_ID, {**_M37, "upward_weight": 1.0}),
 )
 
 
@@ -80,6 +81,7 @@ __all__ = [
     "EXP_HEIGHT_WINDOW_TASK_ID",
     "EXP_NO_WHEEL_DEADZONE_TASK_ID",
     "EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID",
+    "EXP_STAIR_HEIGHT_DZ5_PRUNE_UPWARD_TASK_ID",
     "EXP_STAIR_HEIGHT_DZ5_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",
     "GRU_TASK_ID",
