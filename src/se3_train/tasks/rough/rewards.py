@@ -273,6 +273,7 @@ def base_height_penalty_window_on_terrain(
     terrain_type_names: tuple[str, ...] = ("stairs_up",),
     sigma: float = 0.05,
     max_error: float | None = 0.15,
+    dead_zone_m: float = 0.0,
 ) -> torch.Tensor:
     """机身高度罚：指定列改用机身周围窗口的地面均值作参考、罚改成有界形状，其余列与 Flat 原函数逐位相同。
 
@@ -283,6 +284,12 @@ def base_height_penalty_window_on_terrain(
     罚取 1 − exp(−e²/σ²)：小误差时与原二次罚 e²/σ² 曲率相同，大误差封顶 1（乘权重 −4 即每秒最多 −4），
     原口径夹 ±0.15 m 时峰值是 (0.15/σ)² = 2.25。`max_error` 只作用于其余列的 Flat 原函数。
     顺带记台阶列窗口与支撑面两种口径的 |误差| 均值。
+
+    `dead_zone_m`（M35，2026-09-26 用户定）：只对指定列的窗口罚生效，|误差| 先减去死区再进核，死区内免费；
+    日志仍记原始误差。M34-7800 第 9 级确定性回放的账本（.scratch/m34_eval/window_height_err.py）：窗口口径误差
+    68–86% 的时间偏低（p10 −8…−10 cm），罚款 80% 落在过沿过渡段，单边只罚偏低几乎不省钱（0.62 → 0.58/s），
+    ±5 cm 死区把每秒罚从 0.62/0.85/0.98（爬升 0.73/0.81/0.89 m/s）压到 0.09/0.15/0.22，即把这项随速度上涨的
+    部分从每快 0.08 m/s 多付 0.22/s 压到 0.06/s。0 = 原样（M27/M34）。
     """
     penalty = flat_base_height_penalty_no_jump(
         env,
@@ -298,7 +305,10 @@ def base_height_penalty_window_on_terrain(
     active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
     frame_z = env.scene[height_sensor_name].data.frame_pos_w[:, 0, 2]
     error = frame_z - ground_height_estimate(env, window_sensor_name) - cmd[:, 4]
-    window = (1.0 - torch.exp(-error.square() / (float(sigma) ** 2))) * active.float()
+    shaped = error
+    if float(dead_zone_m) > 0.0:
+        shaped = torch.sign(error) * (error.abs() - float(dead_zone_m)).clamp(min=0.0)
+    window = (1.0 - torch.exp(-shaped.square() / (float(sigma) ** 2))) * active.float()
     log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
     if isinstance(log, dict):
         keep = (mask & active).float()

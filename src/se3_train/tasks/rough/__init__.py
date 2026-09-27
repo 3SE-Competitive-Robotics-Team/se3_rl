@@ -19,17 +19,22 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 EXP_STAIR_SPEED_CAP_TASK_ID = "SE3-WheelLegged-Rough-Exp-StairSpeedCap"
 EXP_HEIGHT_WINDOW_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindow"
 EXP_NO_WHEEL_DEADZONE_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowNoWheelDeadzone"
+# M35/M36（2026-09-26 用户定）：以 M34 为基线各改一个变量，回答"上台阶为什么慢"
+# （docs/plan/m35_m36_stair_speed_20260926.md）。M35：上台阶列窗口高度罚加 ±5 cm 死区；
+# M36：stair_climb_progress 权重 3 → 6。同为临时入口。
+EXP_STAIR_HEIGHT_DZ5_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowDz5NoWheelDeadzone"
+EXP_STAIR_PROGRESS6_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowNoWheelDeadzoneProgress6"
+_M34 = {
+    "stair_height_reference": "window",
+    "wheel_offset_dead_zone_m": 0.0,
+    "wheel_height_diff_dead_zone_m": 0.0,
+}
 _EXP_VARIANTS = (
     (EXP_STAIR_SPEED_CAP_TASK_ID, {"stair_speed_cap": True}),
     (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
-    (
-        EXP_NO_WHEEL_DEADZONE_TASK_ID,
-        {
-            "stair_height_reference": "window",
-            "wheel_offset_dead_zone_m": 0.0,
-            "wheel_height_diff_dead_zone_m": 0.0,
-        },
-    ),
+    (EXP_NO_WHEEL_DEADZONE_TASK_ID, _M34),
+    (EXP_STAIR_HEIGHT_DZ5_TASK_ID, {**_M34, "stair_height_dead_zone_m": 0.05}),
+    (EXP_STAIR_PROGRESS6_TASK_ID, {**_M34, "stair_climb_progress_weight": 6.0}),
 )
 
 
@@ -69,6 +74,8 @@ def register() -> None:
 __all__ = [
     "EXP_HEIGHT_WINDOW_TASK_ID",
     "EXP_NO_WHEEL_DEADZONE_TASK_ID",
+    "EXP_STAIR_HEIGHT_DZ5_TASK_ID",
+    "EXP_STAIR_PROGRESS6_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

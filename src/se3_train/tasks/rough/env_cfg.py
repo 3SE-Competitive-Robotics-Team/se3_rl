@@ -258,6 +258,10 @@ ROUGH_BASE_HEIGHT_SUPPORT_SENSOR = "stair_reward_height"
 #   "window"  = 复旦口径：机身周围 77 点窗口均值（复用 critic 高度扫描）+ 有界罚 1 − exp(−e²/σ²)，
 #               见 rewards.base_height_penalty_window_on_terrain。σ、权重 −4、生效列与 support 相同。
 ROUGH_STAIR_HEIGHT_REFERENCE = "support"
+# M35（2026-09-26 用户定）：窗口口径高度罚在上台阶列的死区（m），只在 "window" 口径下有意义；0 = 原样。
+# 依据 M34-7800 反事实账本（docs/plan/m35_m36_stair_speed_20260926.md）：窗口高度罚是唯一随爬升速度明显上涨的罚项，
+# 误差以过沿时机身偏低为主，±5 cm 死区去掉其 85%，动作罚（action_rate / action_smoothness）在 0.73–0.89 m/s 间不变。
+ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.0
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
 # 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
@@ -295,16 +299,21 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     wheel_offset_dead_zone_m: float = ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
     wheel_height_diff_dead_zone_m: float = ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
+    stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
+    stair_climb_progress_weight: float = ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
+    stair_height_dead_zone_m（M35）/ stair_climb_progress_weight（M36）：台阶提速对照的两个单变量开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
         )
+    if float(stair_height_dead_zone_m) > 0.0 and stair_height_reference != "window":
+        raise ValueError("stair_height_dead_zone_m 只对 'window' 口径生效，support 口径请保持 0")
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -401,7 +410,12 @@ def env_cfg(
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
     )
 
-    _apply_rough_rewards(cfg, stair_height_reference=stair_height_reference)
+    _apply_rough_rewards(
+        cfg,
+        stair_height_reference=stair_height_reference,
+        stair_height_dead_zone_m=stair_height_dead_zone_m,
+        stair_climb_progress_weight=stair_climb_progress_weight,
+    )
     # M34：允许单独关闭轮子几何罚的死区，保留 M25–M27 的原始配置以供对照。
     cfg.rewards["wheel_fore_aft_offset"].params["dead_zone_m"] = wheel_offset_dead_zone_m
     cfg.rewards["wheel_height_diff"].params["dead_zone_m"] = wheel_height_diff_dead_zone_m
@@ -468,13 +482,21 @@ def env_cfg(
 
 
 def _apply_rough_rewards(
-    cfg: ManagerBasedRlEnvCfg, *, stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE
+    cfg: ManagerBasedRlEnvCfg,
+    *,
+    stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
+    stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
+    stair_climb_progress_weight: float = ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
 ) -> None:
-    """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
+    """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。
+
+    stair_climb_progress_weight（M36，2026-09-26 用户定）：进度奖励与爬升速度成正比、整块总量封顶，
+    是账本里唯一"提速即多赚、不碰姿态流形"的正项；默认 3.0，M36 对照取 6.0。
+    """
     cfg.rewards = dict(cfg.rewards)
     cfg.rewards["stair_climb_progress"] = RewardTermCfg(
         func=stair_rewards.stair_climb_progress,
-        weight=ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT,
+        weight=float(stair_climb_progress_weight),
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
     )
     cfg.rewards["stair_support_height"] = RewardTermCfg(
@@ -507,6 +529,7 @@ def _apply_rough_rewards(
     if stair_height_reference == "window":
         height_func = rewards.base_height_penalty_window_on_terrain
         height_params["window_sensor_name"] = ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME
+        height_params["dead_zone_m"] = float(stair_height_dead_zone_m)
     else:
         height_func = rewards.base_height_penalty_support_on_terrain
     cfg.rewards["flat_base_height"] = replace(height, func=height_func, params=height_params)
@@ -613,6 +636,7 @@ __all__ = [
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_STAIR_HEIGHT_DEAD_ZONE_M",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_HEIGHT_REFERENCE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
