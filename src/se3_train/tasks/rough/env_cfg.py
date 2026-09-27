@@ -262,6 +262,19 @@ ROUGH_STAIR_HEIGHT_REFERENCE = "support"
 # 依据 M34-7800 反事实账本（docs/plan/m35_m36_stair_speed_20260926.md）：窗口高度罚是唯一随爬升速度明显上涨的罚项，
 # 误差以过沿时机身偏低为主，±5 cm 死区去掉其 85%，动作罚（action_rate / action_smoothness）在 0.73–0.89 m/s 间不变。
 ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.0
+# M37（2026-09-27 用户定）：在 M35 基线上整组删掉五项重叠定价，其余逐位不变。
+# 依据 docs/plan/m37_reward_prune_20260927.md 的形状分析：
+#   command_velocity_error  lin_vel_scale 3.0 下 1.0 m/s 误差只罚 0.20、斜率不到 1，是常数税不是远端梯度（台阶列实付 −0.68/s）；
+#   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令 ±0.3 永远开不了，与 tracking_ang_vel 重复计酬；
+#   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线，30° 以上已由 bad_orientation 终止接手；
+#   wheel_fore_aft_offset / wheel_height_diff  用户决定对称只保留 joint_mirror 一条关节空间定价。
+ROUGH_M37_DROPPED_REWARDS: tuple[str, ...] = (
+    "command_velocity_error",
+    "tracking_lin_yaw_joint",
+    "bad_tilt",
+    "wheel_fore_aft_offset",
+    "wheel_height_diff",
+)
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
 # 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
@@ -300,12 +313,14 @@ def env_cfg(
     wheel_offset_dead_zone_m: float = ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
     wheel_height_diff_dead_zone_m: float = ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
+    dropped_rewards: tuple[str, ...] = (),
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
     stair_height_dead_zone_m（M35）：上台阶列窗口高度罚死区，台阶提速对照的单变量开关。
+    dropped_rewards（M37）：组装完成后整项删除的奖励名，名字必须存在；用于删重叠定价的对照。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -417,6 +432,11 @@ def env_cfg(
     # M34：允许单独关闭轮子几何罚的死区，保留 M25–M27 的原始配置以供对照。
     cfg.rewards["wheel_fore_aft_offset"].params["dead_zone_m"] = wheel_offset_dead_zone_m
     cfg.rewards["wheel_height_diff"].params["dead_zone_m"] = wheel_height_diff_dead_zone_m
+    # M37：整项删除；放在全部组装之后，删的是最终表里的项，不影响其余项的函数与参数。
+    for name in dropped_rewards:
+        if name not in cfg.rewards:
+            raise KeyError(f"dropped_rewards 里的 {name!r} 不在奖励表中：{sorted(cfg.rewards)}")
+        del cfg.rewards[name]
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -619,6 +639,7 @@ __all__ = [
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
+    "ROUGH_M37_DROPPED_REWARDS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",

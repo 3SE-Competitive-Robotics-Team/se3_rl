@@ -5,7 +5,7 @@ from mjlab.tasks.registry import register_mjlab_task
 from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
-from .env_cfg import env_cfg
+from .env_cfg import ROUGH_M37_DROPPED_REWARDS, env_cfg
 from .rl_cfg import gru_rl_cfg, rl_cfg
 from .terrains import stair_only_terrains_cfg
 
@@ -23,6 +23,9 @@ EXP_NO_WHEEL_DEADZONE_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowNoWheelDe
 # （docs/plan/m35_m36_stair_speed_20260926.md）。2026-09-27 用户判定 M35 优于 M36（进度权重 ×2），
 # M36 入口已删除（复现用 commit 5af0d00）。M35 是当前 rough 线的保留配置。同为临时入口。
 EXP_STAIR_HEIGHT_DZ5_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowDz5NoWheelDeadzone"
+# M37（2026-09-27 用户定）：M35 + 整组删掉五项重叠定价（ROUGH_M37_DROPPED_REWARDS），
+# 见 docs/plan/m37_reward_prune_20260927.md。同为临时入口。
+EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightWindowDz5Prune5"
 _M34 = {
     "stair_height_reference": "window",
     "wheel_offset_dead_zone_m": 0.0,
@@ -33,6 +36,10 @@ _EXP_VARIANTS = (
     (EXP_HEIGHT_WINDOW_TASK_ID, {"stair_height_reference": "window"}),
     (EXP_NO_WHEEL_DEADZONE_TASK_ID, _M34),
     (EXP_STAIR_HEIGHT_DZ5_TASK_ID, {**_M34, "stair_height_dead_zone_m": 0.05}),
+    (
+        EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID,
+        {**_M34, "stair_height_dead_zone_m": 0.05, "dropped_rewards": ROUGH_M37_DROPPED_REWARDS},
+    ),
 )
 
 
@@ -72,6 +79,7 @@ def register() -> None:
 __all__ = [
     "EXP_HEIGHT_WINDOW_TASK_ID",
     "EXP_NO_WHEEL_DEADZONE_TASK_ID",
+    "EXP_STAIR_HEIGHT_DZ5_PRUNE_TASK_ID",
     "EXP_STAIR_HEIGHT_DZ5_TASK_ID",
     "EXP_STAIR_SPEED_CAP_TASK_ID",
     "GRU_TASK_ID",
