@@ -109,7 +109,7 @@ PPO value/surrogate loss 为有限值；课程统计 `vel_tracking_lin_vel` 在�
 | 网关脚本 | 笔记本 `C:\Users\Lenovo\.local\bin\whtws-wandb-gateway.ps1`（由 nulltask1 脚本替换名字生成） |
 | 计划任务 | `SE3-Whtws-WandbGateway`（登录触发、失败重启），状态 `~/.local/state/whtws-wandb-gateway/gateway.log` |
 | Pod 内代理地址 | `http://10.10.10.116:38444` |
-| Secret | `whtws-wandb`（namespace 同）：HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy 已填；`WANDB_API_KEY` 待用户定 |
+| Secret | `whtws-wandb`（namespace 同）：HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy 已填；`WANDB_API_KEY` 2026-09-28 由用户批准从 `nulltask1-wandb` 服务端复制（值未离开集群），启动器 `--dry-run` 已通过 W&B 认证探测 |
 | 启动器 | 本机 Git Bash `C:\Users\13567\.local\bin\start-whtws-training.sh`，Secret 在入口机读取经 stdin 注入 Pod，`--dry-run` 只做预检（含 W&B 认证探测） |
 
 验证（2026-09-28 00:31）：网关日志 `Firewall refreshed: pod_ip=172.16.3.151` / `gateway is ready`；Pod 经 38444 到 api.wandb.ai 返回 404（可达），
