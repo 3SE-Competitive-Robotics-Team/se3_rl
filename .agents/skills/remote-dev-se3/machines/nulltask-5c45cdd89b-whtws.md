@@ -99,8 +99,22 @@ PPO value/surrogate loss 为有限值；课程统计 `vel_tracking_lin_vel` 在�
 `logs/rsl_rl/SE3-WheelLegged-Flat-MLP/2026-09-27_04-48-01`。
 显式指定单卡时 CLI 参数应为 `--gpu-ids '[0]'`，或省略并使用默认值。
 
-未配置在线 W&B；验证使用禁用上传的 smoke 模式。
-不要套用 `nulltask1` 的代理防火墙和 Secret 配置。
+在线 W&B 链路于 2026-09-28 单独搭建（与 nulltask1 的链路并行、互不影响，不改 nulltask1 的脚本、链和 Secret）：
+
+| 环节 | 值 |
+|---|---|
+| 本机代理 | 共用笔记本 `proxy.exe` 127.0.0.1:18787（两条网关都只"复用"，谁都不拥有它） |
+| boring 隧道 | `whtws-wandb-proxy`：入口机 `0.0.0.0:38444` ← 笔记本 18787（`~/.boring.toml` 第二条，group se3） |
+| 入口机防火墙 | 链 `SE3_WANDB_WHTWS`，INPUT 规则注释 `se3-whtws-wandb-gateway`，dport 38444，只放行本 Pod IP |
+| 网关脚本 | 笔记本 `C:\Users\Lenovo\.local\bin\whtws-wandb-gateway.ps1`（由 nulltask1 脚本替换名字生成） |
+| 计划任务 | `SE3-Whtws-WandbGateway`（登录触发、失败重启），状态 `~/.local/state/whtws-wandb-gateway/gateway.log` |
+| Pod 内代理地址 | `http://10.10.10.116:38444` |
+| Secret | `whtws-wandb`（namespace 同）：HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy 已填；`WANDB_API_KEY` 待用户定 |
+| 启动器 | 本机 Git Bash `C:\Users\13567\.local\bin\start-whtws-training.sh`，Secret 在入口机读取经 stdin 注入 Pod，`--dry-run` 只做预检（含 W&B 认证探测） |
+
+验证（2026-09-28 00:31）：网关日志 `Firewall refreshed: pod_ip=172.16.3.151` / `gateway is ready`；Pod 经 38444 到 api.wandb.ai 返回 404（可达），
+nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退到 Ready 时先 `schtasks /Run /TN SE3-Whtws-WandbGateway`；
+隧道 closed 时 `boring open whtws-wandb-proxy`。
 
 现场检查可见 7 张 NVIDIA A800 80GB PCIe，驱动 535.54.03；GPU 占用是动态值，启动前复核。
 `/workspace` 当前位于容器 overlay，并非已确认的持久卷；Pod 被删除重建时，环境可能丢失。
