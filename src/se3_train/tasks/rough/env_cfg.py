@@ -441,6 +441,18 @@ def env_cfg(
     return cfg
 
 
+def history_mlp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """生成五帧 actor 历史观测的 Rough-MLP 环境，critic 保持单帧观测。"""
+    cfg = env_cfg(play=play)
+    actor_cfg = cfg.observations["actor"]
+    cfg.observations["actor"] = replace(
+        actor_cfg,
+        history_length=5,
+        flatten_history_dim=True,
+    )
+    return cfg
+
+
 def _apply_rough_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
     cfg.rewards = dict(cfg.rewards)
