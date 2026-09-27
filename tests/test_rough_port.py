@@ -1253,7 +1253,24 @@ class TwoStepGateRuntimeTests(unittest.TestCase):
         self.assertTrue(bool((types[original == up_col] == stairs_col).all()))
         self.assertTrue(bool((types[original == down_col] == flat_col).all()))
 
+        # 原属普通台阶的 env 仍在平地时，其平地等级不能提前打开门控。
+        native_stairs = torch.nonzero(original == stairs_col).flatten()
+        self.assertGreater(native_stairs.numel(), 1)
+        self.terrain.terrain_types[native_stairs] = flat_col
+        self.terrain.terrain_levels[native_stairs] = 6
+        out = self._run()
+        self.assertEqual(float(out["opened"]), 0.0)
+        self.assertEqual(float(out["gate_level"]), 0.0)
+
+        # 渐进迁移时只读取已到普通台阶的 env，仍在平地的高等级不参与平均。
+        self.terrain.terrain_types[native_stairs[0]] = stairs_col
+        self.terrain.terrain_levels[native_stairs[0]] = 4
+        out = self._run()
+        self.assertEqual(float(out["opened"]), 0.0)
+        self.assertEqual(float(out["gate_level"]), 4.0)
+
         # 把 stairs_up 的原生 env 抬到 5 级：门控打开，两列拿回自己的 env 且从第 0 行起步。
+        self.terrain.terrain_types[native_stairs] = stairs_col
         self.terrain.terrain_levels[original == stairs_col] = 5
         out = self._run()
         self.assertEqual(float(out["opened"]), 1.0)

@@ -148,10 +148,11 @@ def two_step_gate(
         opened = torch.zeros((), dtype=torch.bool, device=env.device)
         setattr(env, TWO_STEP_GATE_OPENED_ATTR, opened)
 
-    # 门控判据只看"本来就属于 gate 列"的 env，不受门控期迁进来的样本影响。
+    # 只统计原属且当前确实位于 gate 列的 env，排除热身期在平地升出的等级。
     level = torch.zeros((), device=env.device)
     if gate_terrain_name in names:
-        gate_mask = original == names.index(gate_terrain_name)
+        gate_col = names.index(gate_terrain_name)
+        gate_mask = (original == gate_col) & (terrain.terrain_types == gate_col)
         if bool(gate_mask.any()):
             level = terrain.terrain_levels[gate_mask].float().mean()
     if not bool(opened) and float(level) >= float(gate_level):
