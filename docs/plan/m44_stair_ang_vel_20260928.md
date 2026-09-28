@@ -29,4 +29,16 @@ yaw 指令 ±0.3 rad/s 小、且撞沿时机身被动扭转会被当成"跟踪�
 
 ## 启动记录
 
-（启动后补）
+代码 commit `d79e094`，whtws 仓库由 1361ba8 快进到同一 commit（M42/M43 在跑，其后续 ONNX 的 git HEAD 会记 d79e094）；
+本地入口 CPU smoke 5 轮通过，`tests/test_rough_port.py` 41 项通过。
+
+启动时笔记本上游到 api.wandb.ai 间歇超时/重置（proxy.py 日志 22–23 点每小时 40–60 次，与前两晚 W&B 显示 crashed 的时段一致；
+boring 隧道与网关本身正常，跑着的 run 靠 wandb 自身重试不受影响）。启动器的 W&B 预检改成 Pod 内 12 次 × 10 s 重试后一次通过。
+
+- 启动时间：2026-09-29 00:03（Pod 时区），GPU 4–5，两卡 × 8192、5000 轮、保存 200、seed 42，在线 W&B；与 M42（0–1）、M43（2–3）并行。
+- run：`2026-09-28_16-03-49_rough-M44-stairyaw-seed42-2x8192-5k`，
+  W&B [nirk75yr](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/nirk75yr)，PID/PGID `2313226`，
+  state `/workspace/.se3-training-state/whtws/20260928T160342Z`。
+- 首轮核验：第 16 轮在迭代、无 Traceback、无 nefc overflow，3.20 s/轮，GPU 4–5 各 11.0–11.4 GB、利用率 83–86%；
+  远端 `params/env.yaml`：`tracking_ang_vel` 3.0（σ 0.25、sigma_cmd_scale 0.4、ratio_blend 0.2、无门控，参数表里已无 `terrain_type_names`），
+  `tracking_lin_vel` 1.5 / `tracking_lin_vel_enhance` 1.5、无 narrow，共 25 项，与 M43 只差 yaw 跟踪一项。
