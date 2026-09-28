@@ -47,4 +47,14 @@ scale 翻倍后同一物理动作的归一化差分减半、平方 1/4，所以 
 
 ## 启动记录
 
-（启动后补）
+代码 commit `f4f515c`，whtws 仓库由 8ea3c9e 快进到同一 commit；本地入口 CPU smoke 5 轮通过（灾难终止 0）；
+smoke 导出的 ONNX metadata 核验：`robot/KP = [20,20,20,20,0,0]`、`robot/KD = [1.5,1.5,1.5,1.5,0.2,0.2]`、`policy_io/action/scale = [0.5×4, 10, 10]`、
+`robot_config_overridden = True`。启动器 `--dry-run` 通过。用户指定本条只用两张卡。
+
+- 启动时间：2026-09-28 23:18（Pod 时区），GPU 0–1，两卡 × 8192、5000 轮、保存 200、seed 42，在线 W&B。
+- run：`2026-09-28_15-18-44_rough-M42-fudanactuation-seed42-2x8192-5k`，
+  W&B [ir84bch8](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/ir84bch8)，PID/PGID `2296319`，
+  state `/workspace/.se3-training-state/whtws/20260928T151837Z`。
+- 首轮核验：第 33 轮在迭代、无 Traceback、无 nefc overflow，3.23 s/轮，两卡 11.0–11.4 GB、利用率 83–84%，其余五卡空闲；
+  远端 `params/env.yaml`：腿 stiffness 20 / damping 1.5、`wheel_scale 10.0`、action_rate −0.05、action_smoothness −0.05。
+- 批量是 M38–M41 七卡的 2/7，按同 iteration 对比带批量混杂。
