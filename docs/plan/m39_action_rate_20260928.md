@@ -27,4 +27,11 @@ M38（已定为默认，docs/plan/m38_upward_20260928.md）台阶列每秒账本
 
 ## 启动记录
 
-（启动后补）
+代码 commit `a724b49`，whtws 仓库由 02946a4 快进到同一 commit；本地入口 CPU smoke 5 轮通过（action_rate −0.1）；启动器 `--dry-run` 通过。
+
+- 启动时间：2026-09-28 12:42（Pod 时区），七卡 `--gpu-ids all` × 8192、5000 轮、保存 200、seed 42，在线 W&B。
+- run：`2026-09-28_04-42-40_rough-M39-actionrate010-seed42-7x8192-5k`，
+  W&B [uouikynn](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/uouikynn)，PID/PGID `2088093`，
+  state `/workspace/.se3-training-state/whtws/20260928T044233Z`。
+- 首轮核验：第 29 轮在迭代、无 Traceback、无 nefc overflow，3.13 s/轮，七卡 13.0–13.5 GB、利用率 84–87%；
+  远端 `params/env.yaml`：`action_rate.weight −0.1`、`upward.weight 1.0`。
