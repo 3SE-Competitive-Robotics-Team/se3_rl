@@ -19,6 +19,8 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 各对照 commit 见 env_cfg.py 模块 docstring 与 docs/plan/m3*_*.md。
 # M39（2026-09-28 用户定）：M38 默认 + action_rate 权重 −0.48 → −0.10（docs/plan/m39_action_rate_20260928.md）。临时入口。
 EXP_ACTION_RATE_010_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010"
+# M40（2026-09-28 用户定）：M39 + action_smoothness −0.12 → −0.06（docs/plan/m40_action_smooth_20260928.md）。临时入口。
+EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006"
 
 
 def register() -> None:
@@ -51,9 +53,17 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_ACTION_RATE_010_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID,
+        env_cfg=env_cfg(action_rate_weight=-0.10, action_smoothness_weight=-0.06),
+        play_env_cfg=env_cfg(play=True, action_rate_weight=-0.10, action_smoothness_weight=-0.06),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID",
     "EXP_ACTION_RATE_010_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
