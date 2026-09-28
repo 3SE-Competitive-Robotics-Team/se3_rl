@@ -17,6 +17,8 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 所以对照用任务入口而不是逐实验 commit 区分；对照结束、定下默认值后删除入口，复现用对应 commit。
 # 2026-09-28：M25–M38 的临时入口已全部删除，默认配置 = M38（env_cfg 模块常量），
 # 各对照 commit 见 env_cfg.py 模块 docstring 与 docs/plan/m3*_*.md。
+# M39（2026-09-28 用户定）：M38 默认 + action_rate 权重 −0.48 → −0.10（docs/plan/m39_action_rate_20260928.md）。临时入口。
+EXP_ACTION_RATE_010_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010"
 
 
 def register() -> None:
@@ -42,9 +44,17 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_ACTION_RATE_010_TASK_ID,
+        env_cfg=env_cfg(action_rate_weight=-0.10),
+        play_env_cfg=env_cfg(play=True, action_rate_weight=-0.10),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_ACTION_RATE_010_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "EXP_ACTION_RATE_010_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",

@@ -258,6 +258,9 @@ ROUGH_UPWARD_WEIGHT: float | None = 1.0
 #   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令 ±0.3 永远开不了，与 tracking_ang_vel 重复计酬；
 #   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线，30° 以上已由 bad_orientation 终止接手。
 ROUGH_DROPPED_FLAT_REWARDS: tuple[str, ...] = ("tracking_lin_yaw_joint", "bad_tilt")
+# M39（2026-09-28 用户定）：action_rate 权重 −0.48 → −0.10 的单变量对照。None = 沿用 Flat 的 −0.48（M38 默认）。
+# M34-7800 账本里 action_rate 在 0.73–0.89 m/s 间不随速度变（−0.55…−0.58/s），M38 台阶列实付 −0.85/s，是台阶列第二大罚项。
+ROUGH_ACTION_RATE_WEIGHT: float | None = None
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
 # 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
@@ -295,6 +298,7 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
+    action_rate_weight: float | None = ROUGH_ACTION_RATE_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -411,6 +415,11 @@ def env_cfg(
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
+    # M39：action_rate 权重覆盖（只改权重，函数与参数不动）。
+    if action_rate_weight is not None:
+        cfg.rewards["action_rate"] = replace(
+            cfg.rewards["action_rate"], weight=float(action_rate_weight)
+        )
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
@@ -566,6 +575,7 @@ def _apply_rough_rewards(
 
 
 __all__ = [
+    "ROUGH_ACTION_RATE_WEIGHT",
     "ROUGH_ALL_TERRAIN_TYPE_NAMES",
     "ROUGH_BASE_HEIGHT_SIGMA",
     "ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS",
