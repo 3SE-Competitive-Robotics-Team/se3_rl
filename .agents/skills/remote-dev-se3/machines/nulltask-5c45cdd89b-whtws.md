@@ -131,5 +131,7 @@ nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退
 
 | M40 | `SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006` / `28faab7` | `2026-09-28_11-21-00_rough-M40-actionrate010-smooth006-seed42-7x8192-5k` | 2216716 | `/workspace/.se3-training-state/whtws/20260928T112053Z` | 2026-09-28 19:21 启动，七卡 × 8192、5000 轮，在线 W&B `j5zwvw1x` |
 
+| M41 | `SE3-WheelLegged-Rough-Exp-ActionRate001NoSmooth` / `8ea3c9e` | `2026-09-28_13-11-28_rough-M41-actionrate001-nosmooth-seed42-7x8192-5k` | 2253936 | `/workspace/.se3-training-state/whtws/20260928T131121Z` | 2026-09-28 21:11 启动，七卡 × 8192、5000 轮，在线 W&B `pe5zdez0`；M40 为此在 1767 轮停止 |
+
 仓库于 2026-09-27 通过 git bundle 由 5af0d00 快进到 `448c7e4`，2026-09-28 再快进到 `25ca875`（子模块仍 `e753ce6`）。
 停止：`ps -o args= -g <pgid>` 核对 run name 后 `kill -INT -- -<pgid>`；容器 PID 1 不回收僵尸，defunct 条目可忽略。
