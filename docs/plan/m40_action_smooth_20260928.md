@@ -45,3 +45,10 @@ D 系列经验：σ 过 0.5 后站立极限环与抖动开始出现，−0.06 �
   state `/workspace/.se3-training-state/whtws/20260928T112053Z`。
 - 首轮核验：第 36 轮在迭代、无 Traceback、无 nefc overflow，3.13 s/轮，七卡 13.0–13.5 GB、利用率 80–86%；
   远端 `params/env.yaml`：`action_rate.weight −0.1`、`action_smoothness.weight −0.06`。
+
+## 停止（2026-09-28）
+
+为给 M41 腾卡，按用户指令在 1767 轮 SIGINT 停止（最后 checkpoint `model_1600`），未跑满。停止前曲线（1500 轮，对 M39 同轮次）：
+stairs_up 4.96（M39 6.03）、台阶列 vx 0.77（持平）、σ 0.47（M39 0.41）、平滑罚实付 −0.65（M39 −0.93）、action_rate −0.37（M39 −0.31）、
+灾难终止 0.02（M39 0.002）。约 1900 轮时台阶列负项：action_smoothness −0.65、orientation −0.51、高度 −0.46、action_rate −0.36、ang_vel_xy −0.30，
+两项动作罚合计仍占负项 37%。`model_1400.onnx` 已拉回本地。

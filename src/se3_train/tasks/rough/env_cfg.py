@@ -265,6 +265,8 @@ ROUGH_ACTION_RATE_WEIGHT: float | None = None
 # 依据：M39 跑满后 σ 0.41、静站无抖动；按 k = 2·w_rate + 6·w_smooth 的噪声成本标定（M38→M39 指数约 0.32），
 # −0.06 预计 σ 约 0.48，是 σ 0.5 以内能迈的最大一步（docs/plan/m40_action_smooth_20260928.md）。
 ROUGH_ACTION_SMOOTHNESS_WEIGHT: float | None = None
+# M41（2026-09-28 用户定）：action_smoothness 整项删除、action_rate −0.01（legged_gym 一类仓库的常规值；本仓库 −0.48 来自
+# Flat D 系列把动作罚当 σ 调节器的历史）。`action_smoothness_weight=0.0` 表示删除该项而不是留一个零权重项。
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
 # 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
@@ -425,11 +427,14 @@ def env_cfg(
         cfg.rewards["action_rate"] = replace(
             cfg.rewards["action_rate"], weight=float(action_rate_weight)
         )
-    # M40：action_smoothness 权重覆盖（只改权重，封顶与轮分量定价不动）。
+    # M40：action_smoothness 权重覆盖（只改权重，封顶与轮分量定价不动）；M41：0.0 = 整项删除。
     if action_smoothness_weight is not None:
-        cfg.rewards["action_smoothness"] = replace(
-            cfg.rewards["action_smoothness"], weight=float(action_smoothness_weight)
-        )
+        if float(action_smoothness_weight) == 0.0:
+            del cfg.rewards["action_smoothness"]
+        else:
+            cfg.rewards["action_smoothness"] = replace(
+                cfg.rewards["action_smoothness"], weight=float(action_smoothness_weight)
+            )
 
     cfg.terminations = dict(cfg.terminations)
     catastrophic = cfg.terminations["catastrophic_state"]
