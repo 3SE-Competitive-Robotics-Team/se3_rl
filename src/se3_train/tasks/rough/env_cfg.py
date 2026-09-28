@@ -279,6 +279,9 @@ ROUGH_LEG_KD: float | None = None
 # 尖核仍走 mdp.rewards.tracking_lin_vel（sigma_move = sigma_stand = 0.25、vz 0、无门控），
 # 以保留速度课程要读的 Locomotion/tracking_lin_vel_reward_curriculum 日志键；课程阈值 0.5 在更尖的核下会推得更慢。
 ROUGH_TRACKING_KERNEL: str = "se3"
+# M44（2026-09-28 用户定）：台阶列的 yaw 角速度跟踪加回来。默认 False = M2 起台阶列置零（tracking_ang_vel_off_terrain）；
+# True 时 tracking_ang_vel 恢复 Flat 原函数，全列同权同参（w 3.0、σ 0.25、sigma_cmd_scale 0.4、ratio_blend 0.2）。
+ROUGH_STAIR_ANG_VEL_TRACKING: bool = False
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -328,6 +331,7 @@ def env_cfg(
     leg_kp: float | None = ROUGH_LEG_KP,
     leg_kd: float | None = ROUGH_LEG_KD,
     tracking_kernel: str = ROUGH_TRACKING_KERNEL,
+    stair_ang_vel_tracking: bool = ROUGH_STAIR_ANG_VEL_TRACKING,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -473,6 +477,14 @@ def env_cfg(
             },
         )
         del cfg.rewards["tracking_lin_vel_narrow"]
+    # M44：台阶列 yaw 跟踪加回来——去掉 off_terrain 包装，恢复 Flat 原函数与原参数，全列统一。
+    if stair_ang_vel_tracking:
+        ang = cfg.rewards["tracking_ang_vel"]
+        cfg.rewards["tracking_ang_vel"] = replace(
+            ang,
+            func=mdp_rewards.tracking_ang_vel,
+            params={k: v for k, v in ang.params.items() if k != "terrain_type_names"},
+        )
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
@@ -678,6 +690,7 @@ __all__ = [
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
     "ROUGH_STAIRS_ZEROED_REWARDS",
+    "ROUGH_STAIR_ANG_VEL_TRACKING",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",

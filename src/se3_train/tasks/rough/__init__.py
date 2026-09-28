@@ -37,6 +37,9 @@ _M42 = {
 # M43（2026-09-28 用户定）：M42 + 速度跟踪核换成复旦的尖核 + 有界宽核（docs/plan/m43_fudan_tracking_20260928.md）。临时入口。
 EXP_FUDAN_TRACKING_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanActuationTracking"
 _M43 = {**_M42, "tracking_kernel": "fudan"}
+# M44（2026-09-28 用户定）：M43 + 台阶列 yaw 角速度跟踪加回来（docs/plan/m44_stair_ang_vel_20260928.md）。临时入口。
+EXP_STAIR_ANG_VEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanActuationTrackingStairYaw"
+_M44 = {**_M43, "stair_ang_vel_tracking": True}
 # M42（2026-09-28 用户定）：action_rate −0.05、action_smoothness −0.05（复旦上台阶3 的组合，对探索噪声的定价 k=0.4 与之等价，
 # docs/plan/m42_fudan_action_penalty_20260928.md）。临时入口。
 EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate005Smooth005"
@@ -101,6 +104,13 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_STAIR_ANG_VEL_TASK_ID,
+        env_cfg=env_cfg(**_M44),
+        play_env_cfg=env_cfg(play=True, **_M44),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_STAIR_ANG_VEL_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID,
         env_cfg=env_cfg(action_rate_weight=-0.05, action_smoothness_weight=-0.05),
         play_env_cfg=env_cfg(play=True, action_rate_weight=-0.05, action_smoothness_weight=-0.05),
@@ -116,6 +126,7 @@ __all__ = [
     "EXP_ACTION_RATE_010_TASK_ID",
     "EXP_FUDAN_ACTUATION_TASK_ID",
     "EXP_FUDAN_TRACKING_TASK_ID",
+    "EXP_STAIR_ANG_VEL_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
