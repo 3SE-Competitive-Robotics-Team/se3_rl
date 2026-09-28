@@ -37,4 +37,11 @@ D 系列经验：σ 过 0.5 后站立极限环与抖动开始出现，−0.06 �
 
 ## 启动记录
 
-（启动后补）
+代码 commit `28faab7`，whtws 仓库由 a724b49 快进到同一 commit；本地入口 CPU smoke 5 轮通过（action_rate −0.1、action_smoothness −0.06）；启动器 `--dry-run` 通过。
+
+- 启动时间：2026-09-28 19:21（Pod 时区），七卡 `--gpu-ids all` × 8192、5000 轮、保存 200、seed 42，在线 W&B。
+- run：`2026-09-28_11-21-00_rough-M40-actionrate010-smooth006-seed42-7x8192-5k`，
+  W&B [j5zwvw1x](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/j5zwvw1x)，PID/PGID `2216716`，
+  state `/workspace/.se3-training-state/whtws/20260928T112053Z`。
+- 首轮核验：第 36 轮在迭代、无 Traceback、无 nefc overflow，3.13 s/轮，七卡 13.0–13.5 GB、利用率 80–86%；
+  远端 `params/env.yaml`：`action_rate.weight −0.1`、`action_smoothness.weight −0.06`。
