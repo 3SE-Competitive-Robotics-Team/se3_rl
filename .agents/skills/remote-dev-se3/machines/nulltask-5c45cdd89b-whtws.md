@@ -134,6 +134,7 @@ nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退
 | M41 | `SE3-WheelLegged-Rough-Exp-ActionRate001NoSmooth` / `8ea3c9e` | `2026-09-28_13-11-28_rough-M41-actionrate001-nosmooth-seed42-7x8192-5k` | 2253936 | `/workspace/.se3-training-state/whtws/20260928T131121Z` | 2026-09-28 21:11 启动，七卡 × 8192、5000 轮，在线 W&B `pe5zdez0`；M40 为此在 1767 轮停止 |
 
 | M42 | `SE3-WheelLegged-Rough-Exp-FudanActuation` / `f4f515c` | `2026-09-28_15-18-44_rough-M42-fudanactuation-seed42-2x8192-5k` | 2296319 | `/workspace/.se3-training-state/whtws/20260928T151837Z` | 2026-09-28 23:18 启动，GPU 0–1 两卡 × 8192、5000 轮，在线 W&B `ir84bch8`；M41 为此在 1991 轮停止 |
+| M43 | `SE3-WheelLegged-Rough-Exp-FudanActuationTracking` / `1361ba8` | `2026-09-28_15-34-48_rough-M43-fudantracking-seed42-2x8192-5k` | 2302488 | `/workspace/.se3-training-state/whtws/20260928T153441Z` | 2026-09-28 23:34 启动，GPU 2–3 两卡 × 8192、5000 轮，在线 W&B `6lp5bbmy`；与 M42 并行（启动器 `--allow-concurrent`） |
 
 仓库于 2026-09-27 通过 git bundle 由 5af0d00 快进到 `448c7e4`，2026-09-28 再快进到 `25ca875`（子模块仍 `e753ce6`）。
 停止：`ps -o args= -g <pgid>` 核对 run name 后 `kill -INT -- -<pgid>`；容器 PID 1 不回收僵尸，defunct 条目可忽略。

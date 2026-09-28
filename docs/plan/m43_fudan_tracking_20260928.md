@@ -43,4 +43,14 @@
 
 ## 启动记录
 
-（启动后补）
+代码 commit `1361ba8`，whtws 仓库由 f4f515c 快进到同一 commit（M42 在跑，后续 M42 ONNX 的 git HEAD 会记 1361ba8）；
+本地入口 CPU smoke 5 轮通过（tracking_lin_vel 1.5、tracking_lin_vel_enhance 1.5、课程键正常记录）。
+启动器新增 `--allow-concurrent`（只要求申请的 GPU 显存 < 1 GiB，不再因已有 se3-train 进程拒绝），`--dry-run` 通过。
+
+- 启动时间：2026-09-28 23:34（Pod 时区），GPU 2–3，两卡 × 8192、5000 轮、保存 200、seed 42，在线 W&B；与 M42（GPU 0–1）并行。
+- run：`2026-09-28_15-34-48_rough-M43-fudantracking-seed42-2x8192-5k`，
+  W&B [6lp5bbmy](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/6lp5bbmy)，PID/PGID `2302488`，
+  state `/workspace/.se3-training-state/whtws/20260928T153441Z`。
+- 首轮核验：第 50 轮在迭代、无 Traceback、无 nefc overflow，3.17 s/轮，GPU 2–3 各 11.0–11.4 GB、利用率 84–86%（M42 在 0–1 同时 82–83%）；
+  远端 `params/env.yaml`：`tracking_lin_vel` 1.5（σ 0.25/0.25、vz 0、无门控）、`tracking_lin_vel_enhance` 1.5（σ 2.5）、
+  `tracking_lin_vel_narrow` 不存在、共 25 项；腿 scale 0.5 / 轮 10、腿 stiffness 20 / damping 1.5、action_rate −0.05、action_smoothness −0.05、upward 1.0。
