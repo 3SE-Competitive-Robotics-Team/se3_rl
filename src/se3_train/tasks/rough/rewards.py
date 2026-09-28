@@ -47,6 +47,23 @@ if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 
+def tracking_lin_vel_enhance(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sigma: float = 2.5,
+) -> torch.Tensor:
+    """复旦 `_reward_tracking_lin_vel_enhance`：exp(−e²/σ) − 1，e 为机身系 vx 与指令之差。
+
+    值域 (−1, 0]，是"宽核减一"的有界罚：小误差处接近 0，大误差处给 −1 的常数梯度尾巴。
+    与 mdp.rewards.tracking_lin_vel（σ 0.25、复旦尖核）成对使用（M43，2026-09-28）；σ 是指数分母。
+    全列生效、无门控、无 vz 项，与复旦一致。
+    """
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    error = robot.data.root_link_lin_vel_b[:, 0] - cmd[:, 0]
+    return torch.exp(-error.square() / float(sigma)) - 1.0
+
+
 def tracking_lin_vel_narrow(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -327,6 +344,7 @@ __all__ = [
     "column_scaled",
     "off_column",
     "tracking_ang_vel_off_terrain",
+    "tracking_lin_vel_enhance",
     "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
 ]

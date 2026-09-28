@@ -272,6 +272,16 @@ ROUGH_LEG_ACTION_SCALE: float | None = None
 ROUGH_WHEEL_ACTION_SCALE: float | None = None
 ROUGH_LEG_KP: float | None = None
 ROUGH_LEG_KD: float | None = None
+# M43（2026-09-28 用户定）：速度跟踪核换成复旦上台阶3 的一对（全列统一、不分列）：
+#   tracking_lin_vel         1.5 · exp(−e²/0.25)        （半额处误差 0.42 m/s）
+#   tracking_lin_vel_enhance 1.5 · (exp(−e²/2.5) − 1)   （有界罚，半额处 1.3 m/s）
+# 替换本仓库的"宽核（平地 σ 0.5 / 台阶列 1.44，w 6）+ 窄核（σ 0.04，w 3 / 台阶列 1）"。
+# 尖核仍走 mdp.rewards.tracking_lin_vel（sigma_move = sigma_stand = 0.25、vz 0、无门控），
+# 以保留速度课程要读的 Locomotion/tracking_lin_vel_reward_curriculum 日志键；课程阈值 0.5 在更尖的核下会推得更慢。
+ROUGH_TRACKING_KERNEL: str = "se3"
+ROUGH_FUDAN_TRACKING_SIGMA = 0.25
+ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
+ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
 # M41（2026-09-28 用户定）：action_smoothness 整项删除、action_rate −0.01（legged_gym 一类仓库的常规值；本仓库 −0.48 来自
 # Flat D 系列把动作罚当 σ 调节器的历史）。`action_smoothness_weight=0.0` 表示删除该项而不是留一个零权重项。
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
@@ -317,6 +327,7 @@ def env_cfg(
     wheel_action_scale: float | None = ROUGH_WHEEL_ACTION_SCALE,
     leg_kp: float | None = ROUGH_LEG_KP,
     leg_kd: float | None = ROUGH_LEG_KD,
+    tracking_kernel: str = ROUGH_TRACKING_KERNEL,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -438,6 +449,30 @@ def env_cfg(
         stair_height_reference=stair_height_reference,
         stair_height_dead_zone_m=stair_height_dead_zone_m,
     )
+    # M43：速度跟踪核换成复旦的尖核 + 有界宽核，去掉本仓库的窄核与分列宽核。
+    if tracking_kernel not in ("se3", "fudan"):
+        raise ValueError(f"tracking_kernel 只能是 'se3' 或 'fudan'，实际为 {tracking_kernel!r}")
+    if tracking_kernel == "fudan":
+        cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
+            func=mdp_rewards.tracking_lin_vel,
+            weight=ROUGH_FUDAN_TRACKING_WEIGHT,
+            params={
+                "command_name": "velocity_height",
+                "sigma_move": ROUGH_FUDAN_TRACKING_SIGMA,
+                "sigma_stand": ROUGH_FUDAN_TRACKING_SIGMA,
+                "vz_weight": 0.0,
+                "use_upright_gate": False,
+            },
+        )
+        cfg.rewards["tracking_lin_vel_enhance"] = RewardTermCfg(
+            func=rewards.tracking_lin_vel_enhance,
+            weight=ROUGH_FUDAN_TRACKING_WEIGHT,
+            params={
+                "command_name": "velocity_height",
+                "sigma": ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA,
+            },
+        )
+        del cfg.rewards["tracking_lin_vel_narrow"]
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
@@ -629,6 +664,9 @@ __all__ = [
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
+    "ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA",
+    "ROUGH_FUDAN_TRACKING_SIGMA",
+    "ROUGH_FUDAN_TRACKING_WEIGHT",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_LEG_ACTION_SCALE",
     "ROUGH_LEG_KD",
@@ -658,6 +696,7 @@ __all__ = [
     "ROUGH_TERRAIN_LIN_VEL_X_RANGE",
     "ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES",
     "ROUGH_TERRAIN_VZ_WEIGHT",
+    "ROUGH_TRACKING_KERNEL",
     "ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS",
     "ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT",
     "ROUGH_TRACKING_LIN_VEL_WEIGHT",
