@@ -23,13 +23,19 @@ M10：修 M9 的 bug——下行地形正常往下走会跌破 catastrophic_stat
 M11：非台阶列运动核退回 0.5，找回中高速段的分辨率（见 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE 注释）。
 M12：njmax 256 → 512，五列地形下 256 一直在溢出丢约束（见 ROUGH_NJMAX 注释）。
 M15：全程叠加窄核速度跟踪（w=1、σ=0.04）；M17：窄核权重 1 → 3（见 ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT 注释）。
-M18：左右轮前后错位罚 w·Δx²，台阶列置零；M19：改成只罚平地列 + 10 cm 死区（见 ROUGH_WHEEL_OFFSET_WEIGHT 注释）。
+M18：左右轮前后错位罚 w·Δx²，台阶列置零；M19：改成只罚平地列 + 10 cm 死区（M37 起删除，见下）。
 M20：窄核速度跟踪在上台阶列置零；M22：台阶列恢复到 w=1（见 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT 注释）。
-M23：上台阶列新增左右轮高度差罚，堵死走梯（见 ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT 注释）。
+M23：上台阶列新增左右轮高度差罚，堵死走梯（M37 起删除，见下）。
 M24：新增二级台阶上行/下行两列（复旦那道凸棱），上行列按 stairs_up 待遇、下行列按平地待遇；
 八处台阶开关统一引用 terrains.ROUGH_STAIR_LIKE_COLUMNS；两列由 curriculums.two_step_gate 门控，
 stairs_up 均级到 5 才开放（见 ROUGH_TWO_STEP_GATE_LEVEL）。
 M21：上台阶列机身高度罚的地面参考改为轮子支撑面（见 ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS 注释）。
+M27/M34：上台阶列高度参考改为复旦窗口口径 + 有界罚，两项轮几何罚死区归零（见 ROUGH_STAIR_HEIGHT_REFERENCE 注释）。
+M35：窗口高度罚加 ±5 cm 死区（见 ROUGH_STAIR_HEIGHT_DEAD_ZONE_M 注释）。
+M37：删五项重叠定价——command_velocity_error、tracking_lin_yaw_joint、bad_tilt、wheel_fore_aft_offset、
+wheel_height_diff（见 ROUGH_DROPPED_FLAT_REWARDS 注释，docs/plan/m37_reward_prune_20260927.md）。
+M38：加全局向上奖励 upward 权重 1.0（见 ROUGH_UPWARD_WEIGHT 注释）。2026-09-28 用户定 M38 为默认，临时入口全部删除，
+复现各对照用对应 commit（M34 1a10b73、M35 5af0d00、M37 9e07b44、M38 25ca875）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -65,8 +71,6 @@ from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
-    FLAT_CMD_VEL_DEADBAND,
-    FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY,
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
@@ -135,10 +139,8 @@ ROUGH_ALL_TERRAIN_TYPE_NAMES = tuple(ROUGH_TERRAIN_PROPORTIONS)
 # 台阶专项奖励（A12；消融 A7/A8：撤掉任一项台阶列速度归零）。
 ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
 ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
-# 速度违令二次罚（A6 起台阶列，A15 起全六列）。误差归一化尺度 3.0：0.5 时台阶列全程贴封顶 9、
-# 梯度没了且 −18/s 的常数负奖励会教出自杀策略（A10）；3.0 时误差 1.65 → −0.57/s、2.35 → −1.23/s。
-ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT = FLAT_COMMAND_VELOCITY_ERROR_WEIGHT_LEGACY
-ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE = 3.0
+# 速度违令二次罚（A6 起台阶列，A15 起全六列，lin_vel_scale 3.0）M37 起删除：3.0 下 1.0 m/s 误差只罚 0.20、
+# 斜率不到 1，是常数税不是远端梯度（docs/plan/m37_reward_prune_20260927.md）。
 # A15 非台阶列定价。A13b flat 列账本（96 env，指令 vx 2.0 / h 0.38）：站着不动净 +2.407/s、走路净
 # −2.932/s，走路必然产生的机身起伏被高度罚、核里的 vz 项、姿态罚罚了三遍。σ 0.05→0.10 收回 +3.11/s，
 # 运动核 0.08→0.5 与 vz 2.0→0 合计收回 +2.97/s；违令罚扩到全列只打在"不动"那边。
@@ -180,32 +182,9 @@ ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT = 3.0
 # 分列权重靠 rewards.column_scaled 实现（RewardTermCfg 只有一个 weight）。
 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT = 1.0
-# M18（2026-09-21 用户定）：左右轮前后错位罚。M17-7999 评测（docs/plan/m17_narrow_w3_20260920.md 附录）：
-# 前进时左右轮心在机身系里错开 +20…+29 cm（跨立步态，轮心距 0.433 → 0.49–0.52 m），38 cm 静站 −26 cm，
-# 倒退翻成右轮在前；M15 在 22/30 cm 也有 2–11 cm、38 cm 16–20 cm。机理：两轮前后错开后俯仰不再是倒立摆，
-# 跟踪近似静定，窄核 w=3 抬高了它的价值。joint_mirror −0.179 是关节空间量，Δx=28 cm 只花 0.18/s，等于免费。
-# 直接罚几何量 w·Δx²：w=40/m² 使 25 cm 花 2.5/s（与跟踪激励 +2.4…+3.7 同量级）、5 cm 只花 0.1/s；
-# 台阶列置零（爬升时一条腿先上，Δx 周期摆到 ±20 cm 是动作本身）。相对 M17 的唯一改动。
-ROUGH_WHEEL_OFFSET_WEIGHT = 40.0
-# M19（2026-09-21 用户定）：改形，权重不变。M18 跑到 4468 轮的中途核查：平地 |Δx| 已压到 1–5 cm，但共享策略把
-# "两轮齐平"学成全局习惯，台阶上也齐平，M17 那种一只轮先上 20 cm（轮高差 p95 20 cm）的走梯方式没了，只剩
-# 深前倾（−21°）双轮同抬的"扑着上"，用户判定动作流形不对。改成：只罚平地列（坡列、下台阶列不罚），
-# 并加 10 cm 死区——静站/平地行驶时 20–29 cm 的错位仍花 0.4–1.4/s，10 cm 以内免费，爬梯的一先一后不再被同一习惯压平。
-ROUGH_WHEEL_OFFSET_DEAD_ZONE_M = 0.10
-ROUGH_WHEEL_OFFSET_COLUMNS: tuple[str, ...] = ("flat",)
-# M23（2026-09-21 用户定）：上台阶列新增左右轮**高度**差罚，堵死走梯（一只轮先上一级、另一只在下一级推地）。
-# 为什么罚 Δz 不罚 Δx：爬升段两种流形的 |Δz| p95 切得很干净——目标流形 M15-7999 2.7/4.2、M18 0.2–2.7、
-# M21-2600 1.2/4.1，走梯 M17-7999 14.1/20.4、M22-1200 14.0/18.4；而前后错位 |Δx| 在两组完全重叠
-# （M15 均值 −10.5/−9.2 比 M22 的 −7.4/−7.8 还大），罚 Δx 会先把目标流形罚掉（docs/plan/m23_wheel_dz_20260921.md）。
-# 机制（.scratch/m22_eval/leg_pair.py）：M22 两条腿是同时收的（时差 0.00–0.08 s），慢的是后轮——
-# 左轮 0.12–0.24 s 抬起、右轮要 0.18–0.50 s，因为两轮前后错开后前轮先够到立面。根因是撞面速度不足
-# （M15 1.24–1.31 m/s 靠动量整体越沿，M22 只有 0.86–0.93、20 cm 第一道甚至 −0.10 被弹回），
-# 动量不够时"双轮同抬"要更大的瞬时减速，错开左右轮则不掉速，而台阶列的 Δx 罚 M19 起就关了，错开是免费的。
-# 定价：死区 0.08 留在 M15 的 p95（4.2 cm）之上两倍，爬升摆动免费；12 cm 罚 0.064/s、14 cm 0.144/s、
-# 18 cm 0.40/s、22 cm 0.78/s，与台阶列窄核收益（0.125/s）同量级，够抵消"错开省速度"的好处。
-ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT = 40.0
-ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M = 0.08
-ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_COLUMNS
+# M18/M19（左右轮前后错位罚 Δx²，平地列、10 cm 死区）与 M23（上台阶列左右轮高度差罚 Δz²、8 cm 死区）
+# 于 M37 删除：用户决定对称只保留 joint_mirror 一条关节空间定价；M34 曾把两项死区归零。
+# 历史与定价推导见 docs/plan/m18_wheel_offset_20260921.md、m23_wheel_dz_20260921.md、m37_reward_prune_20260927.md。
 ROUGH_TRACKING_LIN_VEL_NARROW_SIGMA = 0.04
 ROUGH_FLAT_VZ_WEIGHT = 0.0
 # 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
@@ -258,11 +237,11 @@ ROUGH_BASE_HEIGHT_SUPPORT_SENSOR = "stair_reward_height"
 #   "support" = M21 两轮支撑面 + 夹 ±0.15 m 的二次罚（现行默认）；
 #   "window"  = 复旦口径：机身周围 77 点窗口均值（复用 critic 高度扫描）+ 有界罚 1 − exp(−e²/σ²)，
 #               见 rewards.base_height_penalty_window_on_terrain。σ、权重 −4、生效列与 support 相同。
-ROUGH_STAIR_HEIGHT_REFERENCE = "support"
+ROUGH_STAIR_HEIGHT_REFERENCE = "window"
 # M35（2026-09-26 用户定）：窗口口径高度罚在上台阶列的死区（m），只在 "window" 口径下有意义；0 = 原样。
 # 依据 M34-7800 反事实账本（docs/plan/m35_m36_stair_speed_20260926.md）：窗口高度罚是唯一随爬升速度明显上涨的罚项，
 # 误差以过沿时机身偏低为主，±5 cm 死区去掉其 85%，动作罚（action_rate / action_smoothness）在 0.73–0.89 m/s 间不变。
-ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.0
+ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.05
 # M37（2026-09-27 用户定）：在 M35 基线上整组删掉五项重叠定价，其余逐位不变。
 # 依据 docs/plan/m37_reward_prune_20260927.md 的形状分析：
 #   command_velocity_error  lin_vel_scale 3.0 下 1.0 m/s 误差只罚 0.20、斜率不到 1，是常数税不是远端梯度（台阶列实付 −0.68/s）；
@@ -272,15 +251,13 @@ ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.0
 # M38（2026-09-28 用户定）：M37 + 全局向上奖励 `mdp.rewards.upward`（(1 − pg_z)²，直立 4、侧躺 1、倒置 0）权重 1.0。
 # 形状：0–20° 内几乎是 +4/s 常数工资（18° 只少 0.2/s，是 orientation_l2 同角度的 1/6），45° 以上才有量；
 # 它不受列掩码，等于给台阶列重新发 4 倍 is_alive 的工资（M2 曾把 is_alive 在台阶列置零），判据里要盯台阶列低速冻住。
-# None = 不加（M37 及之前）。
-ROUGH_UPWARD_WEIGHT: float | None = None
-ROUGH_M37_DROPPED_REWARDS: tuple[str, ...] = (
-    "command_velocity_error",
-    "tracking_lin_yaw_joint",
-    "bad_tilt",
-    "wheel_fore_aft_offset",
-    "wheel_height_diff",
-)
+# None = 不加（M37 及之前）。M38-4999 回放：撞面俯仰从 M37 的 −16…−18° 回到 −2…−10°，h=0.38 低速格子从卡变过；
+# 代价是台阶列 vx 0.79–0.86 → 0.72–0.75、落差后摔倒变多（docs/plan/m38_upward_20260928.md）。2026-09-28 起默认 1.0。
+ROUGH_UPWARD_WEIGHT: float | None = 1.0
+# 从 Flat 继承后整项删除的两项（另三项 rough 自己不再构造）：
+#   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令 ±0.3 永远开不了，与 tracking_ang_vel 重复计酬；
+#   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线，30° 以上已由 bad_orientation 终止接手。
+ROUGH_DROPPED_FLAT_REWARDS: tuple[str, ...] = ("tracking_lin_yaw_joint", "bad_tilt")
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
 # 无限平面、16 env）显示这是探索瓶颈而不是定价问题：h=0.38 静止起步时确定性动作回报 232.4、0 个跑起来；
 # 加训练实际噪声 σ=0.31 后只有 1/16 跑起来、采样里最好的 238.6 仍不如确定性的 261.8（优势全非正，
@@ -316,26 +293,20 @@ def env_cfg(
     terrain_generator: TerrainGeneratorCfg | None = None,
     stair_speed_cap: bool = ROUGH_STAIR_SPEED_CAP_ENABLED,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
-    wheel_offset_dead_zone_m: float = ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
-    wheel_height_diff_dead_zone_m: float = ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
-    dropped_rewards: tuple[str, ...] = (),
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
-    stair_speed_cap / stair_height_reference：两项对照实验的开关，默认取模块常量（见各常量注释）。
-    stair_height_dead_zone_m（M35）：上台阶列窗口高度罚死区，台阶提速对照的单变量开关。
-    dropped_rewards（M37）：组装完成后整项删除的奖励名，名字必须存在；用于删重叠定价的对照。
-    upward_weight（M38）：不为 None 时加全局向上奖励 `upward`，全列生效、无门控。
+    stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
+    默认取模块常量（当前默认 = M38：window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
         )
-    if float(stair_height_dead_zone_m) > 0.0 and stair_height_reference != "window":
-        raise ValueError("stair_height_dead_zone_m 只对 'window' 口径生效，support 口径请保持 0")
+    # stair_height_dead_zone_m 只进 "window" 口径的参数表；选 "support" 时忽略（M38 起默认死区 0.05，选回 support 不该报错）。
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -437,15 +408,7 @@ def env_cfg(
         stair_height_reference=stair_height_reference,
         stair_height_dead_zone_m=stair_height_dead_zone_m,
     )
-    # M34：允许单独关闭轮子几何罚的死区，保留 M25–M27 的原始配置以供对照。
-    cfg.rewards["wheel_fore_aft_offset"].params["dead_zone_m"] = wheel_offset_dead_zone_m
-    cfg.rewards["wheel_height_diff"].params["dead_zone_m"] = wheel_height_diff_dead_zone_m
-    # M37：整项删除；放在全部组装之后，删的是最终表里的项，不影响其余项的函数与参数。
-    for name in dropped_rewards:
-        if name not in cfg.rewards:
-            raise KeyError(f"dropped_rewards 里的 {name!r} 不在奖励表中：{sorted(cfg.rewards)}")
-        del cfg.rewards[name]
-    # M38：全局向上奖励，放在删除之后，避免被 dropped_rewards 误删。
+    # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
 
@@ -528,19 +491,9 @@ def _apply_rough_rewards(
         weight=ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT,
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
     )
-    cfg.rewards["command_velocity_error"] = RewardTermCfg(
-        func=rewards.command_velocity_error_on_terrain,
-        weight=float(ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT),
-        params={
-            "command_name": "velocity_height",
-            "terrain_type_names": ROUGH_ALL_TERRAIN_TYPE_NAMES,
-            "lin_vel_scale": ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
-            "yaw_vel_scale": 1.0,
-            "lin_deadband": float(FLAT_CMD_VEL_DEADBAND[0]),
-            "yaw_deadband": float(FLAT_CMD_VEL_DEADBAND[1]),
-            "max_penalty": 9.0,
-        },
-    )
+    # M37：从 Flat 继承的两项重叠定价整项删除（另三项 rough 不再构造）。
+    for name in ROUGH_DROPPED_FLAT_REWARDS:
+        del cfg.rewards[name]
     # M21：上台阶列高度参考改为轮子支撑面，其余列与 Flat 原函数逐位相同（σ 取 A15 的 0.10）。
     # "window" 口径换成机身周围 77 点窗口均值 + 有界罚，其余参数不变（见 ROUGH_STAIR_HEIGHT_REFERENCE）。
     height = cfg.rewards["flat_base_height"]
@@ -593,23 +546,6 @@ def _apply_rough_rewards(
             / ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT,
         },
     )
-    cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
-        func=rewards.wheel_fore_aft_offset,
-        weight=-ROUGH_WHEEL_OFFSET_WEIGHT,
-        params={
-            "apply_type_names": ROUGH_WHEEL_OFFSET_COLUMNS,
-            "dead_zone_m": ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
-        },
-    )
-    # M23：上台阶列的左右轮高度差罚（走梯罚），与上面的平地前后错位罚是两件事。
-    cfg.rewards["wheel_height_diff"] = RewardTermCfg(
-        func=rewards.wheel_height_diff,
-        weight=-ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT,
-        params={
-            "apply_type_names": ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS,
-            "dead_zone_m": ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
-        },
-    )
     # M2：台阶列不发工资、不罚爬升动作；权重与原参数逐位沿用 Flat，只在台阶列乘零。
     for name in ROUGH_STAIRS_ZEROED_REWARDS:
         term = cfg.rewards[name]
@@ -636,8 +572,6 @@ __all__ = [
     "ROUGH_BASE_HEIGHT_SUPPORT_SENSOR",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
     "ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT",
-    "ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE",
-    "ROUGH_COMMAND_VELOCITY_ERROR_WEIGHT",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
@@ -645,12 +579,12 @@ __all__ = [
     "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
+    "ROUGH_DROPPED_FLAT_REWARDS",
     "ROUGH_FALL_PENALTY",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
-    "ROUGH_M37_DROPPED_REWARDS",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
@@ -681,11 +615,5 @@ __all__ = [
     "ROUGH_TRACKING_LIN_VEL_WEIGHT",
     "ROUGH_UPWARD_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
-    "ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS",
-    "ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M",
-    "ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT",
-    "ROUGH_WHEEL_OFFSET_COLUMNS",
-    "ROUGH_WHEEL_OFFSET_DEAD_ZONE_M",
-    "ROUGH_WHEEL_OFFSET_WEIGHT",
     "env_cfg",
 ]
