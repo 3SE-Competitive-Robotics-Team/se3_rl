@@ -41,13 +41,23 @@ def _serialleg_spec_for_training(collision_geom_group: int | None = None) -> muj
 
 
 def get_serialleg_closedchain_cfg(
-    *, wheel_kd_override: float | None = None, collision_geom_group: int | None = None
+    *,
+    wheel_kd_override: float | None = None,
+    collision_geom_group: int | None = None,
+    leg_kp_override: float | None = None,
+    leg_kd_override: float | None = None,
 ) -> EntityCfg:
-    """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。"""
+    """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
+
+    leg_kp_override / leg_kd_override（M42，2026-09-28）：腿 PD 增益覆盖，None 取 se3_shared.RobotConfig（60 / 3.0）。
+    覆盖值会随 actuator cfg 写进 ONNX metadata 的 KP/KD，sim2x 与真机按 metadata 执行，不需要改 runtime。
+    """
+    leg_kp = _ROBOT_CFG.leg_kp if leg_kp_override is None else float(leg_kp_override)
+    leg_kd = _ROBOT_CFG.leg_kd if leg_kd_override is None else float(leg_kd_override)
     leg_actuator_cfg = DcMotorActuatorCfg(
         target_names_expr=JointGroup.POLICY_LEG_NAMES,
-        stiffness=_ROBOT_CFG.leg_kp,
-        damping=_ROBOT_CFG.leg_kd,
+        stiffness=leg_kp,
+        damping=leg_kd,
         saturation_effort=DM8009P.stall_torque,
         velocity_limit=DM8009P.no_load_speed,
         effort_limit=DM8009P.rated_torque,

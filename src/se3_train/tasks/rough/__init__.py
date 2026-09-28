@@ -23,6 +23,20 @@ EXP_ACTION_RATE_010_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010"
 EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006"
 # M41（2026-09-28 用户定）：删 action_smoothness、action_rate −0.01（docs/plan/m41_action_rate_001_20260928.md）。临时入口。
 EXP_ACTION_RATE_001_NO_SMOOTH_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate001NoSmooth"
+# M42（2026-09-28 用户定）：执行链对齐复旦量级（腿 scale 0.5、轮 10、腿 kp 20 / kd 1.5）+ 动作罚 −0.05 / −0.05
+# （docs/plan/m42_fudan_actuation_20260928.md）。临时入口。
+EXP_FUDAN_ACTUATION_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanActuation"
+_M42 = {
+    "action_rate_weight": -0.05,
+    "action_smoothness_weight": -0.05,
+    "leg_action_scale": 0.5,
+    "wheel_action_scale": 10.0,
+    "leg_kp": 20.0,
+    "leg_kd": 1.5,
+}
+# M42（2026-09-28 用户定）：action_rate −0.05、action_smoothness −0.05（复旦上台阶3 的组合，对探索噪声的定价 k=0.4 与之等价，
+# docs/plan/m42_fudan_action_penalty_20260928.md）。临时入口。
+EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate005Smooth005"
 
 
 def register() -> None:
@@ -69,12 +83,28 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_ACTION_RATE_001_NO_SMOOTH_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_FUDAN_ACTUATION_TASK_ID,
+        env_cfg=env_cfg(**_M42),
+        play_env_cfg=env_cfg(play=True, **_M42),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_FUDAN_ACTUATION_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
+        task_id=EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID,
+        env_cfg=env_cfg(action_rate_weight=-0.05, action_smoothness_weight=-0.05),
+        play_env_cfg=env_cfg(play=True, action_rate_weight=-0.05, action_smoothness_weight=-0.05),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_ACTION_RATE_001_NO_SMOOTH_TASK_ID",
+    "EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID",
     "EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID",
     "EXP_ACTION_RATE_010_TASK_ID",
+    "EXP_FUDAN_ACTUATION_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",

@@ -265,6 +265,13 @@ ROUGH_ACTION_RATE_WEIGHT: float | None = None
 # 依据：M39 跑满后 σ 0.41、静站无抖动；按 k = 2·w_rate + 6·w_smooth 的噪声成本标定（M38→M39 指数约 0.32），
 # −0.06 预计 σ 约 0.48，是 σ 0.5 以内能迈的最大一步（docs/plan/m40_action_smooth_20260928.md）。
 ROUGH_ACTION_SMOOTHNESS_WEIGHT: float | None = None
+# M42（2026-09-28 用户定）：执行链对齐复旦上台阶3 的量级——单位动作对应的力矩：复旦腿 kp15×0.5=7.5 N·m、轮 kd0.1×10=1.0 N·m，
+# 本仓库默认腿 60×0.25=15、轮 0.2×15=3.0，同样的 σ 物理上抖 2–3 倍。M42 取腿 scale 0.5、轮 10、腿 kp 20 / kd 1.5
+# （轮 kd 0.2 不动）→ 腿 10 N·m/单位、轮 2.0 N·m/单位。None = 默认（se3_shared.RobotConfig / Flat 常量）。
+ROUGH_LEG_ACTION_SCALE: float | None = None
+ROUGH_WHEEL_ACTION_SCALE: float | None = None
+ROUGH_LEG_KP: float | None = None
+ROUGH_LEG_KD: float | None = None
 # M41（2026-09-28 用户定）：action_smoothness 整项删除、action_rate −0.01（legged_gym 一类仓库的常规值；本仓库 −0.48 来自
 # Flat D 系列把动作罚当 σ 调节器的历史）。`action_smoothness_weight=0.0` 表示删除该项而不是留一个零权重项。
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
@@ -306,6 +313,10 @@ def env_cfg(
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
     action_rate_weight: float | None = ROUGH_ACTION_RATE_WEIGHT,
     action_smoothness_weight: float | None = ROUGH_ACTION_SMOOTHNESS_WEIGHT,
+    leg_action_scale: float | None = ROUGH_LEG_ACTION_SCALE,
+    wheel_action_scale: float | None = ROUGH_WHEEL_ACTION_SCALE,
+    leg_kp: float | None = ROUGH_LEG_KP,
+    leg_kd: float | None = ROUGH_LEG_KD,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -318,15 +329,23 @@ def env_cfg(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
         )
     # stair_height_dead_zone_m 只进 "window" 口径的参数表；选 "support" 时忽略（M38 起默认死区 0.05，选回 support 不该报错）。
+    flat_kwargs = {}
+    if leg_action_scale is not None:
+        flat_kwargs["leg_action_scale"] = float(leg_action_scale)
     cfg = flat_env_cfg(
         play=play,
-        wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
+        wheel_action_scale=FLAT_WHEEL_ACTION_SCALE
+        if wheel_action_scale is None
+        else float(wheel_action_scale),
         action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
+        **flat_kwargs,
     )
 
     cfg.scene.entities = {
         "robot": get_serialleg_closedchain_cfg(
-            collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP
+            collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
+            leg_kp_override=leg_kp,
+            leg_kd_override=leg_kd,
         )
     }
     cfg.scene.terrain = TerrainEntityCfg(
@@ -611,6 +630,9 @@ __all__ = [
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
+    "ROUGH_LEG_ACTION_SCALE",
+    "ROUGH_LEG_KD",
+    "ROUGH_LEG_KP",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
@@ -641,5 +663,6 @@ __all__ = [
     "ROUGH_TRACKING_LIN_VEL_WEIGHT",
     "ROUGH_UPWARD_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
+    "ROUGH_WHEEL_ACTION_SCALE",
     "env_cfg",
 ]

@@ -168,6 +168,7 @@ def env_cfg(
     play: bool = False,
     *,
     wheel_action_scale: float = _FLAT_LEGACY_WHEEL_ACTION_SCALE,
+    leg_action_scale: float = _FLAT_LEG_ACTION_SCALE,
     action_smoothness: tuple[float, float, float] = FLAT_ACTION_SMOOTHNESS_LEGACY,
     command_velocity_deadband: tuple[float, float] = FLAT_CMD_VEL_DEADBAND,
     flat_wheel_contact_weight: float = FLAT_WHEEL_CONTACT_WEIGHT,
@@ -186,6 +187,7 @@ def env_cfg(
 ) -> ManagerBasedRlEnvCfg:
     """SerialLeg 轮腿机器人的平地环境配置。
 
+    leg_action_scale：腿 raw action → 关节目标（rad）的 scale，默认 0.25；rough M42 对照传 0.5。
     wheel_action_scale：轮 raw action → 轮速目标（rad/s）的 scale。默认 45 供继承线沿用旧契约；
     Flat 任务注册时传 FLAT_WHEEL_ACTION_SCALE=15。动作空间罚项（action_rate / action_smoothness）
     的轮分量按 (wheel_action_scale/45)² 折算，保证同一物理轮速轨迹的罚款与 scale 无关。
@@ -371,7 +373,7 @@ def env_cfg(
     cfg.actions = {
         "delayed_action": SerialLegDelayedActionCfg(
             entity_name="robot",
-            leg_scales=(_FLAT_LEG_ACTION_SCALE,) * 4,
+            leg_scales=(float(leg_action_scale),) * 4,
             wheel_scale=float(wheel_action_scale),
             action_clip=_ROBOT_DEFAULTS.action_clip,
             leg_action_semantics=leg_action_semantics,
