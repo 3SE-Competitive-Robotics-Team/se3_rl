@@ -295,6 +295,11 @@ ROUGH_FUDAN_HEIGHT_STAIR_REFERENCE: str = "window"
 # M47（2026-09-29 用户定，以 M39 为底）：删 bad_orientation 终止（倾角 > 30° 连续 100 步即终止并吃 fall_penalty −500）。
 # 删后失败终止只剩数值发散的 catastrophic_state，倒地 env 躺到 20 s 超时，只由姿态/触地等奖励项计价。True = 保留（默认）。
 ROUGH_BAD_ORIENTATION_TERMINATION: bool = True
+# M48（2026-09-29 用户定，以 M47 为底）：joint_mirror 权重 −0.179 → −5。M47-2794 近 200 轮 Recovery/diag_joint_mirror
+# 均值 0.152 rad²（每对关节左右差约 22°），每秒只扣 0.03，对腿部姿态几乎不约束。复旦 nominal_state = −1.0·(θ0左−θ0右)²，
+# 按每对关节折算是本仓库的 11 倍，再按跟踪总权重（本仓库 9 对复旦 3）折算约 30 倍；−5 在当前误差下每秒约 −0.76，
+# 左右差 10° 时约 −0.15。None = 沿用 Flat 的 −0.179。
+ROUGH_JOINT_MIRROR_WEIGHT: float | None = None
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -348,6 +353,7 @@ def env_cfg(
     height_shape: str = ROUGH_HEIGHT_SHAPE,
     fudan_height_stair_reference: str = ROUGH_FUDAN_HEIGHT_STAIR_REFERENCE,
     bad_orientation_termination: bool = ROUGH_BAD_ORIENTATION_TERMINATION,
+    joint_mirror_weight: float | None = ROUGH_JOINT_MIRROR_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -529,6 +535,11 @@ def env_cfg(
             func=rewards.base_height_fudan_enhance,
             weight=1.0,
             params=height_common,
+        )
+    # M48：joint_mirror 权重覆盖（见 ROUGH_JOINT_MIRROR_WEIGHT）。
+    if joint_mirror_weight is not None:
+        cfg.rewards["joint_mirror"] = replace(
+            cfg.rewards["joint_mirror"], weight=float(joint_mirror_weight)
         )
     # M38：全局向上奖励。
     if upward_weight is not None:
@@ -731,6 +742,7 @@ __all__ = [
     "ROUGH_FUDAN_TRACKING_WEIGHT",
     "ROUGH_HEIGHT_SHAPE",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
+    "ROUGH_JOINT_MIRROR_WEIGHT",
     "ROUGH_LEG_ACTION_SCALE",
     "ROUGH_LEG_KD",
     "ROUGH_LEG_KP",
