@@ -43,6 +43,7 @@ M38：加全局向上奖励 upward 权重 1.0（见 ROUGH_UPWARD_WEIGHT 注释�
 
 from __future__ import annotations
 
+import math
 from dataclasses import fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -305,6 +306,11 @@ ROUGH_JOINT_MIRROR_WEIGHT: float | None = None
 # 竖直分量（左右腿长差）留给 roll 指令，平地侧倾由 tracking_orientation_l2 计价。w −50/m²：Δx 5/10/20 cm 每秒 0.13/0.5/2.0，
 # 22° 摆角差约对应 11 cm、每秒约 0.6，与 M48 的 joint_mirror −5 同量级。None = 不加该项。
 ROUGH_WHEEL_FORE_AFT_WEIGHT: float | None = None
+# M50 改动一（2026-09-29 用户定，以 M49 为底）：台阶列不再采样 yaw 角速度指令（stair_ang_vel_yaw_range → (0, 0)），
+# 转向多样性改由初始朝向提供；初始朝向从全向均匀 (−180°, 180°) 收窄为「正对某一面台阶 ± 30°」（stair_facing_yaw 钩子）。
+# 台阶列 = stairs_up、stairs_two_step_up；其余列指令与朝向不变。None = 不改（沿用 ±0.3 rad/s 与全向朝向）。
+ROUGH_STAIR_YAW_COMMAND_OVERRIDE: tuple[float, float] | None = None
+ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG: float | None = None
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -360,6 +366,8 @@ def env_cfg(
     bad_orientation_termination: bool = ROUGH_BAD_ORIENTATION_TERMINATION,
     joint_mirror_weight: float | None = ROUGH_JOINT_MIRROR_WEIGHT,
     wheel_fore_aft_weight: float | None = ROUGH_WHEEL_FORE_AFT_WEIGHT,
+    stair_ang_vel_yaw_range: tuple[float, float] | None = ROUGH_STAIR_YAW_COMMAND_OVERRIDE,
+    stair_spawn_yaw_half_range_deg: float | None = ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -556,6 +564,25 @@ def env_cfg(
             func=rewards.wheel_fore_aft_offset,
             weight=float(wheel_fore_aft_weight),
             params={"dead_zone_m": 0.0},
+        )
+    # M50：台阶列 yaw 指令与初始朝向（见 ROUGH_STAIR_YAW_COMMAND_OVERRIDE / ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG）。
+    if stair_ang_vel_yaw_range is not None:
+        cfg.commands["velocity_height"].stair_ang_vel_yaw_range = (
+            float(stair_ang_vel_yaw_range[0]),
+            float(stair_ang_vel_yaw_range[1]),
+        )
+    if stair_spawn_yaw_half_range_deg is not None:
+        reset_root = cfg.events["reset_root_state"]
+        cfg.events["reset_root_state"] = replace(
+            reset_root,
+            params={
+                **(reset_root.params or {}),
+                "yaw_sampler": events.stair_facing_yaw,
+                "yaw_sampler_params": {
+                    "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+                    "half_range_rad": math.radians(float(stair_spawn_yaw_half_range_deg)),
+                },
+            },
         )
     # M38：全局向上奖励。
     if upward_weight is not None:
@@ -777,9 +804,11 @@ __all__ = [
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_HEIGHT_REFERENCE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
+    "ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG",
     "ROUGH_STAIR_SPEED_CAP_ENABLED",
     "ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT",
     "ROUGH_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_STAIR_YAW_COMMAND_OVERRIDE",
     "ROUGH_STEPS_PER_POLICY_ITER",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
     "ROUGH_TERRAIN_COMMAND_FLAT_NAMES",

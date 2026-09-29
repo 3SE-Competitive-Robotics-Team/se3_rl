@@ -30,6 +30,10 @@ _M48 = {**_M47, "joint_mirror_weight": -5.0}
 # 从 M48 最新 checkpoint 完整续训。临时入口。
 EXP_WHEEL_FORE_AFT_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010NoBadOriWheelDx50"
 _M49 = {**_M48, "joint_mirror_weight": 0.0, "wheel_fore_aft_weight": -50.0}
+# M50（2026-09-29 用户筹划中）：M49 + 台阶列不采样 yaw 指令、初始朝向正对台阶 ±30°（docs/plan/m50_stair_yaw_20260929.md）。
+# 改动还在累加，未启动。临时入口。
+EXP_M50_TASK_ID = "SE3-WheelLegged-Rough-Exp-M50"
+_M50 = {**_M49, "stair_ang_vel_yaw_range": (0.0, 0.0), "stair_spawn_yaw_half_range_deg": 30.0}
 # M40（2026-09-28 用户定）：M39 + action_smoothness −0.12 → −0.06（docs/plan/m40_action_smooth_20260928.md）。临时入口。
 EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006"
 # M41（2026-09-28 用户定）：删 action_smoothness、action_rate −0.01（docs/plan/m41_action_rate_001_20260928.md）。临时入口。
@@ -115,6 +119,13 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_M50_TASK_ID,
+        env_cfg=env_cfg(**_M50),
+        play_env_cfg=env_cfg(play=True, **_M50),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_M50_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID,
         env_cfg=env_cfg(action_rate_weight=-0.10, action_smoothness_weight=-0.06),
         play_env_cfg=env_cfg(play=True, action_rate_weight=-0.10, action_smoothness_weight=-0.06),
@@ -183,6 +194,7 @@ __all__ = [
     "EXP_FUDAN_HEIGHT_TASK_ID",
     "EXP_FUDAN_TRACKING_TASK_ID",
     "EXP_JOINT_MIRROR_TASK_ID",
+    "EXP_M50_TASK_ID",
     "EXP_STAIR_ANG_VEL_TASK_ID",
     "EXP_WHEEL_FORE_AFT_TASK_ID",
     "GRU_TASK_ID",

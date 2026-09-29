@@ -574,8 +574,14 @@ def reset_root_state_full(
     recovery_grace_steps: int = 400,
     recovery_mask_attr: str | None = None,
     yaw_range: tuple[float, float] = (-math.pi, math.pi),
+    yaw_sampler=None,
+    yaw_sampler_params: dict | None = None,
 ) -> None:
-    """重置 base 到默认站立状态，yaw 按给定范围采样，xy 小偏移。"""
+    """重置 base 到默认站立状态，yaw 按给定范围采样，xy 小偏移。
+
+    `yaw_sampler`（可选）：`yaw_sampler(env, env_ids, yaw, **yaw_sampler_params) -> yaw`，在均匀采样之后改写部分 env 的
+    初始 yaw（如 rough 台阶列只正对台阶 ±30°，M50）；None 时行为不变。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -665,6 +671,8 @@ def reset_root_state_full(
         (n,),
         env.device,
     )
+    if yaw_sampler is not None:
+        yaw = yaw_sampler(env, env_ids, yaw, **(yaw_sampler_params or {}))
     roll = torch.zeros(n, device=env.device)
     pitch = torch.zeros(n, device=env.device)
     cache_mask = torch.zeros(n, device=env.device, dtype=torch.bool)
