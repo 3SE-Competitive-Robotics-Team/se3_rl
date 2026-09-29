@@ -40,4 +40,14 @@
 
 ## 启动记录
 
-（启动后补）
+代码 commit `4398698`，whtws 仓库由 35952c0 快进到同一 commit；41 项 rough 测试通过，本地入口 CPU smoke 5 轮通过（无 Traceback）。
+配置核验：相对 M39 只删 `bad_orientation`，奖励、课程、动作逐项相同。M46 已在 1318 轮按用户指令停止，七卡全空。
+
+- 启动时间：2026-09-29 15:59（Pod 时区），七卡 × 8192、5000 轮、保存 200、seed 42，在线 W&B。
+- run：`2026-09-29_07-59-37_rough-M47-actionrate010-nobadori-seed42-7x8192-5k`，
+  W&B [87ahmuea](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/87ahmuea)，PID/PGID `2623517`，
+  state `/workspace/.se3-training-state/whtws/20260929T075930Z`。
+- 首轮核验：第 16 轮在迭代、无 Traceback、无 nefc overflow，3.16 s/轮，七卡各 13.0–13.5 GB、利用率 84–88%；
+  远端 `params/env.yaml` 终止项为 time_out、catastrophic_state、leg_contact、terrain_edge_reached、out_of_terrain_bounds，
+  action_rate −0.1、action_smoothness −0.12。
+- 启动器在非续训时因"Loading model checkpoint"一行 grep 不到而提前退出（训练已正常拉起，run_dir 手工补写），已修成 `|| true`。
