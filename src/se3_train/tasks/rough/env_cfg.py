@@ -282,6 +282,13 @@ ROUGH_TRACKING_KERNEL: str = "se3"
 # M44（2026-09-28 用户定）：台阶列的 yaw 角速度跟踪加回来。默认 False = M2 起台阶列置零（tracking_ang_vel_off_terrain）；
 # True 时 tracking_ang_vel 恢复 Flat 原函数，全列同权同参（w 3.0、σ 0.25、sigma_cmd_scale 0.4、ratio_blend 0.2）。
 ROUGH_STAIR_ANG_VEL_TRACKING: bool = False
+# M45（2026-09-29 用户定，以 M42 为底）：高度罚换成复旦上台阶3 的高度对（按原式、不裁剪；全列统一、窗口口径、无死区）：
+#   base_height_fudan          w 1 · 1.5·exp(−1000·e²)
+#   base_height_fudan_enhance  w 1 · (exp(−e²/0.01) − 1)   （有界罚，0 到 −1）
+# 整项替换 flat_base_height（台阶列：窗口口径 + ±5 cm 死区 + 核宽 0.10 有界、w −4；其余列：二次罚 σ 0.10 夹 ±15 cm）。
+# 依据（.scratch/m45_height/，model_4999 台阶列第 9 级确定性回放）：M42 机身 99–100% 时间低于指令、中位 −9 cm，
+# 现形状在 −4…−9 cm 每秒只收 0.1–0.9 且几乎无梯度；复旦形状同轨迹每秒损失 1.8，1–5 cm 区间最陡。
+ROUGH_HEIGHT_SHAPE: str = "se3"
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -332,6 +339,7 @@ def env_cfg(
     leg_kd: float | None = ROUGH_LEG_KD,
     tracking_kernel: str = ROUGH_TRACKING_KERNEL,
     stair_ang_vel_tracking: bool = ROUGH_STAIR_ANG_VEL_TRACKING,
+    height_shape: str = ROUGH_HEIGHT_SHAPE,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -484,6 +492,26 @@ def env_cfg(
             ang,
             func=mdp_rewards.tracking_ang_vel,
             params={k: v for k, v in ang.params.items() if k != "terrain_type_names"},
+        )
+    # M45：高度罚换成复旦式高度对（全列、窗口口径、无死区、不裁剪），整项替换 flat_base_height。
+    if height_shape not in ("se3", "fudan"):
+        raise ValueError(f"height_shape 只能是 'se3' 或 'fudan'，实际为 {height_shape!r}")
+    if height_shape == "fudan":
+        height_common = {
+            "command_name": "velocity_height",
+            "height_sensor_name": "base_height_sensor",
+            "window_sensor_name": ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+        }
+        del cfg.rewards["flat_base_height"]
+        cfg.rewards["base_height_fudan"] = RewardTermCfg(
+            func=rewards.base_height_fudan,
+            weight=1.0,
+            params={**height_common, "stair_type_names": ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS},
+        )
+        cfg.rewards["base_height_fudan_enhance"] = RewardTermCfg(
+            func=rewards.base_height_fudan_enhance,
+            weight=1.0,
+            params=height_common,
         )
     # M38：全局向上奖励。
     if upward_weight is not None:
@@ -679,6 +707,7 @@ __all__ = [
     "ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA",
     "ROUGH_FUDAN_TRACKING_SIGMA",
     "ROUGH_FUDAN_TRACKING_WEIGHT",
+    "ROUGH_HEIGHT_SHAPE",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_LEG_ACTION_SCALE",
     "ROUGH_LEG_KD",

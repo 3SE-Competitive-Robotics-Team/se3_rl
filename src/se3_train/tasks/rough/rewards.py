@@ -229,6 +229,57 @@ def base_height_penalty_window_on_terrain(
     return torch.where(mask, window, penalty)
 
 
+def _window_height_error(
+    env: ManagerBasedRlEnv, command_name: str, height_sensor_name: str, window_sensor_name: str
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """窗口口径高度误差 e = 机身 z − 机身周围 77 点地面均值 − 高度指令，与活跃掩码（非跳跃、非恢复 reset）。"""
+    cmd = env.command_manager.get_command(command_name)
+    active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
+    frame_z = env.scene[height_sensor_name].data.frame_pos_w[:, 0, 2]
+    error = frame_z - ground_height_estimate(env, window_sensor_name) - cmd[:, 4]
+    return error, active
+
+
+def base_height_fudan(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    window_sensor_name: str,
+    stair_type_names: tuple[str, ...] = ("stairs_up",),
+) -> torch.Tensor:
+    """复旦上台阶3 `_reward_base_height`（正权重分支）：1.5·exp(−1000·e²)，全列统一、窗口口径、无死区（M45，2026-09-29）。
+
+    按原式、不做复旦的逐项每秒 ±1 裁剪（用户定），峰值 1.5；核宽约 3.2 cm，1–5 cm 区间损失涨得最快。
+    顺带记全列与台阶列的带符号误差、|误差| 均值。
+    """
+    error, active = _window_height_error(env, command_name, height_sensor_name, window_sensor_name)
+    reward = 1.5 * torch.exp(-1000.0 * error.square())
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        act = active.float()
+        n = act.sum().clamp(min=1.0)
+        log["Rough/base_height_err_window_all"] = (error * act).sum() / n
+        log["Rough/base_height_abs_err_window_all"] = (error.abs() * act).sum() / n
+        mask = column_mask(env, stair_type_names)
+        if mask is not None:
+            keep = (mask & active).float()
+            m = keep.sum().clamp(min=1.0)
+            log["Rough/base_height_err_window_stairs_signed"] = (error * keep).sum() / m
+            log["Rough/base_height_err_window_stairs"] = (error.abs() * keep).sum() / m
+    return reward * active.float()
+
+
+def base_height_fudan_enhance(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    window_sensor_name: str,
+) -> torch.Tensor:
+    """复旦上台阶3 `_reward_base_height_enhance`：exp(−e²/0.01) − 1，值域 (−1, 0]，全列统一、窗口口径（M45）。"""
+    error, active = _window_height_error(env, command_name, height_sensor_name, window_sensor_name)
+    return (torch.exp(-error.square() / 0.01) - 1.0) * active.float()
+
+
 def off_column(
     env: ManagerBasedRlEnv,
     inner,
@@ -338,6 +389,8 @@ def tracking_lin_vel_terrain_vz(
 
 
 __all__ = [
+    "base_height_fudan",
+    "base_height_fudan_enhance",
     "base_height_penalty_off_terrain",
     "base_height_penalty_support_on_terrain",
     "base_height_penalty_window_on_terrain",
