@@ -40,4 +40,15 @@ M48 把 joint_mirror 从 −0.179 加到 −5。joint_mirror 罚前杆角与主�
 
 ## 启动记录
 
-（启动后补）
+代码 commit `d5db384`，whtws 仓库由 be494d1 快进到同一 commit；41 项 rough 测试通过，本地入口 CPU smoke 5 轮通过。
+配置核验：相对 M48 删 `joint_mirror`、加 `wheel_fore_aft_offset`，其余奖励与终止项逐项相同。
+
+- M48 在 1354 轮按用户指令停止，最新 checkpoint model_1200.pt（sha256 前缀 `3679ff244901647a`）复制到 `m48-src/`。
+- 启动时间：2026-09-29 20:22（Pod 时区），七卡 × 8192，从 1200 续 3800 轮到 5000，保存 200、seed 42，在线 W&B。
+- run：`2026-09-29_12-22-37_rough-M49-wheeldx50-from-m48-1200-seed42-7x8192`，
+  W&B [fxig1m4z](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/fxig1m4z)，PID/PGID `2711263`，
+  state `/workspace/.se3-training-state/whtws/20260929T122230Z`。
+- 首轮核验：日志加载 `m48-src/model_1200.pt`，迭代从 1200 接着走（1214 轮 3.46 s/轮），无 Traceback、无 nefc overflow，
+  七卡各 13.0–13.5 GB、利用率 77–87%；奖励表 `wheel_fore_aft_offset` −50.0、无 `joint_mirror`。
+- 续训开局：`Rough/wheel_dx_abs` 2.4 cm、`Rough/wheel_dz_body_abs` 1.0 cm（M48 的 joint_mirror −5 已把两轮压齐）；
+  回合长 200 步是地形等级重置与 critic 重拟合的开局期。
