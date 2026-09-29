@@ -42,4 +42,12 @@ joint_mirror = (前杆角左右差² + 主动杆角左右差²)/2 × 直立门�
 
 ## 启动记录
 
-（启动后补）
+代码 commit `be494d1`，whtws 仓库由 4398698 快进到同一 commit；41 项 rough 测试通过，本地入口 CPU smoke 5 轮通过。
+配置核验：相对 M47 只改 joint_mirror 权重，奖励键、终止项逐项相同。M47 在 2858 轮按用户指令停止。
+
+- 启动时间：2026-09-29 19:02（Pod 时区），七卡 × 8192、5000 轮、保存 200、seed 42，在线 W&B。
+- run：`2026-09-29_11-02-47_rough-M48-nobadori-mirror5-seed42-7x8192-5k`，
+  W&B [76yn2t4h](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/76yn2t4h)，PID/PGID `2683670`，
+  state `/workspace/.se3-training-state/whtws/20260929T110240Z`。
+- 首轮核验：第 12 轮在迭代、无 Traceback、无 nefc overflow，3.14 s/轮，七卡各 13.0–13.5 GB、利用率 84–86%；
+  训练日志奖励表 `joint_mirror` −5.0，远端 env.yaml 无 `bad_orientation`。
