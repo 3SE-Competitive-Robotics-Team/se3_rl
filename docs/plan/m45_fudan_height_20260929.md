@@ -51,4 +51,15 @@ M42/M43/M44 跑满 5000 轮后，用户判断 M42 效果最好，但高度罚不
 
 ## 启动记录
 
-（启动后补）
+代码 commit `569aaf2`，whtws 仓库由 d79e094 快进到同一 commit；本地入口 CPU smoke 5 轮通过（无 Traceback），
+`tests/test_rough_port.py` 41 项通过。配置核验：相对 M42 删 `flat_base_height`、加两项，其余逐位相同。
+M42/M43/M44 已跑满 5000 轮退出，七卡全空。
+
+- 启动时间：2026-09-29 13:06（Pod 时区），七卡 × 8192、5000 轮、保存 200、seed 42，在线 W&B。
+- run：`2026-09-29_05-06-36_rough-M45-fudanheight-seed42-7x8192-5k`，
+  W&B [gyoug52h](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/gyoug52h)，PID/PGID `2564245`，
+  state `/workspace/.se3-training-state/whtws/20260929T050629Z`。
+- 首轮核验：第 15 轮在迭代、无 Traceback、无 nefc overflow，3.20 s/轮，七卡各 13.0–13.5 GB、利用率 80–87%；
+  远端 `params/env.yaml`：`flat_base_height` 不存在，`base_height_fudan` / `base_height_fudan_enhance` 各 w 1.0（窗口 `critic_height_scan`），
+  共 26 项；腿 scale 0.5 / 轮 10、腿 stiffness 20 / damping 1.5、action_rate −0.05、action_smoothness −0.05、M42 的双跟踪核不变。
+- 批量是 M42 两卡的 3.5 倍，按同 iteration 对比带批量混杂。
