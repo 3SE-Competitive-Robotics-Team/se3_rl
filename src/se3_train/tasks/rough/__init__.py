@@ -43,6 +43,10 @@ _M44 = {**_M43, "stair_ang_vel_tracking": True}
 # M45（2026-09-29 用户定）：M42 + 高度罚换成复旦式高度对（docs/plan/m45_fudan_height_20260929.md）。临时入口。
 EXP_FUDAN_HEIGHT_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanActuationHeight"
 _M45 = {**_M42, "height_shape": "fudan"}
+# M46（2026-09-29 用户定）：M45 + 台阶类列高度参考改两轮支撑面（docs/plan/m46_stair_support_height_20260929.md）；
+# 从 M45 model_600 完整续训（common_step_counter 随 checkpoint 恢复，平地热身不重来）。临时入口。
+EXP_FUDAN_HEIGHT_SUPPORT_TASK_ID = "SE3-WheelLegged-Rough-Exp-FudanActuationHeightSupport"
+_M46 = {**_M45, "fudan_height_stair_reference": "support"}
 # M42（2026-09-28 用户定）：action_rate −0.05、action_smoothness −0.05（复旦上台阶3 的组合，对探索噪声的定价 k=0.4 与之等价，
 # docs/plan/m42_fudan_action_penalty_20260928.md）。临时入口。
 EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate005Smooth005"
@@ -121,6 +125,13 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_FUDAN_HEIGHT_SUPPORT_TASK_ID,
+        env_cfg=env_cfg(**_M46),
+        play_env_cfg=env_cfg(play=True, **_M46),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_FUDAN_HEIGHT_SUPPORT_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID,
         env_cfg=env_cfg(action_rate_weight=-0.05, action_smoothness_weight=-0.05),
         play_env_cfg=env_cfg(play=True, action_rate_weight=-0.05, action_smoothness_weight=-0.05),
@@ -135,6 +146,7 @@ __all__ = [
     "EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID",
     "EXP_ACTION_RATE_010_TASK_ID",
     "EXP_FUDAN_ACTUATION_TASK_ID",
+    "EXP_FUDAN_HEIGHT_SUPPORT_TASK_ID",
     "EXP_FUDAN_HEIGHT_TASK_ID",
     "EXP_FUDAN_TRACKING_TASK_ID",
     "EXP_STAIR_ANG_VEL_TASK_ID",
