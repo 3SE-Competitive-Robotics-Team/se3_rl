@@ -53,4 +53,14 @@ M45 在 1365 轮按用户指令停止。
 
 ## 启动记录
 
-（启动后补）
+代码 commit `35952c0`，whtws 仓库由 569aaf2 快进到同一 commit；41 项 rough 测试通过，本地续训 smoke 600→605 通过。
+M45 的 model_600.pt（sha256 前缀 `bec84ebc9f28ef49`）复制到 `m45-model600-src/`。启动器新增 `-L/-K` 完整续训参数，`--dry-run` 通过。
+
+- 启动时间：2026-09-29 14:45（Pod 时区），七卡 × 8192，从 600 续 4400 轮到 5000，保存 200、seed 42，在线 W&B。
+- run：`2026-09-29_06-45-20_rough-M46-stairsupport-from-m45-600-seed42-7x8192`，
+  W&B [wzyqxzgz](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/wzyqxzgz)，PID/PGID `2597707`，
+  state `/workspace/.se3-training-state/whtws/20260929T064514Z`。
+- 首轮核验：日志 "Loading model checkpoint … m45-model600-src/model_600.pt"，迭代编号从 600 接着走（616 轮时 3.24 s/轮），
+  无 Traceback、无 nefc overflow，七卡各 13.0–13.5 GB、利用率 82–86%；已有 env 在台阶列（stairs_up 均级 0.32），换列过渡按 20% 接续；
+  远端 env.yaml 两项高度奖励的 `stair_support_sensor_name` 均为 `stair_reward_height`，agent.yaml `resume: true`、`max_iterations: 4400`。
+- 地形等级与速度课程从初值重新推进（未存进 checkpoint）；首轮回合长 222 步低于 M45-600 的 407，是换参考后 critic 重拟合与等级重置的开局期。
