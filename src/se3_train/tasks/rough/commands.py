@@ -25,7 +25,13 @@ from se3_train.mdp.height_default_cache import update_policy_default_from_height
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
 from .columns import column_mask, non_flat_column_mask
-from .terrains import ROUGH_STAIR_LIKE_COLUMNS, ROUGH_TWO_STEP_DOWN_COLUMN
+from .terrains import (
+    ROUGH_OBSTACLE_COLUMN,
+    ROUGH_RANDOM_ROUGH_COLUMN,
+    ROUGH_STAIR_LIKE_COLUMNS,
+    ROUGH_TWO_STEP_DOWN_COLUMN,
+    ROUGH_WAVE_COLUMN,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -52,6 +58,10 @@ ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
     ROUGH_TWO_STEP_DOWN_COLUMN,
     "slope_up",
     "slope_down",
+    # M51 的三列随机地形按平地发指令（不在当前地形集里的列名会被跳过，对其他入口无影响）。
+    ROUGH_RANDOM_ROUGH_COLUMN,
+    ROUGH_WAVE_COLUMN,
+    ROUGH_OBSTACLE_COLUMN,
 )
 # A7 留下的"非平地列前向指令"，2026-09-15 起已无列使用（stairs_up 被台阶覆盖压在上面），
 # 保留是为了以后再加"需要限速的列"时有现成档位：vx 0.4–0.8 与平地课程脱钩、yaw ±0.2。

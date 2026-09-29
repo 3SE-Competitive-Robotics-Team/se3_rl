@@ -311,6 +311,10 @@ ROUGH_WHEEL_FORE_AFT_WEIGHT: float | None = None
 # 台阶列 = stairs_up、stairs_two_step_up；其余列指令与朝向不变。None = 不改（沿用 ±0.3 rad/s 与全向朝向）。
 ROUGH_STAIR_YAW_COMMAND_OVERRIDE: tuple[float, float] | None = None
 ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG: float | None = None
+# M51（2026-09-29 用户定，以 M50 为底）：地形集加随机粗糙、波浪、离散矮障碍三列（terrains.ROUGH_RANDOM_TERRAIN_*），
+# 新列 MDP 与 flat 一致：按平地发指令（commands.ROUGH_TERRAIN_COMMAND_FLAT_NAMES 已含三列名）、平地同一套奖励
+# （不进台阶分列定价与接触税置零名单）、高度参考不变（非台阶列仍是机身正下方单点射线）。速度课程信号仍只读 flat 列。
+ROUGH_RANDOM_TERRAINS: bool = False
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -368,6 +372,7 @@ def env_cfg(
     wheel_fore_aft_weight: float | None = ROUGH_WHEEL_FORE_AFT_WEIGHT,
     stair_ang_vel_yaw_range: tuple[float, float] | None = ROUGH_STAIR_YAW_COMMAND_OVERRIDE,
     stair_spawn_yaw_half_range_deg: float | None = ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG,
+    random_terrains: bool = ROUGH_RANDOM_TERRAINS,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -401,7 +406,7 @@ def env_cfg(
     }
     cfg.scene.terrain = TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=terrain_generator or rough_terrains_cfg(),
+        terrain_generator=terrain_generator or rough_terrains_cfg(random_terrains=random_terrains),
         max_init_terrain_level=ROUGH_MAX_INIT_TERRAIN_LEVEL,
     )
     cfg.sim.contact_sensor_maxmatch = ROUGH_CONTACT_SENSOR_MAXMATCH
@@ -793,6 +798,7 @@ __all__ = [
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
     "ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_RANDOM_TERRAINS",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
     "ROUGH_STAIRS_ZEROED_REWARDS",

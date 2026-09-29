@@ -37,6 +37,11 @@ from mjlab.terrains.config import (
     pyramid_stairs,
     pyramid_stairs_inv,
 )
+from mjlab.terrains.heightfield_terrains import (
+    HfDiscreteObstaclesTerrainCfg,
+    HfRandomUniformTerrainCfg,
+    HfWaveTerrainCfg,
+)
 from mjlab.terrains.terrain_generator import (
     SubTerrainCfg,
     TerrainGeneratorCfg,
@@ -91,6 +96,40 @@ ROUGH_TERRAIN_PROPORTIONS: dict[str, float] = {
     "stairs_down": 0.14,
     "slope_up": 0.09,
     "slope_down": 0.09,
+}
+
+# M51（2026-09-29 用户定）：在 M50 的七列上加三列随机地形，MDP 与 flat 一致（按平地发指令、平地同一套奖励与高度参考）。
+# 全部用 heightfield（每块只占一个 geom），格子 0.2 m（见模块 docstring：0.1 m 格子会丢接触）。
+ROUGH_RANDOM_ROUGH_COLUMN = "random_rough"
+ROUGH_WAVE_COLUMN = "wave"
+ROUGH_OBSTACLE_COLUMN = "obstacles"
+ROUGH_RANDOM_TERRAIN_COLUMNS: tuple[str, ...] = (
+    ROUGH_RANDOM_ROUGH_COLUMN,
+    ROUGH_WAVE_COLUMN,
+    ROUGH_OBSTACLE_COLUMN,
+)
+# 随机粗糙：每格高度在 [0, 上限] 均匀取，上限随难度从 0 线性涨到 5 cm（第 9 级 4.5 cm）。
+ROUGH_RANDOM_ROUGH_NOISE_RANGE = (0.0, 0.05)
+# 波浪：幅值随难度 0 → 8 cm，9 m 地块 4 个波（波长约 2.25 m），对应赛场起伏路段。
+ROUGH_WAVE_AMPLITUDE_RANGE = (0.0, 0.08)
+ROUGH_WAVE_NUM_WAVES = 4
+# 离散矮障碍：只有凸起（fixed，不挖坑），高度随难度 2 → 10 cm，宽 0.4–1.0 m，每块 40 个，中心 2 m 出生平台留空。
+ROUGH_OBSTACLE_HEIGHT_RANGE = (0.02, 0.10)
+ROUGH_OBSTACLE_WIDTH_RANGE = (0.4, 1.0)
+ROUGH_OBSTACLE_NUM = 40
+# 十列比例：上台阶两列 0.43 不动；从 flat（0.15 → 0.07）、两坡（各 0.09 → 0.05）、二级下台阶（0.10 → 0.06）
+# 匀出 0.20 给三列新地形；stairs_down 0.14 保留（下台阶是 M38/M39/M42 的共同短板）。
+ROUGH_RANDOM_TERRAIN_PROPORTIONS: dict[str, float] = {
+    "flat": 0.07,
+    "stairs_up": 0.28,
+    ROUGH_TWO_STEP_UP_COLUMN: 0.15,
+    ROUGH_TWO_STEP_DOWN_COLUMN: 0.06,
+    "stairs_down": 0.14,
+    "slope_up": 0.05,
+    "slope_down": 0.05,
+    ROUGH_RANDOM_ROUGH_COLUMN: 0.08,
+    ROUGH_WAVE_COLUMN: 0.07,
+    ROUGH_OBSTACLE_COLUMN: 0.05,
 }
 
 # 坡度（rise/run）：上坡 0.4 = 21.8°，摩擦 1.0 下轮式可行；下坡有重力助推更易失控，上界收到 0.35。
@@ -296,9 +335,47 @@ def _two_step(*, proportion: float, descending: bool = False) -> TwoStepStairsTe
     )
 
 
-def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
-    """训练地形集：平地与上台阶各一列，env 按 ROUGH_TERRAIN_PROPORTIONS 分配。"""
-    p = ROUGH_TERRAIN_PROPORTIONS
+def _random_terrains(p: dict[str, float]) -> dict:
+    """M51 的三列随机地形（heightfield，格子 0.2 m，外圈与台阶同宽的边）。"""
+    return {
+        ROUGH_RANDOM_ROUGH_COLUMN: HfRandomUniformTerrainCfg(
+            proportion=p[ROUGH_RANDOM_ROUGH_COLUMN],
+            size=ROUGH_PATCH_SIZE,
+            noise_range=ROUGH_RANDOM_ROUGH_NOISE_RANGE,
+            noise_step=0.005,
+            scale_with_difficulty=True,
+            horizontal_scale=ROUGH_HFIELD_HORIZONTAL_SCALE,
+            border_width=_STAIR_BORDER_WIDTH,
+        ),
+        ROUGH_WAVE_COLUMN: HfWaveTerrainCfg(
+            proportion=p[ROUGH_WAVE_COLUMN],
+            size=ROUGH_PATCH_SIZE,
+            amplitude_range=ROUGH_WAVE_AMPLITUDE_RANGE,
+            num_waves=ROUGH_WAVE_NUM_WAVES,
+            horizontal_scale=ROUGH_HFIELD_HORIZONTAL_SCALE,
+            border_width=_STAIR_BORDER_WIDTH,
+        ),
+        ROUGH_OBSTACLE_COLUMN: HfDiscreteObstaclesTerrainCfg(
+            proportion=p[ROUGH_OBSTACLE_COLUMN],
+            size=ROUGH_PATCH_SIZE,
+            obstacle_height_mode="fixed",
+            obstacle_height_range=ROUGH_OBSTACLE_HEIGHT_RANGE,
+            obstacle_width_range=ROUGH_OBSTACLE_WIDTH_RANGE,
+            num_obstacles=ROUGH_OBSTACLE_NUM,
+            platform_width=ROUGH_PLATFORM_WIDTH,
+            horizontal_scale=ROUGH_HFIELD_HORIZONTAL_SCALE,
+            border_width=_STAIR_BORDER_WIDTH,
+        ),
+    }
+
+
+def rough_terrains_cfg(*, num_rows: int = 10, random_terrains: bool = False) -> TerrainGeneratorCfg:
+    """训练地形集，env 按 ROUGH_TERRAIN_PROPORTIONS 分配。
+
+    `random_terrains=True`（M51）：再加随机粗糙、波浪、离散矮障碍三列，比例改用 ROUGH_RANDOM_TERRAIN_PROPORTIONS。
+    """
+    p = ROUGH_RANDOM_TERRAIN_PROPORTIONS if random_terrains else ROUGH_TERRAIN_PROPORTIONS
+    extra = _random_terrains(p) if random_terrains else {}
     return TerrainGeneratorCfg(
         size=ROUGH_PATCH_SIZE,
         border_width=5.0,
@@ -323,6 +400,7 @@ def rough_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
             "slope_down": _slope(
                 hf_pyramid_slope, proportion=p["slope_down"], slope_range=ROUGH_SLOPE_DOWN_RANGE
             ),
+            **extra,
         },
         add_lights=False,
     )
@@ -350,8 +428,16 @@ def stair_only_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
 
 __all__ = [
     "ROUGH_HFIELD_HORIZONTAL_SCALE",
+    "ROUGH_OBSTACLE_COLUMN",
+    "ROUGH_OBSTACLE_HEIGHT_RANGE",
+    "ROUGH_OBSTACLE_NUM",
+    "ROUGH_OBSTACLE_WIDTH_RANGE",
     "ROUGH_PATCH_SIZE",
     "ROUGH_PLATFORM_WIDTH",
+    "ROUGH_RANDOM_ROUGH_COLUMN",
+    "ROUGH_RANDOM_ROUGH_NOISE_RANGE",
+    "ROUGH_RANDOM_TERRAIN_COLUMNS",
+    "ROUGH_RANDOM_TERRAIN_PROPORTIONS",
     "ROUGH_SLOPE_DOWN_RANGE",
     "ROUGH_SLOPE_UP_RANGE",
     "ROUGH_STAIR_LIKE_COLUMNS",
@@ -366,6 +452,9 @@ __all__ = [
     "ROUGH_TWO_STEP_SECOND_HEIGHT_RANGE",
     "ROUGH_TWO_STEP_SECOND_WIDTH_RANGE",
     "ROUGH_TWO_STEP_UP_COLUMN",
+    "ROUGH_WAVE_AMPLITUDE_RANGE",
+    "ROUGH_WAVE_COLUMN",
+    "ROUGH_WAVE_NUM_WAVES",
     "TwoStepStairsTerrainCfg",
     "rough_terrains_cfg",
     "stair_only_terrains_cfg",

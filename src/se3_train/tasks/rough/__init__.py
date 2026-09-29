@@ -41,6 +41,10 @@ _M50 = {
     # 改动二：台阶列 yaw 跟踪不再置零（复用 M44 的开关）；指令恒 0 时它就是台阶列的 yaw 角速度罚。
     "stair_ang_vel_tracking": True,
 }
+# M51（2026-09-29 用户筹划中）：M50 + 随机粗糙、波浪、离散矮障碍三列地形，MDP 与 flat 一致（docs/plan/m51_random_terrain_20260929.md）。
+# 未启动。临时入口。
+EXP_M51_TASK_ID = "SE3-WheelLegged-Rough-Exp-M51"
+_M51 = {**_M50, "random_terrains": True}
 # M40（2026-09-28 用户定）：M39 + action_smoothness −0.12 → −0.06（docs/plan/m40_action_smooth_20260928.md）。临时入口。
 EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006"
 # M41（2026-09-28 用户定）：删 action_smoothness、action_rate −0.01（docs/plan/m41_action_rate_001_20260928.md）。临时入口。
@@ -133,6 +137,13 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_M51_TASK_ID,
+        env_cfg=env_cfg(**_M51),
+        play_env_cfg=env_cfg(play=True, **_M51),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_M51_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID,
         env_cfg=env_cfg(action_rate_weight=-0.10, action_smoothness_weight=-0.06),
         play_env_cfg=env_cfg(play=True, action_rate_weight=-0.10, action_smoothness_weight=-0.06),
@@ -202,6 +213,7 @@ __all__ = [
     "EXP_FUDAN_TRACKING_TASK_ID",
     "EXP_JOINT_MIRROR_TASK_ID",
     "EXP_M50_TASK_ID",
+    "EXP_M51_TASK_ID",
     "EXP_STAIR_ANG_VEL_TASK_ID",
     "EXP_WHEEL_FORE_AFT_TASK_ID",
     "GRU_TASK_ID",
