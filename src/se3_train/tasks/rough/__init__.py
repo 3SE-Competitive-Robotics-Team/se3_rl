@@ -19,6 +19,10 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 各对照 commit 见 env_cfg.py 模块 docstring 与 docs/plan/m3*_*.md。
 # M39（2026-09-28 用户定）：M38 默认 + action_rate 权重 −0.48 → −0.10（docs/plan/m39_action_rate_20260928.md）。临时入口。
 EXP_ACTION_RATE_010_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010"
+# M47（2026-09-29 用户定）：M39 + 删 bad_orientation 终止（docs/plan/m47_no_bad_orientation_20260929.md）。临时入口。
+EXP_ACTION_RATE_010_NO_BAD_ORI_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010NoBadOri"
+_M39 = {"action_rate_weight": -0.10}
+_M47 = {**_M39, "bad_orientation_termination": False}
 # M40（2026-09-28 用户定）：M39 + action_smoothness −0.12 → −0.06（docs/plan/m40_action_smooth_20260928.md）。临时入口。
 EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006"
 # M41（2026-09-28 用户定）：删 action_smoothness、action_rate −0.01（docs/plan/m41_action_rate_001_20260928.md）。临时入口。
@@ -83,6 +87,13 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_ACTION_RATE_010_NO_BAD_ORI_TASK_ID,
+        env_cfg=env_cfg(**_M47),
+        play_env_cfg=env_cfg(play=True, **_M47),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_ACTION_RATE_010_NO_BAD_ORI_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID,
         env_cfg=env_cfg(action_rate_weight=-0.10, action_smoothness_weight=-0.06),
         play_env_cfg=env_cfg(play=True, action_rate_weight=-0.10, action_smoothness_weight=-0.06),
@@ -143,6 +154,7 @@ def register() -> None:
 __all__ = [
     "EXP_ACTION_RATE_001_NO_SMOOTH_TASK_ID",
     "EXP_ACTION_RATE_005_SMOOTH_005_TASK_ID",
+    "EXP_ACTION_RATE_010_NO_BAD_ORI_TASK_ID",
     "EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID",
     "EXP_ACTION_RATE_010_TASK_ID",
     "EXP_FUDAN_ACTUATION_TASK_ID",

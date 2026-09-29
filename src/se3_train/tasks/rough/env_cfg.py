@@ -292,6 +292,9 @@ ROUGH_HEIGHT_SHAPE: str = "se3"
 # M46（2026-09-29 用户定）：复旦式高度对在台阶类列（ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS）的地面参考从窗口均值改为两轮
 # 支撑面均值（stair_reward_height 传感器）；其余列仍是窗口口径。只在 height_shape="fudan" 时生效。
 ROUGH_FUDAN_HEIGHT_STAIR_REFERENCE: str = "window"
+# M47（2026-09-29 用户定，以 M39 为底）：删 bad_orientation 终止（倾角 > 30° 连续 100 步即终止并吃 fall_penalty −500）。
+# 删后失败终止只剩数值发散的 catastrophic_state，倒地 env 躺到 20 s 超时，只由姿态/触地等奖励项计价。True = 保留（默认）。
+ROUGH_BAD_ORIENTATION_TERMINATION: bool = True
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -344,6 +347,7 @@ def env_cfg(
     stair_ang_vel_tracking: bool = ROUGH_STAIR_ANG_VEL_TRACKING,
     height_shape: str = ROUGH_HEIGHT_SHAPE,
     fudan_height_stair_reference: str = ROUGH_FUDAN_HEIGHT_STAIR_REFERENCE,
+    bad_orientation_termination: bool = ROUGH_BAD_ORIENTATION_TERMINATION,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -560,6 +564,9 @@ def env_cfg(
     cfg.terminations["out_of_terrain_bounds"] = TerminationTermCfg(
         func=out_of_terrain_bounds, time_out=True
     )
+    # M47：删倾角终止（见 ROUGH_BAD_ORIENTATION_TERMINATION）。
+    if not bad_orientation_termination:
+        del cfg.terminations["bad_orientation"]
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -700,6 +707,7 @@ __all__ = [
     "ROUGH_ACTION_RATE_WEIGHT",
     "ROUGH_ACTION_SMOOTHNESS_WEIGHT",
     "ROUGH_ALL_TERRAIN_TYPE_NAMES",
+    "ROUGH_BAD_ORIENTATION_TERMINATION",
     "ROUGH_BASE_HEIGHT_SIGMA",
     "ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS",
     "ROUGH_BASE_HEIGHT_SUPPORT_SENSOR",
