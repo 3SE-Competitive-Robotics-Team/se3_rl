@@ -300,6 +300,11 @@ ROUGH_BAD_ORIENTATION_TERMINATION: bool = True
 # 按每对关节折算是本仓库的 11 倍，再按跟踪总权重（本仓库 9 对复旦 3）折算约 30 倍；−5 在当前误差下每秒约 −0.76，
 # 左右差 10° 时约 −0.15。None = 沿用 Flat 的 −0.179。
 ROUGH_JOINT_MIRROR_WEIGHT: float | None = None
+# M49（2026-09-29 用户定，以 M48 为底、从 M48 最新 checkpoint 续训）：对称只罚水平分量——删 joint_mirror
+# （joint_mirror_weight=0.0 = 删项），加 wheel_fore_aft_offset（左右轮心机身系前后错位 Δx²，全列、无死区、直立门控）。
+# 竖直分量（左右腿长差）留给 roll 指令，平地侧倾由 tracking_orientation_l2 计价。w −50/m²：Δx 5/10/20 cm 每秒 0.13/0.5/2.0，
+# 22° 摆角差约对应 11 cm、每秒约 0.6，与 M48 的 joint_mirror −5 同量级。None = 不加该项。
+ROUGH_WHEEL_FORE_AFT_WEIGHT: float | None = None
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -354,6 +359,7 @@ def env_cfg(
     fudan_height_stair_reference: str = ROUGH_FUDAN_HEIGHT_STAIR_REFERENCE,
     bad_orientation_termination: bool = ROUGH_BAD_ORIENTATION_TERMINATION,
     joint_mirror_weight: float | None = ROUGH_JOINT_MIRROR_WEIGHT,
+    wheel_fore_aft_weight: float | None = ROUGH_WHEEL_FORE_AFT_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -536,10 +542,20 @@ def env_cfg(
             weight=1.0,
             params=height_common,
         )
-    # M48：joint_mirror 权重覆盖（见 ROUGH_JOINT_MIRROR_WEIGHT）。
+    # M48：joint_mirror 权重覆盖（见 ROUGH_JOINT_MIRROR_WEIGHT）；M49：0.0 = 删项。
     if joint_mirror_weight is not None:
-        cfg.rewards["joint_mirror"] = replace(
-            cfg.rewards["joint_mirror"], weight=float(joint_mirror_weight)
+        if float(joint_mirror_weight) == 0.0:
+            del cfg.rewards["joint_mirror"]
+        else:
+            cfg.rewards["joint_mirror"] = replace(
+                cfg.rewards["joint_mirror"], weight=float(joint_mirror_weight)
+            )
+    # M49：左右轮心前后错位罚（见 ROUGH_WHEEL_FORE_AFT_WEIGHT）。
+    if wheel_fore_aft_weight is not None:
+        cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
+            func=rewards.wheel_fore_aft_offset,
+            weight=float(wheel_fore_aft_weight),
+            params={"dead_zone_m": 0.0},
         )
     # M38：全局向上奖励。
     if upward_weight is not None:
@@ -779,5 +795,6 @@ __all__ = [
     "ROUGH_UPWARD_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_ACTION_SCALE",
+    "ROUGH_WHEEL_FORE_AFT_WEIGHT",
     "env_cfg",
 ]

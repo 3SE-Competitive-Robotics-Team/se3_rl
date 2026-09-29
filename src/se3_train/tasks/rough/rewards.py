@@ -31,8 +31,10 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_train.mdp.rewards import (
+    _DEFAULT_ASSET_CFG,
     _recovery_reset_mask,
     _tracking_upright_gate,
+    _wheel_pos_body_frame,
 )
 from se3_train.mdp.terrain_height import frame_height_above_terrain, ground_height_estimate
 from se3_train.tasks.flat.rewards import (
@@ -313,6 +315,35 @@ def base_height_fudan_enhance(
     return (torch.exp(-error.square() / 0.01) - 1.0) * active.float()
 
 
+def wheel_fore_aft_offset(
+    env: ManagerBasedRlEnv,
+    dead_zone_m: float = 0.0,
+    tracking_upright_full_cos: float = 0.7,
+) -> torch.Tensor:
+    """左右轮心在机身系里的前后错位 Δx，超出死区的部分取平方（m²），全列生效，直立门控（M49，2026-09-29 用户定）。
+
+    只罚水平分量、不罚竖直分量：左右腿长差（机身系 Δz）留给 roll 指令用，平地上腿长不等导致的机身侧倾
+    已由 tracking_orientation_l2 计价。机身系而非世界系，俯仰不产生假误差。与 M18–M36 的同名项（M37 删除）
+    同式，但全列生效、默认无死区——上台阶目标是"腿一收双轮同抬"，不要一先一后的走梯。
+    顺带记全列与台阶列的 |Δx|，以及机身系左右腿长差 |Δz|。
+    """
+    robot = env.scene[_DEFAULT_ASSET_CFG.name]
+    wheel_b = _wheel_pos_body_frame(env, _DEFAULT_ASSET_CFG)  # [N, 2, 3]，顺序 (左, 右)
+    dx = wheel_b[:, 0, 0] - wheel_b[:, 1, 0]
+    excess = torch.clamp(dx.abs() - float(dead_zone_m), min=0.0)
+    gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], tracking_upright_full_cos)
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        dz = (wheel_b[:, 0, 2] - wheel_b[:, 1, 2]).abs()
+        log["Rough/wheel_dx_abs"] = dx.abs().mean()
+        log["Rough/wheel_dz_body_abs"] = dz.mean()
+        mask = column_mask(env, ("stairs_up", "stairs_two_step_up"))
+        if mask is not None:
+            keep = mask.float()
+            log["Rough/wheel_dx_abs_stairs"] = (dx.abs() * keep).sum() / keep.sum().clamp(min=1.0)
+    return excess.square() * gate
+
+
 def off_column(
     env: ManagerBasedRlEnv,
     inner,
@@ -433,4 +464,5 @@ __all__ = [
     "tracking_lin_vel_enhance",
     "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
+    "wheel_fore_aft_offset",
 ]
