@@ -1,4 +1,4 @@
-# M51：M50 + 三列随机地形（筹划中，2026-09-29，用户定）
+# M51：M50 + 三列随机地形（2026-09-29，用户定）
 
 ## 背景
 
@@ -43,8 +43,20 @@ M50 之前的七列都是规则几何（平台、台阶、光滑坡），没有�
 
 ## 待办
 
-- 启动前用 `scripts/bench_rough_sim.py` 实测迭代时间（heightfield 与轮子碰撞在 mjwarp 上的开销未测）。
+- heightfield 与轮子碰撞的迭代开销：前 500 轮平地热身期全体在平地，看不出来；换列完成（1000 轮后）再与 M50 同期比 s/轮。
 
 ## 验证
 
 rough 41 项测试通过（默认地形集不变）；M51 入口 CPU smoke 通过；相对 M50 奖励、终止、课程、观测、动作逐项相同。
+
+## 启动记录
+
+代码 commit `db1805a`（与 M50 同一 commit）。用户定用剩下四张卡、与 M50（GPU 0–2）并行。
+
+- 启动时间：2026-09-29 23:53（Pod 时区），GPU 3–6 四卡 × 8192、5000 轮、保存 200、seed 42，从头训，在线 W&B。
+- run：`2026-09-29_15-53-16_rough-M51-randomterrain-seed42-4x8192-5k`，
+  W&B [du0d16ft](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/du0d16ft)，PID/PGID `2783527`，
+  state `/workspace/.se3-training-state/whtws/20260929T155309Z`。
+- 首轮核验：第 16 轮在迭代、无 Traceback、无 nefc overflow，3.17 s/轮（同期 M50 三卡 3.04 s/轮，都在平地热身期），
+  四卡各 12.0–12.4 GB、利用率 82–87%；远端 env.yaml 十列比例与上表一致，三列新地形在 `terrain_command_flat_names` 里。
+- 批量 4 × 8192，M50 是 3 × 8192，两者对比带批量混杂。
