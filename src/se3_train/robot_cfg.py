@@ -59,22 +59,36 @@ def get_serialleg_closedchain_cfg(
     leg_kp_override: float | None = None,
     leg_kd_override: float | None = None,
     knee_gas_spring: bool = True,
+    leg_torque_envelope_scale: float | None = None,
 ) -> EntityCfg:
     """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
 
     leg_kp_override / leg_kd_override（M42，2026-09-28）：腿 PD 增益覆盖，None 取 se3_shared.RobotConfig（60 / 3.0）。
     覆盖值会随 actuator cfg 写进 ONNX metadata 的 KP/KD，sim2x 与真机按 metadata 执行，不需要改 runtime。
     knee_gas_spring：False = 训练 plant 去掉 300 N 膝气弹簧（M52），见 `_serialleg_spec_for_training`。
+    leg_torque_envelope_scale（M53，2026-09-30）：None = 旧口径（saturation_effort 填峰值 40、effort_limit 填额定 20，
+    恒扭矩区被额定削平）；给系数 k 时按物理含义取参——saturation_effort = k·电压限零速截距（DM8009P V1.0 @24V 约 132），
+    effort_limit = k·峰值 40，即「k·40 平台 + 反电动势下降段」，转折与空载速度不随 k 变。两值随 actuator cfg 写进
+    ONNX metadata，sim2x / 真机按同一 T-N 包络限矩。对比图见 scripts/plot_tn_envelope_proposal.py。
     """
     leg_kp = _ROBOT_CFG.leg_kp if leg_kp_override is None else float(leg_kp_override)
     leg_kd = _ROBOT_CFG.leg_kd if leg_kd_override is None else float(leg_kd_override)
+    if leg_torque_envelope_scale is None:
+        leg_saturation_effort = DM8009P.stall_torque
+        leg_effort_limit = DM8009P.rated_torque
+    else:
+        scale = float(leg_torque_envelope_scale)
+        if not 0.0 < scale <= 1.0:
+            raise ValueError(f"leg_torque_envelope_scale 必须位于 (0, 1]，实际为 {scale}")
+        leg_saturation_effort = scale * DM8009P.voltage_limited_stall_torque
+        leg_effort_limit = scale * DM8009P.stall_torque
     leg_actuator_cfg = DcMotorActuatorCfg(
         target_names_expr=JointGroup.POLICY_LEG_NAMES,
         stiffness=leg_kp,
         damping=leg_kd,
-        saturation_effort=DM8009P.stall_torque,
+        saturation_effort=leg_saturation_effort,
         velocity_limit=DM8009P.no_load_speed,
-        effort_limit=DM8009P.rated_torque,
+        effort_limit=leg_effort_limit,
     )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
     return EntityCfg(

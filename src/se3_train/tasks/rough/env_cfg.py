@@ -319,6 +319,16 @@ ROUGH_RANDOM_TERRAINS: bool = False
 # 随之去掉只在有弹簧时有意义的两项：弹簧力 DR 事件 knee_spring_force、critic 特权观测 knee_gas_spring_force（2D）；
 # 动作项的 knee_gas_spring_force 置 0，ONNX 契约如实导出「无弹簧、无补偿」。电机前馈补偿本来就默认关闭。
 ROUGH_KNEE_GAS_SPRING: bool = True
+# M53（2026-09-30 用户定，以 M51 为底）：plant 保留 300 N 膝气弹簧，电机侧打开前馈补偿 −F·dL/dα，F 按额定 300 N 给
+# （se3_shared.RobotConfig.knee_gas_spring_force）；弹簧力 DR 照旧左右独立 ×0.9–1.1（270–330 N），额定之外的残差
+# 交给策略与 PD。前馈在 PD 之后、T-N 限幅之前叠加（SerialLegDelayedAction），与真机执行方式一致；ONNX 契约随动作项
+# 导出 {force: 300, compensation_enabled: true}，sim2x / 真机按契约做同一前馈。
+ROUGH_KNEE_GAS_SPRING_COMPENSATION: bool = False
+# M53 第二处改动（2026-09-30 用户定）：腿部电机 T-N 包络按物理含义取参并整体 ×0.8——saturation_effort = 0.8·电压限零速截距
+# （DM8009P V1.0 @24V 约 132 → 106）、effort_limit = 0.8·峰值 40 = 32，即 32 N·m 平台到约 11.7 rad/s 再沿反电动势下降、
+# 16.76 rad/s 过零（旧口径恒扭矩区被额定 20 削平，100 rpm 下只有 15 N·m，低于达妙官方实测的至少 25 N·m）。
+# 用户确认真机至少 30、35 肯定可给。None = 旧口径。见 robot_cfg.get_serialleg_closedchain_cfg。
+ROUGH_LEG_TORQUE_ENVELOPE_SCALE: float | None = None
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -378,6 +388,8 @@ def env_cfg(
     stair_spawn_yaw_half_range_deg: float | None = ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG,
     random_terrains: bool = ROUGH_RANDOM_TERRAINS,
     knee_gas_spring: bool = ROUGH_KNEE_GAS_SPRING,
+    knee_gas_spring_compensation: bool = ROUGH_KNEE_GAS_SPRING_COMPENSATION,
+    leg_torque_envelope_scale: float | None = ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -408,6 +420,7 @@ def env_cfg(
             leg_kp_override=leg_kp,
             leg_kd_override=leg_kd,
             knee_gas_spring=knee_gas_spring,
+            leg_torque_envelope_scale=leg_torque_envelope_scale,
         )
     }
     cfg.scene.terrain = TerrainEntityCfg(
@@ -505,6 +518,16 @@ def env_cfg(
         if delayed_action.knee_gas_spring_compensation_enabled:
             raise ValueError("去掉膝气弹簧时不能启用电机侧气弹簧前馈补偿")
         delayed_action.knee_gas_spring_force = 0.0
+    # M53：电机侧气弹簧前馈补偿（见 ROUGH_KNEE_GAS_SPRING_COMPENSATION）。
+    if knee_gas_spring_compensation:
+        if not knee_gas_spring:
+            raise ValueError("去掉膝气弹簧时不能启用电机侧气弹簧前馈补偿")
+        delayed_action = cfg.actions["delayed_action"]
+        if delayed_action.knee_gas_spring_force <= 0.0:
+            raise ValueError(
+                f"前馈补偿弹簧力必须为正数，实际为 {delayed_action.knee_gas_spring_force}"
+            )
+        delayed_action.knee_gas_spring_compensation_enabled = True
 
     _apply_rough_rewards(
         cfg,
@@ -809,9 +832,11 @@ __all__ = [
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_JOINT_MIRROR_WEIGHT",
     "ROUGH_KNEE_GAS_SPRING",
+    "ROUGH_KNEE_GAS_SPRING_COMPENSATION",
     "ROUGH_LEG_ACTION_SCALE",
     "ROUGH_LEG_KD",
     "ROUGH_LEG_KP",
+    "ROUGH_LEG_TORQUE_ENVELOPE_SCALE",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
