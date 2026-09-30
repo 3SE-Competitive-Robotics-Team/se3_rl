@@ -72,4 +72,13 @@ kd 3 的显式阻尼稳定界约 6.7 ms（只计转子惯量），5 ms 步长有
 
 ## 启动记录
 
-（未启动）
+代码 commit `fd4fd76`，Pod 由 `c32740e` 经 git bundle 快进（M52 在同一 Pod 继续跑，不受影响）。GPU 0–3 被 M52 占用，
+M53 用剩下三卡，与 M51（四卡）对比带批量混杂，同 M50/M51 的先例。
+
+- 启动时间：2026-09-30 22:14（Pod 时区），GPU 4–6 三卡 × 8192、5000 轮、保存 200、seed 42，从头训，在线 W&B。
+- run：`2026-09-30_14-14-15_rough-M53-kneeff300-tn08-seed42-3x8192-5k`，
+  W&B [eh5l9vma](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/eh5l9vma)，PID/PGID `3225418`，
+  state `/workspace/.se3-training-state/whtws/20260930T141408Z`。
+- 首轮核验：第 16 轮在迭代、无 Traceback、无 nefc overflow，3.20 s/轮，三卡各 11.5–12.0 GB、利用率 84–87%，M52 同时在 2447 轮；
+  远端 env.yaml 与 M51 只差三处：spec_fn 参数 `knee_gas_spring=True`（M51 旧代码无此参数，行为相同）、腿部
+  `effort_limit` 20 → 32 与 `saturation_effort` 40 → 105.93、`knee_gas_spring_compensation_enabled` false → true。
