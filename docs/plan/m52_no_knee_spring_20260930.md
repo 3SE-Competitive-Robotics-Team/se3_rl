@@ -33,4 +33,14 @@ sim2x 按契约不做补偿，等于把无弹簧训练的策略放到有弹簧�
 
 ## 启动记录
 
-（未启动）
+代码 commit `c32740e`（子模块 `bdff426`），Pod 由 `db1805a` 经 git bundle 快进；中间 5 个提交只动 sim2x 场景、脚本与文档，
+`src/se3_train` 与 M51 相同。按 M51 配置（用户定）：
+
+- 启动时间：2026-09-30 19:42（Pod 时区），GPU 0–3 四卡 × 8192、5000 轮、保存 200、seed 42，从头训，在线 W&B。
+- run：`2026-09-30_11-42-56_rough-M52-nokneespring-seed42-4x8192-5k`，
+  W&B [uccav6w7](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/uccav6w7)，PID/PGID `3175460`，
+  state `/workspace/.se3-training-state/whtws/20260930T114249Z`。
+- 首轮核验：第 16 轮在迭代、无 Traceback、无 nefc overflow，3.19 s/轮（M51 同期 3.17 s/轮），四卡各 11.9–12.3 GB、利用率 83–86%，
+  GPU 4–6 空闲；远端 env.yaml 与 M51 只差四处：spec_fn 参数 `knee_gas_spring=False`、critic 无 `knee_gas_spring_force`、
+  动作项 `knee_gas_spring_force` 300 → 0、无 `knee_spring_force` DR 事件。
+- 第一次启动在第一跳 SSH（laptop-wg）握手中断、未进入 Pod；复查无新状态目录、卡全空后重新启动。

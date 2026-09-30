@@ -143,6 +143,7 @@ nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退
 | M49 | `SE3-WheelLegged-Rough-Exp-ActionRate010NoBadOriWheelDx50` / `d5db384` | `2026-09-29_12-22-37_rough-M49-wheeldx50-from-m48-1200-seed42-7x8192` | 2711263 | `/workspace/.se3-training-state/whtws/20260929T122230Z` | 2026-09-29 20:22 启动，七卡 × 8192，从 M48 model_1200 完整续训到 5000（`-L m48-src -K model_1200.pt -i 3800`），在线 W&B `fxig1m4z`；2026-09-29 4014 轮按用户指令停止 |
 | M50 | `SE3-WheelLegged-Rough-Exp-M50` / `db1805a` | `2026-09-29_15-36-04_rough-M50-stairyaw-facing30-seed42-3x8192-5k` | 2776868 | `/workspace/.se3-training-state/whtws/20260929T153558Z` | 2026-09-29 23:36 启动，GPU 0–2 三卡 × 8192、5000 轮，从头训，在线 W&B `1aocaulm`；此前误启动的七卡 M50（`172gl519`，state `20260929T153416Z`）在第 6 轮停止 |
 | M51 | `SE3-WheelLegged-Rough-Exp-M51` / `db1805a` | `2026-09-29_15-53-16_rough-M51-randomterrain-seed42-4x8192-5k` | 2783527 | `/workspace/.se3-training-state/whtws/20260929T155309Z` | 2026-09-29 23:53 启动，GPU 3–6 四卡 × 8192、5000 轮，从头训，在线 W&B `du0d16ft`；与 M50 并行 |
+| M52 | `SE3-WheelLegged-Rough-Exp-M52` / `c32740e` | `2026-09-30_11-42-56_rough-M52-nokneespring-seed42-4x8192-5k` | 3175460 | `/workspace/.se3-training-state/whtws/20260930T114249Z` | 2026-09-30 19:42 启动，GPU 0–3 四卡 × 8192、5000 轮，从头训，在线 W&B `uccav6w7`；Pod 经 git bundle 由 db1805a 快进（子模块 e753ce6 → bdff426） |
 
 仓库于 2026-09-27 通过 git bundle 由 5af0d00 快进到 `448c7e4`，2026-09-28 再快进到 `25ca875`（子模块仍 `e753ce6`）。
 停止：`ps -o args= -g <pgid>` 核对 run name 后 `kill -INT -- -<pgid>`；容器 PID 1 不回收僵尸，defunct 条目可忽略。
