@@ -22,6 +22,7 @@ fi
 
 echo "[se3-sim2x] 监听 ${REPO_ROOT}/logs/rsl_rl"
 echo "[se3-sim2x] 在 Viser 中按 experiment / run_id / ONNX 切换模型"
+echo "[se3-sim2x] 多 env：--num-envs N（每个样本一台机器人，指令统一下发）；--spawn-yaw-deg 控制出生朝向散布，--seed 固定"
 
 cd -- "${REPO_ROOT}"
-exec "${uv_bin}" run --no-sync --with-editable ./submodules/se3-sim2x se3-sim2x-browser
+exec "${uv_bin}" run --no-sync --with-editable ./submodules/se3-sim2x se3-sim2x-browser "$@"
