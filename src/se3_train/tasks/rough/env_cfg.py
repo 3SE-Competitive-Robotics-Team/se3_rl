@@ -315,6 +315,10 @@ ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG: float | None = None
 # 新列 MDP 与 flat 一致：按平地发指令（commands.ROUGH_TERRAIN_COMMAND_FLAT_NAMES 已含三列名）、平地同一套奖励
 # （不进台阶分列定价与接触税置零名单）、高度参考不变（非台阶列仍是机身正下方单点射线）。速度课程信号仍只读 flat 列。
 ROUGH_RANDOM_TERRAINS: bool = False
+# M52（2026-09-30 用户定，以 M51 为底）：训练 plant 去掉 MJCF 里两个 300 N 膝气弹簧恒力 actuator（只改内存 spec）。
+# 随之去掉只在有弹簧时有意义的两项：弹簧力 DR 事件 knee_spring_force、critic 特权观测 knee_gas_spring_force（2D）；
+# 动作项的 knee_gas_spring_force 置 0，ONNX 契约如实导出「无弹簧、无补偿」。电机前馈补偿本来就默认关闭。
+ROUGH_KNEE_GAS_SPRING: bool = True
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -373,6 +377,7 @@ def env_cfg(
     stair_ang_vel_yaw_range: tuple[float, float] | None = ROUGH_STAIR_YAW_COMMAND_OVERRIDE,
     stair_spawn_yaw_half_range_deg: float | None = ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG,
     random_terrains: bool = ROUGH_RANDOM_TERRAINS,
+    knee_gas_spring: bool = ROUGH_KNEE_GAS_SPRING,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -402,6 +407,7 @@ def env_cfg(
             collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
             leg_kp_override=leg_kp,
             leg_kd_override=leg_kd,
+            knee_gas_spring=knee_gas_spring,
         )
     }
     cfg.scene.terrain = TerrainEntityCfg(
@@ -488,6 +494,17 @@ def env_cfg(
         interval_range_s=(0.0, 0.0),
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
     )
+
+    # M52：去掉膝气弹簧（见 ROUGH_KNEE_GAS_SPRING）。
+    if not knee_gas_spring:
+        # play 配置不含 DR 事件，所以用 pop。
+        cfg.events.pop("knee_spring_force", None)
+        del critic_terms["knee_gas_spring_force"]
+        cfg.observations["critic"] = replace(critic, terms=critic_terms)
+        delayed_action = cfg.actions["delayed_action"]
+        if delayed_action.knee_gas_spring_compensation_enabled:
+            raise ValueError("去掉膝气弹簧时不能启用电机侧气弹簧前馈补偿")
+        delayed_action.knee_gas_spring_force = 0.0
 
     _apply_rough_rewards(
         cfg,
@@ -791,6 +808,7 @@ __all__ = [
     "ROUGH_HEIGHT_SHAPE",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_JOINT_MIRROR_WEIGHT",
+    "ROUGH_KNEE_GAS_SPRING",
     "ROUGH_LEG_ACTION_SCALE",
     "ROUGH_LEG_KD",
     "ROUGH_LEG_KP",
