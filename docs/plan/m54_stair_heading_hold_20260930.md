@@ -39,4 +39,14 @@ MJLab CPU、stairs_up 第 9 级 20 cm、vx 1.0、yaw 0、M53 model_3600）：
 
 ## 启动记录
 
-（未启动）
+代码 commit `01e87e2`，Pod 由 `fd4fd76` 经 git bundle 快进。按用户指令停掉其余训练腾出七卡：M52 已于 4999 轮正常结束
+（W&B 补传完成，残留僵尸进程可忽略）；M53 在 4261 轮 SIGINT 停止（最后 checkpoint `model_4200`，状态目录留 NOTE）。
+
+- 启动时间：2026-09-30 18:45（Pod 时区），七卡 × 8192、5000 轮、保存 200、seed 42，从头训，在线 W&B。
+- run：`2026-09-30_18-45-35_rough-M54-headinghold6-fa025-yaw15-seed42-7x8192-5k`，
+  W&B [vjmjllbj](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/vjmjllbj)，PID/PGID `3314582`，
+  state `/workspace/.se3-training-state/whtws/20260930T184528Z`。
+- 首轮核验：第 14 轮在迭代、无 Traceback、无 nefc overflow，3.25–3.28 s/轮，七卡各 13.2–13.6 GB、利用率 81–85%；
+  远端 env.yaml 与 M53 只差三处：出生朝向半幅 0.524 → 0.262 rad、`wheel_fore_aft_offset` 包成 `column_scaled`（台阶两列 ×0.25）、
+  新增 `stair_heading_hold`（−6，台阶两列）。前 500 轮平地热身期没有台阶列，`Rough/stair_heading_error_deg` 为 0 属正常。
+- 批量 7 × 8192，M53 是 3 × 8192，对比带批量混杂。
