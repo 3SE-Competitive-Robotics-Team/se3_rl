@@ -452,6 +452,45 @@ def tracking_lin_vel_terrain_vz(
     return reward
 
 
+_HEADING_TARGET_ATTR = "_rough_stair_heading_target"
+
+
+def _yaw_from_quat_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    w, x, y, z = quat.unbind(dim=-1)
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def stair_heading_hold(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+) -> torch.Tensor:
+    """台阶列航向保持：目标航向 = 回合起点航向 + ∫yaw 指令 dt，返回航向误差平方（rad²），其余列为 0（M54，2026-09-30 用户定）。
+
+    M53 斜向撞立面时先触面的轮子被挡住、另一侧继续走，机身被动绕被挡轮转正（`.scratch/m53_yaw_ledger/`：出生偏 30° 转 −24°，
+    强制左右轮同速反而转 −32°）；原定价只有 tracking_ang_vel 按瞬时角速度收费（转动 0.2 s 约 0.6），转完后航向变化不计价。
+    本项让航向偏差持续计价，策略要么抵抗被动扭转，要么转完再转回来。目标航向在回合第一步取当前航向（reset 事件已按
+    stair_facing_yaw 摆好出生朝向），之后每步按指令 yaw 角速度积分；台阶列 yaw 指令恒为 0 时目标即出生朝向。
+    """
+    robot = env.scene[_DEFAULT_ASSET_CFG.name]
+    yaw = _yaw_from_quat_wxyz(robot.data.root_link_quat_w)
+    cmd_yaw_rate = env.command_manager.get_command(command_name)[:, 1]
+    target = getattr(env, _HEADING_TARGET_ATTR, None)
+    if not isinstance(target, torch.Tensor) or target.shape != yaw.shape:
+        target = yaw.clone()
+    new_episode = env.episode_length_buf <= 1
+    target = torch.where(new_episode, yaw, target + cmd_yaw_rate * float(env.step_dt))
+    setattr(env, _HEADING_TARGET_ATTR, target)
+    err = torch.atan2(torch.sin(yaw - target), torch.cos(yaw - target))
+    mask = column_mask(env, terrain_type_names)
+    keep = torch.ones_like(err) if mask is None else mask.float()
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict) and mask is not None:
+        n = keep.sum().clamp(min=1.0)
+        log["Rough/stair_heading_error_deg"] = torch.rad2deg((err.abs() * keep).sum() / n)
+    return err.square() * keep
+
+
 __all__ = [
     "base_height_fudan",
     "base_height_fudan_enhance",
@@ -460,6 +499,7 @@ __all__ = [
     "base_height_penalty_window_on_terrain",
     "column_scaled",
     "off_column",
+    "stair_heading_hold",
     "tracking_ang_vel_off_terrain",
     "tracking_lin_vel_enhance",
     "tracking_lin_vel_narrow",

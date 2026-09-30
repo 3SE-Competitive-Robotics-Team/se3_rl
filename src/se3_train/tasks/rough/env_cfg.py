@@ -329,6 +329,14 @@ ROUGH_KNEE_GAS_SPRING_COMPENSATION: bool = False
 # 16.76 rad/s 过零（旧口径恒扭矩区被额定 20 削平，100 rpm 下只有 15 N·m，低于达妙官方实测的至少 25 N·m）。
 # 用户确认真机至少 30、35 肯定可给。None = 旧口径。见 robot_cfg.get_serialleg_closedchain_cfg。
 ROUGH_LEG_TORQUE_ENVELOPE_SCALE: float | None = None
+# M54（2026-09-30 用户定，以 M53 为底）：斜向上台阶不靠被动扭转转正。M53 记账（.scratch/m53_yaw_ledger/）显示先触立面的轮子
+# 被挡住、另一侧继续走，机身被动转正（出生偏 30° 转 −24°，强制左右轮同速转 −32°），原定价只按瞬时角速度收 0.6、转完不计价；
+# 而单轮先上会被轮前后错位罚持续扣分。两处改动，均只作用于台阶列（stairs_up、stairs_two_step_up）：
+#   1. stair_heading_hold：航向误差平方（rad²）×(−6)，目标 = 出生朝向 + ∫yaw 指令；偏 15°/30° 每秒 −0.41/−1.64。
+#   2. wheel_fore_aft_offset 在台阶列 ×0.25（Δx 20 cm 每秒 −2.0 → −0.5），给单轮先上留余地；其余列 −50 不变。
+# 可行域：出生朝向 ±30° → ±15°（腿长行程 19.6 cm < 最高台阶 20 cm，斜 30° 不转正只能大侧倾硬爬）。None = 不改。
+ROUGH_STAIR_HEADING_HOLD_WEIGHT: float | None = None
+ROUGH_STAIR_WHEEL_FORE_AFT_SCALE: float | None = None
 ROUGH_FUDAN_TRACKING_SIGMA = 0.25
 ROUGH_FUDAN_TRACKING_ENHANCE_SIGMA = 2.5
 ROUGH_FUDAN_TRACKING_WEIGHT = 1.5
@@ -390,6 +398,8 @@ def env_cfg(
     knee_gas_spring: bool = ROUGH_KNEE_GAS_SPRING,
     knee_gas_spring_compensation: bool = ROUGH_KNEE_GAS_SPRING_COMPENSATION,
     leg_torque_envelope_scale: float | None = ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
+    stair_heading_hold_weight: float | None = ROUGH_STAIR_HEADING_HOLD_WEIGHT,
+    stair_wheel_fore_aft_scale: float | None = ROUGH_STAIR_WHEEL_FORE_AFT_SCALE,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -629,6 +639,32 @@ def env_cfg(
                 },
             },
         )
+    # M54：台阶列航向保持、放宽轮前后错位（见 ROUGH_STAIR_HEADING_HOLD_WEIGHT 等）。
+    if stair_heading_hold_weight is not None:
+        cfg.rewards["stair_heading_hold"] = RewardTermCfg(
+            func=rewards.stair_heading_hold,
+            weight=float(stair_heading_hold_weight),
+            params={
+                "command_name": "velocity_height",
+                "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+            },
+        )
+    if stair_wheel_fore_aft_scale is not None:
+        fore_aft = cfg.rewards.get("wheel_fore_aft_offset")
+        if fore_aft is None:
+            raise ValueError(
+                "stair_wheel_fore_aft_scale 需要 wheel_fore_aft_offset 项（wheel_fore_aft_weight 不能为 None）"
+            )
+        cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
+            func=rewards.column_scaled,
+            weight=float(fore_aft.weight),
+            params={
+                "inner": fore_aft.func,
+                "params": dict(fore_aft.params),
+                "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
+                "scale": float(stair_wheel_fore_aft_scale),
+            },
+        )
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
@@ -849,6 +885,7 @@ __all__ = [
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
+    "ROUGH_STAIR_HEADING_HOLD_WEIGHT",
     "ROUGH_STAIR_HEIGHT_DEAD_ZONE_M",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_HEIGHT_REFERENCE",
@@ -857,6 +894,7 @@ __all__ = [
     "ROUGH_STAIR_SPEED_CAP_ENABLED",
     "ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT",
     "ROUGH_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_STAIR_WHEEL_FORE_AFT_SCALE",
     "ROUGH_STAIR_YAW_COMMAND_OVERRIDE",
     "ROUGH_STEPS_PER_POLICY_ITER",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",

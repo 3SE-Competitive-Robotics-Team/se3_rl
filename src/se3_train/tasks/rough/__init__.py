@@ -52,6 +52,15 @@ _M52 = {**_M51, "knee_gas_spring": False}
 # 按物理含义取参 ×0.8（32 N·m 平台）（docs/plan/m53_knee_spring_feedforward_20260930.md）。临时入口。
 EXP_M53_TASK_ID = "SE3-WheelLegged-Rough-Exp-M53"
 _M53 = {**_M51, "knee_gas_spring_compensation": True, "leg_torque_envelope_scale": 0.8}
+# M54（2026-09-30 用户定）：M53 + 台阶列航向保持 −6、轮前后错位 ×0.25、出生朝向 ±15°
+# （docs/plan/m54_stair_heading_hold_20260930.md）。临时入口。
+EXP_M54_TASK_ID = "SE3-WheelLegged-Rough-Exp-M54"
+_M54 = {
+    **_M53,
+    "stair_heading_hold_weight": -6.0,
+    "stair_wheel_fore_aft_scale": 0.25,
+    "stair_spawn_yaw_half_range_deg": 15.0,
+}
 # M40（2026-09-28 用户定）：M39 + action_smoothness −0.12 → −0.06（docs/plan/m40_action_smooth_20260928.md）。临时入口。
 EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID = "SE3-WheelLegged-Rough-Exp-ActionRate010Smooth006"
 # M41（2026-09-28 用户定）：删 action_smoothness、action_rate −0.01（docs/plan/m41_action_rate_001_20260928.md）。临时入口。
@@ -165,6 +174,13 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_M54_TASK_ID,
+        env_cfg=env_cfg(**_M54),
+        play_env_cfg=env_cfg(play=True, **_M54),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_M54_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_ACTION_RATE_010_SMOOTH_006_TASK_ID,
         env_cfg=env_cfg(action_rate_weight=-0.10, action_smoothness_weight=-0.06),
         play_env_cfg=env_cfg(play=True, action_rate_weight=-0.10, action_smoothness_weight=-0.06),
@@ -237,6 +253,7 @@ __all__ = [
     "EXP_M51_TASK_ID",
     "EXP_M52_TASK_ID",
     "EXP_M53_TASK_ID",
+    "EXP_M54_TASK_ID",
     "EXP_STAIR_ANG_VEL_TASK_ID",
     "EXP_WHEEL_FORE_AFT_TASK_ID",
     "GRU_TASK_ID",
