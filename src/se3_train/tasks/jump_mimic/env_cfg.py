@@ -35,6 +35,9 @@ from .reference import DEFAULT_REFERENCE_PATHS, JumpReferenceLibrary
 JUMP_MIMIC_LEG_TORQUE_ENVELOPE_SCALE = 0.8
 JUMP_MIMIC_RSI_PROB = 0.5
 JUMP_MIMIC_EPISODE_LENGTH_S = 10.0
+JUMP_MIMIC_MAX_HEIGHT_ERROR = 0.25
+"""J1 机身高度偏离终止阈值；0.25 m 大于 0.20/0.30 参考的最高点（不起跳也不触发），J2 收紧到 0.12 m。"""
+JUMP_MIMIC_J2_MAX_HEIGHT_ERROR = 0.12
 JUMP_MIMIC_REWARD_WEIGHTS = {
     "mimic_leg_length": 3.0,
     "mimic_base_height": 3.0,
@@ -47,7 +50,10 @@ def _stand_height() -> float:
     return JumpReferenceLibrary(DEFAULT_REFERENCE_PATHS, "cpu").stand_height
 
 
-def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def env_cfg(
+    play: bool = False, max_height_error: float = JUMP_MIMIC_MAX_HEIGHT_ERROR
+) -> ManagerBasedRlEnvCfg:
+    """跳跃 mimic 环境；max_height_error 为跳跃期间机身高度偏离参考的提前终止阈值（m）。"""
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -117,7 +123,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # 终止：跳跃期间偏离参考过大
     cfg.terminations = dict(cfg.terminations)
     cfg.terminations["mimic_deviation"] = TerminationTermCfg(
-        func=mdp.mimic_deviation, time_out=False
+        func=mdp.mimic_deviation,
+        time_out=False,
+        params={"max_height_error": float(max_height_error)},
     )
 
     # reset：参考状态初始化替代 Flat 的根状态 / 关节随机 reset（后者把髋随机到 ±90°）
@@ -140,7 +148,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 __all__ = [
     "JUMP_MIMIC_EPISODE_LENGTH_S",
+    "JUMP_MIMIC_J2_MAX_HEIGHT_ERROR",
     "JUMP_MIMIC_LEG_TORQUE_ENVELOPE_SCALE",
+    "JUMP_MIMIC_MAX_HEIGHT_ERROR",
     "JUMP_MIMIC_REWARD_WEIGHTS",
     "JUMP_MIMIC_RSI_PROB",
     "env_cfg",
