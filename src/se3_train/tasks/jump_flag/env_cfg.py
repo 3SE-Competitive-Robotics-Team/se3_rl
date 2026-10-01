@@ -58,9 +58,16 @@ JUMP_FLAG_EVENT_MASKED_REWARDS = (
     "contact_forces",
 )
 """跳跃事件期间置零的行走项。"""
+JUMP_FLAG_TAKEOFF_MIMIC_WEIGHTS = {"takeoff_mimic_height": 3.0, "takeoff_mimic_vz": 1.5}
+"""J6 起跳参考跟踪权重（同 J4 的机身高度 / 竖直速度模仿项）。"""
 
 
-def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def env_cfg(play: bool = False, takeoff_mimic: bool = False) -> ManagerBasedRlEnvCfg:
+    """跳跃 flag 环境。
+
+    takeoff_mimic：J6 起跳段解析参考跟踪奖励（触发 → 参考最高点，只进奖励不进观测）。J5 只靠按状态触发的跳跃奖励，
+    约 1800 轮全部漏跳（站着到离地 3 cm 之间没有可爬的奖励坡度）；J4 能学会靠的是逐帧稠密的模仿奖励。
+    """
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -138,6 +145,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["jump_missed"] = RewardTermCfg(
         func=mdp.jump_missed, weight=-JUMP_FLAG_MISSED_PENALTY / step_dt
     )
+    if takeoff_mimic:
+        for name, weight in JUMP_FLAG_TAKEOFF_MIMIC_WEIGHTS.items():
+            cfg.rewards[name] = RewardTermCfg(func=getattr(mdp, name), weight=float(weight))
 
     # reset：Flat 根状态 + 小幅关节扰动（Flat 默认把髋随机到 ±90°）
     cfg.events = dict(cfg.events)
@@ -171,6 +181,7 @@ __all__ = [
     "JUMP_FLAG_RESET_JOINT_OFFSET",
     "JUMP_FLAG_REWARD_WEIGHTS",
     "JUMP_FLAG_STANDING_RATIO",
+    "JUMP_FLAG_TAKEOFF_MIMIC_WEIGHTS",
     "JUMP_FLAG_TARGET_CLEARANCE_RANGE",
     "JUMP_FLAG_WINDOW_S",
     "env_cfg",

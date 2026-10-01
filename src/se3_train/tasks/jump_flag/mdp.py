@@ -86,6 +86,30 @@ def jump_rehop(env: ManagerBasedRlEnv, command_name: str = "velocity_height") ->
     return (term.event & term.landed & term.airborne).float()
 
 
+def takeoff_mimic_height(
+    env: ManagerBasedRlEnv, command_name: str = "velocity_height", sigma: float = 0.05
+) -> torch.Tensor:
+    """J6 起跳参考：机身高度跟踪 exp(−Δz²/σ²)，只在触发 → 参考最高点之间、第一次落地前有效（σ 同 J4）。"""
+    term = _term(env, command_name)
+    z_ref, _, valid = term.takeoff_reference()
+    err = z_ref - term.base_height()
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        v = valid.float()
+        log["Jump/takeoff_height_err_abs"] = (err.abs() * v).sum() / v.sum().clamp(min=1.0)
+    return torch.exp(-err.square() / sigma**2) * valid.float()
+
+
+def takeoff_mimic_vz(
+    env: ManagerBasedRlEnv, command_name: str = "velocity_height", sigma: float = 0.5
+) -> torch.Tensor:
+    """J6 起跳参考：机身竖直速度跟踪 exp(−Δvz²/σ²)，有效区间同上（σ 同 J4）。"""
+    term = _term(env, command_name)
+    _, vz_ref, valid = term.takeoff_reference()
+    err = vz_ref - env.scene["robot"].data.root_link_lin_vel_w[:, 2]
+    return torch.exp(-err.square() / sigma**2) * valid.float()
+
+
 # ---------------------------------------------------------------- 屏蔽与行走项改写
 def outside_jump_event(
     env: ManagerBasedRlEnv, inner, params: dict, command_name: str = "velocity_height"
@@ -139,5 +163,7 @@ __all__ = [
     "jump_tuck",
     "jump_upward_velocity",
     "outside_jump_event",
+    "takeoff_mimic_height",
+    "takeoff_mimic_vz",
     "tracking_lin_vel_jump_event",
 ]

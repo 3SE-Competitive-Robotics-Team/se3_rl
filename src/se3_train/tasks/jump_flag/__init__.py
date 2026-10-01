@@ -9,6 +9,8 @@ from se3_train.tasks.flat.rl_cfg import mlp_rl_cfg
 from .env_cfg import env_cfg
 
 TASK_ID = "SE3-WheelLegged-Jump-Flag-MLP"
+EXP_J6_TASK_ID = "SE3-WheelLegged-Jump-Flag-Exp-J6"
+"""J6 = J5 + 起跳段解析参考跟踪奖励（只进奖励，观测仍 34 维）。"""
 
 
 def register() -> None:
@@ -20,6 +22,13 @@ def register() -> None:
         rl_cfg=bind_task_name(mlp_rl_cfg(), TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_J6_TASK_ID,
+        env_cfg=env_cfg(takeoff_mimic=True),
+        play_env_cfg=env_cfg(play=True, takeoff_mimic=True),
+        rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J6_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
-__all__ = ["TASK_ID", "register"]
+__all__ = ["EXP_J6_TASK_ID", "TASK_ID", "register"]
