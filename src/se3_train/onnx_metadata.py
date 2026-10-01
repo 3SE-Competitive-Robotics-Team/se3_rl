@@ -73,7 +73,7 @@ def build_deployment_onnx_metadata(
     if not math.isclose(sim_dt * decimation, step_dt, rel_tol=1.0e-9, abs_tol=1.0e-12):
         raise ValueError("step_dt 必须等于 sim_dt × decimation")
 
-    return {
+    metadata = {
         "meta": {
             "schema_name": SCHEMA_NAME,
             "assets": _build_assets_metadata(actuator_metadata),
@@ -117,6 +117,12 @@ def build_deployment_onnx_metadata(
             "action": _build_action_metadata(runtime_env),
         },
     }
+    # 跳跃 mimic：参考数据随 artifact 下发，sim2x / 真机 runtime 由此播放参考（见 se3_runtime.jump_reference）。
+    command_term = runtime_env.command_manager.get_term("velocity_height")
+    deployment_reference = getattr(command_term, "deployment_jump_reference", None)
+    if callable(deployment_reference):
+        metadata["jump_reference"] = deployment_reference()
+    return metadata
 
 
 def embed_onnx_metadata(

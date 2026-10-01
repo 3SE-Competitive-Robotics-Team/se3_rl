@@ -27,6 +27,8 @@ _ASSET = SceneEntityCfg("robot")
 DEFAULT_OFFSETS_STEPS: tuple[int, ...] = (0, 2, 5, 10)
 """参考帧偏移（policy step）：当前、+40 ms、+100 ms、+200 ms。"""
 FEATURES_PER_FRAME = 5
+REFERENCE_SCALES = {"leg_len_err": 5.0, "base_z_rel": 5.0, "base_vz": 0.5, "contact": 1.0}
+"""参考帧各特征缩放；部署契约 jump_reference.scales 与 runtime 播放器同式。"""
 
 
 def _term(env: ManagerBasedRlEnv, command_name: str) -> JumpMimicCommandTerm:
@@ -68,10 +70,10 @@ def jump_reference_obs(
         feats.append(
             torch.cat(
                 [
-                    (ref.leg_len - current) * 5.0,
-                    ((ref.base_z - stand) * 5.0).unsqueeze(-1),
-                    (ref.base_vz * 0.5).unsqueeze(-1),
-                    ref.contact.unsqueeze(-1),
+                    (ref.leg_len - current) * REFERENCE_SCALES["leg_len_err"],
+                    ((ref.base_z - stand) * REFERENCE_SCALES["base_z_rel"]).unsqueeze(-1),
+                    (ref.base_vz * REFERENCE_SCALES["base_vz"]).unsqueeze(-1),
+                    (ref.contact * REFERENCE_SCALES["contact"]).unsqueeze(-1),
                 ],
                 dim=-1,
             )
@@ -215,6 +217,7 @@ def reset_jump_mimic(
 __all__ = [
     "DEFAULT_OFFSETS_STEPS",
     "FEATURES_PER_FRAME",
+    "REFERENCE_SCALES",
     "jump_reference_obs",
     "jump_reference_state_obs",
     "mimic_base_height",

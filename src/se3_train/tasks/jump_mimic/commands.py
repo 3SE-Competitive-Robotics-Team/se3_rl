@@ -99,6 +99,32 @@ class JumpMimicCommandTerm(VelocityHeightCommandTerm):
             )
         self._write_jump_dims()
 
+    def deployment_jump_reference(self) -> dict:
+        """部署契约顶层 jump_reference：参考数据 + 观测帧偏移与缩放（se3_runtime.jump_reference 解析）。"""
+        from .mdp import DEFAULT_OFFSETS_STEPS, REFERENCE_SCALES
+
+        lib = self.library
+        references = []
+        for k in range(lib.num_refs):
+            n = int(lib.length[k])
+            references.append(
+                {
+                    "target_clearance": float(lib.target_clearance[k]),
+                    "leg_len": lib.leg_len[k, :n, 0].tolist(),
+                    "base_z": lib.base_z[k, :n].tolist(),
+                    "base_vz": lib.base_vz[k, :n].tolist(),
+                    "contact": lib.contact[k, :n].tolist(),
+                }
+            )
+        return {
+            "format": "se3.jump_ref.v1",
+            "dt": lib.dt,
+            "stand_height": lib.stand_height,
+            "offsets_steps": list(DEFAULT_OFFSETS_STEPS),
+            "scales": dict(REFERENCE_SCALES),
+            "references": references,
+        }
+
     def _write_jump_dims(self) -> None:
         self._command[:, 5] = self.active.float()
         self._command[:, 6] = self.library.target_clearance[self.ref_id] * self.active.float()
