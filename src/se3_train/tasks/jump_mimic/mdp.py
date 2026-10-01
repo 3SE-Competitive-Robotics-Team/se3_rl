@@ -15,6 +15,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_from_euler_xyz
 
 from se3_shared.fourbar import output_leg_wheel_xz_torch, policy_to_output_pos_torch
+from se3_train.mdp import rewards as flat_rewards
 from se3_train.mdp.events import _apply_policy_leg_reset
 from se3_train.mdp.joint_indices import policy_leg_joint_ids, tensor_ids, wheel_joint_ids
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from .commands import JumpMimicCommandTerm
 
 _ASSET = SceneEntityCfg("robot")
+_WHEEL_RADIUS_M = 0.06
 DEFAULT_OFFSETS_STEPS: tuple[int, ...] = (0, 2, 5, 10)
 """参考帧偏移（policy step）：当前、+40 ms、+100 ms、+200 ms。"""
 FEATURES_PER_FRAME = 5
@@ -144,6 +146,20 @@ def mimic_contact(
     return (contact == ref).float().mean(dim=-1)
 
 
+def tracking_lin_vel_jump(
+    env: ManagerBasedRlEnv, command_name: str = "velocity_height", **kwargs
+) -> torch.Tensor:
+    """Flat 速度跟踪，跳跃期间去掉核里的 vz 项。
+
+    Flat 核 exp(−(Δvx² + w·vz²)/σ) 在腾空时 vz≈2 m/s，整项归零，跳跃中前进速度没有任何塑形；
+    跳跃期间竖直运动由模仿项管，速度跟踪只管 vx（前进跳，用户定 2026-10-01）。
+    """
+    vz_weight = float(kwargs.pop("vz_weight", 2.0))
+    active = _term(env, command_name).active
+    weight = torch.where(active, torch.zeros_like(active, dtype=torch.float), vz_weight)
+    return flat_rewards.tracking_lin_vel(env, command_name, vz_weight=weight, **kwargs)
+
+
 def not_jumping(
     env: ManagerBasedRlEnv, inner, params: dict, command_name: str = "velocity_height"
 ) -> torch.Tensor:
@@ -173,7 +189,10 @@ def reset_jump_mimic(
     command_name: str = "velocity_height",
     rsi_prob: float = 0.5,
 ) -> None:
-    """按参考写机器人状态：rsi_prob 的 env 从随机参考的随机时刻开始（RSI），其余从站姿开始；朝向随机。"""
+    """按参考写机器人状态：rsi_prob 的 env 从随机参考的随机时刻开始（RSI），其余从站姿开始；朝向随机。
+
+    RSI 的 env 同时按本回合 vx 指令给机身水平速度与轮速（无滑滚动），站姿开始的 env 从静止起步。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
     env_ids = env_ids.to(device=env.device, dtype=torch.long)
@@ -191,7 +210,12 @@ def reset_jump_mimic(
     robot = env.scene[_ASSET.name]
     joint_pos = robot.data.default_joint_pos[env_ids].clone()
     joint_vel = torch.zeros_like(joint_pos)
-    joint_pos[:, tensor_ids(wheel_joint_ids(robot), device=env.device)] = 0.0
+    wheel_ids = tensor_ids(wheel_joint_ids(robot), device=env.device)
+    joint_pos[:, wheel_ids] = 0.0
+    vx = env.command_manager.get_command(command_name)[env_ids, 0] * rsi.float()
+    # 左轮轴 +y、右轮轴 −y（common_mistakes #1）：前进时左轮广义速度为正、右轮为负
+    joint_vel[:, wheel_ids[0]] = vx / _WHEEL_RADIUS_M
+    joint_vel[:, wheel_ids[1]] = -vx / _WHEEL_RADIUS_M
     leg_vel = frame.leg_vel * rsi.float().unsqueeze(-1)
     _apply_policy_leg_reset(
         robot,
@@ -210,6 +234,8 @@ def reset_jump_mimic(
     quat = quat_from_euler_xyz(zeros, zeros, yaw)
     robot.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=env_ids)
     vel = torch.zeros(n, 6, device=env.device)
+    vel[:, 0] = vx * torch.cos(yaw)
+    vel[:, 1] = vx * torch.sin(yaw)
     vel[:, 2] = frame.base_vz * rsi.float()
     robot.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
 
@@ -227,4 +253,5 @@ __all__ = [
     "mimic_leg_length",
     "not_jumping",
     "reset_jump_mimic",
+    "tracking_lin_vel_jump",
 ]

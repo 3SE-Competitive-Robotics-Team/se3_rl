@@ -37,3 +37,10 @@ J2 用 `JUMP_MIMIC_J2_MAX_HEIGHT_ERROR`。
   state `/workspace/.se3-training-state/whtws/20261001T074409Z`。
 - 首轮核验：第 33 轮在迭代、无 Traceback、无 nefc overflow，1.39–1.41 s/轮，七卡各 6.2–6.7 GB、利用率 67–71%；
   `Jump/active_rate` 0.24，`mimic_deviation` 终止每轮约 55–57 次。
+
+## 结果
+
+跑满 5000 轮（naqomk10）。sim2x 无界面回放（500 Hz、带弹簧 MJCF + 前馈，`.scratch/j1_headless_jump.py`，
+站稳 1 s 后触发）：model_1000 / 2000 / 3000 / 4000 / 4999 三档全部起跳，轮底最大离地间隙均在目标 ±1 cm 内
+（model_4999：0.206 / 0.301 / 0.406 m），全部落稳不摔，落地后倾角 3–4°。跳跃中最大倾角 model_3000 最差（11.9°），
+4000 起收回到约 4°；落地站姿高度从 0.279 m 缓慢降到 0.274 m。收紧阈值解决了 J1 的"不起跳"问题。

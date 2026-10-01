@@ -66,6 +66,18 @@ class JumpMimicCommandTerm(VelocityHeightCommandTerm):
         self._write_jump_dims()
 
     # ---- 生命周期 ----
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        """跳跃中的 env 不换速度 / 姿态指令（腾空时水平速度改不了，换了只会制造无法完成的指令）；reset 照常重采样。"""
+        if bool(getattr(self, "_resampling_for_reset", False)):
+            super()._resample_command(env_ids)
+            return
+        keep = env_ids[self.active[env_ids]]
+        saved = self._command[keep, 0:4].clone()
+        saved_standing = self._standing_mask[keep].clone()
+        super()._resample_command(env_ids)
+        self._command[keep, 0:4] = saved
+        self._standing_mask[keep] = saved_standing
+
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, torch.Tensor]:
         extras = super().reset(env_ids)
         assert isinstance(env_ids, torch.Tensor)

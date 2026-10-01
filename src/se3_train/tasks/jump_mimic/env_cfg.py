@@ -1,12 +1,14 @@
 """跳跃 mimic 任务环境配置（2026-10-01 用户定）。
 
-单独一个跳跃策略：MLP、单帧本体 34 维 + 参考帧 20 维、从头训、平地原地跳。以 Flat 基线为底：
+单独一个跳跃策略：MLP、单帧本体 34 维 + 参考帧 20 维、从头训、平地跳。以 Flat 基线为底：
 - 执行链与 rough M54 对齐：膝气弹簧 300 N + 电机侧前馈补偿，腿部 T-N 包络按物理口径 ×0.8（平台 32 N·m）。
-- 指令：vx / yaw / pitch / roll 恒 0、站姿高度恒为参考站姿（0.28 m）；跳跃触发与参考时钟见 commands.py，
+- 指令：yaw / pitch / roll 恒 0（vx 默认恒 0，J3 起放开做前进跳）、站姿高度恒为参考站姿（0.28 m）；跳跃触发与参考时钟见 commands.py，
   jump_phase 恒 0（不把相位输入网络）。
-- 奖励：Flat 原定价 + 腿长 / 机身高度 / 竖直速度 / 轮接触四项模仿奖励；Flat 的速度跟踪、轮/腿离地罚、高度罚
+- 奖励：Flat 原定价 + 腿长 / 机身高度 / 竖直速度 / 轮接触四项模仿奖励；Flat 的轮/腿离地罚、高度罚
   原本就按 jump_flag 屏蔽，另把静站罚与轮子大接触力罚在跳跃期间置零。
 - reset：rsi_prob 的回合从参考随机时刻开始（RSI），其余从站姿开始；跳跃期间偏离参考过大提前终止。
+- 前进跳（max_lin_vel_x > 0，J3 起）：跳跃中速度 / 姿态指令冻结；速度跟踪核在跳跃期间去掉 vz 项只看 vx
+  （Flat 核含 vz，腾空时整项归零）；RSI 回合按 vx 指令给机身水平速度与无滑轮速。
 - 去掉速度课程（会自动放开 vx），保留推扰课程。
 """
 
@@ -38,6 +40,10 @@ JUMP_MIMIC_EPISODE_LENGTH_S = 10.0
 JUMP_MIMIC_MAX_HEIGHT_ERROR = 0.25
 """J1 机身高度偏离终止阈值；0.25 m 大于 0.20/0.30 参考的最高点（不起跳也不触发），J2 收紧到 0.12 m。"""
 JUMP_MIMIC_J2_MAX_HEIGHT_ERROR = 0.12
+JUMP_MIMIC_J3_MAX_LIN_VEL_X = 1.5
+"""J3 前进跳 vx 指令包络 ±1.5 m/s（Flat 部署上限 2.4 的约 60%，先在中速段学会跑着跳）。"""
+JUMP_MIMIC_MOVING_STANDING_RATIO = 0.2
+"""放开 vx 后仍保留 20% 零速回合，原地跳不丢。"""
 JUMP_MIMIC_REWARD_WEIGHTS = {
     "mimic_leg_length": 3.0,
     "mimic_base_height": 3.0,
@@ -51,9 +57,18 @@ def _stand_height() -> float:
 
 
 def env_cfg(
-    play: bool = False, max_height_error: float = JUMP_MIMIC_MAX_HEIGHT_ERROR
+    play: bool = False,
+    max_height_error: float = JUMP_MIMIC_MAX_HEIGHT_ERROR,
+    max_lin_vel_x: float = 0.0,
 ) -> ManagerBasedRlEnvCfg:
-    """跳跃 mimic 环境；max_height_error 为跳跃期间机身高度偏离参考的提前终止阈值（m）。"""
+    """跳跃 mimic 环境。
+
+    max_height_error：跳跃期间机身高度偏离参考的提前终止阈值（m）。
+    max_lin_vel_x：vx 指令包络（m/s）；0 = 原地跳（J1/J2）。大于 0 时为前进跳：vx 在 ±max 内均匀采样
+    （保留 JUMP_MIMIC_MOVING_STANDING_RATIO 的零速回合），跳跃期间速度跟踪只看 vx，RSI 带指令速度。
+    """
+    moving = float(max_lin_vel_x) > 0.0
+    vx_range = (-float(max_lin_vel_x), float(max_lin_vel_x)) if moving else (0.0, 0.0)
     cfg = flat_env_cfg(
         play=play,
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
@@ -76,15 +91,15 @@ def env_cfg(
     base = cfg.commands["velocity_height"]
     kwargs = {f.name: getattr(base, f.name) for f in fields(VelocityHeightCommandCfg) if f.init}
     kwargs.update(
-        lin_vel_x_range=(0.0, 0.0),
+        lin_vel_x_range=vx_range,
         ang_vel_yaw_range=(0.0, 0.0),
         pitch_range=(0.0, 0.0),
         roll_range=(0.0, 0.0),
         height_range=(stand, stand),
         standing_height_range=(stand, stand),
-        standing_ratio=1.0,
+        standing_ratio=JUMP_MIMIC_MOVING_STANDING_RATIO if moving else 1.0,
         deployment_ranges={
-            "lin_vel_x": (0.0, 0.0),
+            "lin_vel_x": vx_range,
             "ang_vel_yaw": (0.0, 0.0),
             "pitch": (0.0, 0.0),
             "roll": (0.0, 0.0),
@@ -116,6 +131,11 @@ def env_cfg(
             func=mdp.not_jumping,
             weight=float(term.weight),
             params={"inner": term.func, "params": dict(term.params or {})},
+        )
+    if moving:
+        term = cfg.rewards["tracking_lin_vel"]
+        cfg.rewards["tracking_lin_vel"] = RewardTermCfg(
+            func=mdp.tracking_lin_vel_jump, weight=float(term.weight), params=dict(term.params)
         )
     for name, weight in JUMP_MIMIC_REWARD_WEIGHTS.items():
         cfg.rewards[name] = RewardTermCfg(func=getattr(mdp, name), weight=float(weight))
@@ -149,8 +169,10 @@ def env_cfg(
 __all__ = [
     "JUMP_MIMIC_EPISODE_LENGTH_S",
     "JUMP_MIMIC_J2_MAX_HEIGHT_ERROR",
+    "JUMP_MIMIC_J3_MAX_LIN_VEL_X",
     "JUMP_MIMIC_LEG_TORQUE_ENVELOPE_SCALE",
     "JUMP_MIMIC_MAX_HEIGHT_ERROR",
+    "JUMP_MIMIC_MOVING_STANDING_RATIO",
     "JUMP_MIMIC_REWARD_WEIGHTS",
     "JUMP_MIMIC_RSI_PROB",
     "env_cfg",

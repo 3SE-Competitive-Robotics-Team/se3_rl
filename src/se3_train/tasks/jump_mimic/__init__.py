@@ -6,11 +6,17 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 from se3_train.tasks.flat.rl_cfg import mlp_rl_cfg
 
-from .env_cfg import JUMP_MIMIC_J2_MAX_HEIGHT_ERROR, env_cfg
+from .env_cfg import JUMP_MIMIC_J2_MAX_HEIGHT_ERROR, JUMP_MIMIC_J3_MAX_LIN_VEL_X, env_cfg
 
 TASK_ID = "SE3-WheelLegged-Jump-Mimic-MLP"
 EXP_J2_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J2"
 """J2 = J1 + 机身高度偏离终止阈值 0.25 → 0.12 m（不起跳即被终止）。"""
+EXP_J3_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J3"
+"""J3 = J2 + 放开 vx 指令（±1.5 m/s）做前进跳。"""
+_J3 = {
+    "max_height_error": JUMP_MIMIC_J2_MAX_HEIGHT_ERROR,
+    "max_lin_vel_x": JUMP_MIMIC_J3_MAX_LIN_VEL_X,
+}
 
 
 def register() -> None:
@@ -29,6 +35,13 @@ def register() -> None:
         rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J2_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_J3_TASK_ID,
+        env_cfg=env_cfg(**_J3),
+        play_env_cfg=env_cfg(play=True, **_J3),
+        rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J3_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
-__all__ = ["EXP_J2_TASK_ID", "TASK_ID", "register"]
+__all__ = ["EXP_J2_TASK_ID", "EXP_J3_TASK_ID", "TASK_ID", "register"]
