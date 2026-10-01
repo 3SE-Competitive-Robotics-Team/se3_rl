@@ -34,3 +34,16 @@ J2 三档原地跳都已成立（见 `j2_jump_mimic_tight_height_termination_202
 - 三个入口参数核对：J1 / J2 的 vx 包络 (0, 0)、跟踪项为原 `tracking_lin_vel`；J3 为 ±1.5、`tracking_lin_vel_jump`。
 - `tests.test_onnx_metadata` + `tests.test_flat_baseline` 38 项通过；CPU smoke（1 env、5 轮）通过，导出的 ONNX
   能被 se3_runtime 加载（`supports_jump=True`）。
+
+## 启动记录
+
+代码 commit `4a43f13`。whtws GPU 0–5 被别人的实验占用，改在 nulltask1 六卡，所以比 J2 少一张卡（总样本约为 J2 的 6/7）。
+nulltask1 主 checkout 停在别人的分支，J3 在独立 worktree `/workspace/se3-worktrees/j3-4a43f13` 中运行（见机器档案）。
+
+- 启动时间：2026-10-01 18:15（Pod 时区），六卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，在线 W&B（项目 `SE3-WheelLegged-Jump-Mimic`）。
+- run：`2026-10-01_18-15-37_jump-J3-mimic-vx15-seed42-6x8192-5k`，
+  W&B [cjilu9wl](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/cjilu9wl)，PID/PGID `748772`，
+  state `/workspace/.se3-training-state/nulltask1/20261001T101530Z-18005`。
+- 首轮核验：第 37 轮在迭代、无 Traceback、无 nefc overflow，1.37 s/轮，六卡各 6.1–6.5 GB、利用率 70–73%；
+  `Jump/active_rate` 0.25，`Locomotion/cmd_vx_mean` −0.02（对称采样），`base_vx_error_abs` 0.79（随机策略），
+  `mimic_deviation` 终止每轮约 54 次（与 J2 开局同量级）。
