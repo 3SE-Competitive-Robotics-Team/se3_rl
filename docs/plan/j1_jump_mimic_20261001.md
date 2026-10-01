@@ -60,4 +60,11 @@ ONNX metadata 已登记 `jump_reference` 观测项（宽 20、偏移与特征名
 
 ## 启动记录
 
-（未启动）
+代码 commit `8cb1dcb`，Pod 由 `01e87e2` 经 git bundle 快进。M54 已跑满，七卡空闲。
+
+- 启动时间：2026-10-01 06:34（Pod 时区），七卡 × 8192、5000 轮、保存 200、seed 42，从头训，在线 W&B（项目 `SE3-WheelLegged-Jump-Mimic`）。
+- run：`2026-10-01_06-34-29_jump-J1-mimic-v1ref-seed42-7x8192-5k`，
+  W&B [edy6opq0](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/edy6opq0)，PID/PGID `3541217`，
+  state `/workspace/.se3-training-state/whtws/20261001T063422Z`。
+- 首轮核验：第 36 轮在迭代、无 Traceback、无 nefc overflow，1.41 s/轮（平地，约为 rough 的 40%），七卡各 6.2–6.7 GB、
+  利用率 64–87%；`Jump/active_rate` 0.25，开局 `mimic_deviation` 终止多（策略随机，属预期），后续看它是否下降。
