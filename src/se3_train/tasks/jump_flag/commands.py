@@ -43,6 +43,9 @@ class JumpFlagCommandCfg(VelocityHeightCommandCfg):
     """目标轮底离地间隙采样范围（m）。"""
     wheel_sensor_name: str = "wheel_sensor"
     contact_force_threshold: float = 1.0
+    min_flight_clearance: float = 0.03
+    """算作"离地"的最低轮底间隙（m）。只看接触力会把一步轮子卸载当成离地（首版 J5 第 64 轮实测：
+    落地记录里最高点均值 0.009 m、漏跳 0 次，漏跳罚被假离地绕过），所以离地要求两轮无接触且较低一侧轮底高于此值。"""
 
     def build(self, env: ManagerBasedRlEnv) -> JumpFlagCommandTerm:
         return JumpFlagCommandTerm(self, env)
@@ -136,9 +139,10 @@ class JumpFlagCommandTerm(VelocityHeightCommandTerm):
         self.landing_now.zero_()
         self.missed_now.zero_()
 
-        contact = self.wheel_contact()
-        airborne = ~contact.any(dim=-1)
+        contact = self.wheel_contact().any(dim=-1)
         clearance = self.wheel_clearance()
+        # 真离地：两轮无接触且轮底高于 min_flight_clearance（排除一步轮子卸载）
+        airborne = ~contact & (clearance > self.cfg.min_flight_clearance)
         ev = self.event
         self.event_t = torch.where(ev, self.event_t + dt, self.event_t)
 
@@ -149,8 +153,8 @@ class JumpFlagCommandTerm(VelocityHeightCommandTerm):
         self.max_clearance = torch.where(
             flying, torch.maximum(self.max_clearance, clearance), self.max_clearance
         )
-        # 离地后第一次触地 → 一次性落地信号，带出本次腾空最高点
-        touchdown = flying & ~airborne
+        # 离地后第一次触地（任一轮有接触）→ 一次性落地信号，带出本次腾空最高点
+        touchdown = flying & contact
         self.landing_now |= touchdown
         self.landing_clearance = torch.where(touchdown, self.max_clearance, self.landing_clearance)
         self.landed |= touchdown
