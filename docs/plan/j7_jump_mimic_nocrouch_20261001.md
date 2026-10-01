@@ -28,3 +28,13 @@
 - J4 / J7 配置对比：只差参考目录与随之变化的站姿高度（0.28 → 0.22）。
 - 功能检查（`.scratch/j7_check.py`，CPU 32 env）：四条参考都被触发（400 步 17 / 20 / 17 / 15 次）；RSI 写入后机身高度与腿长偏差 ≤ 4 cm；奖励与观测有限。
 - `tests.test_onnx_metadata` + `tests.test_flat_baseline` 通过；CPU smoke（1 env、5 轮）通过。
+
+## 启动记录
+
+代码 commit `09493b2`，whtws 经 git bundle 由 `6cea122` 快进；GPU 0–5 仍被他人占用，用户定 GPU 6 单卡（样本约为 J4 的 1/6）。
+
+- 启动时间：2026-10-01 18:07（Pod 时区），GPU 6 单卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，
+  W&B [qar24d7n](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/qar24d7n)，PID/PGID `3770619`，
+  state `/workspace/.se3-training-state/whtws/20261001T180708Z`。单卡 run 停训用 SIGTERM（SIGINT 不响应）。
+- 首轮核验：第 84 轮无 Traceback、无 nefc overflow，1.34 s/轮，GPU 6 4.0 GB / 69%；`Jump/active_rate` 0.13，
+  `mimic_deviation` 终止每次记录约 51 次（随机策略，与 J2–J4 开局同量级）。
