@@ -14,9 +14,16 @@ import numpy as np
 import torch
 
 REFERENCE_DIR = Path(__file__).resolve().parents[4] / "assets" / "trajectories" / "jump_ref_v1"
-DEFAULT_REFERENCE_PATHS: tuple[str, ...] = tuple(
-    str(REFERENCE_DIR / f"jump_{h:.2f}m.npz") for h in (0.20, 0.30, 0.40)
-)
+DEFAULT_REFERENCE_HEIGHTS: tuple[float, ...] = (0.20, 0.30, 0.40)
+"""J1–J3 的三条参考（目标轮底离地间隙，m）。"""
+
+
+def reference_paths(heights: tuple[float, ...]) -> tuple[str, ...]:
+    """按目标离地间隙取 jump_ref_v1 下的参考文件路径。"""
+    return tuple(str(REFERENCE_DIR / f"jump_{h:.2f}m.npz") for h in heights)
+
+
+DEFAULT_REFERENCE_PATHS: tuple[str, ...] = reference_paths(DEFAULT_REFERENCE_HEIGHTS)
 REFERENCE_FORMAT = "se3.jump_ref.v1"
 
 
@@ -99,4 +106,10 @@ class JumpReferenceLibrary:
         )
 
 
-__all__ = ["DEFAULT_REFERENCE_PATHS", "JumpReferenceLibrary", "ReferenceFrame"]
+__all__ = [
+    "DEFAULT_REFERENCE_HEIGHTS",
+    "DEFAULT_REFERENCE_PATHS",
+    "JumpReferenceLibrary",
+    "ReferenceFrame",
+    "reference_paths",
+]

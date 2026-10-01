@@ -6,7 +6,12 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 from se3_train.tasks.flat.rl_cfg import mlp_rl_cfg
 
-from .env_cfg import JUMP_MIMIC_J2_MAX_HEIGHT_ERROR, JUMP_MIMIC_J3_MAX_LIN_VEL_X, env_cfg
+from .env_cfg import (
+    JUMP_MIMIC_J2_MAX_HEIGHT_ERROR,
+    JUMP_MIMIC_J3_MAX_LIN_VEL_X,
+    JUMP_MIMIC_J4_REFERENCE_HEIGHTS,
+    env_cfg,
+)
 
 TASK_ID = "SE3-WheelLegged-Jump-Mimic-MLP"
 EXP_J2_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J2"
@@ -17,6 +22,9 @@ _J3 = {
     "max_height_error": JUMP_MIMIC_J2_MAX_HEIGHT_ERROR,
     "max_lin_vel_x": JUMP_MIMIC_J3_MAX_LIN_VEL_X,
 }
+EXP_J4_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J4"
+"""J4 = J3 + 0.50 m 参考（四条参考 0.20/0.30/0.40/0.50）。"""
+_J4 = {**_J3, "reference_heights": JUMP_MIMIC_J4_REFERENCE_HEIGHTS}
 
 
 def register() -> None:
@@ -42,6 +50,13 @@ def register() -> None:
         rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J3_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_J4_TASK_ID,
+        env_cfg=env_cfg(**_J4),
+        play_env_cfg=env_cfg(play=True, **_J4),
+        rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J4_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
-__all__ = ["EXP_J2_TASK_ID", "EXP_J3_TASK_ID", "TASK_ID", "register"]
+__all__ = ["EXP_J2_TASK_ID", "EXP_J3_TASK_ID", "EXP_J4_TASK_ID", "TASK_ID", "register"]
