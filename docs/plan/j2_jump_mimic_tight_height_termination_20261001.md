@@ -26,3 +26,14 @@ J2 用 `JUMP_MIMIC_J2_MAX_HEIGHT_ERROR`。
 
 - J1 / J2 的终止参数分别是 0.25 / 0.12；`tests.test_onnx_metadata` + `tests.test_flat_baseline` 38 项通过。
 - CPU smoke（1 env、5 轮）通过，导出 ONNX。
+
+## 启动记录
+
+代码 commit `e0be3e4`，Pod 经 git bundle 由 `8cb1dcb` 快进（子模块 bdff426 → 446e89f）；J1 为此停止。
+
+- 启动时间：2026-10-01 07:44（Pod 时区），七卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，在线 W&B（项目 `SE3-WheelLegged-Jump-Mimic`）。
+- run：`2026-10-01_07-44-16_jump-J2-mimic-h012-seed42-7x8192-5k`，
+  W&B [naqomk10](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/naqomk10)，PID/PGID `3566109`，
+  state `/workspace/.se3-training-state/whtws/20261001T074409Z`。
+- 首轮核验：第 33 轮在迭代、无 Traceback、无 nefc overflow，1.39–1.41 s/轮，七卡各 6.2–6.7 GB、利用率 67–71%；
+  `Jump/active_rate` 0.24，`mimic_deviation` 终止每轮约 55–57 次。

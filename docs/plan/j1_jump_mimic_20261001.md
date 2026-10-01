@@ -68,3 +68,5 @@ ONNX metadata 已登记 `jump_reference` 观测项（宽 20、偏移与特征名
   state `/workspace/.se3-training-state/whtws/20261001T063422Z`。
 - 首轮核验：第 36 轮在迭代、无 Traceback、无 nefc overflow，1.41 s/轮（平地，约为 rough 的 40%），七卡各 6.2–6.7 GB、
   利用率 64–87%；`Jump/active_rate` 0.25，开局 `mimic_deviation` 终止多（策略随机，属预期），后续看它是否下降。
+- 2026-10-01 07:43 按用户指令 SIGINT 停止（第 2928 轮，最后 checkpoint `model_2800`），七卡让给 J2。
+  model_2000 回放结论：只有 0.40 m 起跳，0.20 / 0.30 m 不起跳不会被终止（见 `j2_jump_mimic_tight_height_termination_20261001.md`）。
