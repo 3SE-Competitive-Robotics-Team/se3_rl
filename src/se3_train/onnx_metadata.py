@@ -37,6 +37,8 @@ _TERM_WIDTHS = {
     "wheel_vel": 2,
     "last_actions": 6,
     "jump_commands": 3,
+    # 跳跃 mimic 参考帧（4 帧 × 5 维，见 se3_train.tasks.jump_mimic.mdp）。runtime 尚未支持，部署前需在 se3_runtime 实现。
+    "jump_reference": 20,
 }
 _COMMAND_FIELD_NAMES = (
     "lin_vel_x",
@@ -441,6 +443,19 @@ def _build_observation_groups(
             }
             if term_name in {"commands", "jump_commands"}:
                 entry["params"] = {"command_name": "velocity_height"}
+            if term_name == "jump_reference":
+                params = dict(getattr(term_cfg, "params", None) or {})
+                entry["params"] = {
+                    "command_name": "velocity_height",
+                    "offsets_steps": list(params.get("offsets_steps", (0, 2, 5, 10))),
+                    "features": [
+                        "leg_len_err_l",
+                        "leg_len_err_r",
+                        "base_z_rel",
+                        "base_vz",
+                        "contact",
+                    ],
+                }
             terms.append(entry)
         groups[group_name] = {"terms": terms}
     return groups
@@ -458,6 +473,7 @@ def _observation_scale(term_name: str, term_cfg: Any) -> list[float]:
         "wheel_vel": [cfg.wheel_vel_scale] * 2,
         "last_actions": [1.0] * 6,
         "jump_commands": [1.0] * 3,
+        "jump_reference": [1.0] * 20,
     }[term_name]
     manager_scale = getattr(term_cfg, "scale", None)
     if manager_scale is None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 from . import (
     flat,
     jump_finetune,
+    jump_mimic,
     jump_pretrain,
     rough,
     stair,
@@ -23,6 +24,7 @@ def register_all_tasks() -> None:
     stair.register()
     jump_pretrain.register()
     jump_finetune.register()
+    jump_mimic.register()
     wheel_dog.register()
 
 
