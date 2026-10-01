@@ -12,6 +12,7 @@ from .env_cfg import (
     JUMP_MIMIC_J4_REFERENCE_HEIGHTS,
     env_cfg,
 )
+from .reference import NOCROUCH_REFERENCE_DIR
 
 TASK_ID = "SE3-WheelLegged-Jump-Mimic-MLP"
 EXP_J2_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J2"
@@ -25,6 +26,9 @@ _J3 = {
 EXP_J4_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J4"
 """J4 = J3 + 0.50 m 参考（四条参考 0.20/0.30/0.40/0.50）。"""
 _J4 = {**_J3, "reference_heights": JUMP_MIMIC_J4_REFERENCE_HEIGHTS}
+EXP_J7_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J7"
+"""J7 = J4 + 参考去掉起始停顿与下蹲、站姿 0.22 m（flag 一到就蹬，jump_ref_v2_nocrouch_h022）。"""
+_J7 = {**_J4, "reference_dir": NOCROUCH_REFERENCE_DIR}
 
 
 def register() -> None:
@@ -57,6 +61,20 @@ def register() -> None:
         rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J4_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_J7_TASK_ID,
+        env_cfg=env_cfg(**_J7),
+        play_env_cfg=env_cfg(play=True, **_J7),
+        rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J7_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
-__all__ = ["EXP_J2_TASK_ID", "EXP_J3_TASK_ID", "EXP_J4_TASK_ID", "TASK_ID", "register"]
+__all__ = [
+    "EXP_J2_TASK_ID",
+    "EXP_J3_TASK_ID",
+    "EXP_J4_TASK_ID",
+    "EXP_J7_TASK_ID",
+    "TASK_ID",
+    "register",
+]

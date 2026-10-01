@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
+from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -32,7 +33,12 @@ from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import mdp
 from .commands import JumpMimicCommandCfg
-from .reference import DEFAULT_REFERENCE_HEIGHTS, JumpReferenceLibrary, reference_paths
+from .reference import (
+    DEFAULT_REFERENCE_HEIGHTS,
+    REFERENCE_DIR,
+    JumpReferenceLibrary,
+    reference_paths,
+)
 
 JUMP_MIMIC_LEG_TORQUE_ENVELOPE_SCALE = 0.8
 JUMP_MIMIC_RSI_PROB = 0.5
@@ -63,6 +69,7 @@ def env_cfg(
     max_height_error: float = JUMP_MIMIC_MAX_HEIGHT_ERROR,
     max_lin_vel_x: float = 0.0,
     reference_heights: tuple[float, ...] = DEFAULT_REFERENCE_HEIGHTS,
+    reference_dir: Path = REFERENCE_DIR,
 ) -> ManagerBasedRlEnvCfg:
     """跳跃 mimic 环境。
 
@@ -70,6 +77,7 @@ def env_cfg(
     max_lin_vel_x：vx 指令包络（m/s）；0 = 原地跳（J1/J2）。大于 0 时为前进跳：vx 在 ±max 内均匀采样
     （保留 JUMP_MIMIC_MOVING_STANDING_RATIO 的零速回合），跳跃期间速度跟踪只看 vx，RSI 带指令速度。
     reference_heights：参考轨迹的目标离地间隙（m），触发时均匀选一条；部署包络 jump_target_height 上界取其最大值。
+    reference_dir：参考轨迹目录（默认 jump_ref_v1）；站姿高度指令取参考的站姿，J7 换成无下蹲参考（站姿 0.22 m）。
     """
     moving = float(max_lin_vel_x) > 0.0
     vx_range = (-float(max_lin_vel_x), float(max_lin_vel_x)) if moving else (0.0, 0.0)
@@ -78,7 +86,7 @@ def env_cfg(
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
         action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
     )
-    paths = reference_paths(tuple(reference_heights))
+    paths = reference_paths(tuple(reference_heights), reference_dir)
     stand = _stand_height(paths)
 
     # 执行链：与 M54 对齐

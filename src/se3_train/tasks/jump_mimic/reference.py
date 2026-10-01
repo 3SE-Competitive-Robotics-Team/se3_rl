@@ -13,14 +13,17 @@ from pathlib import Path
 import numpy as np
 import torch
 
-REFERENCE_DIR = Path(__file__).resolve().parents[4] / "assets" / "trajectories" / "jump_ref_v1"
+TRAJECTORY_ROOT = Path(__file__).resolve().parents[4] / "assets" / "trajectories"
+REFERENCE_DIR = TRAJECTORY_ROOT / "jump_ref_v1"
+NOCROUCH_REFERENCE_DIR = TRAJECTORY_ROOT / "jump_ref_v2_nocrouch_h022"
+"""J7 参考：站姿 0.22 m、无起始停顿与下蹲，第 0 帧即恒加速度蹬地（se3-jump-to --no-crouch）。"""
 DEFAULT_REFERENCE_HEIGHTS: tuple[float, ...] = (0.20, 0.30, 0.40)
 """J1–J3 的三条参考（目标轮底离地间隙，m）。"""
 
 
-def reference_paths(heights: tuple[float, ...]) -> tuple[str, ...]:
-    """按目标离地间隙取 jump_ref_v1 下的参考文件路径。"""
-    return tuple(str(REFERENCE_DIR / f"jump_{h:.2f}m.npz") for h in heights)
+def reference_paths(heights: tuple[float, ...], directory: Path = REFERENCE_DIR) -> tuple[str, ...]:
+    """按目标离地间隙取参考文件路径（默认 jump_ref_v1）。"""
+    return tuple(str(Path(directory) / f"jump_{h:.2f}m.npz") for h in heights)
 
 
 DEFAULT_REFERENCE_PATHS: tuple[str, ...] = reference_paths(DEFAULT_REFERENCE_HEIGHTS)
@@ -109,6 +112,8 @@ class JumpReferenceLibrary:
 __all__ = [
     "DEFAULT_REFERENCE_HEIGHTS",
     "DEFAULT_REFERENCE_PATHS",
+    "NOCROUCH_REFERENCE_DIR",
+    "REFERENCE_DIR",
     "JumpReferenceLibrary",
     "ReferenceFrame",
     "reference_paths",
