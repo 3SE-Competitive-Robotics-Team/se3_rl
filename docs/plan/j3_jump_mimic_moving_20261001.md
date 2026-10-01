@@ -47,3 +47,6 @@ nulltask1 主 checkout 停在别人的分支，J3 在独立 worktree `/workspace
 - 首轮核验：第 37 轮在迭代、无 Traceback、无 nefc overflow，1.37 s/轮，六卡各 6.1–6.5 GB、利用率 70–73%；
   `Jump/active_rate` 0.25，`Locomotion/cmd_vx_mean` −0.02（对称采样），`base_vx_error_abs` 0.79（随机策略），
   `mimic_deviation` 终止每轮约 54 次（与 J2 开局同量级）。
+- 2026-10-01 18:47 按用户指令 SIGINT 停止（第 1396 轮，最后 checkpoint `model_1200`），六卡让给 J4。
+  停止前 model_800 回放：vx 0 / 0.5 / 1.0 / 1.5 下三档全部起跳、落稳，离地间隙在目标 ±1 cm 内；跳跃期间平均速度基本保持，
+  最低点比起跳前低 0.2–0.3 m/s；vx=0 时向后溜约 0.1 m/s，vx=0.5 欠速约 18%（`.scratch/j3_moving_jump.py`）。

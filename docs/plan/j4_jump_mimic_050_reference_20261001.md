@@ -39,3 +39,15 @@ sim2x 的 Jump Height 下拉框加了 0.50；runtime 按最近参考选轨，三
   ≤ 4.0 cm、腿长差 ≤ 3.2 cm（低于 0.12 m 终止阈值）；400 步触发 16 / 16 / 12 / 19 次，奖励与观测全有限。
 - `tests.test_onnx_metadata` + `tests.test_flat_baseline` 通过；CPU smoke（1 env、5 轮）通过，导出的 ONNX 被 runtime
   加载后有四条参考，`trigger_jump(0.5)` 选中 0.50 m 轨（时长 2.02 s）。
+
+## 启动记录
+
+代码 commit `6f558da`，nulltask1 独立 worktree `/workspace/se3-worktrees/j4-6f558da`（`.venv` 软链主 checkout，uv.lock 一致）；
+J3 为此在 1396 轮停止。
+
+- 启动时间：2026-10-01 18:48（Pod 时区），六卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，在线 W&B（项目 `SE3-WheelLegged-Jump-Mimic`）。
+- run：`2026-10-01_18-48-34_jump-J4-mimic-vx15-ref050-seed42-6x8192-5k`，
+  W&B [6upe0z1l](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/6upe0z1l)，PID/PGID `751429`，
+  state `/workspace/.se3-training-state/nulltask1/20261001T104827Z-02527`。
+- 首轮核验：第 40 轮无 Traceback、无 nefc overflow，1.37 s/轮，六卡 6.1–6.5 GB / 69–80%；`Jump/active_rate` 0.24，
+  `mimic_deviation` 终止每轮约 57 次（与 J3 开局同量级）。
