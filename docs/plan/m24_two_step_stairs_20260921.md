@@ -104,7 +104,8 @@ stairs_down 0.15、slope_up 0.10、slope_down 0.10。
 （等级会随策略波动，反复迁移会让这些 env 的课程等级与 episode 统计来回重置）。
 
 两个实现要点：
-- 判据只统计"本来就属于 `stairs_up`"的 env，不受门控期迁进来的样本影响。
+- 判据按**当前在 `stairs_up` 列**的 env 统计，与官方 `Curriculum/terrain_levels/stairs_up` 同口径（2026-09-25 修正；
+  最初按原始列归属统计，热身期会误开门，见文末 bug 一节）。
 - 必须排在 `flat_warmup` **之后**，且只处理已结束热身的 env：热身期全体在平地列，这时迁移会把还在热身的 env
   提前拽到 `stairs_up`；原始列名也优先复用热身记下的那份，否则第一次运行时 clone 到的是"热身把大家改成 flat 之后"的快照。
 - 日志：`Curriculum/two_step_gate/opened`、`Curriculum/two_step_gate/gate_level`。
@@ -194,3 +195,7 @@ mask 为空、level 保持 0，门控不会打开；热身结束后统计的就�
 
 影响：本轮训练里两条二级台阶列从热身结束（约 1039 轮）起就有 env，等于**没有门控**。
 从等级曲线看没造成灾难（两列都涨到 6 附近），所以这次的结果仍可用；但"等级到 5 才开放"这个要求没有真正验证过。
+
+**已修复（2026-09-25，`xyh/925`）**：按上面的修法改为当前所在列统计。合并到 main 的 Rough 仍带着这个 bug，
+`rough-xyh925-c448de4-6x8192-5k`（W&B `7c29rmkd`）同样在热身期第 381 轮就开了门，与 M24 条件一致。
+`TwoStepGateRuntimeTests` 新增回归段：原生 `stairs_up` env 放在平地列、等级 6 时门控必须保持关闭（旧判据在这一步误开）。
