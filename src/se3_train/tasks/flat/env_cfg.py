@@ -28,6 +28,7 @@ from se3_train.mdp.actions import SerialLegDelayedActionCfg
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 
 from . import commands, curriculums, events, observations, rewards, terminations
+from .rl_cfg import FLAT_NUM_STEPS_PER_ENV
 
 _ROBOT_DEFAULTS = SharedRobotConfig()
 _OBS_DEFAULTS = ObservationConfig()
@@ -63,7 +64,7 @@ _FLAT_ACTION_RATE_WEIGHT = -0.48
 # rough/jump/flow_match 继承线保持旧契约，Flat 三个任务注册时显式传 SPRING。
 FLAT_ACTION_SMOOTHNESS_LEGACY = (-0.01, 80.0, 1.0)
 FLAT_ACTION_SMOOTHNESS_SPRING = (-0.12, 320.0, 2.0)
-# History-MLP 变体的 actor 历史帧数（34 维 × 5 = 170 维展平），与 recovery_discovery 一致。
+# History-MLP 变体的 actor 历史帧数（34 维 × 5 = 170 维展平），与 stair 的 History-MLP 一致。
 FLAT_HISTORY_LENGTH = 5
 # 自适应课程从零起步，commands_vel_adaptive() 首次调用即覆写为 (0,0)
 _FLAT_INITIAL_LIN_VEL_X_RANGE = (0.0, 0.0)
@@ -130,7 +131,7 @@ FLAT_ACTION_PENALTY_WHEEL_PRICING_LEGACY: float | None = None
 FLAT_TRACKING_ORIENTATION_WEIGHT = -12.0
 FLAT_TRACKING_ORIENTATION_WEIGHT_STRONG = -120.0
 # joint_pos_penalty（腿关节偏离高度条件默认姿态的 L2 范数，直立门控、始终生效，静止时 ×5）权重。
-# None = 不加，Flat 基线只有指令为零时才生效的 stand_still。-1.0 与 recovery / recovery_discovery / stair 三条线相同。
+# None = 不加，Flat 基线只有指令为零时才生效的 stand_still。-1.0 与 stair 线相同。
 # 2026-09-05 腿部摆动诊断的量级：D4 确定性站立慢摆 ||Δq|| 均值 0.32 rad，×5 后 1.6/s；D2 式安静站立 0.04 rad，0.18/s；
 # 行进时 D4 0.49/s、D2 0.30/s。训练条件（σ 采样 + 观测噪声 + 域随机化）下两者都约 1.9/s，该项会同时把两种策略往默认姿态推。
 FLAT_JOINT_POS_PENALTY_WEIGHT: float | None = None
@@ -588,7 +589,7 @@ def env_cfg(
     if command_velocity_error_weight is None:
         del cfg.rewards["command_velocity_error"]
     if joint_pos_penalty_weight is not None:
-        # 参数与 recovery / recovery_discovery 线完全一致。
+        # 参数与 stair 线完全一致。
         cfg.rewards["joint_pos_penalty"] = RewardTermCfg(
             func=rewards.joint_pos_penalty,
             weight=float(joint_pos_penalty_weight),
@@ -655,6 +656,10 @@ def env_cfg(
                 func=curriculums.push_disturbance,
                 params={
                     "use_iterations": True,
+                    # 阶段阈值按 PPO 轮次计，必须用本任务 rollout 长度换算。此前漏传、落到函数默认的 64，
+                    # D11 把 rollout 改成 24 之后课程时钟慢了 2.67 倍：2000 轮的首档推力实际要到 5333 轮，
+                    # 3500 轮的 Flat 与 5000 轮的 Rough 从未推过（2026-09-25 修正）。
+                    "steps_per_policy_iter": FLAT_NUM_STEPS_PER_ENV,
                     "push_stages": [
                         {
                             "step": 0,

@@ -148,10 +148,12 @@ def two_step_gate(
         opened = torch.zeros((), dtype=torch.bool, device=env.device)
         setattr(env, TWO_STEP_GATE_OPENED_ATTR, opened)
 
-    # 门控判据只看"本来就属于 gate 列"的 env，不受门控期迁进来的样本影响。
+    # 门控判据按**当前所在列**统计，与官方 `Curriculum/terrain_levels/<列名>` 同口径。不能按原始列归属取：
+    # 热身期原生 stairs_up env 被放在平地列，官方升降级照常按平地上走的距离给它们升级，读到的是平地等级，
+    # M24 因此在热身期（< 500 轮）就开了门。门控期迁进来的二级上行 env 与原生 env 同列同难度，一并统计。
     level = torch.zeros((), device=env.device)
     if gate_terrain_name in names:
-        gate_mask = original == names.index(gate_terrain_name)
+        gate_mask = terrain.terrain_types == names.index(gate_terrain_name)
         if bool(gate_mask.any()):
             level = terrain.terrain_levels[gate_mask].float().mean()
     if not bool(opened) and float(level) >= float(gate_level):
@@ -185,4 +187,18 @@ def two_step_gate(
     return {"opened": opened.float(), "gate_level": level}
 
 
-__all__ = ["flat_warmup", "two_step_gate"]
+def stair_speed_cap(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+) -> dict[str, torch.Tensor]:
+    """台阶列逐 env vx 上限：按刚结束 episode 的速度达成率升降（规则见 commands.py 的模块常量）。
+
+    必须排在 `flat_warmup` 与 `two_step_gate` 之后：它们会给 env 换列，本项按换列后的列决定
+    是否把上限写进采样范围。实现放在指令项里，因为累计量和采样范围都归它管。
+    """
+    term = env.command_manager.get_term(command_name)
+    return term.update_stair_speed_caps(env_ids)
+
+
+__all__ = ["flat_warmup", "stair_speed_cap", "two_step_gate"]

@@ -14,6 +14,7 @@ body_collision_bottom_offset`，把高度指令采样区间的下界顶到该值
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -24,7 +25,13 @@ from se3_train.mdp.height_default_cache import update_policy_default_from_height
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
 from .columns import column_mask, non_flat_column_mask
-from .terrains import ROUGH_STAIR_LIKE_COLUMNS, ROUGH_TWO_STEP_DOWN_COLUMN
+from .terrains import (
+    ROUGH_OBSTACLE_COLUMN,
+    ROUGH_RANDOM_ROUGH_COLUMN,
+    ROUGH_STAIR_LIKE_COLUMNS,
+    ROUGH_TWO_STEP_DOWN_COLUMN,
+    ROUGH_WAVE_COLUMN,
+)
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -51,19 +58,40 @@ ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
     ROUGH_TWO_STEP_DOWN_COLUMN,
     "slope_up",
     "slope_down",
+    # M51 的三列随机地形按平地发指令（不在当前地形集里的列名会被跳过，对其他入口无影响）。
+    ROUGH_RANDOM_ROUGH_COLUMN,
+    ROUGH_WAVE_COLUMN,
+    ROUGH_OBSTACLE_COLUMN,
 )
 # A7 留下的"非平地列前向指令"，2026-09-15 起已无列使用（stairs_up 被台阶覆盖压在上面），
 # 保留是为了以后再加"需要限速的列"时有现成档位：vx 0.4–0.8 与平地课程脱钩、yaw ±0.2。
 ROUGH_TERRAIN_LIN_VEL_X_RANGE = (0.4, 0.8)
 ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
 
-# 上台阶列独立采样前进速度 0.4–2.4 m/s、偏航角速度 −0.3–0.3 rad/s。
+# 上台阶列独立采样前进速度 0.4–2.4 m/s；偏航角速度 M50（2026-09-29 用户定）起恒 0，转向多样性改由出生朝向提供
+# （env_cfg.ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG，正对台阶 ±15°），此前是 −0.3–0.3 rad/s。
 # 高度 0.20–0.38 与 Flat 同区间——A13 由 sim2x 定位到 0.35–0.38 会让每个 episode 都从
 # "高站姿 + 够不着的高速指令"开局而训出静止策略，矮站姿开局必须保留；第 9 行由地形感知下限自动收窄到 0.34–0.38。
 ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_STAIR_LIN_VEL_X_RANGE = (0.4, 2.4)
-ROUGH_STAIR_ANG_VEL_YAW_RANGE = (-0.3, 0.3)
+ROUGH_STAIR_ANG_VEL_YAW_RANGE = (0.0, 0.0)
 ROUGH_STAIR_HEIGHT_RANGE = (0.20, 0.38)
+
+# 台阶列逐 env 速度上限（2026-09-25 用户定做对照，参考 yly-true/fudan_rl_wheel_leg 的逐 env 指令课程）。
+# 每个 env 记一个 vx 上限，台阶列按 [ROUGH_STAIR_LIN_VEL_X_RANGE[0], 上限] 采样；每个 episode 结束时按
+# 速度达成率 r = Σmax(vx, 0) / Σ指令 vx 调整：r < 0.4 降 0.25、r ≥ 0.7 升 0.1，夹在 [1.0, 2.4]。
+# 0.4 / 0.7 沿用复旦的降级线（跟踪分 < 40%）与指令扩张线（> 70%），降幅 0.25 与下限 1.0 同复旦。
+# 复旦只在"第 0 级失败 / 最高级通关"时调速度；我们的官方升降级只看 20 s 内是否走到地块边缘
+# （平均 0.225 m/s 就够），管不到速度跟踪，所以改成每个 episode 按达成率连续调。
+# 初值取区间上界，开局分布与关闭时相同。默认关，实验时单独翻这个开关。
+ROUGH_STAIR_SPEED_CAP_ENABLED = False
+ROUGH_STAIR_SPEED_CAP_MIN = 1.0
+ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW = 0.4
+ROUGH_STAIR_SPEED_CAP_GROW_ABOVE = 0.7
+ROUGH_STAIR_SPEED_CAP_SHRINK_STEP = 0.25
+ROUGH_STAIR_SPEED_CAP_GROW_STEP = 0.1
+# episode 内在台阶列上不足这么久（如刚迁进来就摔）不调，样本太短的达成率只是噪声。
+ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S = 1.0
 
 
 @dataclass
@@ -96,6 +124,15 @@ class RoughCommandCfg(JumpCommandCfg):
     stair_ang_vel_yaw_range: tuple[float, float] = ROUGH_STAIR_ANG_VEL_YAW_RANGE
     stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE
     """台阶列的机身高度指令范围(m)，采样下界再与地形感知下限取较大者。"""
+
+    stair_speed_cap_enabled: bool = ROUGH_STAIR_SPEED_CAP_ENABLED
+    """台阶列是否按 env 自适应 vx 上限；打开时还要注册课程项 `curriculums.stair_speed_cap`。"""
+    stair_speed_cap_min: float = ROUGH_STAIR_SPEED_CAP_MIN
+    stair_speed_cap_shrink_below: float = ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW
+    stair_speed_cap_grow_above: float = ROUGH_STAIR_SPEED_CAP_GROW_ABOVE
+    stair_speed_cap_shrink_step: float = ROUGH_STAIR_SPEED_CAP_SHRINK_STEP
+    stair_speed_cap_grow_step: float = ROUGH_STAIR_SPEED_CAP_GROW_STEP
+    stair_speed_cap_min_episode_s: float = ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S
 
     high_stand_transition_prob: float = 0.0
     """平地每次重采样时生成"高姿态静站→前进"序列的概率；0 关闭。
@@ -131,6 +168,18 @@ class RoughCommandTerm(JumpCommandTerm):
         self._high_stand_target_vx = torch.zeros(
             self.num_envs, device=self.device, dtype=self._command.dtype
         )
+        # 台阶列逐 env vx 上限与本 episode 的速度累计（stair_speed_cap_enabled 时才用）。
+        self._stair_speed_cap = torch.full(
+            (self.num_envs,),
+            float(cfg.stair_lin_vel_x_range[1]),
+            device=self.device,
+            dtype=self._command.dtype,
+        )
+        self._stair_vx_sum = torch.zeros(
+            self.num_envs, device=self.device, dtype=self._command.dtype
+        )
+        self._stair_cmd_sum = torch.zeros_like(self._stair_vx_sum)
+        self._stair_steps = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         if cfg.terrain_command_override_enabled:
             self.refresh_terrain_override()
 
@@ -171,10 +220,73 @@ class RoughCommandTerm(JumpCommandTerm):
                 lin_vel_x_range=tuple(self.cfg.stair_lin_vel_x_range),
                 ang_vel_yaw_range=tuple(self.cfg.stair_ang_vel_yaw_range),
             )
+            if self.cfg.stair_speed_cap_enabled:
+                assert self._lin_vel_x_range_override is not None
+                low = float(self.cfg.stair_lin_vel_x_range[0])
+                self._lin_vel_x_range_override[ids, 1] = torch.clamp(
+                    self._stair_speed_cap[ids], min=low
+                )
+
+    def update_stair_speed_caps(self, env_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+        """按刚结束 episode 的台阶速度达成率调整这些 env 的 vx 上限，写回采样范围并清空累计。
+
+        由课程项 `curriculums.stair_speed_cap` 在 reset 时调用：此时下一 episode 的指令还没采样
+        （reset 事件里的预采样也在课程之后），新上限当场生效。只调 episode 内在台阶列上待够
+        `stair_speed_cap_min_episode_s` 的 env；全程用掩码不做布尔索引，避免每步 reset 引入主机同步。
+        """
+        cfg = self.cfg
+        cap_max = float(cfg.stair_lin_vel_x_range[1])
+        cap_min = min(float(cfg.stair_speed_cap_min), cap_max)
+        min_steps = max(1, math.ceil(float(cfg.stair_speed_cap_min_episode_s) / self._env.step_dt))
+
+        ids = env_ids.to(device=self.device, dtype=torch.long).reshape(-1)
+        counted = self._stair_steps[ids] >= min_steps
+        ratio = self._stair_vx_sum[ids] / self._stair_cmd_sum[ids].clamp(min=1e-6)
+        shrink = counted & (ratio < float(cfg.stair_speed_cap_shrink_below))
+        grow = counted & (ratio >= float(cfg.stair_speed_cap_grow_above))
+        cap = self._stair_speed_cap[ids]
+        cap = torch.where(
+            shrink, torch.clamp(cap - float(cfg.stair_speed_cap_shrink_step), min=cap_min), cap
+        )
+        cap = torch.where(
+            grow, torch.clamp(cap + float(cfg.stair_speed_cap_grow_step), max=cap_max), cap
+        )
+        self._stair_speed_cap[ids] = cap
+        self._stair_vx_sum[ids] = 0.0
+        self._stair_cmd_sum[ids] = 0.0
+        self._stair_steps[ids] = 0
+
+        zero = torch.zeros((), device=self.device)
+        if self._stair_mask is None or self._lin_vel_x_range_override is None:
+            return {"cap_mean": zero, "ratio_mean": zero}
+        on_stairs = self._stair_mask[ids]
+        low = float(cfg.stair_lin_vel_x_range[0])
+        self._lin_vel_x_range_override[ids, 1] = torch.where(
+            on_stairs, torch.clamp(cap, min=low), self._lin_vel_x_range_override[ids, 1]
+        )
+
+        stairs = self._stair_mask.float()
+        n_stairs = stairs.sum().clamp(min=1.0)
+        n_counted = counted.float().sum().clamp(min=1.0)
+        return {
+            "cap_mean": (self._stair_speed_cap * stairs).sum() / n_stairs,
+            "cap_at_min": ((self._stair_speed_cap <= cap_min + 1e-6).float() * stairs).sum()
+            / n_stairs,
+            "ratio_mean": (ratio.clamp(max=2.0) * counted.float()).sum() / n_counted,
+            "shrink_rate": shrink.float().sum() / n_counted,
+            "grow_rate": grow.float().sum() / n_counted,
+        }
 
     def _update_command(self) -> None:
         super()._update_command()
         self._update_high_stand_transition()
+        if self.cfg.stair_speed_cap_enabled and self._stair_mask is not None:
+            # 台阶列逐步累计实速与指令，episode 结束时由 update_stair_speed_caps 结算。
+            on_stairs = self._stair_mask
+            base_vx = self._env.scene["robot"].data.root_link_lin_vel_b[:, 0]
+            self._stair_vx_sum += torch.clamp(base_vx, min=0.0) * on_stairs
+            self._stair_cmd_sum += self._command[:, 0] * on_stairs
+            self._stair_steps += on_stairs.long()
         # 地形感知下限只在重采样时抬高采样下界，没有逐步状态；记一笔均值，否则 W&B 上看不出它有没有顶起来。
         if self._terrain_override_mask is None:
             return
@@ -298,12 +410,175 @@ class RoughCommandTerm(JumpCommandTerm):
         )
 
 
+# ---------------------------------------------------------------- 跳跃合入（RJ1，2026-10-02 用户定）
+ROUGH_JUMP_COLUMN_NAMES: tuple[str, ...] = ("flat",)
+"""允许跳跃的子地形列（用户定：只有平地列）。"""
+ROUGH_JUMP_ENV_FRACTION = 0.3
+"""跳跃样本占这些列 env 的比例（每回合 reset 时抽，用户定 30%）。"""
+ROUGH_JUMP_TRIGGER_RATE_HZ = 0.2
+"""跳跃样本站满 min_idle_s 后每秒触发概率（J10 为 0.5，跳跃时间占 29%，rough 降低免得挤占地形训练）。"""
+ROUGH_JUMP_MAX_LIN_VEL_X = 1.5
+"""触发时 vx 指令夹到 ±该值（J10 训练范围）。"""
+
+
+@dataclass
+class RoughJumpCommandCfg(RoughCommandCfg):
+    """rough 指令 + J10 跳跃参考时钟。
+
+    旧 JumpCommandTerm 的跳跃生命周期（原地跳、旧轨迹、jump_phase 写成 0→1 相位）必须关掉
+    （enable_jump_lifecycle=False），否则它会把 jump_flag=1 的 env 当成旧跳跃推进并改写 [5:8]。
+    """
+
+    reference_paths: tuple[str, ...] = ()
+    phase_time_scale_s: float | None = None
+    min_idle_s: float = 1.0
+    trigger_rate_hz: float = ROUGH_JUMP_TRIGGER_RATE_HZ
+    jump_column_names: tuple[str, ...] = ROUGH_JUMP_COLUMN_NAMES
+    jump_env_fraction: float = ROUGH_JUMP_ENV_FRACTION
+    jump_max_lin_vel_x: float = ROUGH_JUMP_MAX_LIN_VEL_X
+
+    def build(self, env: ManagerBasedRlEnv) -> RoughJumpCommandTerm:
+        if self.enable_jump_lifecycle:
+            raise ValueError(
+                "RoughJumpCommandCfg 必须关掉旧跳跃生命周期（enable_jump_lifecycle=False）"
+            )
+        if not self.reference_paths:
+            raise ValueError("RoughJumpCommandCfg 需要跳跃参考 reference_paths")
+        return RoughJumpCommandTerm(self, env)
+
+
+class RoughJumpCommandTerm(RoughCommandTerm):
+    """rough 指令项上叠加跳跃样本与参考时钟（与 J10 同一时钟，见 jump_mimic.clock）。
+
+    每回合 reset 时，在允许跳跃的列上按 jump_env_fraction 抽"跳跃样本"：整回合高度指令固定为参考站姿
+    （与 J10 一样，用户定）、不参加高姿态起步序列，只有它们会触发跳跃。跳跃期间冻结速度 / 姿态 / 高度指令，
+    触发时 vx 夹到 ±jump_max_lin_vel_x、yaw / pitch / roll 置 0。其余 env 与 M54 完全一样。
+    """
+
+    cfg: RoughJumpCommandCfg
+
+    def __init__(self, cfg: RoughJumpCommandCfg, env: ManagerBasedRlEnv):
+        from se3_train.tasks.jump_mimic.clock import JumpReferenceClock
+        from se3_train.tasks.jump_mimic.reference import JumpReferenceLibrary
+
+        self.jump_env = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.clock = JumpReferenceClock(
+            JumpReferenceLibrary(cfg.reference_paths, env.device),
+            env.num_envs,
+            env.device,
+            min_idle_s=cfg.min_idle_s,
+            trigger_rate_hz=cfg.trigger_rate_hz,
+            phase_time_scale_s=cfg.phase_time_scale_s,
+        )
+        super().__init__(cfg, env)
+
+    # ---- 时钟状态（jump_mimic.mdp 的模仿奖励 / 偏离终止读取） ----
+    @property
+    def library(self):
+        return self.clock.library
+
+    @property
+    def active(self) -> torch.Tensor:
+        return self.clock.active
+
+    @property
+    def ref_id(self) -> torch.Tensor:
+        return self.clock.ref_id
+
+    @property
+    def ref_t(self) -> torch.Tensor:
+        return self.clock.ref_t
+
+    def reference(self, offset_s: float = 0.0):
+        return self.clock.reference(offset_s)
+
+    # ---- 生命周期 ----
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        if bool(getattr(self, "_resampling_for_reset", False)):
+            self._sample_jump_envs(env_ids)
+            super()._resample_command(env_ids)
+        else:
+            keep = env_ids[self.active[env_ids]]
+            saved = self._command[keep, 0:5].clone()
+            saved_standing = self._standing_mask[keep].clone()
+            super()._resample_command(env_ids)
+            self._command[keep, 0:5] = saved
+            self._standing_mask[keep] = saved_standing
+        self._fix_jump_env_height(env_ids)
+        self.clock.write_dims(self._command)
+
+    def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
+        mask = column_mask(self._env, self.cfg.jump_column_names)
+        on_column = (
+            torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+            if mask is None
+            else mask[env_ids]
+        )
+        draw = torch.rand(len(env_ids), device=self.device) < float(self.cfg.jump_env_fraction)
+        self.jump_env[env_ids] = on_column & draw
+
+    def _fix_jump_env_height(self, env_ids: torch.Tensor) -> None:
+        """跳跃样本：高度指令固定为参考站姿，退出高姿态起步序列。"""
+        ids = env_ids[self.jump_env[env_ids]]
+        if ids.numel() == 0:
+            return
+        self._high_stand_selected[ids] = False
+        self._high_stand_steps_left[ids] = 0
+        self._command[ids, 4] = float(self.library.stand_height)
+        update_policy_default_from_height_cache(
+            self._env,
+            "velocity_height",
+            env_ids=ids,
+            command=self._command,
+        )
+
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, torch.Tensor]:
+        extras = super().reset(env_ids)
+        assert isinstance(env_ids, torch.Tensor)
+        self.clock.reset(env_ids)
+        self.clock.write_dims(self._command)
+        return extras
+
+    def _update_command(self) -> None:
+        super()._update_command()
+        fired = self.clock.step(float(self._env.step_dt), allowed=self.jump_env)
+        if fired.numel() > 0:
+            vmax = float(self.cfg.jump_max_lin_vel_x)
+            self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
+            self._command[fired, 1:4] = 0.0
+        self.clock.write_dims(self._command)
+
+    def deployment_jump_reference(self) -> dict:
+        """部署契约顶层 jump_reference（同 J10）。"""
+        from se3_train.tasks.jump_mimic.mdp import DEFAULT_OFFSETS_STEPS, REFERENCE_SCALES
+
+        return self.clock.deployment_payload(DEFAULT_OFFSETS_STEPS, REFERENCE_SCALES)
+
+    def _update_metrics(self) -> None:
+        super()._update_metrics()
+        log = self._env.extras.setdefault("log", {}) if hasattr(self._env, "extras") else None
+        if isinstance(log, dict):
+            log["Jump/active_rate"] = self.active.float().mean()
+            log["Jump/jump_env_rate"] = self.jump_env.float().mean()
+
+
 __all__ = [
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_JUMP_COLUMN_NAMES",
+    "ROUGH_JUMP_ENV_FRACTION",
+    "ROUGH_JUMP_MAX_LIN_VEL_X",
+    "ROUGH_JUMP_TRIGGER_RATE_HZ",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
+    "ROUGH_STAIR_SPEED_CAP_ENABLED",
+    "ROUGH_STAIR_SPEED_CAP_GROW_ABOVE",
+    "ROUGH_STAIR_SPEED_CAP_GROW_STEP",
+    "ROUGH_STAIR_SPEED_CAP_MIN",
+    "ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S",
+    "ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW",
+    "ROUGH_STAIR_SPEED_CAP_SHRINK_STEP",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
     "ROUGH_TERRAIN_COMMAND_FLAT_NAMES",
     "ROUGH_TERRAIN_HEIGHT_CLEARANCE",
@@ -312,6 +587,8 @@ __all__ = [
     "JumpCommandCfg",
     "RoughCommandCfg",
     "RoughCommandTerm",
+    "RoughJumpCommandCfg",
+    "RoughJumpCommandTerm",
     "VelocityHeightCommandCfg",
     "VelocityHeightCommandTerm",
 ]

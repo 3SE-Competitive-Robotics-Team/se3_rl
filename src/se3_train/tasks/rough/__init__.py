@@ -13,6 +13,10 @@ TASK_ID = "SE3-WheelLegged-Rough"
 # M16：同一份 env_cfg，只把 actor/critic 换成 GRU（rl_cfg.gru_rl_cfg）。
 GRU_TASK_ID = "SE3-WheelLegged-Rough-GRU"
 STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
+# 对照实验用临时入口的约定：并发 run 共用 Pod 上同一份仓库，中途切 commit 会让在跑的 run 把新 commit 写进 ONNX 溯源，
+# 所以对照用任务入口而不是逐实验 commit 区分；对照结束、定下默认值后删除入口，复现用对应 commit。
+# 2026-10-02：M39–M54 与 RJ1 的临时入口已全部删除，默认配置 = RJ1（M54 + 合入 J10 跳跃，env_cfg 模块常量），
+# 各对照的改动与依据见 env_cfg.py 模块 docstring 与 docs/plan/m39_*–m54_*.md、rj1_rough_jump_20261002.md。
 
 
 def register() -> None:
@@ -44,8 +48,5 @@ __all__ = [
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
-    "env_cfg",
-    "gru_rl_cfg",
     "register",
-    "rl_cfg",
 ]

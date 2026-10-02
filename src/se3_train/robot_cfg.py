@@ -2,11 +2,11 @@ import functools
 from pathlib import Path
 
 import mujoco
+from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from se3_shared import DM8009P, M3508_C620_14, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
-from se3_train.torque_speed_actuator import TnTrackedDcMotorActuatorCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
@@ -41,16 +41,34 @@ def _serialleg_spec_for_training(collision_geom_group: int | None = None) -> muj
 
 
 def get_serialleg_closedchain_cfg(
-    *, wheel_kd_override: float | None = None, collision_geom_group: int | None = None
+    *,
+    wheel_kd_override: float | None = None,
+    collision_geom_group: int | None = None,
+    leg_torque_envelope_scale: float | None = None,
 ) -> EntityCfg:
-    """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。"""
-    leg_actuator_cfg = TnTrackedDcMotorActuatorCfg(
+    """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
+
+    leg_torque_envelope_scale（M53，2026-09-30）：None = 旧口径（saturation_effort 填峰值 40、effort_limit 填额定 20，
+    恒扭矩区被额定削平）；给系数 k 时按物理含义取参——saturation_effort = k·电压限零速截距（DM8009P V1.0 @24V 约 132），
+    effort_limit = k·峰值 40，即「k·40 平台 + 反电动势下降段」，转折与空载速度不随 k 变。两值随 actuator cfg 写进
+    ONNX metadata，sim2x / 真机按同一 T-N 包络限矩。对比图见 scripts/plot_tn_envelope_proposal.py。
+    """
+    if leg_torque_envelope_scale is None:
+        leg_saturation_effort = DM8009P.stall_torque
+        leg_effort_limit = DM8009P.rated_torque
+    else:
+        scale = float(leg_torque_envelope_scale)
+        if not 0.0 < scale <= 1.0:
+            raise ValueError(f"leg_torque_envelope_scale 必须位于 (0, 1]，实际为 {scale}")
+        leg_saturation_effort = scale * DM8009P.voltage_limited_stall_torque
+        leg_effort_limit = scale * DM8009P.stall_torque
+    leg_actuator_cfg = DcMotorActuatorCfg(
         target_names_expr=JointGroup.POLICY_LEG_NAMES,
         stiffness=_ROBOT_CFG.leg_kp,
         damping=_ROBOT_CFG.leg_kd,
-        saturation_effort=DM8009P.stall_torque,
+        saturation_effort=leg_saturation_effort,
         velocity_limit=DM8009P.no_load_speed,
-        effort_limit=DM8009P.rated_torque,
+        effort_limit=leg_effort_limit,
     )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
     return EntityCfg(
@@ -58,7 +76,7 @@ def get_serialleg_closedchain_cfg(
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,
-                TnTrackedDcMotorActuatorCfg(
+                DcMotorActuatorCfg(
                     target_names_expr=_WHEEL_JOINT_NAMES,
                     stiffness=0.0,
                     damping=wheel_kd,

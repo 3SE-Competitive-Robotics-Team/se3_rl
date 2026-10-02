@@ -25,7 +25,7 @@ def _curriculum_progress(
     offset_iter: int = 0,
     fixed_iteration: int | None = None,
 ) -> int:
-    """返回课程进度；recovery 任务使用 PPO iter，普通任务沿用 policy step。"""
+    """返回课程进度；use_iterations 时按 PPO iter 计，否则沿用 policy step。"""
     if fixed_iteration is not None:
         return max(0, int(fixed_iteration) - int(offset_iter))
 
@@ -389,8 +389,8 @@ def commands_vel_adaptive(
 
     - yaw_gate_enabled：yaw 上限改由 Locomotion/tracking_ang_vel_reward_all 的独立 EMA 驱动
       （阈值 yaw_advance_threshold），vx 仍由线速度 EMA 驱动。此前两个上限共用同一个线速度
-      触发，等价于直线走得好就放开旋转指令上限，与 yaw 跟踪能力无关；recovery 线
-      （tasks/recovery/curriculums.py）本来就是 lin_score + yaw_score 双阈值，flat 线漏了一半。
+      触发，等价于直线走得好就放开旋转指令上限，与 yaw 跟踪能力无关；当时的 recovery 线
+      本来就是 lin_score + yaw_score 双阈值，flat 线漏了一半。
     - retreat_enabled：EMA 跌破 retreat_threshold 时回退一步，形成滞回。原实现只扩不缩，
       2026-09-03 六并发实验里五个 run 都因课程在前 200 轮冲到 yaw 9 而摔到 alive 0.12-0.18，
       课程却锁死在 9.0 无法回退，只能靠策略自己爬两三千轮：A2 爬了 2700 轮，B2 始终没爬出来。
