@@ -71,6 +71,7 @@ def env_cfg(
     reference_heights: tuple[float, ...] = DEFAULT_REFERENCE_HEIGHTS,
     reference_dir: Path = REFERENCE_DIR,
     reference_obs: bool = True,
+    rsi_prob: float = JUMP_MIMIC_RSI_PROB,
 ) -> ManagerBasedRlEnvCfg:
     """跳跃 mimic 环境。
 
@@ -81,6 +82,7 @@ def env_cfg(
     reference_dir：参考轨迹目录（默认 jump_ref_v1）；站姿高度指令取参考的站姿，J7 换成无下蹲参考（站姿 0.22 m）。
     reference_obs：观测里是否有参考信息。False（J8，用户定）时 actor 与 critic 都不看 20 维参考帧，critic 也不看参考时钟 /
     参考编号，actor 只有 34 维本体（含 jump_flag / 目标高度），是 POMDP；模仿奖励、偏离终止、RSI 不变。
+    rsi_prob：回合从参考随机时刻开始（RSI）的比例；J9 置 0（所有回合从站姿开始，跳跃只能由触发进入）。
     """
     moving = float(max_lin_vel_x) > 0.0
     vx_range = (-float(max_lin_vel_x), float(max_lin_vel_x)) if moving else (0.0, 0.0)
@@ -173,7 +175,7 @@ def env_cfg(
     cfg.events["reset_jump_mimic"] = EventTermCfg(
         func=mdp.reset_jump_mimic,
         mode="reset",
-        params={"rsi_prob": 0.0 if play else JUMP_MIMIC_RSI_PROB},
+        params={"rsi_prob": 0.0 if play else float(rsi_prob)},
     )
 
     # 课程：去掉速度课程，保留推扰

@@ -32,6 +32,9 @@ _J7 = {**_J4, "reference_dir": NOCROUCH_REFERENCE_DIR}
 EXP_J8_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J8"
 """J8 = J7 + actor 与 critic 都不看参考帧 / 参考时钟（actor 34 维，POMDP），模仿奖励、偏离终止、RSI 不变。"""
 _J8 = {**_J7, "reference_obs": False}
+EXP_J9_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J9"
+"""J9 = J7 + 去掉 RSI（rsi_prob 0.5 → 0），验证不靠参考中途初始化能否学会跳。"""
+_J9 = {**_J7, "rsi_prob": 0.0}
 
 
 def register() -> None:
@@ -78,6 +81,13 @@ def register() -> None:
         rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J8_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_J9_TASK_ID,
+        env_cfg=env_cfg(**_J9),
+        play_env_cfg=env_cfg(play=True, **_J9),
+        rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J9_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
@@ -86,6 +96,7 @@ __all__ = [
     "EXP_J4_TASK_ID",
     "EXP_J7_TASK_ID",
     "EXP_J8_TASK_ID",
+    "EXP_J9_TASK_ID",
     "TASK_ID",
     "register",
 ]
