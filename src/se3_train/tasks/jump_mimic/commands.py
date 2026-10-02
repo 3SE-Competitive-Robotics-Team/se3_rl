@@ -1,7 +1,8 @@
 """跳跃 mimic 指令项：8 维指令 + 参考时钟。
 
 指令布局与部署契约一致：[lin_vel_x, ang_vel_yaw, pitch, roll, height, jump_flag, jump_target_height, jump_phase]。
-jump_phase 恒为 0（用户定：不把相位输入网络，参考进度靠参考帧观测）。参考时钟只在环境内部，按时间推进：
+jump_phase 默认恒 0（J1 用户定：不把相位输入网络，参考进度靠参考帧观测）；J10 起可设 phase_time_scale_s，
+跳跃中 jump_phase = 参考时刻 / 该常数（J8 证明网络必须有时间信息，J10 试一维相位代替 20 维参考帧）。参考时钟只在环境内部，按时间推进：
 触发时从参考第 0 帧开始，每个 policy step 前进 step_dt，播完回到站立并进入冷却。
 参考状态初始化（RSI）由 reset 事件调用 `start_reference` 预置，command reset 时保留（事件先于指令 reset）。
 """
@@ -17,6 +18,9 @@ from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightComma
 
 from .reference import DEFAULT_REFERENCE_PATHS, JumpReferenceLibrary, ReferenceFrame
 
+PLAYBACK_END_TOLERANCE_S = 1.0e-6
+"""参考播完判定容差（与 se3_runtime.jump_reference 同值）。"""
+
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
@@ -30,6 +34,9 @@ class JumpMimicCommandCfg(VelocityHeightCommandCfg):
     """回合开始或上一跳结束后至少站这么久才允许触发。"""
     trigger_rate_hz: float = 0.5
     """满足条件后每秒触发概率（泊松近似）。"""
+    phase_time_scale_s: float | None = None
+    """J10：jump_phase = 触发后参考时刻 / 该常数（跳跃中），给网络一维时间信息；None 时 jump_phase 恒 0（J1–J9）。
+    用固定常数而不是各条参考时长归一化，使同一相位值对应同一物理时刻（起蹬都在 0）。"""
 
     def build(self, env: ManagerBasedRlEnv) -> JumpMimicCommandTerm:
         return JumpMimicCommandTerm(self, env)
@@ -93,7 +100,10 @@ class JumpMimicCommandTerm(VelocityHeightCommandTerm):
         super()._update_command()
         dt = float(self._env.step_dt)
         self.ref_t = torch.where(self.active, self.ref_t + dt, self.ref_t)
-        finished = self.active & (self.ref_t >= self.library.duration[self.ref_id])
+        # 留容差：float32 累加 73 × 0.02 = 1.4599999 < 1.46，否则比 runtime（float64）多播一步
+        finished = self.active & (
+            self.ref_t >= self.library.duration[self.ref_id] - PLAYBACK_END_TOLERANCE_S
+        )
         self.active = self.active & ~finished
         self.ref_t = torch.where(finished, torch.zeros_like(self.ref_t), self.ref_t)
         self.idle_t = torch.where(self.active, torch.zeros_like(self.idle_t), self.idle_t + dt)
@@ -128,7 +138,7 @@ class JumpMimicCommandTerm(VelocityHeightCommandTerm):
                     "contact": lib.contact[k, :n].tolist(),
                 }
             )
-        return {
+        payload = {
             "format": "se3.jump_ref.v1",
             "dt": lib.dt,
             "stand_height": lib.stand_height,
@@ -136,11 +146,18 @@ class JumpMimicCommandTerm(VelocityHeightCommandTerm):
             "scales": dict(REFERENCE_SCALES),
             "references": references,
         }
+        if self.cfg.phase_time_scale_s is not None:
+            payload["phase_time_scale_s"] = float(self.cfg.phase_time_scale_s)
+        return payload
 
     def _write_jump_dims(self) -> None:
         self._command[:, 5] = self.active.float()
         self._command[:, 6] = self.library.target_clearance[self.ref_id] * self.active.float()
-        self._command[:, 7] = 0.0
+        scale = self.cfg.phase_time_scale_s
+        if scale is None:
+            self._command[:, 7] = 0.0
+        else:
+            self._command[:, 7] = (self.ref_t / float(scale)) * self.active.float()
 
     def _update_metrics(self) -> None:
         super()._update_metrics()

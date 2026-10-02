@@ -3,7 +3,7 @@
 单独一个跳跃策略：MLP、单帧本体 34 维 + 参考帧 20 维、从头训、平地跳。以 Flat 基线为底：
 - 执行链与 rough M54 对齐：膝气弹簧 300 N + 电机侧前馈补偿，腿部 T-N 包络按物理口径 ×0.8（平台 32 N·m）。
 - 指令：yaw / pitch / roll 恒 0（vx 默认恒 0，J3 起放开做前进跳）、站姿高度恒为参考站姿（0.28 m）；跳跃触发与参考时钟见 commands.py，
-  jump_phase 恒 0（不把相位输入网络）。
+  jump_phase 默认恒 0（不把相位输入网络）；J10 起可设 phase_time_scale_s 给一维相位。
 - 奖励：Flat 原定价 + 腿长 / 机身高度 / 竖直速度 / 轮接触四项模仿奖励；Flat 的轮/腿离地罚、高度罚
   原本就按 jump_flag 屏蔽，另把静站罚与轮子大接触力罚在跳跃期间置零。
 - reset：rsi_prob 的回合从参考随机时刻开始（RSI），其余从站姿开始；跳跃期间偏离参考过大提前终止。
@@ -42,6 +42,8 @@ from .reference import (
 
 JUMP_MIMIC_LEG_TORQUE_ENVELOPE_SCALE = 0.8
 JUMP_MIMIC_RSI_PROB = 0.5
+JUMP_MIMIC_J10_PHASE_TIME_SCALE_S = 1.5
+"""J10 相位时间尺度：参考最长 1.46 s，相位约落在 0–0.97。"""
 JUMP_MIMIC_EPISODE_LENGTH_S = 10.0
 JUMP_MIMIC_MAX_HEIGHT_ERROR = 0.25
 """J1 机身高度偏离终止阈值；0.25 m 大于 0.20/0.30 参考的最高点（不起跳也不触发），J2 收紧到 0.12 m。"""
@@ -64,6 +66,13 @@ def _stand_height(paths: tuple[str, ...]) -> float:
     return JumpReferenceLibrary(paths, "cpu").stand_height
 
 
+def _phase_upper(paths: tuple[str, ...], phase_time_scale_s: float | None) -> float:
+    """jump_phase 部署包络上界：最长参考时长 / 时间尺度；不给相位时为 0。"""
+    if phase_time_scale_s is None:
+        return 0.0
+    return float(JumpReferenceLibrary(paths, "cpu").duration.max()) / float(phase_time_scale_s)
+
+
 def env_cfg(
     play: bool = False,
     max_height_error: float = JUMP_MIMIC_MAX_HEIGHT_ERROR,
@@ -72,6 +81,7 @@ def env_cfg(
     reference_dir: Path = REFERENCE_DIR,
     reference_obs: bool = True,
     rsi_prob: float = JUMP_MIMIC_RSI_PROB,
+    phase_time_scale_s: float | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """跳跃 mimic 环境。
 
@@ -83,6 +93,7 @@ def env_cfg(
     reference_obs：观测里是否有参考信息。False（J8，用户定）时 actor 与 critic 都不看 20 维参考帧，critic 也不看参考时钟 /
     参考编号，actor 只有 34 维本体（含 jump_flag / 目标高度），是 POMDP；模仿奖励、偏离终止、RSI 不变。
     rsi_prob：回合从参考随机时刻开始（RSI）的比例；J9 置 0（所有回合从站姿开始，跳跃只能由触发进入）。
+    phase_time_scale_s：J10，跳跃中 jump_phase = 触发后参考时刻 / 该常数（None 时恒 0）；部署包络 jump_phase 上界随之放开。
     """
     moving = float(max_lin_vel_x) > 0.0
     vx_range = (-float(max_lin_vel_x), float(max_lin_vel_x)) if moving else (0.0, 0.0)
@@ -124,10 +135,14 @@ def env_cfg(
             "height": (stand, stand),
             "jump_flag": (0.0, 1.0),
             "jump_target_height": (0.0, float(max(reference_heights))),
-            "jump_phase": (0.0, 0.0),
+            "jump_phase": (0.0, _phase_upper(paths, phase_time_scale_s)),
         },
     )
-    cfg.commands = {"velocity_height": JumpMimicCommandCfg(reference_paths=paths, **kwargs)}
+    cfg.commands = {
+        "velocity_height": JumpMimicCommandCfg(
+            reference_paths=paths, phase_time_scale_s=phase_time_scale_s, **kwargs
+        )
+    }
 
     # 观测：actor 34 维本体 + 参考帧；critic 再加参考时钟
     cfg.observations = dict(cfg.observations)
@@ -191,6 +206,7 @@ __all__ = [
     "JUMP_MIMIC_J2_MAX_HEIGHT_ERROR",
     "JUMP_MIMIC_J3_MAX_LIN_VEL_X",
     "JUMP_MIMIC_J4_REFERENCE_HEIGHTS",
+    "JUMP_MIMIC_J10_PHASE_TIME_SCALE_S",
     "JUMP_MIMIC_LEG_TORQUE_ENVELOPE_SCALE",
     "JUMP_MIMIC_MAX_HEIGHT_ERROR",
     "JUMP_MIMIC_MOVING_STANDING_RATIO",

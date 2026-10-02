@@ -10,6 +10,7 @@ from .env_cfg import (
     JUMP_MIMIC_J2_MAX_HEIGHT_ERROR,
     JUMP_MIMIC_J3_MAX_LIN_VEL_X,
     JUMP_MIMIC_J4_REFERENCE_HEIGHTS,
+    JUMP_MIMIC_J10_PHASE_TIME_SCALE_S,
     env_cfg,
 )
 from .reference import NOCROUCH_REFERENCE_DIR
@@ -35,6 +36,13 @@ _J8 = {**_J7, "reference_obs": False}
 EXP_J9_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J9"
 """J9 = J7 + 去掉 RSI（rsi_prob 0.5 → 0），验证不靠参考中途初始化能否学会跳。"""
 _J9 = {**_J7, "rsi_prob": 0.0}
+EXP_J10_TASK_ID = "SE3-WheelLegged-Jump-Mimic-Exp-J10"
+"""J10 = J9 + 去掉 actor 与 critic 的参考帧 / 参考时钟，改给一维相位 jump_phase = 参考时刻 / 1.5 s（actor 34 维）。"""
+_J10 = {
+    **_J9,
+    "reference_obs": False,
+    "phase_time_scale_s": JUMP_MIMIC_J10_PHASE_TIME_SCALE_S,
+}
 
 
 def register() -> None:
@@ -88,6 +96,13 @@ def register() -> None:
         rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J9_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_J10_TASK_ID,
+        env_cfg=env_cfg(**_J10),
+        play_env_cfg=env_cfg(play=True, **_J10),
+        rl_cfg=bind_task_name(mlp_rl_cfg(), EXP_J10_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
@@ -97,6 +112,7 @@ __all__ = [
     "EXP_J7_TASK_ID",
     "EXP_J8_TASK_ID",
     "EXP_J9_TASK_ID",
+    "EXP_J10_TASK_ID",
     "TASK_ID",
     "register",
 ]
