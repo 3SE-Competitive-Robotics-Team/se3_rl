@@ -153,6 +153,7 @@ nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退
 | J7 | `SE3-WheelLegged-Jump-Mimic-Exp-J7` / `09493b2` | `2026-10-01_18-07-15_jump-J7-mimic-nocrouch-h022-seed42-1x8192-5k` | 3770619 | `/workspace/.se3-training-state/whtws/20261001T180708Z` | 2026-10-01 18:07 启动，GPU 6 单卡 × 8192、5000 轮，从头训，W&B `qar24d7n`；= J4 + 无下蹲参考（站姿 0.22） |
 | J8 | `SE3-WheelLegged-Jump-Mimic-Exp-J8` / `cdc95b4` | `2026-10-02_03-56-43_jump-J8-mimic-norefobs-h022-seed42-1x8192-5k` | 3967075 | `/workspace/.se3-training-state/whtws/20261002T035636Z` | 2026-10-02 03:56 启动，GPU 6 单卡 × 8192、5000 轮，从头训，W&B `e9xuzhwh`；= J7 + actor 与 critic 都不看参考观测（34 维 POMDP）；子模块随之更新到 `120831e`；2026-10-02 511 轮 SIGTERM 停止（POMDP 学不出） |
 | J9 | `SE3-WheelLegged-Jump-Mimic-Exp-J9` / `4c7ce37` | `2026-10-02_04-10-49_jump-J9-mimic-nocrouch-norsi-seed42-1x8192-5k` | 3972586 | `/workspace/.se3-training-state/whtws/20261002T041042Z` | 2026-10-02 04:10 启动，GPU 6 单卡 × 8192、5000 轮，从头训，W&B `mcr71gg5`；= J7 去掉 RSI |
+| J10 | `SE3-WheelLegged-Jump-Mimic-Exp-J10` / `e3c3a0a` | `2026-10-02_07-53-50_jump-J10-mimic-phase015-norsi-seed42-1x8192-5k` | 4046465 | `/workspace/.se3-training-state/whtws/20261002T075343Z` | 2026-10-02 07:53 启动，GPU 6 单卡 × 8192、5000 轮，从头训，W&B `ve0ypvwi`；= J9 用一维相位代替参考帧（34 维）；子模块 `2422622` |
 
 仓库于 2026-09-27 通过 git bundle 由 5af0d00 快进到 `448c7e4`，2026-09-28 再快进到 `25ca875`（子模块仍 `e753ce6`）。
 停止：`ps -o args= -g <pgid>` 核对 run name 后 `kill -INT -- -<pgid>`；容器 PID 1 不回收僵尸，defunct 条目可忽略。

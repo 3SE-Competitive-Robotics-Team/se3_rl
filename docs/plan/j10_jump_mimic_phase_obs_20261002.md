@@ -29,3 +29,13 @@ metadata 顶层 `jump_reference` 新增可选 `phase_time_scale_s`；runtime 播
 - 相位时序核对（`.scratch/j10_phase_check.py`，关掉偏离终止只看时序）：训练端观测里的 jump_phase 与 runtime 播放器逐步差 0，
   两端都在 0.96 之后同一步归 0。
 - se3-sim2x 全部 unittest、`tests.test_onnx_metadata` + `tests.test_flat_baseline` 通过；CPU smoke（1 env、5 轮）通过。
+
+## 启动记录
+
+代码 commit `e3c3a0a`（子模块 `2422622`），whtws 经 git bundle 由 `4c7ce37` 快进（子模块 `120831e` → `2422622`）。
+
+- 启动时间：2026-10-02 07:53（Pod 时区），GPU 6 单卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，
+  W&B [ve0ypvwi](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/ve0ypvwi)，PID/PGID `4046465`，
+  state `/workspace/.se3-training-state/whtws/20261002T075343Z`。单卡 run 停训用 SIGTERM。
+- 首轮核验：第 84 轮无 Traceback，1.26 s/轮，GPU 6 3.9 GB / 58%；`Jump/active_rate` 0.049、`mimic_deviation` 约 52 次/记录（与 J9 开局一致）。
+- 判据：与 J9（mcr71gg5，300–500 轮突破）对比突破时间与最终指标；跑完回放四档 × 四速与离地延迟。
