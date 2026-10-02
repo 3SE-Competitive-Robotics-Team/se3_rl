@@ -1,10 +1,6 @@
-"""SerialLeg 跳跃轨迹优化（TO）模块。
+"""SerialLeg 跳跃参考轨迹模块。
 
-基于质心动力学（centroidal dynamics）的 kino-dynamic 轨迹优化，
-为 TO+RL 路线提供参考跳跃轨迹。
-
-主要输出：
-    - base_link 位置/速度轨迹
-    - 关节角度轨迹（站立段）
-    - 着陆时刻时间戳（用于 RL 的奖励松弛）
+reference.py 生成 se3.jump_ref.v1 原地跳跃运动学参考（policy 主动杆坐标、腿长、机身高度/竖直速度、
+接触标志、阶段），供跳跃 mimic 任务使用；只保证运动学，动力学由训练 rollout 迭代。
+kinematics.py / replay.py 保留给旧格式文件回放。
 """

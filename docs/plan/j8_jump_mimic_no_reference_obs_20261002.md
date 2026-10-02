@@ -1,0 +1,45 @@
+# J8：J7 去掉全部参考观测（POMDP）（2026-10-02，用户定）
+
+## 动机
+
+用户想看 J7 的跳跃效果能否在没有参考帧的情况下学出来：部署契约回到 34 维（与 rough 同布局），不需要参考帧观测。
+
+## 改动（单变量：观测）
+
+`SE3-WheelLegged-Jump-Mimic-Exp-J8` = J7 + `env_cfg(reference_obs=False)`：
+
+- actor 去掉 20 维参考帧，只剩 34 维本体（跳跃信息只有 jump_flag / 目标高度，jump_phase 恒 0）。
+- critic 也去掉参考帧与参考时钟 / 参考编号（用户定：critic 也不看），只从状态估值。
+- 其余全部照 J7：无下蹲参考（站姿 0.22 m）、四项模仿奖励按参考时刻计算、偏离终止 0.12 m、RSI 50%、jump_flag 在整段参考（约 1.4 s）为 1、vx ±1.5、执行链与 PPO。
+
+这是 POMDP：奖励按参考时间算，actor 与 critic 都看不到时间。起跳段从 flag 上升沿开始单调上升，状态与时刻基本一一对应；
+落地后的缓冲 / 恢复与参考末尾的站立段（flag 仍为 1）状态相似、时刻不同，可能出现时机不准、模仿奖励偏低或二次起跳。
+
+## runtime（se3-sim2x）
+
+`policy_descriptor` / `policy_runtime`：metadata 带顶层 `jump_reference` 但观测没有该项时不再拒绝加载；跳跃播放器照样按参考时长驱动
+`velocity_height[5:8]`（jump_flag / 目标高度），只是不生成参考帧观测。J8 ONNX 为 34 维、`supports_jump=True`；J7 54 维 ONNX 照常。
+
+## 验证
+
+- J7 / J8 配置对比：只差观测（J8 actor 与 critic 的跳跃相关项只剩 jump_commands）。
+- se3-sim2x 全部 unittest、`tests.test_onnx_metadata` + `tests.test_flat_baseline` 通过；CPU smoke（1 env、5 轮）通过，导出 ONNX 被 runtime
+  加载为 34 维且可触发跳跃。
+
+## 启动记录
+
+代码 commit `cdc95b4`（子模块 `120831e`），whtws 经 git bundle 由 `09493b2` 快进（J7 的启动记录与结果文档提交此前未同步）；
+GPU 0–5 仍被他人占用，GPU 6 单卡，与 J7 同规格。
+
+- 启动时间：2026-10-02 03:56（Pod 时区），GPU 6 单卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，
+  W&B [e9xuzhwh](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/e9xuzhwh)，PID/PGID `3967075`，
+  state `/workspace/.se3-training-state/whtws/20261002T035636Z`。单卡 run 停训用 SIGTERM。
+
+## 结果
+
+第 511 轮按用户指令 SIGTERM 停止。到第 278 轮与 J7 同轮次对比：偏离终止 50.4 对 0.64（开局起没降）、回合长度 161 对 475、
+跳跃中机身高度误差 3.9 对 1.4 cm、机身高度 / 腿长模仿奖励 0.90 / 0.72 对 2.78 / 2.49；走路在学（vx 误差 0.45 → 0.26）。
+
+结论：在"按时间模仿 + 任意时刻 RSI + 偏离终止"的框架下，参考的时间信息必须给网络。RSI 把策略放到参考任意时刻，actor 无法
+从单帧本体判断第几帧（腾空上升 / 下降在关节状态上很像，actor 又没有机身线速度），几步内偏出 0.12 m 被终止。这不证明 POMDP
+本身不可解（带记忆的 History-MLP / GRU 可从近期运动推断时刻），但合入 rough 时 J7 的参考帧要保留。

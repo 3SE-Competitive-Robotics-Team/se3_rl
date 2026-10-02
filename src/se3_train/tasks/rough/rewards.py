@@ -1,14 +1,14 @@
 """本任务的奖励包装：数学全部复用 Flat 基线，只按地形列改生效范围或核参数。
 
-1. `command_velocity_error_on_terrain`：速度违令二次罚，只在指定列生效。Flat 基线已删掉它
-   （平地上误差小且短暂，等于奖励指令阶跃后猛冲），但台阶列换列后跟踪误差长期大于 0.4 m/s，
-   tracking_lin_vel 的高斯核在那里是平的零、没有梯度（A5 跟踪 2.2 → 0.5 后再没回来），A6 起
-   在台阶列加回来；A15 扩到全部六列（生效列由 env_cfg 配）。
+1. （已删除）`command_velocity_error_on_terrain`：A6–M35 用的速度违令二次罚。M37 起删除：lin_vel_scale 3.0 下
+   1.0 m/s 误差只罚 0.20、斜率不到 1，是常数税不是远端梯度（docs/plan/m37_reward_prune_20260927.md）。
 2. `base_height_penalty_support_on_terrain`（M21）：机身高度罚，在指定列（上台阶列）把地面参考从 base_link
    正下方射线换成两轮下方射线（轮子支撑面），其余列与 Flat 原函数逐位相同。旧口径下机身沿一越过台阶边，
    参考地面瞬间抬一阶，误差夹满 0.15 就按封顶 −9/s 罚到机身升完这一阶，把"机身先过沿、轮子随后收腿提上来"
    的过渡期罚成了起跳/走梯（见 env_cfg 的 ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS 注释）。
    `base_height_penalty_off_terrain` 是 M1/M2 用过的按列置零包装（M3 起全列生效、不再挂在配置里，留作对照工具）。
+2b. `base_height_penalty_window_on_terrain`（M27 对照 M21，M34 起默认）：上台阶列的地面参考改成机身周围 77 点窗口均值
+   （复旦口径），罚改成有界的 1 − exp(−e²/σ²)，M35 起 ±5 cm 死区；由 env_cfg 的 ROUGH_STAIR_HEIGHT_REFERENCE 选择口径。
 3. `tracking_ang_vel_off_terrain`：yaw 跟踪在台阶列置零（A10）。台阶列 yaw 指令恒 0、σ=0.25，
    完全静止就能拿满 73% 的正奖励，站着不动是正收益均衡；指令侧归零 + 奖励侧归零缺一不可。
 4. `tracking_lin_vel_terrain_vz`：非平地列关掉核里的 vz 项（A7，爬升必须有垂直速度），台阶列单独
@@ -17,14 +17,9 @@
    flat_wheel_contact、collision（见 env_cfg.py 的 ROUGH_STAIRS_ZEROED_REWARDS 注释）。
 5b. `column_scaled`：同一件事的连续版，指定列乘一个系数而不是置零。M22 用它给窄核速度跟踪分列定权
    （台阶列 w=1、其余四列 w=3，见 env_cfg.py 的 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT 注释）。
-6b. `wheel_height_diff`（M23 引入）：左右轮心的世界系高度差 |Δz| 超出 8 cm 死区的部分取平方，只在上台阶列生效。
-   量的是"一只轮已经上了一级、另一只还没上"这件事本身。爬升段 |Δz| 的 p95 把两种流形切得很干净：
-   目标流形（M15 2.7/4.2、M18 0.2–2.7、M21-2600 1.2/4.1）≤ 4.2 cm，走梯（M17 14.1/20.4、M22 14.0/18.4）≥ 14 cm；
-   而前后错位 Δx 在两组里完全重叠（M15 均值 −10.5/−9.2 比 M22 的 −7.4/−7.8 还大），罚 Δx 会先罚掉目标流形。
-6. `wheel_fore_aft_offset`（M18 引入，M19 改形）：左右轮心在机身系里的前后错位 Δx 超出死区 10 cm 的部分取平方，
-   几何量、不经关节空间；只在平地列生效（M18 的"全列除台阶"把爬梯的一先一后也压平了）。M17 评测发现策略靠"跨立"
-   （左右轮前后错开 20–29 cm）把俯仰平衡变成静定问题来做精确跟踪，joint_mirror −0.179 在 Δx=28 cm
-   只花 0.18/s，形同免费（docs/plan/m17_narrow_w3_20260920.md 附录）。
+6. （已删除）`wheel_fore_aft_offset`（M18/M19）与 `wheel_height_diff`（M23）：左右轮心前后错位 Δx² 与高度差 Δz² 的几何罚。
+   M37 起删除：用户决定对称只保留 joint_mirror 一条关节空间定价。推导见 docs/plan/m18_wheel_offset_20260921.md、
+   m23_wheel_dz_20260921.md；复现用 commit 5af0d00（M35，最后一个带这两项的入口）。
 
 掩码为 None（非课程地形、平面地形、列名对不上）时全部退化成 Flat 基线的行为。
 """
@@ -43,9 +38,7 @@ from se3_train.mdp.rewards import (
 )
 from se3_train.mdp.terrain_height import frame_height_above_terrain, ground_height_estimate
 from se3_train.tasks.flat.rewards import (
-    command_velocity_error,
     flat_base_height_penalty_no_jump,
-    tracking_ang_vel,
     tracking_lin_vel,
 )
 
@@ -67,129 +60,6 @@ def tracking_lin_vel_narrow(
     error = robot.data.root_link_lin_vel_b[:, 0] - command[:, 0]
     gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], tracking_upright_full_cos)
     return torch.exp(-error.square() / sigma) * gate
-
-
-def wheel_fore_aft_offset(
-    env: ManagerBasedRlEnv,
-    apply_type_names: tuple[str, ...] = ("flat",),
-    dead_zone_m: float = 0.10,
-    tracking_upright_full_cos: float = 0.7,
-) -> torch.Tensor:
-    """左右轮心在机身系里的前后错位 Δx：超出死区的部分取平方（m²），只在指定列生效，直立门控；顺带记 |Δx| 均值。
-
-    M18 用的是"全列（除台阶列）+ 无死区"，结果共享策略把两轮齐平学成全局习惯，台阶列也丢掉了
-    M17 那种一先一后的走梯方式，只剩深前倾双轮同抬（docs/plan/m18_wheel_offset_20260921.md 中途核查）。
-    M19 起改成只罚平地列、死区 10 cm：静站/平地行驶时 20–29 cm 的错位仍被罚，10 cm 以内不管，
-    坡列/下台阶列不罚，爬梯时的一先一后不受影响。没有分列信息（plane）时全体生效。
-    """
-    robot = env.scene[_DEFAULT_ASSET_CFG.name]
-    wheel_b = _wheel_pos_body_frame(env, _DEFAULT_ASSET_CFG)  # [N, 2, 3]，顺序 (左, 右)
-    dx = wheel_b[:, 0, 0] - wheel_b[:, 1, 0]
-    excess = torch.clamp(dx.abs() - float(dead_zone_m), min=0.0)
-    gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], tracking_upright_full_cos)
-    penalty = excess.square() * gate
-    mask = column_mask(env, apply_type_names)
-    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
-    if isinstance(log, dict):
-        log["Rough/wheel_dx_abs"] = dx.abs().mean()
-        if mask is not None:
-            keep = mask.float()
-            log["Rough/wheel_dx_abs_flat"] = (dx.abs() * keep).sum() / keep.sum().clamp(min=1.0)
-            log["Rough/wheel_dx_abs_off_flat"] = (dx.abs() * (1.0 - keep)).sum() / (
-                1.0 - keep
-            ).sum().clamp(min=1.0)
-    if mask is None:
-        return penalty
-    return penalty * mask.float()
-
-
-def wheel_height_diff(
-    env: ManagerBasedRlEnv,
-    apply_type_names: tuple[str, ...] = ("stairs_up",),
-    dead_zone_m: float = 0.08,
-    tracking_upright_full_cos: float = 0.7,
-) -> torch.Tensor:
-    """左右轮心的世界系高度差 |Δz| 超出死区的部分取平方（m²），只在指定列生效，直立门控。
-
-    M23（2026-09-21 用户定）：堵死"一只轮先上一级、另一只在下一级推地"的走梯。死区 8 cm 留在目标流形之上
-    （M15-7999 爬升段 |Δz| p95 只有 2.7–4.2 cm、峰值 5.8），所以爬升本身的摆动免费；
-    走梯的 14–20 cm 会被罚 0.14–0.40/s，与台阶列窄核奖励（0.125/s）同量级。
-    没有分列信息（plane）时恒 0：这是台阶专项，平面上不该凭空多一项罚。
-    """
-    robot = env.scene[_DEFAULT_ASSET_CFG.name]
-    wheel_ids, _ = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
-    wheel_z = robot.data.body_link_pos_w[:, wheel_ids, 2]
-    dz = wheel_z[:, 0] - wheel_z[:, 1]
-    excess = torch.clamp(dz.abs() - float(dead_zone_m), min=0.0)
-    gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], tracking_upright_full_cos)
-    penalty = excess.square() * gate
-    mask = column_mask(env, apply_type_names)
-    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
-    if isinstance(log, dict):
-        log["Rough/wheel_dz_abs"] = dz.abs().mean()
-        if mask is not None:
-            keep = mask.float()
-            log["Rough/wheel_dz_abs_stairs"] = (dz.abs() * keep).sum() / keep.sum().clamp(min=1.0)
-    if mask is None:
-        return torch.zeros_like(penalty)
-    return penalty * mask.float()
-
-
-def command_velocity_error_on_terrain(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    terrain_type_names: tuple[str, ...] = ("stairs_up",),
-    lin_vel_scale: float = 0.5,
-    yaw_vel_scale: float = 1.0,
-    lin_deadband: float = 0.05,
-    yaw_deadband: float = 0.10,
-    max_penalty: float = 9.0,
-) -> torch.Tensor:
-    """速度违令二次罚，只在指定的子地形列上生效（其余列恒 0）。"""
-    penalty = command_velocity_error(
-        env,
-        command_name=command_name,
-        lin_vel_scale=lin_vel_scale,
-        yaw_vel_scale=yaw_vel_scale,
-        lin_deadband=lin_deadband,
-        yaw_deadband=yaw_deadband,
-        max_penalty=max_penalty,
-    )
-    mask = column_mask(env, terrain_type_names)
-    if mask is None:
-        # 没有分列信息时不生效：Flat 基线里这一项已被删除，默默全局加回来会改掉基线。
-        return torch.zeros_like(penalty)
-    penalty = penalty * mask.float()
-    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
-    if isinstance(log, dict):
-        log["Rough/command_velocity_error_terrain"] = penalty.sum() / mask.sum().clamp(min=1)
-    return penalty
-
-
-def tracking_ang_vel_off_terrain(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    sigma: float,
-    terrain_type_names: tuple[str, ...] = ("stairs_up",),
-    sigma_cmd_scale: float = 0.0,
-    ratio_blend: float = 0.0,
-    use_upright_gate: bool = True,
-    tracking_upright_full_cos: float = 0.7,
-) -> torch.Tensor:
-    """yaw 角速度跟踪，在指定子地形列上置零，其余列与 Flat 基线逐位相同。"""
-    reward = tracking_ang_vel(
-        env,
-        command_name=command_name,
-        sigma=sigma,
-        sigma_cmd_scale=sigma_cmd_scale,
-        ratio_blend=ratio_blend,
-        use_upright_gate=use_upright_gate,
-        tracking_upright_full_cos=tracking_upright_full_cos,
-    )
-    mask = column_mask(env, terrain_type_names)
-    if mask is None:
-        return reward
-    return reward * (~mask).float()
 
 
 def base_height_penalty_off_terrain(
@@ -262,6 +132,90 @@ def base_height_penalty_support_on_terrain(
     return torch.where(mask, support, penalty)
 
 
+def base_height_penalty_window_on_terrain(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    height_sensor_name: str,
+    window_sensor_name: str,
+    support_sensor_name: str = "stair_reward_height",
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+    sigma: float = 0.05,
+    max_error: float | None = 0.15,
+    dead_zone_m: float = 0.0,
+) -> torch.Tensor:
+    """机身高度罚：指定列改用机身周围窗口的地面均值作参考、罚改成有界形状，其余列与 Flat 原函数逐位相同。
+
+    对照 M21 的支撑面口径（2026-09-25 用户定）。参考来自 yly-true/fudan_rl_wheel_leg 上台阶 v3：
+    高度 = 机身 z − 机身周围 11×7 点（x ±0.5、y ±0.3 m，yaw 对齐）的地面均值，这里直接复用 critic 的
+    同尺寸高度扫描（`window_sensor_name`）。机身接近台阶时窗口前沿先扫到上一阶，参考提前抬高、过沿时
+    平滑过渡，等于奖励"机身先过沿"；M21 的支撑面在机身过沿时参考不动，这份激励也没了。
+    罚取 1 − exp(−e²/σ²)：小误差时与原二次罚 e²/σ² 曲率相同，大误差封顶 1（乘权重 −4 即每秒最多 −4），
+    原口径夹 ±0.15 m 时峰值是 (0.15/σ)² = 2.25。`max_error` 只作用于其余列的 Flat 原函数。
+    顺带记台阶列窗口与支撑面两种口径的 |误差| 均值。
+
+    `dead_zone_m`（M35，2026-09-26 用户定）：只对指定列的窗口罚生效，|误差| 先减去死区再进核，死区内免费；
+    日志仍记原始误差。M34-7800 第 9 级确定性回放的账本（.scratch/m34_eval/window_height_err.py）：窗口口径误差
+    68–86% 的时间偏低（p10 −8…−10 cm），罚款 80% 落在过沿过渡段，单边只罚偏低几乎不省钱（0.62 → 0.58/s），
+    ±5 cm 死区把每秒罚从 0.62/0.85/0.98（爬升 0.73/0.81/0.89 m/s）压到 0.09/0.15/0.22，即把这项随速度上涨的
+    部分从每快 0.08 m/s 多付 0.22/s 压到 0.06/s。0 = 原样（M27/M34）。
+    """
+    penalty = flat_base_height_penalty_no_jump(
+        env,
+        command_name=command_name,
+        height_sensor_name=height_sensor_name,
+        sigma=sigma,
+        max_error=max_error,
+    )
+    mask = column_mask(env, terrain_type_names)
+    if mask is None:
+        return penalty
+    cmd = env.command_manager.get_command(command_name)
+    active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
+    frame_z = env.scene[height_sensor_name].data.frame_pos_w[:, 0, 2]
+    error = frame_z - ground_height_estimate(env, window_sensor_name) - cmd[:, 4]
+    shaped = error
+    if float(dead_zone_m) > 0.0:
+        shaped = torch.sign(error) * (error.abs() - float(dead_zone_m)).clamp(min=0.0)
+    window = (1.0 - torch.exp(-shaped.square() / (float(sigma) ** 2))) * active.float()
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        keep = (mask & active).float()
+        n = keep.sum().clamp(min=1.0)
+        support_error = frame_z - ground_height_estimate(env, support_sensor_name) - cmd[:, 4]
+        log["Rough/base_height_err_window_stairs"] = (error.abs() * keep).sum() / n
+        log["Rough/base_height_err_support_stairs"] = (support_error.abs() * keep).sum() / n
+    return torch.where(mask, window, penalty)
+
+
+def wheel_fore_aft_offset(
+    env: ManagerBasedRlEnv,
+    dead_zone_m: float = 0.0,
+    tracking_upright_full_cos: float = 0.7,
+) -> torch.Tensor:
+    """左右轮心在机身系里的前后错位 Δx，超出死区的部分取平方（m²），全列生效，直立门控（M49，2026-09-29 用户定）。
+
+    只罚水平分量、不罚竖直分量：左右腿长差（机身系 Δz）留给 roll 指令用，平地上腿长不等导致的机身侧倾
+    已由 tracking_orientation_l2 计价。机身系而非世界系，俯仰不产生假误差。与 M18–M36 的同名项（M37 删除）
+    同式，但全列生效、默认无死区——上台阶目标是"腿一收双轮同抬"，不要一先一后的走梯。
+    顺带记全列与台阶列的 |Δx|，以及机身系左右腿长差 |Δz|。
+    """
+    robot = env.scene[_DEFAULT_ASSET_CFG.name]
+    wheel_b = _wheel_pos_body_frame(env, _DEFAULT_ASSET_CFG)  # [N, 2, 3]，顺序 (左, 右)
+    dx = wheel_b[:, 0, 0] - wheel_b[:, 1, 0]
+    excess = torch.clamp(dx.abs() - float(dead_zone_m), min=0.0)
+    gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], tracking_upright_full_cos)
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict):
+        dz = (wheel_b[:, 0, 2] - wheel_b[:, 1, 2]).abs()
+        log["Rough/wheel_dx_abs"] = dx.abs().mean()
+        log["Rough/wheel_dz_body_abs"] = dz.mean()
+        mask = column_mask(env, ("stairs_up", "stairs_two_step_up"))
+        if mask is not None:
+            keep = mask.float()
+            log["Rough/wheel_dx_abs_stairs"] = (dx.abs() * keep).sum() / keep.sum().clamp(min=1.0)
+    return excess.square() * gate
+
+
 def off_column(
     env: ManagerBasedRlEnv,
     inner,
@@ -306,8 +260,11 @@ def tracking_lin_vel_terrain_vz(
     tracking_upright_full_cos: float = 0.7,
     stair_sigma_move: float | None = None,
     stair_type_names: tuple[str, ...] = ("stairs_up",),
+    zero_vz_when_jumping: bool = False,
 ) -> torch.Tensor:
     """x 速度跟踪：非平地列把核里的 vz 项换成 `terrain_vz_weight`，台阶列把运动核换成 `stair_sigma_move`。
+
+    zero_vz_when_jumping（RJ1）：跳跃参考播放中的 env 去掉 vz 项（腾空 vz≈2 m/s 时整项归零，跳跃中前进速度没有塑形，同 J3）。
 
     逐 env 的权重/核张量直接喂给 `tracking_lin_vel`，按元素广播；观测、静站判定、课程累加与
     `Locomotion/*` 记账均复用 Flat 基线。
@@ -320,6 +277,9 @@ def tracking_lin_vel_terrain_vz(
             torch.tensor(float(terrain_vz_weight), device=env.device),
             torch.tensor(float(vz_weight), device=env.device),
         )
+    if zero_vz_when_jumping:
+        jumping = env.command_manager.get_term(command_name).active
+        weight = torch.where(jumping, torch.zeros_like(jumping, dtype=torch.float), weight)
     move_sigma: float | torch.Tensor = sigma_move
     stair_mask = column_mask(env, stair_type_names) if stair_sigma_move is not None else None
     if stair_mask is not None:
@@ -354,18 +314,89 @@ def tracking_lin_vel_terrain_vz(
                 "Rough/base_vx_error_terrain": ((cmd_vx - base_vx).abs() * terrain).sum() / n_t,
             }
         )
+        # `*_terrain` 是全部非平地列，M9 起混进了按平地方式发 ±2.4 对称指令的下台阶与坡道列，
+        # 看不出上台阶列本身跟不跟得上；单独记一份只看上台阶列的。
+        stairs_mask = column_mask(env, stair_type_names)
+        if stairs_mask is not None:
+            stairs = stairs_mask.float()
+            n_s = stairs.sum().clamp(min=1.0)
+            log.update(
+                {
+                    "Rough/cmd_vx_stairs": (cmd_vx * stairs).sum() / n_s,
+                    "Rough/base_vx_stairs": (base_vx * stairs).sum() / n_s,
+                    "Rough/base_vx_error_stairs": ((cmd_vx - base_vx).abs() * stairs).sum() / n_s,
+                }
+            )
     return reward
+
+
+_HEADING_TARGET_ATTR = "_rough_stair_heading_target"
+
+
+def _yaw_from_quat_wxyz(quat: torch.Tensor) -> torch.Tensor:
+    w, x, y, z = quat.unbind(dim=-1)
+    return torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def stair_heading_hold(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+) -> torch.Tensor:
+    """台阶列航向保持：目标航向 = 回合起点航向 + ∫yaw 指令 dt，返回航向误差平方（rad²），其余列为 0（M54，2026-09-30 用户定）。
+
+    M53 斜向撞立面时先触面的轮子被挡住、另一侧继续走，机身被动绕被挡轮转正（`.scratch/m53_yaw_ledger/`：出生偏 30° 转 −24°，
+    强制左右轮同速反而转 −32°）；原定价只有 tracking_ang_vel 按瞬时角速度收费（转动 0.2 s 约 0.6），转完后航向变化不计价。
+    本项让航向偏差持续计价，策略要么抵抗被动扭转，要么转完再转回来。目标航向在回合第一步取当前航向（reset 事件已按
+    stair_facing_yaw 摆好出生朝向），之后每步按指令 yaw 角速度积分；台阶列 yaw 指令恒为 0 时目标即出生朝向。
+    """
+    robot = env.scene[_DEFAULT_ASSET_CFG.name]
+    yaw = _yaw_from_quat_wxyz(robot.data.root_link_quat_w)
+    cmd_yaw_rate = env.command_manager.get_command(command_name)[:, 1]
+    target = getattr(env, _HEADING_TARGET_ATTR, None)
+    if not isinstance(target, torch.Tensor) or target.shape != yaw.shape:
+        target = yaw.clone()
+    new_episode = env.episode_length_buf <= 1
+    target = torch.where(new_episode, yaw, target + cmd_yaw_rate * float(env.step_dt))
+    setattr(env, _HEADING_TARGET_ATTR, target)
+    err = torch.atan2(torch.sin(yaw - target), torch.cos(yaw - target))
+    mask = column_mask(env, terrain_type_names)
+    keep = torch.ones_like(err) if mask is None else mask.float()
+    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    if isinstance(log, dict) and mask is not None:
+        n = keep.sum().clamp(min=1.0)
+        log["Rough/stair_heading_error_deg"] = torch.rad2deg((err.abs() * keep).sum() / n)
+    return err.square() * keep
+
+
+def is_terminated_except(env: ManagerBasedRlEnv, exclude_terms: tuple[str, ...]) -> torch.Tensor:
+    """非超时终止，但不算 exclude_terms 里的终止项（RJ1：偏离参考提前终止不吃 −500 摔倒罚）。"""
+    manager = env.termination_manager
+    done = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for name in manager.active_terms:
+        if name in exclude_terms or manager.get_term_cfg(name).time_out:
+            continue
+        done |= manager.get_term(name)
+    return done.float()
+
+
+def jump_env_only(
+    env: ManagerBasedRlEnv, inner, params: dict, command_name: str = "velocity_height"
+) -> torch.Tensor:
+    """任意奖励项只在跳跃样本上计（RJ1：模仿奖励的站姿帧是 0.22 m，非跳跃样本高度指令 0.20–0.38 不能被它拉向站姿）。"""
+    return inner(env, **params) * env.command_manager.get_term(command_name).jump_env.float()
 
 
 __all__ = [
     "base_height_penalty_off_terrain",
     "base_height_penalty_support_on_terrain",
+    "base_height_penalty_window_on_terrain",
     "column_scaled",
-    "command_velocity_error_on_terrain",
+    "is_terminated_except",
+    "jump_env_only",
     "off_column",
-    "tracking_ang_vel_off_terrain",
+    "stair_heading_hold",
     "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
     "wheel_fore_aft_offset",
-    "wheel_height_diff",
 ]

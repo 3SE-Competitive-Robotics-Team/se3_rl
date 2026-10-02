@@ -8,9 +8,10 @@
 
 | 目录 | task id | 用途 |
 | --- | --- | --- |
-| `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-GRU` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认定价取 A15，见 `docs/plan/stair_training_wandb_review_20260913.md` 与 `rough_official_base_survey_20260913.md`。`-GRU` 入口（M16，2026-09-20）与 MLP 共用同一份 env_cfg，只把 actor/critic 换成单层 GRU 512、rollout 仍 24 步（`rough/rl_cfg.py`）。历史实验用对应 Git commit 复现。 |
+| `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-GRU` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认配置 2026-10-02 起 = RJ1：M38（A15 基础上：上台阶列窗口口径高度罚 + 5 cm 死区、两项轮几何罚与违令罚/lin_yaw_joint/bad_tilt 删除、upward 1.0）+ M39–M54（action_rate −0.10、删 bad_orientation 终止、删 joint_mirror 改轮心前后错位罚 −50、台阶列 yaw 指令恒 0 且出生正对台阶 ±15°、台阶列航向保持 −6、随机粗糙/波浪/障碍三列地形、膝气弹簧前馈补偿 + 腿 T-N 包络 ×0.8）+ 平地列 30% 跳跃样本合入 J10 跳跃（`commands.RoughJumpCommandTerm`），推导链见 `docs/plan/m35_m36_stair_speed_20260926.md` 至 `m54_stair_heading_hold_20260930.md` 与 `rj1_rough_jump_20261002.md`；A15 定价的来源见 `docs/plan/stair_training_wandb_review_20260913.md` 与 `rough_official_base_survey_20260913.md`。`-GRU` 入口（M16，2026-09-20）与 MLP 共用同一份 env_cfg，只把 actor/critic 换成单层 GRU 512、rollout 仍 24 步（`rough/rl_cfg.py`）。历史实验用对应 Git commit 复现。 |
+| `rough/`（临时，已清空） | 无 | M25–M38 的对照入口于 2026-09-28 删除、M38 成为默认（复现：M34 1a10b73、M35 5af0d00、M37 9e07b44、M38 25ca875）；M39–M54 与 RJ1 的对照入口（`...-Exp-ActionRate010*`、`-Exp-Fudan*`、`-Exp-M50`–`-Exp-M54`、`-Exp-RJ1`）于 2026-10-02 删除、RJ1 成为默认。采用的改动复现用对应 commit：M39 a724b49、M47 4398698、M49 d5db384、M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab；未采用的 M40–M46、M48、M52 见 `docs/plan/m40_*` 至 `m52_*`。 |
+| `jump_mimic/` | `SE3-WheelLegged-Jump-Mimic-MLP` | 单独的跳跃 mimic 策略（MLP、34 维观测、从头训、平地前进跳）：无下蹲参考 0.20–0.50 m、四项模仿奖励（腿长 / 机身高度 / 竖直速度 / 接触）、偏离参考 0.12 m 提前终止、无 RSI、jump_phase 一维相位。参考时钟 `clock.JumpReferenceClock` 与 rough 共用。J1–J10 的对照入口与 J5/J6 的 `jump_flag/` 任务已于 2026-10-02 删除，J10 配置成为默认；复现用对应 commit（J7 09493b2、J9 4c7ce37、J10 e3c3a0a），结论见 `docs/plan/j7_*` 至 `j10_*`。参考由 `uv run se3-jump-to` 生成（默认即训练用的四条）。 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
-| `recovery_discovery/` | `SE3-WheelLegged-Recovery-Discovery-GRU` / `SE3-WheelLegged-Recovery-Discovery-MLP` / `SE3-WheelLegged-Recovery-Discovery-History-MLP` / `SE3-WheelLegged-Recovery-Loco-Grouped-MLP` / `SE3-WheelLegged-Recovery-Discovery-Ungrouped-MLP` | 唯一倒地自启任务；五个入口共享奖励、课程和 PPO 配置，Recovery-Loco-Grouped-MLP 使用 loco/recover 分组与五帧历史观测 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
@@ -21,12 +22,19 @@
 有信息量的窗口在 3500 轮以内），`randomize_com` 由 ±20 mm 收到 ±5 mm。全部数值由
 `tests/test_flat_baseline.py` 逐项守护，改基线必须同步改该测试并在提交信息里写明对照实验编号。
 
+**2026-09-25 修正推力课程的轮次换算**：推力课程按 PPO 轮次分档，但一直没传 `steps_per_policy_iter`，
+落到默认 64；rollout 改成 24 之后课程时钟慢了 2.67 倍，首档（2000 轮、±0.3 m/s）实际要到 5333 轮才出现，
+所以 D11 冻结的 Flat 基线与之后的 Rough 5000 轮训练都**从未推过**。修正后 Flat 在第 2000 轮开始推、Rough 在第 5000 轮升到
+±0.5 m/s。复现修正前的 D11 用 commit `236666c`。runner 启动时会校验所有按轮次推进的课程/事件与
+`num_steps_per_env` 一致，不一致直接报错。
+
 Flat 基线已合并 D2–D8 的已验证改动。2026-09-13 清理后，GRU、History-MLP 和全部 Flat-Exp 注册入口已删除；复现历史实验请使用对应 Git commit。
 
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
-`tasks/recovery/` 仅保留 Recovery-Discovery 使用的环境基配置、奖励、事件和课程实现，
-不注册独立 task；所有倒地自启训练必须从 `recovery_discovery/` 的三个正式入口启动。
+倒地自启的 Recovery-Discovery 任务族（含 `tasks/recovery/` 共享实现）已于 2026-09-25 删除；
+复现历史实验请使用对应 Git commit。stair 的 recovery rehearsal 仍复用 `mdp/` 下的 recovery
+复位、奖励与状态掩码。
 
 ## 台阶任务
 
@@ -140,7 +148,6 @@ from se3_train.tasks import (
     flat,
     jump_finetune,
     jump_pretrain,
-    recovery_discovery,
     rough,
     stair,
 )
@@ -148,7 +155,6 @@ from se3_train.tasks import (
 for module in (
     rough,
     flat,
-    recovery_discovery,
     stair,
     jump_pretrain,
     jump_finetune,

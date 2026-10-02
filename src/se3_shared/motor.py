@@ -60,6 +60,16 @@ class MotorSpec:
         """转子级反电动势常数 Ke (V·s/rad)。"""
         return self.rated_voltage / (self.no_load_speed * self.gear_ratio)
 
+    @property
+    def voltage_limited_stall_torque(self) -> float:
+        """输出轴电压限零速截距 N·Kt·V/R (N·m)。
+
+        反电动势限制线 τ = T_v·(1 − ω/ω₀) 在零速处的截距，物理上远大于电流限决定的峰值力矩；
+        作 mjlab DcMotor 的 saturation_effort、峰值力矩作 effort_limit 时，包络为「峰值平台 + 反电动势下降段」。
+        Kt 由 stall_torque / (stall_current·N) 估计（DM8009P V1.0 @24V 约 132 N·m）。
+        """
+        return self.gear_ratio * self.rotor_kt * self.rated_voltage / self.phase_resistance
+
     def torque_limit_np(self, velocity: np.ndarray | float) -> np.ndarray:
         """按输出轴速度返回允许的最大扭矩绝对值。"""
 

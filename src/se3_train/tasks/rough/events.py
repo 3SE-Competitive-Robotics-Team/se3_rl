@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
+
+import torch
 
 from .columns import column_mask
 
 if TYPE_CHECKING:
-    import torch
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
 CURRICULUM_ENV_MASK_ATTR = "_se3_curriculum_env_mask"
@@ -68,9 +70,35 @@ def log_reward_split_by_column(
         log[f"{REWARD_SPLIT_LOG_PREFIX}{name}_{suffix}"] = means[index]
 
 
+def stair_facing_yaw(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    yaw: torch.Tensor,
+    terrain_type_names: tuple[str, ...] = ("stairs_up", "stairs_two_step_up"),
+    half_range_rad: float = math.radians(30.0),
+) -> torch.Tensor:
+    """`reset_root_state_full` 的 yaw 钩子：指定台阶列的 env 初始朝向改为「正对某一面台阶 ± half_range」（M50，2026-09-29 用户定）。
+
+    stairs_up（反金字塔）与二级台阶都是以出生点为中心、与世界轴对齐的方形环，四个正对方向是 0/90/180/270°；
+    每个 env 随机挑一面，再加 U(−half_range, +half_range)。其余列保持传入的均匀 yaw。没有分列信息（plane）时原样返回。
+    """
+    mask = column_mask(env, terrain_type_names)
+    if mask is None:
+        return yaw
+    ids = env_ids.to(device=env.device, dtype=torch.long)
+    on_stairs = mask[ids]
+    face = torch.randint(0, 4, (ids.numel(),), device=env.device).to(yaw.dtype) * (math.pi / 2.0)
+    jitter = (torch.rand(ids.numel(), device=env.device, dtype=yaw.dtype) * 2.0 - 1.0) * float(
+        half_range_rad
+    )
+    facing = torch.remainder(face + jitter + math.pi, 2.0 * math.pi) - math.pi
+    return torch.where(on_stairs, facing, yaw)
+
+
 __all__ = [
     "CURRICULUM_ENV_MASK_ATTR",
     "REWARD_SPLIT_LOG_PREFIX",
     "log_reward_split_by_column",
     "set_curriculum_env_mask",
+    "stair_facing_yaw",
 ]

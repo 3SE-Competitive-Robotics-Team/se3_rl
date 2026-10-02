@@ -2,18 +2,18 @@
 
 rough = 冻结的 Flat 基线 + 一层薄覆盖：地形/升降级课程/截断/高度扫描用 mjlab 官方件，
 自己的部分只有指令分列覆盖、台阶专项奖励、按列奖励包装、平地热身。本文件把这几条钉住，
-默认定价（A15）改动必须同步改这里并在提交信息里写对照实验编号。
+默认定价（A15 起，2026-10-02 起为 RJ1）改动必须同步改这里并在提交信息里写对照实验编号。
 """
 
 from __future__ import annotations
 
 import collections
+import math
 import unittest
 
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.envs.mdp import height_scan
-from mjlab.envs.mdp.rewards import is_terminated
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 from mjlab.tasks.velocity.mdp.curriculums import terrain_levels_vel
 from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain_edge_reached
@@ -23,25 +23,27 @@ from mjlab.terrains import (
 )
 
 import se3_train  # noqa: F401  # 注册任务
+from se3_train.mdp import rewards as mdp_rewards
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
-    FLAT_CMD_VEL_DEADBAND,
     FLAT_WHEEL_ACTION_SCALE,
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
+from se3_train.tasks.jump_mimic.env_cfg import JUMP_MIMIC_REWARD_WEIGHTS
 from se3_train.tasks.rough import curriculums, events
 from se3_train.tasks.rough import rewards as rough_rewards
 from se3_train.tasks.rough.columns import column_mask, non_flat_column_mask
 from se3_train.tasks.rough.commands import RoughCommandCfg
 from se3_train.tasks.rough.env_cfg import (
+    ROUGH_ACTION_RATE_WEIGHT,
     ROUGH_ALL_TERRAIN_TYPE_NAMES,
     ROUGH_BASE_HEIGHT_SIGMA,
     ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS,
     ROUGH_BASE_HEIGHT_SUPPORT_SENSOR,
     ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
-    ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE,
     ROUGH_CONTACT_TAX_FREE_COLUMNS,
     ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+    ROUGH_DROPPED_FLAT_REWARDS,
     ROUGH_FALL_PENALTY,
     ROUGH_FLAT_VZ_WEIGHT,
     ROUGH_FLAT_WARMUP_ITERATIONS,
@@ -55,9 +57,12 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_ROBOT_COLLISION_GEOM_GROUP,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
     ROUGH_STAIR_COMMAND_TERRAIN_NAMES,
+    ROUGH_STAIR_HEADING_HOLD_WEIGHT,
+    ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
     ROUGH_STAIR_TRACKING_SIGMA_MOVE,
+    ROUGH_STAIR_WHEEL_FORE_AFT_SCALE,
     ROUGH_STAIRS_ZEROED_REWARDS,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
@@ -71,21 +76,18 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT,
     ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT,
     ROUGH_TRACKING_LIN_VEL_WEIGHT,
-    ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS,
-    ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
-    ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT,
-    ROUGH_WHEEL_OFFSET_COLUMNS,
-    ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
-    ROUGH_WHEEL_OFFSET_WEIGHT,
+    ROUGH_UPWARD_WEIGHT,
+    ROUGH_WHEEL_FORE_AFT_WEIGHT,
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
     ROUGH_PATCH_SIZE,
     ROUGH_PLATFORM_WIDTH,
+    ROUGH_RANDOM_TERRAIN_COLUMNS,
+    ROUGH_RANDOM_TERRAIN_PROPORTIONS,
     ROUGH_STAIR_LIKE_COLUMNS,
     ROUGH_STEP_HEIGHT_RANGE,
     ROUGH_STEP_WIDTH,
-    ROUGH_TERRAIN_PROPORTIONS,
     ROUGH_TWO_STEP_DOWN_COLUMN,
     ROUGH_TWO_STEP_GATE_LEVEL,
     ROUGH_TWO_STEP_SECOND_WIDTH_RANGE,
@@ -102,16 +104,19 @@ _WRAPPED = (
     "tracking_lin_vel",
     "tracking_ang_vel",
     *ROUGH_STAIRS_ZEROED_REWARDS,
+    "stand_still",  # RJ1：跳跃期间置零（jump_mimic.mdp.not_jumping）
+    "contact_forces",
 )
-_REWEIGHTED = ("tracking_lin_vel",)
+_REWEIGHTED = ("tracking_lin_vel", "action_rate")
 _ROUGH_ONLY = (
-    "command_velocity_error",
     "stair_climb_progress",
     "stair_support_height",
     "fall_penalty",
     "tracking_lin_vel_narrow",  # M15（7d0e6ca）：全程叠加的窄核速度跟踪
-    "wheel_fore_aft_offset",  # M18：左右轮前后错位罚
-    "wheel_height_diff",  # M23：上台阶列左右轮高度差罚
+    "upward",  # M38：全局向上奖励（2026-09-28 起默认）
+    "wheel_fore_aft_offset",  # M49：左右轮心前后错位罚（M54 台阶列 ×0.25）
+    "stair_heading_hold",  # M54：台阶列航向保持
+    *JUMP_MIMIC_REWARD_WEIGHTS,  # RJ1：四项模仿奖励（只计跳跃样本）
 )
 
 
@@ -223,16 +228,24 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             list(self.cfg.observations["actor"].terms), list(self.flat.observations["actor"].terms)
         )
 
-    def test_rough_only_adds_three_rewards_and_wraps_three(self) -> None:
-        """相对 Flat：新增两项台阶专项奖励与违令罚；三项换成按列包装；其余项函数与权重逐位相同。"""
+    def test_rough_only_adds_rewards_drops_three_and_wraps_the_rest(self) -> None:
+        """相对 Flat：新增两项台阶专项奖励、摔倒罚、窄核、upward、轮前后错位、航向保持与四项模仿奖励；
+        删 bad_tilt / lin_yaw_joint（M37）与 joint_mirror（M49）；包装项见 _WRAPPED；其余项函数与权重逐位相同。"""
         self.assertEqual(set(self.cfg.rewards) - set(self.flat.rewards), set(_ROUGH_ONLY))
-        self.assertEqual(set(self.flat.rewards) - set(self.cfg.rewards), set())
+        self.assertEqual(
+            set(self.flat.rewards) - set(self.cfg.rewards), set(ROUGH_DROPPED_FLAT_REWARDS)
+        )
+        self.assertEqual(
+            set(ROUGH_DROPPED_FLAT_REWARDS), {"bad_tilt", "tracking_lin_yaw_joint", "joint_mirror"}
+        )
+        self.assertAlmostEqual(float(self.cfg.rewards["upward"].weight), ROUGH_UPWARD_WEIGHT)
+        self.assertAlmostEqual(ROUGH_UPWARD_WEIGHT, 1.0)
         for name, term in self.cfg.rewards.items():
             if name in _ROUGH_ONLY:
                 continue
             base = self.flat.rewards[name]
             if name in _REWEIGHTED:
-                # M7：只有这一项相对 Flat 改了权重，具体值由 test_a15_pricing_on_non_stair_columns 钉死。
+                # M7 跟踪权重、M39 action_rate 相对 Flat 改了权重，具体值由 test_a15_pricing_on_non_stair_columns 钉死。
                 self.assertNotAlmostEqual(float(term.weight), float(base.weight), msg=name)
                 continue
             self.assertAlmostEqual(float(term.weight), float(base.weight), places=12, msg=name)
@@ -268,52 +281,18 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             float(self.cfg.rewards["tracking_lin_vel"].weight), ROUGH_TRACKING_LIN_VEL_WEIGHT
         )
 
-    def test_m23_wheel_height_diff_penalty_is_configured(self) -> None:
-        """M23（对照 M22 8e7e3fc）：上台阶列新增左右轮高度差罚，权重 −40/m²、死区 8 cm。
-
-        罚的是 Δz 不是 Δx：爬升段 |Δz| p95 目标流形 ≤4.2 cm、走梯 ≥14 cm，而 |Δx| 两组重叠
-        （M15 均值 −10.5 比 M22 的 −7.4 还大）。改这些数必须同步改这里并在提交信息写对照编号。
-        """
-        term = self.cfg.rewards["wheel_height_diff"]
-        self.assertIs(term.func, rough_rewards.wheel_height_diff)
-        self.assertAlmostEqual(float(term.weight), -ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT)
-        self.assertAlmostEqual(float(term.weight), -40.0)
-        self.assertEqual(tuple(term.params["apply_type_names"]), ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS)
-        self.assertEqual(ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS, ROUGH_STAIR_LIKE_COLUMNS)
-        self.assertAlmostEqual(
-            float(term.params["dead_zone_m"]), ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M
-        )
-        self.assertAlmostEqual(float(ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M), 0.08)
-        # 死区之上的定价：14 cm 罚 0.144/s、18 cm 0.40/s，与台阶列窄核收益（0.125/s）同量级。
-        for dz, cost in ((0.04, 0.0), (0.08, 0.0), (0.14, 0.144), (0.18, 0.40)):
-            excess = max(abs(dz) - ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M, 0.0)
-            self.assertAlmostEqual(ROUGH_WHEEL_HEIGHT_DIFF_WEIGHT * excess**2, cost, places=2)
-        # 平地的前后错位罚（M18/M19）是另一项，两者互不覆盖。
-        self.assertNotEqual(
-            tuple(self.cfg.rewards["wheel_fore_aft_offset"].params["apply_type_names"]),
-            ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS,
-        )
-
-    def test_m19_wheel_offset_penalty_is_configured(self) -> None:
-        """M19（对照 M18 ad9dd67）：几何错位罚只在平地列生效、死区 10 cm、w=40/m²。改这些数必须同步改这里并在提交信息写对照编号。"""
-        term = self.cfg.rewards["wheel_fore_aft_offset"]
-        self.assertIs(term.func, rough_rewards.wheel_fore_aft_offset)
-        self.assertAlmostEqual(float(term.weight), -ROUGH_WHEEL_OFFSET_WEIGHT)
-        self.assertAlmostEqual(float(term.weight), -40.0)
-        self.assertEqual(tuple(term.params["apply_type_names"]), ROUGH_WHEEL_OFFSET_COLUMNS)
-        self.assertEqual(ROUGH_WHEEL_OFFSET_COLUMNS, ("flat",))
-        self.assertAlmostEqual(float(term.params["dead_zone_m"]), ROUGH_WHEEL_OFFSET_DEAD_ZONE_M)
-        self.assertAlmostEqual(ROUGH_WHEEL_OFFSET_DEAD_ZONE_M, 0.10)
-
     def test_a15_pricing_on_non_stair_columns(self) -> None:
-        """默认定价 = A15（h85eljnj）：高度 σ 0.10、运动核 0.5、平地 vz 0、违令罚全六列。"""
+        """默认定价 = A15（h85eljnj）+ M38 + M39–M54：高度 σ 0.10、运动核 0.5、平地 vz 0；上台阶列窗口口径 + 5 cm 死区。"""
         height = self.cfg.rewards["flat_base_height"]
         flat_height = self.flat.rewards["flat_base_height"]
-        self.assertIs(height.func, rough_rewards.base_height_penalty_support_on_terrain)
+        # M27/M34 起默认窗口口径（复旦 77 点均值 + 有界罚），M35 起 ±5 cm 死区；support 口径仍可由开关选回。
+        self.assertIs(height.func, rough_rewards.base_height_penalty_window_on_terrain)
+        self.assertEqual(height.params["window_sensor_name"], ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME)
+        self.assertAlmostEqual(float(height.params["dead_zone_m"]), ROUGH_STAIR_HEIGHT_DEAD_ZONE_M)
+        self.assertAlmostEqual(ROUGH_STAIR_HEIGHT_DEAD_ZONE_M, 0.05)
         self.assertAlmostEqual(height.params["sigma"], ROUGH_BASE_HEIGHT_SIGMA)
         self.assertAlmostEqual(float(height.weight), float(flat_height.weight))
-        # M3：高度罚全列生效；M21（对照 M20 0c69f77）：上台阶列的地面参考改为轮子支撑面（stair_reward_height），
-        # 机身射线传感器、夹紧 ±0.15 与 Flat 相同。改这些必须同步改这里并在提交信息写对照编号。
+        # M3：高度罚全列生效；M21 起支撑面传感器仍随配置挂着（窗口口径拿它记诊断日志）。
         self.assertEqual(
             tuple(height.params["terrain_type_names"]), ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS
         )
@@ -341,20 +320,41 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             track.params["sigma_stand"], self.flat.rewards["tracking_lin_vel"].params["sigma_stand"]
         )
 
+        # M44 / M50：yaw 角速度跟踪全列 Flat 原式（台阶列 yaw 指令恒 0，即 yaw 角速度罚）。
         ang = self.cfg.rewards["tracking_ang_vel"]
-        self.assertIs(ang.func, rough_rewards.tracking_ang_vel_off_terrain)
-        self.assertEqual(tuple(ang.params["terrain_type_names"]), ROUGH_REWARD_TERRAIN_TYPE_NAMES)
-
-        err = self.cfg.rewards["command_velocity_error"]
-        self.assertIs(err.func, rough_rewards.command_velocity_error_on_terrain)
-        self.assertLess(float(err.weight), 0.0)
-        self.assertEqual(tuple(err.params["terrain_type_names"]), ROUGH_ALL_TERRAIN_TYPE_NAMES)
-        self.assertAlmostEqual(err.params["lin_vel_scale"], ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE)
-        self.assertAlmostEqual(err.params["lin_deadband"], float(FLAT_CMD_VEL_DEADBAND[0]))
-        # 误差尺度要让台阶列的典型误差（1.6–2.4 m/s）落在二次区而不是贴封顶。
-        self.assertLess(
-            (2.4 / ROUGH_COMMAND_VELOCITY_ERROR_LIN_SCALE) ** 2, err.params["max_penalty"]
+        self.assertIs(ang.func, mdp_rewards.tracking_ang_vel)
+        self.assertEqual(ang.params, self.flat.rewards["tracking_ang_vel"].params)
+        self.assertEqual(
+            tuple(self.cfg.commands["velocity_height"].stair_ang_vel_yaw_range), (0.0, 0.0)
         )
+
+        # M39：action_rate −0.10。
+        self.assertAlmostEqual(
+            float(self.cfg.rewards["action_rate"].weight), ROUGH_ACTION_RATE_WEIGHT
+        )
+        self.assertAlmostEqual(ROUGH_ACTION_RATE_WEIGHT, -0.10)
+        # M49 / M54：轮前后错位罚 −50，台阶列 ×0.25；台阶列航向保持 −6。
+        fore_aft = self.cfg.rewards["wheel_fore_aft_offset"]
+        self.assertIs(fore_aft.func, rough_rewards.column_scaled)
+        self.assertIs(fore_aft.params["inner"], rough_rewards.wheel_fore_aft_offset)
+        self.assertAlmostEqual(float(fore_aft.weight), ROUGH_WHEEL_FORE_AFT_WEIGHT)
+        self.assertAlmostEqual(ROUGH_WHEEL_FORE_AFT_WEIGHT, -50.0)
+        self.assertAlmostEqual(float(fore_aft.params["scale"]), ROUGH_STAIR_WHEEL_FORE_AFT_SCALE)
+        self.assertAlmostEqual(ROUGH_STAIR_WHEEL_FORE_AFT_SCALE, 0.25)
+        self.assertEqual(
+            tuple(fore_aft.params["terrain_type_names"]), ROUGH_REWARD_TERRAIN_TYPE_NAMES
+        )
+        heading = self.cfg.rewards["stair_heading_hold"]
+        self.assertAlmostEqual(float(heading.weight), ROUGH_STAIR_HEADING_HOLD_WEIGHT)
+        self.assertAlmostEqual(ROUGH_STAIR_HEADING_HOLD_WEIGHT, -6.0)
+
+        # M37：违令罚、lin_yaw_joint、bad_tilt、轮高差罚整组删除；M49 删 joint_mirror。
+        for name in (
+            "command_velocity_error",
+            "wheel_height_diff",
+            *ROUGH_DROPPED_FLAT_REWARDS,
+        ):
+            self.assertNotIn(name, self.cfg.rewards)
         self.assertEqual(self.cfg.rewards["stair_climb_progress"].weight, 3.0)
         self.assertEqual(self.cfg.rewards["stair_support_height"].weight, 4.0)
 
@@ -362,7 +362,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertAlmostEqual(self.cfg.events["com"].params["com_range"], 0.005)
 
     def test_m2_stairs_column_pricing_and_fall_penalty(self) -> None:
-        """M2：台阶列 is_alive / flat_wheel_contact / collision 置零（权重与原参数沿用 Flat），加一次性摔倒罚。"""
+        """M2：台阶列 is_alive / flat_wheel_contact / collision 置零（权重与原参数沿用 Flat），加一次性摔倒罚；
+        RJ1 起偏离跳跃参考的提前终止不计摔倒罚。"""
         for name in ROUGH_STAIRS_ZEROED_REWARDS:
             term = self.cfg.rewards[name]
             base = self.flat.rewards[name]
@@ -374,7 +375,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             )
             self.assertAlmostEqual(float(term.weight), float(base.weight), places=12, msg=name)
         fall = self.cfg.rewards["fall_penalty"]
-        self.assertIs(fall.func, is_terminated)
+        self.assertIs(fall.func, rough_rewards.is_terminated_except)
+        self.assertEqual(tuple(fall.params["exclude_terms"]), ("mimic_deviation",))
         step_dt = float(self.cfg.sim.mujoco.timestep) * int(self.cfg.decimation)
         # RewardManager 按 dt 缩放，权重反缩放后每次非超时终止恰好扣 ROUGH_FALL_PENALTY。
         self.assertTrue(self.cfg.scale_rewards_by_dt)
@@ -407,7 +409,7 @@ class RoughTerrainTests(unittest.TestCase):
         assert gen is not None
         self.assertTrue(gen.curriculum)
         self.assertEqual(terrain.max_init_terrain_level, ROUGH_MAX_INIT_TERRAIN_LEVEL)
-        # 2026-09-15 起五列，M24（2026-09-21）加 stairs_two_step 成六列。比例为 0 的列不能靠设 0 关掉——mjlab 课程模式仍会生成几何并分 1 个 env，
+        # 2026-09-15 起五列，M24（2026-09-21）加二级台阶上下两列成七列，M51（2026-09-29）加三列随机地形成十列。比例为 0 的列不能靠设 0 关掉——mjlab 课程模式仍会生成几何并分 1 个 env，
         # 之前四个死列白占 160 个 geom、每轮多 0.6 s；要么给正比例，要么从字典里删掉。
         self.assertEqual(list(gen.sub_terrains), list(ROUGH_ALL_TERRAIN_TYPE_NAMES))
         self.assertEqual(
@@ -420,11 +422,12 @@ class RoughTerrainTests(unittest.TestCase):
                 "stairs_down",
                 "slope_up",
                 "slope_down",
+                *ROUGH_RANDOM_TERRAIN_COLUMNS,
             ],
         )
         self.assertEqual(tuple(gen.size), ROUGH_PATCH_SIZE)
         for name, sub in gen.sub_terrains.items():
-            self.assertAlmostEqual(sub.proportion, ROUGH_TERRAIN_PROPORTIONS[name], msg=name)
+            self.assertAlmostEqual(sub.proportion, ROUGH_RANDOM_TERRAIN_PROPORTIONS[name], msg=name)
             self.assertGreater(sub.proportion, 0.0, msg=name)
             self.assertEqual(tuple(sub.size), ROUGH_PATCH_SIZE, msg=name)
         # 上台阶出生在坑底向外爬升（反金字塔）。
@@ -566,8 +569,10 @@ class RoughTerrainTests(unittest.TestCase):
         bounds = self.cfg.terminations["out_of_terrain_bounds"]
         self.assertIs(bounds.func, out_of_terrain_bounds)
         self.assertTrue(bounds.time_out)
-        for name in ("time_out", "bad_orientation", "catastrophic_state", "leg_contact"):
+        for name in ("time_out", "catastrophic_state", "leg_contact", "mimic_deviation"):
             self.assertIn(name, self.cfg.terminations)
+        # M47：删倾角终止。
+        self.assertNotIn("bad_orientation", self.cfg.terminations)
 
     def test_critic_height_scan_is_official_and_terrain_only(self) -> None:
         term = self.cfg.observations["critic"].terms["height_scan"]
@@ -662,7 +667,7 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated_and_masks_agree(self) -> None:
         self.assertEqual(sorted(set(self.types.tolist())), list(range(len(self.names))))
-        self.assertEqual(len(self.names), 7)
+        self.assertEqual(len(self.names), 10)
         self.assertTrue(torch.equal(column_mask(self.env, ("stairs_up",)), self.stairs))
         self.assertTrue(
             torch.equal(column_mask(self.env, ROUGH_STAIR_LIKE_COLUMNS), self.stair_like)
@@ -782,8 +787,8 @@ class RoughRuntimeTests(unittest.TestCase):
             terrain.terrain_levels[:] = saved
 
     def test_column_rewards_only_bite_where_configured(self) -> None:
-        """包装函数点名列时台阶列不吃高度罚；配置里高度罚全列生效（M3 加回、M21 台阶列改支撑面参考）；
-        yaw 工资台阶列为 0；违令罚全列（A15）。"""
+        """包装函数点名列时台阶列不吃高度罚；配置里高度罚全列生效（M3 加回、M34 起台阶列窗口口径 + M35 死区）；
+        yaw 跟踪 M50 起全列生效（台阶列 yaw 指令恒 0）。"""
         _step_once(self.env)
         cmd = self.env.command_manager.get_command("velocity_height")
         saved = cmd.clone()
@@ -792,12 +797,6 @@ class RoughRuntimeTests(unittest.TestCase):
             cmd[:, 1] = 0.0
             cmd[:, 4] = 0.0
             cmd[:, 5] = 0.0
-            vel_pen = rough_rewards.command_velocity_error_on_terrain(
-                self.env,
-                command_name="velocity_height",
-                terrain_type_names=ROUGH_ALL_TERRAIN_TYPE_NAMES,
-                lin_vel_scale=3.0,
-            )
             height_pen = rough_rewards.base_height_penalty_off_terrain(
                 self.env,
                 command_name="velocity_height",
@@ -806,17 +805,17 @@ class RoughRuntimeTests(unittest.TestCase):
             )
         finally:
             cmd[:] = saved
-        self.assertGreater(float(vel_pen.min()), 0.0)
         # 这里直接调包装函数，用的是它的默认列名 ("stairs_up",)，不是配置里的 ROUGH_STAIR_LIKE_COLUMNS。
         self.assertEqual(float(height_pen[self.stairs].abs().max()), 0.0)
         self.assertGreater(float(height_pen[~self.stairs].min()), 0.0)
         manager = self.env.reward_manager
-        # M3：配置里的 flat_base_height 在台阶列真的在扣（reset 后高度指令与实际高度不一致）。
+        # M3：配置里的 flat_base_height 全列挂着；平地列 reset 后高度指令与实际高度不一致必在扣，
+        # 台阶列窗口口径带 5 cm 死区（M35），reset 后可能恰在死区内，只查符号。
         h_index = manager.active_terms.index("flat_base_height")
-        self.assertLess(float(manager._step_reward[self.stair_like, h_index].min()), 0.0)
+        self.assertLessEqual(float(manager._step_reward[self.stair_like, h_index].max()), 0.0)
         self.assertLess(float(manager._step_reward[self.flat, h_index].min()), 0.0)
         index = manager.active_terms.index("tracking_ang_vel")
-        self.assertEqual(float(manager._step_reward[self.stair_like, index].abs().max()), 0.0)
+        self.assertGreater(float(manager._step_reward[self.stair_like, index].min()), 0.0)
         self.assertGreater(float(manager._step_reward[self.flat, index].abs().max()), 0.0)
 
     def test_reward_split_logs_every_term_on_the_stairs_column(self) -> None:
@@ -951,96 +950,6 @@ class RoughRuntimeTests(unittest.TestCase):
         self.assertEqual(float(log["Jump/diag_max_airborne_vz"]), 0.0)
         self.assertEqual(float(log["Jump/diag_jump_success_rate"]), 0.0)
 
-    def test_wheel_height_diff_is_geometric_stairs_only_with_dead_zone(self) -> None:
-        """M23 运行时：罚值 = max(|左轮z − 右轮z| − 0.08, 0)²·门控，只在台阶列，其余列恒 0；死区内恰为 0。"""
-        from se3_train.mdp.rewards import _DEFAULT_ASSET_CFG, _tracking_upright_gate
-
-        _step_once(self.env)
-        robot = self.env.scene[_DEFAULT_ASSET_CFG.name]
-        wheel_ids, _ = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
-        dz = (
-            robot.data.body_link_pos_w[:, wheel_ids[0], 2]
-            - robot.data.body_link_pos_w[:, wheel_ids[1], 2]
-        )
-        gate = _tracking_upright_gate(robot.data.projected_gravity_b[:, 2], 0.7)
-        # 死区设 0 时应逐位等于 |Δz|²·门控，并且只在台阶列非零。
-        bare = rough_rewards.wheel_height_diff(
-            self.env, apply_type_names=ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS, dead_zone_m=0.0
-        )
-        expected = dz.square() * gate
-        self.assertTrue(torch.allclose(bare[self.stair_like], expected[self.stair_like], atol=1e-6))
-        self.assertEqual(float(bare[~self.stair_like].abs().max()), 0.0)
-        # 默认死区下同样逐位对得上（reset 后落地未稳，台阶列 |Δz| 可能有几厘米，不能假设它一定在死区内）。
-        got = rough_rewards.wheel_height_diff(
-            self.env,
-            apply_type_names=ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS,
-            dead_zone_m=ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M,
-        )
-        excess = torch.clamp(dz.abs() - ROUGH_WHEEL_HEIGHT_DIFF_DEAD_ZONE_M, min=0.0)
-        self.assertTrue(
-            torch.allclose(
-                got[self.stair_like], (excess.square() * gate)[self.stair_like], atol=1e-6
-            )
-        )
-        self.assertEqual(float(got[~self.stair_like].abs().max()), 0.0)
-        self.assertLessEqual(float(got.max()), float(bare.max()))
-        # 死区语义：死区大到盖住所有 |Δz| 时必须恰好为 0，而不是很小的正数。
-        wide = rough_rewards.wheel_height_diff(
-            self.env, apply_type_names=ROUGH_WHEEL_HEIGHT_DIFF_COLUMNS, dead_zone_m=1.0
-        )
-        self.assertEqual(float(wide.abs().max()), 0.0)
-        # 列名对不上（plane 口径）时恒 0：这是台阶专项，不该凭空全局生效。
-        none_mask = rough_rewards.wheel_height_diff(
-            self.env, apply_type_names=("no_such_column",), dead_zone_m=0.0
-        )
-        self.assertEqual(float(none_mask.abs().max()), 0.0)
-        manager = self.env.reward_manager
-        value = manager._step_reward[:, manager.active_terms.index("wheel_height_diff")]
-        self.assertTrue(bool(torch.isfinite(value).all()))
-        self.assertLessEqual(float(value.max()), 0.0)
-        self.assertEqual(float(value[~self.stair_like].abs().max()), 0.0)
-        log = self.env.extras.get("log", {})
-        self.assertIn("Rough/wheel_dz_abs", log)
-        self.assertIn("Rough/wheel_dz_abs_stairs", log)
-
-    def test_wheel_offset_penalty_is_geometric_flat_only_with_dead_zone(self) -> None:
-        """M19 运行时：平地列罚值 = −40·max(|Δx|−0.10, 0)²·门控（Δx 为机身系左右轮心 x 差），其余四列恒 0。"""
-        from se3_train.mdp.rewards import (
-            _DEFAULT_ASSET_CFG,
-            _tracking_upright_gate,
-            _wheel_pos_body_frame,
-        )
-
-        _step_once(self.env)
-        manager = self.env.reward_manager
-        idx = manager.active_terms.index("wheel_fore_aft_offset")
-        value = manager._step_reward[:, idx]
-        self.assertEqual(float(value[~self.flat].abs().max()), 0.0)
-        wheel_b = _wheel_pos_body_frame(self.env, _DEFAULT_ASSET_CFG)
-        dx = wheel_b[:, 0, 0] - wheel_b[:, 1, 0]
-        gate = _tracking_upright_gate(self.env.scene["robot"].data.projected_gravity_b[:, 2], 0.7)
-        excess = torch.clamp(dx.abs() - ROUGH_WHEEL_OFFSET_DEAD_ZONE_M, min=0.0)
-        # 数值口径用纯函数逐位比对；_step_reward 比这里读到的状态晚一个物理子步，逐位比对不可靠，
-        # 只查符号与有限性（与 M21/M22/M23 三处同样处理）。
-        got = rough_rewards.wheel_fore_aft_offset(
-            self.env,
-            apply_type_names=ROUGH_WHEEL_OFFSET_COLUMNS,
-            dead_zone_m=ROUGH_WHEEL_OFFSET_DEAD_ZONE_M,
-        )
-        self.assertTrue(
-            torch.allclose(got[self.flat], (excess.square() * gate)[self.flat], atol=1e-6)
-        )
-        self.assertEqual(float(got[~self.flat].abs().max()), 0.0)
-        self.assertTrue(bool(torch.isfinite(value).all()))
-        self.assertLessEqual(float(value.max()), 0.0)
-        # 死区内的 env 罚值必须恰好为 0，而不是很小的负数。
-        inside = self.flat & (dx.abs() < ROUGH_WHEEL_OFFSET_DEAD_ZONE_M - 0.01)
-        if bool(inside.any()):
-            self.assertEqual(float(value[inside].abs().max()), 0.0)
-        log = self.env.extras.get("log", {})
-        self.assertIn("Rough/wheel_dx_abs", log)
-        self.assertIn("Rough/wheel_dx_abs_flat", log)
-
     def test_m21_stairs_height_reference_is_wheel_support_surface(self) -> None:
         """M21 运行时：台阶列高度 = 机身射线 frame_z − 两轮下方射线的地面均值，其余列与 Flat 原函数逐位相同。
 
@@ -1116,7 +1025,8 @@ class RoughRuntimeTests(unittest.TestCase):
             h_index = manager.active_terms.index("flat_base_height")
             value = manager._step_reward[:, h_index]
             self.assertTrue(bool(torch.isfinite(value).all()))
-            self.assertLess(float(value[check].max()), 0.0)
+            # M34 起配置里挂的是窗口口径（M35 起带 5 cm 死区），台阶列不保证严格为负，只查符号与有限性；
+            # 支撑面口径的数值由上面的纯函数比对钉住。
             self.assertLessEqual(float(value.max()), 0.0)
             self.assertLess(float(env.cfg.rewards["flat_base_height"].weight), 0.0)
             log = env.extras.get("log", {})
@@ -1253,8 +1163,18 @@ class TwoStepGateRuntimeTests(unittest.TestCase):
         self.assertTrue(bool((types[original == up_col] == stairs_col).all()))
         self.assertTrue(bool((types[original == down_col] == flat_col).all()))
 
-        # 把 stairs_up 的原生 env 抬到 5 级：门控打开，两列拿回自己的 env 且从第 0 行起步。
-        self.terrain.terrain_levels[original == stairs_col] = 5
+        # 热身期原生 stairs_up env 在平地列上被官方升降级抬到高等级：不算台阶难度，门控不能开（M24 的 bug）。
+        native = original == stairs_col
+        self.terrain.terrain_types[native] = flat_col
+        self.terrain.terrain_levels[native] = 6
+        out = self._run()
+        self.assertEqual(float(out["opened"]), 0.0)
+        self.terrain.terrain_types[native] = stairs_col
+        self.terrain.terrain_levels[:] = 0
+
+        # stairs_up 列当前的 env（原生 + 门控期迁入的二级上行）均级到 5：门控打开，
+        # 两列拿回自己的 env 且从第 0 行起步。
+        self.terrain.terrain_levels[self.terrain.terrain_types == stairs_col] = 5
         out = self._run()
         self.assertEqual(float(out["opened"]), 1.0)
         self.assertGreaterEqual(float(out["gate_level"]), ROUGH_TWO_STEP_GATE_LEVEL)
@@ -1326,6 +1246,132 @@ class FlatWarmupRuntimeTests(unittest.TestCase):
             )
         )
         self.assertTrue(bool(getattr(self.env, curriculums.FLAT_WARMUP_DONE_ATTR).all()))
+
+
+class StairSpeedCapRuntimeTests(unittest.TestCase):
+    """台阶列逐 env 速度上限：按 episode 速度达成率升降、夹在区间内，并写进台阶列的采样上界。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(stair_speed_cap=True)
+        cfg.curriculum.pop("flat_warmup")  # 热身会把所有 env 压到平地列，台阶列就没有 env
+        cfg.scene.num_envs = 14
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+        cls.term = cls.env.command_manager.get_term("velocity_height")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def test_registered_only_when_enabled(self) -> None:
+        self.assertNotIn("stair_speed_cap", rough_env_cfg().curriculum)
+        self.assertFalse(rough_env_cfg().commands["velocity_height"].stair_speed_cap_enabled)
+        order = list(rough_env_cfg(stair_speed_cap=True).curriculum)
+        self.assertGreater(order.index("stair_speed_cap"), order.index("two_step_gate"))
+        play = rough_env_cfg(play=True, stair_speed_cap=True)
+        self.assertFalse(play.commands["velocity_height"].stair_speed_cap_enabled)
+
+    def _fill(self, ids: torch.Tensor, ratio: float, steps: int) -> None:
+        self.term._stair_cmd_sum[ids] = float(steps)
+        self.term._stair_vx_sum[ids] = float(ratio) * steps
+        self.term._stair_steps[ids] = steps
+
+    def test_caps_follow_speed_ratio_and_stay_in_range(self) -> None:
+        term, cfg = self.term, self.term.cfg
+        stairs = term._stair_mask.nonzero(as_tuple=False).flatten()
+        self.assertGreaterEqual(len(stairs), 3)
+        slow, fast, short = stairs[0:1], stairs[1:2], stairs[2:3]
+        min_steps = math.ceil(cfg.stair_speed_cap_min_episode_s / self.env.step_dt)
+        term._stair_speed_cap[:] = 1.5
+        self._fill(slow, 0.2, min_steps)
+        self._fill(fast, 0.9, min_steps)
+        self._fill(short, 0.2, min_steps - 1)  # 在台阶列上待得太短，不调
+        ids = torch.cat((slow, fast, short))
+        curriculums.stair_speed_cap(self.env, ids, command_name="velocity_height")
+
+        cap = term._stair_speed_cap
+        self.assertAlmostEqual(float(cap[slow]), 1.5 - cfg.stair_speed_cap_shrink_step, places=5)
+        self.assertAlmostEqual(float(cap[fast]), 1.5 + cfg.stair_speed_cap_grow_step, places=5)
+        self.assertAlmostEqual(float(cap[short]), 1.5, places=5)
+        self.assertEqual(int(term._stair_steps[ids].sum()), 0)
+        ranges = term._lin_vel_x_range_override
+        self.assertTrue(torch.allclose(ranges[ids, 1], cap[ids]))
+        self.assertTrue(bool((ranges[ids, 0] == cfg.stair_lin_vel_x_range[0]).all()))
+
+        for _ in range(20):
+            self._fill(slow, 0.0, min_steps)
+            self._fill(fast, 1.0, min_steps)
+            curriculums.stair_speed_cap(self.env, torch.cat((slow, fast)), "velocity_height")
+        self.assertAlmostEqual(float(cap[slow]), cfg.stair_speed_cap_min, places=5)
+        self.assertAlmostEqual(float(cap[fast]), cfg.stair_lin_vel_x_range[1], places=5)
+
+    def test_refresh_reapplies_caps_only_on_stairs(self) -> None:
+        term = self.term
+        term._stair_speed_cap[:] = 1.2
+        term.refresh_terrain_override()
+        stairs = term._stair_mask
+        ids = torch.arange(self.env.num_envs, device=self.env.device)
+        _, lin_high, _, _ = term._velocity_ranges(ids)
+        self.assertTrue(torch.allclose(lin_high[stairs], torch.full_like(lin_high[stairs], 1.2)))
+        self.assertTrue(bool((lin_high[~stairs] != 1.2).all()))
+
+
+class StairHeightWindowRuntimeTests(unittest.TestCase):
+    """复旦口径的上台阶列高度罚：窗口均值参考 + 有界形状；其余列与 Flat 原函数逐位相同。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cfg = rough_env_cfg(stair_height_reference="window")
+        cfg.curriculum.pop("flat_warmup")
+        cfg.scene.num_envs = 14
+        cls.env = ManagerBasedRlEnv(cfg, device="cpu")
+        cls.env.reset()
+        _step_once(cls.env)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.close()
+
+    def test_default_is_window_and_support_is_still_selectable(self) -> None:
+        default = rough_env_cfg().rewards["flat_base_height"]
+        self.assertIs(default.func, rough_rewards.base_height_penalty_window_on_terrain)
+        support = rough_env_cfg(stair_height_reference="support").rewards["flat_base_height"]
+        self.assertIs(support.func, rough_rewards.base_height_penalty_support_on_terrain)
+        self.assertNotIn("dead_zone_m", support.params)
+        with self.assertRaises(ValueError):
+            rough_env_cfg(stair_height_reference="ray")
+
+    def test_window_is_bounded_and_other_columns_match_flat(self) -> None:
+        from se3_train.mdp.terrain_height import ground_height_estimate
+        from se3_train.tasks.flat.rewards import flat_base_height_penalty_no_jump
+
+        params = dict(self.env.cfg.rewards["flat_base_height"].params)
+        got = rough_rewards.base_height_penalty_window_on_terrain(self.env, **params)
+        flat = flat_base_height_penalty_no_jump(
+            self.env,
+            command_name=params["command_name"],
+            height_sensor_name=params["height_sensor_name"],
+            sigma=params["sigma"],
+            max_error=params.get("max_error", 0.15),
+        )
+        stairs = column_mask(self.env, params["terrain_type_names"])
+        self.assertTrue(bool(stairs.any()) and bool((~stairs).any()))
+        self.assertTrue(torch.equal(got[~stairs], flat[~stairs]))
+        self.assertTrue(bool((got[stairs] >= 0.0).all()) and bool((got[stairs] < 1.0).all()))
+
+        cmd = self.env.command_manager.get_command("velocity_height")
+        frame_z = self.env.scene[params["height_sensor_name"]].data.frame_pos_w[:, 0, 2]
+        ground = ground_height_estimate(self.env, params["window_sensor_name"])
+        error = frame_z - ground - cmd[:, 4]
+        # M35 死区：|e| 先减死区再进核，死区内恰为 0。
+        dz = float(params["dead_zone_m"])
+        shaped = torch.sign(error) * torch.clamp(error.abs() - dz, min=0.0)
+        expected = 1.0 - torch.exp(-shaped.square() / params["sigma"] ** 2)
+        self.assertTrue(torch.allclose(got[stairs], expected[stairs], atol=1e-6))
+        inside = stairs & (error.abs() < dz)
+        if bool(inside.any()):
+            self.assertEqual(float(got[inside].abs().max()), 0.0)
 
 
 if __name__ == "__main__":
