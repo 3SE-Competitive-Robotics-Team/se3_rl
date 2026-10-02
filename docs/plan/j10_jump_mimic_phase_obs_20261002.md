@@ -39,3 +39,5 @@ metadata 顶层 `jump_reference` 新增可选 `phase_time_scale_s`；runtime 播
   state `/workspace/.se3-training-state/whtws/20261002T075343Z`。单卡 run 停训用 SIGTERM。
 - 首轮核验：第 84 轮无 Traceback，1.26 s/轮，GPU 6 3.9 GB / 58%；`Jump/active_rate` 0.049、`mimic_deviation` 约 52 次/记录（与 J9 开局一致）。
 - 判据：与 J9（mcr71gg5，300–500 轮突破）对比突破时间与最终指标；跑完回放四档 × 四速与离地延迟。
+- 2026-10-02 08:52 按用户指令在 2660 轮 SIGTERM 停止（最后 `model_2600`），七卡让给 RJ1。1054 轮时与 J9 对比：突破更早（300 轮偏离终止 11.6 对 48），
+  1000 轮腿长模仿奖励 2.56 对 2.86、机身高度误差 1.0 对 0.7 cm。

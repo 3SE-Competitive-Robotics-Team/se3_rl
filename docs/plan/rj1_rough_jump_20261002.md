@@ -46,3 +46,16 @@ J7 → J10 验证了跳跃 mimic 的几件事：无下蹲参考（站姿 0.22 m�
 
 - 跳：平地列回放四档 × 四速的离地高度、起跳延迟、落地（`.scratch/j4_moving_jump.py` 需在 rough 场景平地上跑）。
 - 台阶不退化：`riser_events.py` 与二级台阶回放，对照 M54。
+
+## 启动记录
+
+代码 commit `e3b58ab`（子模块 `2422622`），whtws 经 git bundle 由 `e3c3a0a` 快进；J10 为此在 2660 轮停止。
+
+- 启动时间：2026-10-02 08:52（Pod 时区），七卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，在线 W&B（项目 `SE3-WheelLegged-Rough`），
+  run `2026-10-02_08-52-51_rough-RJ1-jump-flat30-seed42-7x8192-5k`，
+  W&B [z5oc5n3t](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/z5oc5n3t)，PID/PGID `4066270`，
+  state `/workspace/.se3-training-state/whtws/20261002T085244Z`。
+- 首轮核验：第 37 轮无 Traceback、无 nefc overflow，3.38 s/轮，七卡各 13.2–13.6 GB、利用率 79–85%；
+  `Jump/jump_env_rate` 0.105、`Jump/active_rate` 0.003、`mimic_deviation` 约 3 次/记录，摔倒罚 0。
+- 预期的跳跃样本占比：平地热身期（前 500 轮全员平地、500→1000 轮线性换列）跳跃样本逐步升到约 30%；换列结束后平地列
+  只占 7%（M51 地形比例），跳跃样本约占全体 2%，跳跃时间占比会很低。看跳跃是否在热身期学会、换列后是否保持。
