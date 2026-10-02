@@ -19,3 +19,13 @@ vx ±1.5、执行链与 PPO。
 ## 验证
 
 J7 / J9 配置对比只差 rsi_prob（0.5 → 0）；CPU smoke（1 env、5 轮）通过。
+
+## 启动记录
+
+代码 commit `4c7ce37`（子模块 `120831e`），whtws 经 git bundle 由 `cdc95b4` 快进；J8 为此在 511 轮停止。
+
+- 启动时间：2026-10-02 04:10（Pod 时区），GPU 6 单卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，
+  W&B [mcr71gg5](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/mcr71gg5)，PID/PGID `3972586`，
+  state `/workspace/.se3-training-state/whtws/20261002T041042Z`。单卡 run 停训用 SIGTERM。
+- 首轮核验：第 81 轮无 Traceback，1.31 s/轮，GPU 6 4.0 GB / 70%；`Jump/active_rate` 0.045（J7 同期 0.13，差额即 RSI 预置的跳跃），
+  `mimic_deviation` 约 52 次/记录。
