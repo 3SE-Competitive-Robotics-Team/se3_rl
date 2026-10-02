@@ -25,3 +25,12 @@
 - J7 / J8 配置对比：只差观测（J8 actor 与 critic 的跳跃相关项只剩 jump_commands）。
 - se3-sim2x 全部 unittest、`tests.test_onnx_metadata` + `tests.test_flat_baseline` 通过；CPU smoke（1 env、5 轮）通过，导出 ONNX 被 runtime
   加载为 34 维且可触发跳跃。
+
+## 启动记录
+
+代码 commit `cdc95b4`（子模块 `120831e`），whtws 经 git bundle 由 `09493b2` 快进（J7 的启动记录与结果文档提交此前未同步）；
+GPU 0–5 仍被他人占用，GPU 6 单卡，与 J7 同规格。
+
+- 启动时间：2026-10-02 03:56（Pod 时区），GPU 6 单卡 × 8192、5000 轮、每 200 轮保存、seed 42，从头训，
+  W&B [e9xuzhwh](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Jump-Mimic/runs/e9xuzhwh)，PID/PGID `3967075`，
+  state `/workspace/.se3-training-state/whtws/20261002T035636Z`。单卡 run 停训用 SIGTERM。
