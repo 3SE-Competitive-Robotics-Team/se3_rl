@@ -70,6 +70,7 @@ def env_cfg(
     max_lin_vel_x: float = 0.0,
     reference_heights: tuple[float, ...] = DEFAULT_REFERENCE_HEIGHTS,
     reference_dir: Path = REFERENCE_DIR,
+    reference_obs: bool = True,
 ) -> ManagerBasedRlEnvCfg:
     """跳跃 mimic 环境。
 
@@ -78,6 +79,8 @@ def env_cfg(
     （保留 JUMP_MIMIC_MOVING_STANDING_RATIO 的零速回合），跳跃期间速度跟踪只看 vx，RSI 带指令速度。
     reference_heights：参考轨迹的目标离地间隙（m），触发时均匀选一条；部署包络 jump_target_height 上界取其最大值。
     reference_dir：参考轨迹目录（默认 jump_ref_v1）；站姿高度指令取参考的站姿，J7 换成无下蹲参考（站姿 0.22 m）。
+    reference_obs：观测里是否有参考信息。False（J8，用户定）时 actor 与 critic 都不看 20 维参考帧，critic 也不看参考时钟 /
+    参考编号，actor 只有 34 维本体（含 jump_flag / 目标高度），是 POMDP；模仿奖励、偏离终止、RSI 不变。
     """
     moving = float(max_lin_vel_x) > 0.0
     vx_range = (-float(max_lin_vel_x), float(max_lin_vel_x)) if moving else (0.0, 0.0)
@@ -128,12 +131,14 @@ def env_cfg(
     cfg.observations = dict(cfg.observations)
     actor = cfg.observations["actor"]
     actor_terms = dict(actor.terms)
-    actor_terms["jump_reference"] = ObservationTermCfg(func=mdp.jump_reference_obs)
+    if reference_obs:
+        actor_terms["jump_reference"] = ObservationTermCfg(func=mdp.jump_reference_obs)
     cfg.observations["actor"] = replace(actor, terms=actor_terms)
     critic = cfg.observations["critic"]
     critic_terms = dict(critic.terms)
-    critic_terms["jump_reference"] = ObservationTermCfg(func=mdp.jump_reference_obs)
-    critic_terms["jump_reference_state"] = ObservationTermCfg(func=mdp.jump_reference_state_obs)
+    if reference_obs:
+        critic_terms["jump_reference"] = ObservationTermCfg(func=mdp.jump_reference_obs)
+        critic_terms["jump_reference_state"] = ObservationTermCfg(func=mdp.jump_reference_state_obs)
     cfg.observations["critic"] = replace(critic, terms=critic_terms)
 
     # 奖励
