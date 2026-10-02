@@ -34,6 +34,9 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
     deployment_ranges: dict[str, tuple[float, float]] | None = None
     """部署 command 包络；课程任务应显式填写最终最高难度范围。"""
+    deployment_fields: tuple[str, ...] | None = None
+    """部署指令契约的字段（se3_shared.COMMAND_FIELDS 的子序列）；None = 训练张量的前缀布局（5 或 8 维）。
+    rough / 跳跃 mimic 用 se3_shared.NO_ATTITUDE_COMMAND_FIELDS 六维，训练张量仍是 8 维。"""
     height_resample_on_reset_only: bool = False
     """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
     constrain_diff_drive_commands: bool = False

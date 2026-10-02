@@ -14,9 +14,11 @@ from typing import Any
 import onnx
 
 from se3_shared import (
+    COMMAND_FIELDS,
     DM8009P,
     HEIGHT_CONDITIONED_DEFAULT_STRATEGY,
     M3508_C620_14,
+    NO_ATTITUDE_COMMAND_OBS_FIELDS,
     JointGroup,
     ObservationConfig,
     RobotConfig,
@@ -31,6 +33,7 @@ _TERM_WIDTHS = {
     "base_ang_vel": 3,
     "projected_gravity": 3,
     "commands": 5,
+    "commands_vx_yaw_height": 3,
     "leg_joint_pos": 6,
     "leg_joint_vel": 4,
     "wheel_pos_zero": 2,
@@ -40,16 +43,8 @@ _TERM_WIDTHS = {
     # 跳跃 mimic 参考帧（4 帧 × 5 维，见 se3_train.tasks.jump_mimic.mdp）。runtime 尚未支持，部署前需在 se3_runtime 实现。
     "jump_reference": 20,
 }
-_COMMAND_FIELD_NAMES = (
-    "lin_vel_x",
-    "ang_vel_yaw",
-    "pitch",
-    "roll",
-    "height",
-    "jump_flag",
-    "jump_target_height",
-    "jump_phase",
-)
+_COMMAND_FIELD_NAMES = COMMAND_FIELDS
+_COMMAND_TERMS = {"commands", "commands_vx_yaw_height", "jump_commands"}
 
 
 def build_deployment_onnx_metadata(
@@ -354,25 +349,44 @@ def _build_command_metadata(command_manager: Any) -> dict[str, Any]:
     command_dim = int(term.command.shape[-1])
     if command_dim not in {5, 8}:
         raise ValueError(f"velocity_height command 仅支持 5D/8D，实际为 {command_dim}D")
-    command_metadata: dict[str, Any] = {"dimension": command_dim}
+    deployment_fields = getattr(term.cfg, "deployment_fields", None)
+    if deployment_fields is None:
+        fields = _COMMAND_FIELD_NAMES[:command_dim]
+        command_metadata: dict[str, Any] = {"dimension": command_dim}
+    else:
+        # 部署契约只取训练张量的部分字段（rough / 跳跃 mimic 去掉 pitch / roll），显式导出字段表。
+        fields = tuple(str(name) for name in deployment_fields)
+        _validate_deployment_fields(fields, command_dim=command_dim)
+        command_metadata = {"dimension": len(fields), "fields": list(fields)}
     deployment_ranges = getattr(term.cfg, "deployment_ranges", None)
     if deployment_ranges is not None:
         command_metadata["ranges"] = _normalize_deployment_command_ranges(
             deployment_ranges,
-            command_dim=command_dim,
+            fields=fields,
         )
     return {"velocity_height": command_metadata}
+
+
+def _validate_deployment_fields(fields: tuple[str, ...], *, command_dim: int) -> None:
+    """部署字段必须是训练张量字段的子序列（保持原顺序、不重复）。"""
+    available = _COMMAND_FIELD_NAMES[:command_dim]
+    unknown = [name for name in fields if name not in available]
+    if unknown:
+        raise ValueError(f"deployment_fields 含训练张量没有的字段：{unknown!r}")
+    order = [available.index(name) for name in fields]
+    if order != sorted(set(order)):
+        raise ValueError(f"deployment_fields 必须按训练张量顺序且不重复：{fields!r}")
 
 
 def _normalize_deployment_command_ranges(
     value: Any,
     *,
-    command_dim: int,
+    fields: tuple[str, ...],
 ) -> dict[str, list[float]]:
     """校验并序列化任务显式声明的最终课程 command 包络。"""
     if not isinstance(value, Mapping):
         raise TypeError("deployment_ranges 必须为 mapping")
-    expected = set(_COMMAND_FIELD_NAMES[:command_dim])
+    expected = set(fields)
     actual = set(value)
     if actual != expected:
         raise ValueError(
@@ -381,7 +395,7 @@ def _normalize_deployment_command_ranges(
         )
 
     normalized: dict[str, list[float]] = {}
-    for field_name in _COMMAND_FIELD_NAMES[:command_dim]:
+    for field_name in fields:
         field_range = value[field_name]
         if not isinstance(field_range, (list, tuple)) or len(field_range) != 2:
             raise TypeError(f"deployment_ranges.{field_name} 必须为二元数组")
@@ -447,7 +461,7 @@ def _build_observation_groups(
                 "history_length": history_length,
                 "clip": _observation_clip(term_name, term_cfg),
             }
-            if term_name in {"commands", "jump_commands"}:
+            if term_name in _COMMAND_TERMS:
                 entry["params"] = {"command_name": "velocity_height"}
             if term_name == "jump_reference":
                 params = dict(getattr(term_cfg, "params", None) or {})
@@ -473,6 +487,10 @@ def _observation_scale(term_name: str, term_cfg: Any) -> list[float]:
         "base_ang_vel": [cfg.ang_vel_scale] * 3,
         "projected_gravity": [1.0] * 3,
         "commands": list(cfg.command_scale),
+        "commands_vx_yaw_height": [
+            cfg.command_scale[_COMMAND_FIELD_NAMES.index(name)]
+            for name in NO_ATTITUDE_COMMAND_OBS_FIELDS
+        ],
         "leg_joint_pos": [1.0] * 6,
         "leg_joint_vel": [cfg.leg_vel_scale] * 4,
         "wheel_pos_zero": [1.0] * 2,

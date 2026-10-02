@@ -13,8 +13,10 @@ import mujoco
 import torch
 
 from se3_shared import (
+    COMMAND_FIELDS,
     DM8009P,
     M3508_C620_14,
+    NO_ATTITUDE_COMMAND_OBS_FIELDS,
     JointGroup,
     ObservationConfig,
     policy_leg_phase_active_obs_torch,
@@ -71,6 +73,18 @@ def commands_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     cmd = env.command_manager.get_command("velocity_height")
     scale = torch.tensor(list(_OBS_CFG.command_scale), device=cmd.device)
     return _finite_clamp(cmd[:, :5] * scale)
+
+
+def commands_vx_yaw_height_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """速度与高度指令（不含 pitch / roll），缩放 (2.0, 0.25, 5.0)，3D。
+
+    取 8 维指令张量的 [lin_vel_x, ang_vel_yaw, height]（se3_shared.NO_ATTITUDE_COMMAND_OBS_FIELDS）；
+    rough 与跳跃 mimic 起 pitch / roll 指令恒 0、不进观测。
+    """
+    cmd = env.command_manager.get_command("velocity_height")
+    ids = [COMMAND_FIELDS.index(name) for name in NO_ATTITUDE_COMMAND_OBS_FIELDS]
+    scale = torch.tensor([_OBS_CFG.command_scale[i] for i in ids], device=cmd.device)
+    return _finite_clamp(cmd[:, ids] * scale)
 
 
 def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

@@ -196,7 +196,7 @@ se3_train/
 │   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
-    ├── observations.py     # 34 维 actor 观测（6-joint policy-order）
+    ├── observations.py     # actor 观测项（34 维布局 + rough / 跳跃 mimic 的 30 维布局）
     ├── rewards.py          # 行走奖励函数
     ├── jump_rewards.py     # 跳跃专属奖励函数
     ├── commands.py         # 速度+高度指令生成器
@@ -223,7 +223,22 @@ se3_jump_to/
 
 轨迹文件字段：`base_pos`、`base_vel`、`q_ref`、`q_vel`（关节角速度，用于 RSI）、`t_stance`、`dt` 等。
 
-### 观测空间（34 维 actor）
+### 观测空间（actor）
+
+Rough（含 GRU / StairEval）与 Jump-Mimic（2026-10-02 起）用 30 维，部署指令契约六维
+`[lin_vel_x, ang_vel_yaw, height, jump_flag, jump_target_height, jump_phase]`（训练内部指令张量仍是 8 维，pitch / roll 恒 0）：
+```
+[0:3]   base_ang_vel × 0.25
+[3:6]   projected_gravity
+[6:9]   commands_vx_yaw_height × (2.0, 0.25, 5.0)
+[9:15]  leg_joint_pos [sin(LF), cos(LF), left_active, sin(RF), cos(RF), right_active]
+[15:19] leg_joint_vel × 0.25
+[19:21] wheel_vel × 0.05
+[21:27] last_actions
+[27:30] jump_commands  [jump_flag, jump_target_height, jump_phase]
+```
+
+其余任务（Flat、Stair、旧跳跃线、WheelDog）仍是 34 维、8 维指令契约：
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
@@ -237,7 +252,7 @@ se3_jump_to/
                         jump_phase: 0→1 连续相位，grounded=0，飞行段随轨迹推进
 ```
 
-critic 在 actor 观测基础上额外包含特权信息（actor 34 维部署契约不受影响）：base 线速度、
+critic 在 actor 观测基础上额外包含特权信息（不进部署契约）：base 线速度、
 轮子接触力、base height、膝气弹簧采样力，以及特权包 v2（CTS RA-L 2024 特权集合 +
 本仓库 DR 参数回读）——六电机实测力矩、六关节角加速度、腿部/机身接触力、
 28 维域随机化模型参数回读（摩擦/质量/质心/惯量/PD 缩放/电机被动参数比值），
@@ -312,7 +327,7 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 
 ### 观测维度不对齐
 
-所有任务统一为 34 维观测。从行走 checkpoint fine-tune 跳跃任务时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
+Rough / Jump-Mimic 是 30 维，其余任务 34 维，两者 checkpoint 不能互相续训。旧跳跃线从行走 checkpoint fine-tune 时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
 
 ## 常见错误手册
 

@@ -19,6 +19,9 @@ class ObservationConfig(BaseModel):
         [25:31] last_actions
         [31:34] jump_commands      [jump_flag, jump_target_height, jump_phase]
                 jump_phase：0→1 的连续相位（grounded 时为 0，飞行/落地时随轨迹帧推进）
+
+    rough 与跳跃 mimic（2026-10-02 起）用 30 维：commands 换成只含 [vx, yaw, height] 的 commands_vx_yaw_height
+    （× (2.0, 0.25, 5.0)），删掉 wheel_pos_zero；部署指令契约为 NO_ATTITUDE_COMMAND_FIELDS 六维。
     """
 
     ang_vel_scale: float = 0.25
@@ -28,3 +31,28 @@ class ObservationConfig(BaseModel):
     clip_value: float = 100.0
     num_obs: int = 34
     num_actions: int = 6
+
+
+COMMAND_FIELDS: tuple[str, ...] = (
+    "lin_vel_x",
+    "ang_vel_yaw",
+    "pitch",
+    "roll",
+    "height",
+    "jump_flag",
+    "jump_target_height",
+    "jump_phase",
+)
+"""训练内部 velocity_height 指令张量的 8 维布局（所有任务共用）。"""
+NO_ATTITUDE_COMMAND_FIELDS: tuple[str, ...] = (
+    "lin_vel_x",
+    "ang_vel_yaw",
+    "height",
+    "jump_flag",
+    "jump_target_height",
+    "jump_phase",
+)
+"""rough / 跳跃 mimic（2026-10-02 起）的部署指令布局：去掉恒 0 的 pitch / roll。训练内部仍是 8 维张量
+（pitch / roll 槽恒 0，共享奖励按位置读高度与 jump_flag），只有观测与 ONNX 指令契约按这六个字段。"""
+NO_ATTITUDE_COMMAND_OBS_FIELDS: tuple[str, ...] = ("lin_vel_x", "ang_vel_yaw", "height")
+"""commands_vx_yaw_height 观测取的三个字段。"""

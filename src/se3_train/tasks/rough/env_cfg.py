@@ -79,6 +79,7 @@ from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_WHEEL_ACTION_SCALE,
@@ -526,6 +527,8 @@ def env_cfg(
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
+    # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
+    apply_no_attitude_layout(cfg)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)

@@ -23,6 +23,7 @@ from mjlab.terrains import (
 )
 
 import se3_train  # noqa: F401  # 注册任务
+from se3_shared import NO_ATTITUDE_COMMAND_FIELDS
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -222,11 +223,20 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertIsInstance(command, RoughCommandCfg)
         self.assertEqual(tuple(command.height_range), (0.20, 0.38))
         self.assertEqual(tuple(command.deployment_ranges["height"]), (0.20, 0.38))
-        # actor 观测契约不变：高度扫描只进 critic。
+        # 高度扫描只进 critic。
         self.assertNotIn("height_scan", self.cfg.observations["actor"].terms)
-        self.assertEqual(
-            list(self.cfg.observations["actor"].terms), list(self.flat.observations["actor"].terms)
-        )
+        # 2026-10-02：相对 Flat 只把 commands 换成 [vx, yaw, height]、删 wheel_pos_zero（actor 30 维），
+        # pitch / roll 指令恒 0，部署指令契约六维。
+        expected = [
+            "commands_vx_yaw_height" if name == "commands" else name
+            for name in self.flat.observations["actor"].terms
+            if name != "wheel_pos_zero"
+        ]
+        self.assertEqual(list(self.cfg.observations["actor"].terms), expected)
+        self.assertEqual(tuple(command.pitch_range), (0.0, 0.0))
+        self.assertEqual(tuple(command.roll_range), (0.0, 0.0))
+        self.assertEqual(tuple(command.deployment_fields), NO_ATTITUDE_COMMAND_FIELDS)
+        self.assertEqual(set(command.deployment_ranges), set(NO_ATTITUDE_COMMAND_FIELDS))
 
     def test_rough_only_adds_rewards_drops_three_and_wraps_the_rest(self) -> None:
         """相对 Flat：新增两项台阶专项奖励、摔倒罚、窄核、upward、轮前后错位、航向保持与四项模仿奖励；
