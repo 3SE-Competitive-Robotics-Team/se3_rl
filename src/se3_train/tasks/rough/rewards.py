@@ -388,8 +388,11 @@ def tracking_lin_vel_terrain_vz(
     tracking_upright_full_cos: float = 0.7,
     stair_sigma_move: float | None = None,
     stair_type_names: tuple[str, ...] = ("stairs_up",),
+    zero_vz_when_jumping: bool = False,
 ) -> torch.Tensor:
     """x 速度跟踪：非平地列把核里的 vz 项换成 `terrain_vz_weight`，台阶列把运动核换成 `stair_sigma_move`。
+
+    zero_vz_when_jumping（RJ1）：跳跃参考播放中的 env 去掉 vz 项（腾空 vz≈2 m/s 时整项归零，跳跃中前进速度没有塑形，同 J3）。
 
     逐 env 的权重/核张量直接喂给 `tracking_lin_vel`，按元素广播；观测、静站判定、课程累加与
     `Locomotion/*` 记账均复用 Flat 基线。
@@ -402,6 +405,9 @@ def tracking_lin_vel_terrain_vz(
             torch.tensor(float(terrain_vz_weight), device=env.device),
             torch.tensor(float(vz_weight), device=env.device),
         )
+    if zero_vz_when_jumping:
+        jumping = env.command_manager.get_term(command_name).active
+        weight = torch.where(jumping, torch.zeros_like(jumping, dtype=torch.float), weight)
     move_sigma: float | torch.Tensor = sigma_move
     stair_mask = column_mask(env, stair_type_names) if stair_sigma_move is not None else None
     if stair_mask is not None:
@@ -491,6 +497,24 @@ def stair_heading_hold(
     return err.square() * keep
 
 
+def is_terminated_except(env: ManagerBasedRlEnv, exclude_terms: tuple[str, ...]) -> torch.Tensor:
+    """非超时终止，但不算 exclude_terms 里的终止项（RJ1：偏离参考提前终止不吃 −500 摔倒罚）。"""
+    manager = env.termination_manager
+    done = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for name in manager.active_terms:
+        if name in exclude_terms or manager.get_term_cfg(name).time_out:
+            continue
+        done |= manager.get_term(name)
+    return done.float()
+
+
+def jump_env_only(
+    env: ManagerBasedRlEnv, inner, params: dict, command_name: str = "velocity_height"
+) -> torch.Tensor:
+    """任意奖励项只在跳跃样本上计（RJ1：模仿奖励的站姿帧是 0.22 m，非跳跃样本高度指令 0.20–0.38 不能被它拉向站姿）。"""
+    return inner(env, **params) * env.command_manager.get_term(command_name).jump_env.float()
+
+
 __all__ = [
     "base_height_fudan",
     "base_height_fudan_enhance",
@@ -498,6 +522,8 @@ __all__ = [
     "base_height_penalty_support_on_terrain",
     "base_height_penalty_window_on_terrain",
     "column_scaled",
+    "is_terminated_except",
+    "jump_env_only",
     "off_column",
     "stair_heading_hold",
     "tracking_ang_vel_off_terrain",

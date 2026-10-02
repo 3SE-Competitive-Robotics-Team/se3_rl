@@ -90,6 +90,7 @@ from .commands import (
     ROUGH_TERRAIN_LIN_VEL_X_RANGE,
     ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
     RoughCommandCfg,
+    RoughJumpCommandCfg,
 )
 from .terrains import (
     ROUGH_STAIR_LIKE_COLUMNS,
@@ -400,6 +401,7 @@ def env_cfg(
     leg_torque_envelope_scale: float | None = ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
     stair_heading_hold_weight: float | None = ROUGH_STAIR_HEADING_HOLD_WEIGHT,
     stair_wheel_fore_aft_scale: float | None = ROUGH_STAIR_WHEEL_FORE_AFT_SCALE,
+    jump_mimic: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -703,6 +705,10 @@ def env_cfg(
     if not bad_orientation_termination:
         del cfg.terminations["bad_orientation"]
 
+    # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
+    if jump_mimic:
+        _apply_jump_mimic(cfg)
+
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
         if "command_vel" in cfg.curriculum:
@@ -744,6 +750,83 @@ def env_cfg(
             )
 
     return cfg
+
+
+ROUGH_JUMP_MAX_HEIGHT_ERROR = 0.12
+"""RJ1 跳跃偏离参考终止阈值（同 J2 起的 0.12 m）。"""
+ROUGH_JUMP_PHASE_TIME_SCALE_S = 1.5
+"""RJ1 jump_phase = 参考时刻 / 该常数（同 J10）。"""
+
+
+def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
+    """RJ1（2026-10-02 用户定）：按 J10 合入跳跃——34 维观测里的 jump_flag / 目标高度 / 相位、无 RSI、无下蹲参考。
+
+    只有平地列 30% 的跳跃样本会跳，且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
+    四项模仿奖励只计跳跃样本；跳跃期间屏蔽静站罚、接触力罚与速度跟踪的 vz 项（机身高度罚、轮 / 腿离地罚
+    本来就按 jump_flag 屏蔽）；偏离参考提前终止不吃 −500 摔倒罚。观测维度与 M54 相同，可直接热启动。
+    """
+    from se3_train.tasks.jump_mimic import mdp as jump_mdp
+    from se3_train.tasks.jump_mimic.env_cfg import (
+        JUMP_MIMIC_J4_REFERENCE_HEIGHTS,
+        JUMP_MIMIC_REWARD_WEIGHTS,
+    )
+    from se3_train.tasks.jump_mimic.reference import (
+        NOCROUCH_REFERENCE_DIR,
+        JumpReferenceLibrary,
+        reference_paths,
+    )
+
+    paths = reference_paths(JUMP_MIMIC_J4_REFERENCE_HEIGHTS, NOCROUCH_REFERENCE_DIR)
+    library = JumpReferenceLibrary(paths, "cpu")
+    base = cfg.commands["velocity_height"]
+    fields_ = {f.name: getattr(base, f.name) for f in fields(base) if f.init}
+    ranges = dict(fields_.get("deployment_ranges") or {})
+    ranges.update(
+        jump_flag=(0.0, 1.0),
+        jump_target_height=(0.0, float(library.target_clearance.max())),
+        jump_phase=(0.0, float(library.duration.max()) / ROUGH_JUMP_PHASE_TIME_SCALE_S),
+    )
+    fields_.update(
+        enable_jump_lifecycle=False,
+        deployment_ranges=ranges,
+        reference_paths=paths,
+        phase_time_scale_s=ROUGH_JUMP_PHASE_TIME_SCALE_S,
+    )
+    cfg.commands["velocity_height"] = RoughJumpCommandCfg(**fields_)
+
+    cfg.rewards = dict(cfg.rewards)
+    for name, weight in JUMP_MIMIC_REWARD_WEIGHTS.items():
+        cfg.rewards[name] = RewardTermCfg(
+            func=rewards.jump_env_only,
+            weight=float(weight),
+            params={"inner": getattr(jump_mdp, name), "params": {}},
+        )
+    for name in ("stand_still", "contact_forces"):
+        term = cfg.rewards[name]
+        cfg.rewards[name] = RewardTermCfg(
+            func=jump_mdp.not_jumping,
+            weight=float(term.weight),
+            params={"inner": term.func, "params": dict(term.params or {})},
+        )
+    track = cfg.rewards["tracking_lin_vel"]
+    if track.func is not rewards.tracking_lin_vel_terrain_vz:
+        raise ValueError("RJ1 只接 se3 速度跟踪核（tracking_lin_vel_terrain_vz）")
+    cfg.rewards["tracking_lin_vel"] = replace(
+        track, params={**track.params, "zero_vz_when_jumping": True}
+    )
+    fall = cfg.rewards["fall_penalty"]
+    cfg.rewards["fall_penalty"] = RewardTermCfg(
+        func=rewards.is_terminated_except,
+        weight=float(fall.weight),
+        params={"exclude_terms": ("mimic_deviation",)},
+    )
+
+    cfg.terminations = dict(cfg.terminations)
+    cfg.terminations["mimic_deviation"] = TerminationTermCfg(
+        func=jump_mdp.mimic_deviation,
+        time_out=False,
+        params={"max_height_error": ROUGH_JUMP_MAX_HEIGHT_ERROR},
+    )
 
 
 def _apply_rough_rewards(
@@ -867,6 +950,8 @@ __all__ = [
     "ROUGH_HEIGHT_SHAPE",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_JOINT_MIRROR_WEIGHT",
+    "ROUGH_JUMP_MAX_HEIGHT_ERROR",
+    "ROUGH_JUMP_PHASE_TIME_SCALE_S",
     "ROUGH_KNEE_GAS_SPRING",
     "ROUGH_KNEE_GAS_SPRING_COMPENSATION",
     "ROUGH_LEG_ACTION_SCALE",

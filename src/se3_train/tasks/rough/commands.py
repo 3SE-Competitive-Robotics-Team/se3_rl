@@ -409,8 +409,164 @@ class RoughCommandTerm(JumpCommandTerm):
         )
 
 
+# ---------------------------------------------------------------- 跳跃合入（RJ1，2026-10-02 用户定）
+ROUGH_JUMP_COLUMN_NAMES: tuple[str, ...] = ("flat",)
+"""允许跳跃的子地形列（用户定：只有平地列）。"""
+ROUGH_JUMP_ENV_FRACTION = 0.3
+"""跳跃样本占这些列 env 的比例（每回合 reset 时抽，用户定 30%）。"""
+ROUGH_JUMP_TRIGGER_RATE_HZ = 0.2
+"""跳跃样本站满 min_idle_s 后每秒触发概率（J10 为 0.5，跳跃时间占 29%，rough 降低免得挤占地形训练）。"""
+ROUGH_JUMP_MAX_LIN_VEL_X = 1.5
+"""触发时 vx 指令夹到 ±该值（J10 训练范围）。"""
+
+
+@dataclass
+class RoughJumpCommandCfg(RoughCommandCfg):
+    """rough 指令 + J10 跳跃参考时钟。
+
+    旧 JumpCommandTerm 的跳跃生命周期（原地跳、旧轨迹、jump_phase 写成 0→1 相位）必须关掉
+    （enable_jump_lifecycle=False），否则它会把 jump_flag=1 的 env 当成旧跳跃推进并改写 [5:8]。
+    """
+
+    reference_paths: tuple[str, ...] = ()
+    phase_time_scale_s: float | None = None
+    min_idle_s: float = 1.0
+    trigger_rate_hz: float = ROUGH_JUMP_TRIGGER_RATE_HZ
+    jump_column_names: tuple[str, ...] = ROUGH_JUMP_COLUMN_NAMES
+    jump_env_fraction: float = ROUGH_JUMP_ENV_FRACTION
+    jump_max_lin_vel_x: float = ROUGH_JUMP_MAX_LIN_VEL_X
+
+    def build(self, env: ManagerBasedRlEnv) -> RoughJumpCommandTerm:
+        if self.enable_jump_lifecycle:
+            raise ValueError(
+                "RoughJumpCommandCfg 必须关掉旧跳跃生命周期（enable_jump_lifecycle=False）"
+            )
+        if not self.reference_paths:
+            raise ValueError("RoughJumpCommandCfg 需要跳跃参考 reference_paths")
+        return RoughJumpCommandTerm(self, env)
+
+
+class RoughJumpCommandTerm(RoughCommandTerm):
+    """rough 指令项上叠加跳跃样本与参考时钟（与 J10 同一时钟，见 jump_mimic.clock）。
+
+    每回合 reset 时，在允许跳跃的列上按 jump_env_fraction 抽"跳跃样本"：整回合高度指令固定为参考站姿
+    （与 J10 一样，用户定）、不参加高姿态起步序列，只有它们会触发跳跃。跳跃期间冻结速度 / 姿态 / 高度指令，
+    触发时 vx 夹到 ±jump_max_lin_vel_x、yaw / pitch / roll 置 0。其余 env 与 M54 完全一样。
+    """
+
+    cfg: RoughJumpCommandCfg
+
+    def __init__(self, cfg: RoughJumpCommandCfg, env: ManagerBasedRlEnv):
+        from se3_train.tasks.jump_mimic.clock import JumpReferenceClock
+        from se3_train.tasks.jump_mimic.reference import JumpReferenceLibrary
+
+        self.jump_env = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.clock = JumpReferenceClock(
+            JumpReferenceLibrary(cfg.reference_paths, env.device),
+            env.num_envs,
+            env.device,
+            min_idle_s=cfg.min_idle_s,
+            trigger_rate_hz=cfg.trigger_rate_hz,
+            phase_time_scale_s=cfg.phase_time_scale_s,
+        )
+        super().__init__(cfg, env)
+
+    # ---- 时钟状态（jump_mimic.mdp 的模仿奖励 / 偏离终止读取） ----
+    @property
+    def library(self):
+        return self.clock.library
+
+    @property
+    def active(self) -> torch.Tensor:
+        return self.clock.active
+
+    @property
+    def ref_id(self) -> torch.Tensor:
+        return self.clock.ref_id
+
+    @property
+    def ref_t(self) -> torch.Tensor:
+        return self.clock.ref_t
+
+    def reference(self, offset_s: float = 0.0):
+        return self.clock.reference(offset_s)
+
+    # ---- 生命周期 ----
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        if bool(getattr(self, "_resampling_for_reset", False)):
+            self._sample_jump_envs(env_ids)
+            super()._resample_command(env_ids)
+        else:
+            keep = env_ids[self.active[env_ids]]
+            saved = self._command[keep, 0:5].clone()
+            saved_standing = self._standing_mask[keep].clone()
+            super()._resample_command(env_ids)
+            self._command[keep, 0:5] = saved
+            self._standing_mask[keep] = saved_standing
+        self._fix_jump_env_height(env_ids)
+        self.clock.write_dims(self._command)
+
+    def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
+        mask = column_mask(self._env, self.cfg.jump_column_names)
+        on_column = (
+            torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+            if mask is None
+            else mask[env_ids]
+        )
+        draw = torch.rand(len(env_ids), device=self.device) < float(self.cfg.jump_env_fraction)
+        self.jump_env[env_ids] = on_column & draw
+
+    def _fix_jump_env_height(self, env_ids: torch.Tensor) -> None:
+        """跳跃样本：高度指令固定为参考站姿，退出高姿态起步序列。"""
+        ids = env_ids[self.jump_env[env_ids]]
+        if ids.numel() == 0:
+            return
+        self._high_stand_selected[ids] = False
+        self._high_stand_steps_left[ids] = 0
+        self._command[ids, 4] = float(self.library.stand_height)
+        update_policy_default_from_height_cache(
+            self._env,
+            "velocity_height",
+            env_ids=ids,
+            command=self._command,
+        )
+
+    def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, torch.Tensor]:
+        extras = super().reset(env_ids)
+        assert isinstance(env_ids, torch.Tensor)
+        self.clock.reset(env_ids)
+        self.clock.write_dims(self._command)
+        return extras
+
+    def _update_command(self) -> None:
+        super()._update_command()
+        fired = self.clock.step(float(self._env.step_dt), allowed=self.jump_env)
+        if fired.numel() > 0:
+            vmax = float(self.cfg.jump_max_lin_vel_x)
+            self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
+            self._command[fired, 1:4] = 0.0
+        self.clock.write_dims(self._command)
+
+    def deployment_jump_reference(self) -> dict:
+        """部署契约顶层 jump_reference（同 J10）。"""
+        from se3_train.tasks.jump_mimic.mdp import DEFAULT_OFFSETS_STEPS, REFERENCE_SCALES
+
+        return self.clock.deployment_payload(DEFAULT_OFFSETS_STEPS, REFERENCE_SCALES)
+
+    def _update_metrics(self) -> None:
+        super()._update_metrics()
+        log = self._env.extras.setdefault("log", {}) if hasattr(self._env, "extras") else None
+        if isinstance(log, dict):
+            log["Jump/active_rate"] = self.active.float().mean()
+            log["Jump/jump_env_rate"] = self.jump_env.float().mean()
+
+
 __all__ = [
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_JUMP_COLUMN_NAMES",
+    "ROUGH_JUMP_ENV_FRACTION",
+    "ROUGH_JUMP_MAX_LIN_VEL_X",
+    "ROUGH_JUMP_TRIGGER_RATE_HZ",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",
@@ -430,6 +586,8 @@ __all__ = [
     "JumpCommandCfg",
     "RoughCommandCfg",
     "RoughCommandTerm",
+    "RoughJumpCommandCfg",
+    "RoughJumpCommandTerm",
     "VelocityHeightCommandCfg",
     "VelocityHeightCommandTerm",
 ]
