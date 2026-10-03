@@ -504,6 +504,10 @@ class RoughJumpCommandTerm(RoughCommandTerm):
     # ---- 生命周期 ----
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         if bool(getattr(self, "_resampling_for_reset", False)):
+            # reset 事件里的预采样早于 command_manager.reset：不先清时钟，下面 write_dims 会把跳跃中途被终止的
+            # env 写成 jump_flag=1，reset 事件随即把它当旧跳跃线 RSI 样本，从旧参考轨迹注入机身与关节状态
+            # （2026-10-03 定位，见 docs/plan/rough_iteration_time_20261003.md）。新 episode 不可能在跳，先清。
+            self.clock.reset(env_ids)
             self._sample_jump_envs(env_ids)
             super()._resample_command(env_ids)
         else:

@@ -64,12 +64,21 @@ JumpCol10 六卡 × 2048（W&B `06j74ep2`）每轮 2.33 s，用户要求拆清�
 
 ## 剩余杠杆（未做）
 
-1. **旧跳跃 RSI 残留（行为 bug，待用户定）**：reset 事件先预采样指令再 `clock.write_dims`，此时跳跃时钟还没 reset，
-   跳跃中途被终止的 env 会被 `reset_root_state_full` / `reset_joints` 当成旧跳跃线 RSI 样本，从旧参考轨迹第 0 帧注入
-   机身高度、速度与关节角（不是正常 reset 分布）。这条路径每步约 20 次同步；修掉会改变训练行为。
+1. ~~旧跳跃 RSI 残留~~ 已修（见下节，改变训练行为）。
 2. **mjlab 内部同步约 40 次/步**：`RewardManager.reset` 逐项 `x[ids] = 0.0`（12.5 次/步）、射线 `_extract_yaw_rotation`
    的 `.any()`、官方 `terrain_levels_vel`、curriculum / termination / event manager。需给上游提 PR 或打补丁。
 3. 会改变实验的：每卡 env 数（单样本吞吐好约 2.5 倍，改 PPO batch）、地形 geom 数（物理 18 → 8 ms，改任务分布）。
+
+## 行为修复：跳跃中途被终止的 env 误走旧跳跃线 RSI（用户批准，单独提交）
+
+reset 事件先预采样指令（`_pre_resample_command_for_reset`）再写跳跃维度（`clock.write_dims`），这时跳跃时钟还没 reset，
+跳跃中途被终止（模仿偏离 / 摔倒）的 env 被写成 `jump_flag=1`；`reset_root_state_full` / `reset_joints` 随即把它当旧跳跃线
+RSI 样本，从旧参考轨迹（`DEFAULT_JUMP_TRAJ_PATHS`）第 0 帧注入机身高度、速度与关节角，而不是正常 reset 分布。
+whtws 实测（2048 env × 600 步、随机动作）：旧代码 733 次跳跃中途 reset 全部走了旧 RSI，修复后 0 次。
+
+修法：`RoughJumpCommandTerm` 在 reset 预采样时先 `clock.reset(env_ids)` 再写跳跃维度（根因）；旧 RSI 只对
+`enable_jump_lifecycle=True` 的 `JumpCommandTerm` 生效（PreTrain / FineTune 不变）。Jump-Mimic 任务用自己的
+`reset_jump_mimic` 事件，不受影响。修复后每步同步 82 → 76.5，单卡 2048 env 训练 1.425 s/轮。
 
 ## 工具
 

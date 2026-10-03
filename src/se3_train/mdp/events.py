@@ -339,6 +339,17 @@ def _load_recovery_state_cache(
     return cache
 
 
+def _legacy_jump_rsi_enabled(term: object) -> bool:
+    """旧跳跃线 RSI 只服务于开着旧跳跃生命周期的 JumpCommandTerm（PreTrain / FineTune）。
+
+    rough 合入 J10 后关掉了旧生命周期（enable_jump_lifecycle=False），jump_flag 由 J10 参考时钟维护；
+    这类指令项的 jump_flag 不代表旧参考轨迹的相位，不能拿来做旧轨迹 RSI。
+    """
+    if isinstance(term, JumpCommandTerm):
+        return bool(term.cfg.enable_jump_lifecycle)
+    return True
+
+
 def _pre_resample_command_for_reset(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -895,7 +906,7 @@ def reset_root_state_full(
             )
             cmd = env.command_manager.get_command("velocity_height")
             jump_mask = cmd[env_ids, 5] > 0.5
-            if jump_mask.any():
+            if _legacy_jump_rsi_enabled(term) and jump_mask.any():
                 # 决定哪些 env 使用轨迹起点初始化（非全量时随机跳过部分）
                 rsi_mask = jump_mask
                 if rsi_takeoff_prob < 1.0:
@@ -1746,7 +1757,10 @@ def reset_joints(
         try:
             cmd = env.command_manager.get_command("velocity_height")
             jump_mask = cmd[env_ids, 5] > 0.5
-            if jump_mask.any():
+            if (
+                _legacy_jump_rsi_enabled(env.command_manager.get_term("velocity_height"))
+                and jump_mask.any()
+            ):
                 rsi_frames = getattr(env, "_rsi_traj_frame", None)
                 # rsi_done_local：local index 中已从轨迹注入关节角的位置（用于计算回退 mask）
                 rsi_done_mask = torch.zeros(len(env_ids), dtype=torch.bool, device=env.device)
