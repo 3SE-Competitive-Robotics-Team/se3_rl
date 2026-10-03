@@ -169,10 +169,17 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertEqual(rough.max_iterations, 5000)
 
     def test_gru_variant_only_swaps_the_network(self) -> None:
-        """M16：GRU 入口除网络外与 MLP 入口逐项相同；rollout 保持 24 步，按轮计数的课程才不会平移。"""
+        """M16：GRU 入口除网络外与 MLP 入口逐项相同；rollout 保持 24 步，按轮计数的课程才不会平移。
+
+        2026-10-04 起 MLP 入口 actor 隐藏层默认 128/64/32（ROUGH_ACTOR_HIDDEN_DIMS），GRU 入口仍用 Flat 的 GRU 头，
+        所以 actor.hidden_dims 不再要求相同。
+        """
+        from se3_train.tasks.rough.rl_cfg import ROUGH_ACTOR_HIDDEN_DIMS
+
         mlp = load_rl_cfg(_ROUGH)
         gru = load_rl_cfg(_ROUGH_GRU)
         self.assertEqual(mlp.actor.class_name, "MLPModel")
+        self.assertEqual(tuple(mlp.actor.hidden_dims), ROUGH_ACTOR_HIDDEN_DIMS)
         for model in (gru.actor, gru.critic):
             self.assertEqual(model.class_name, "RNNModel")
             self.assertEqual(model.rnn_type, "gru")
@@ -180,6 +187,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             self.assertEqual(model.rnn_hidden_dim, 512)
         for name in ("actor", "critic"):
             for key in ("hidden_dims", "activation", "obs_normalization", "distribution_cfg"):
+                if name == "actor" and key == "hidden_dims":
+                    continue
                 self.assertEqual(
                     getattr(getattr(gru, name), key),
                     getattr(getattr(mlp, name), key),
