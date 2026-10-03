@@ -6,7 +6,13 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import env_cfg
-from .rl_cfg import gru_rl_cfg, rl_cfg, small_actor_rl_cfg
+from .rl_cfg import (
+    ROUGH_LONG_ROLLOUT_STEPS,
+    gru_rl_cfg,
+    long_rollout_rl_cfg,
+    rl_cfg,
+    small_actor_rl_cfg,
+)
 from .terrains import stair_only_terrains_cfg
 
 TASK_ID = "SE3-WheelLegged-Rough"
@@ -24,6 +30,9 @@ EXP_ACTOR_128_TASK_ID = "SE3-WheelLegged-Rough-Exp-Actor128"
 # PPO 超参数（γ / λ / 每轮 24 步）与奖励权重都不变。临时入口：对照结束、定下推理频率后删除，复现用对应 commit。
 EXP_DEC2_TASK_ID = "SE3-WheelLegged-Rough-Exp-Dec2"
 EXP_DEC2_DECIMATION = 2
+# 2026-10-03（用户定）：Dec2 + 每轮 48 步（每轮仍覆盖 0.48 s，同复旦 100 Hz 配方），课程/推力按 48 步换算轮次；
+# γ / λ 等其余 PPO 超参数不变。临时入口，同上。
+EXP_DEC2_STEPS48_TASK_ID = "SE3-WheelLegged-Rough-Exp-Dec2-Steps48"
 
 
 def register() -> None:
@@ -63,11 +72,23 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_DEC2_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    dec2_steps48 = {
+        "decimation": EXP_DEC2_DECIMATION,
+        "steps_per_policy_iter": ROUGH_LONG_ROLLOUT_STEPS,
+    }
+    register_mjlab_task(
+        task_id=EXP_DEC2_STEPS48_TASK_ID,
+        env_cfg=env_cfg(**dec2_steps48),
+        play_env_cfg=env_cfg(play=True, **dec2_steps48),
+        rl_cfg=bind_task_name(long_rollout_rl_cfg(), EXP_DEC2_STEPS48_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_ACTOR_128_TASK_ID",
     "EXP_DEC2_DECIMATION",
+    "EXP_DEC2_STEPS48_TASK_ID",
     "EXP_DEC2_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

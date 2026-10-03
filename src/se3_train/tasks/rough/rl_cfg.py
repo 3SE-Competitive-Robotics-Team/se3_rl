@@ -54,6 +54,17 @@ def small_actor_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
+ROUGH_LONG_ROLLOUT_STEPS = 48
+"""2026-10-03 推理 100 Hz 对照：每轮 48 步，使每轮仍覆盖 0.48 s（同复旦 wheel_legged_gym 100 Hz 配 48 步）。"""
+
+
+def long_rollout_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """`rl_cfg` 只把每轮步数换成 ROUGH_LONG_ROLLOUT_STEPS，其余逐项相同。临时对照入口用。"""
+    cfg = rl_cfg(smoke=smoke)
+    cfg.num_steps_per_env = ROUGH_LONG_ROLLOUT_STEPS
+    return cfg
+
+
 def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成 GRU PPO 训练配置：只换网络，rollout 仍 24 步，其余与 `rl_cfg` 逐项相同（M16）。"""
     cfg = _use_se3_ppo(flat_gru_rl_cfg(smoke=smoke))
@@ -64,9 +75,11 @@ def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 
 
 __all__ = [
+    "ROUGH_LONG_ROLLOUT_STEPS",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_SMALL_ACTOR_HIDDEN_DIMS",
     "gru_rl_cfg",
+    "long_rollout_rl_cfg",
     "rl_cfg",
     "small_actor_rl_cfg",
 ]
