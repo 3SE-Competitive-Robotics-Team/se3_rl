@@ -155,6 +155,7 @@ nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退
 | J9 | `SE3-WheelLegged-Jump-Mimic-Exp-J9` / `4c7ce37` | `2026-10-02_04-10-49_jump-J9-mimic-nocrouch-norsi-seed42-1x8192-5k` | 3972586 | `/workspace/.se3-training-state/whtws/20261002T041042Z` | 2026-10-02 04:10 启动，GPU 6 单卡 × 8192、5000 轮，从头训，W&B `mcr71gg5`；= J7 去掉 RSI |
 | J10 | `SE3-WheelLegged-Jump-Mimic-Exp-J10` / `e3c3a0a` | `2026-10-02_07-53-50_jump-J10-mimic-phase015-norsi-seed42-1x8192-5k` | 4046465 | `/workspace/.se3-training-state/whtws/20261002T075343Z` | 2026-10-02 07:53 启动，GPU 6 单卡 × 8192、5000 轮，从头训，W&B `ve0ypvwi`；= J9 用一维相位代替参考帧（34 维）；子模块 `2422622`；2026-10-02 2660 轮 SIGTERM 停止 |
 | RJ1 | `SE3-WheelLegged-Rough-Exp-RJ1` / `e3b58ab` | `2026-10-02_08-52-51_rough-RJ1-jump-flat30-seed42-7x8192-5k` | 4066270 | `/workspace/.se3-training-state/whtws/20261002T085244Z` | 2026-10-02 08:52 启动，七卡 × 8192、5000 轮，从头训，W&B 项目 SE3-WheelLegged-Rough `z5oc5n3t`；= M54 + J10 跳跃（平地列 30% 跳跃样本） |
+| Rough-obs30 | `SE3-WheelLegged-Rough` / `5fc61d4` | `2026-10-03_03-42-56_rough-obs30-noattitude-seed42-7x8192-5k` | 243373 | `/workspace/.se3-training-state/whtws/20261003T034249Z` | 2026-10-03 03:42 启动，七卡 × 8192、5000 轮，从头训，W&B 项目 SE3-WheelLegged-Rough `tlfquma2`；= RJ1 默认配置 + actor 30 维（去掉 pitch / roll 指令与 wheel_pos_zero，pitch / roll 采样恒 0）；Pod 经 git bundle 由 e3b58ab 切到 xyh/1002（子模块 d8f76f5）。RJ1 已跑满 5000 轮 |
 
 仓库于 2026-09-27 通过 git bundle 由 5af0d00 快进到 `448c7e4`，2026-09-28 再快进到 `25ca875`（子模块仍 `e753ce6`）。
 停止：`ps -o args= -g <pgid>` 核对 run name 后 `kill -INT -- -<pgid>`；容器 PID 1 不回收僵尸，defunct 条目可忽略。
