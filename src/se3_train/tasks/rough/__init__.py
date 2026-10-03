@@ -6,7 +6,7 @@ from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import env_cfg
-from .rl_cfg import gru_rl_cfg, rl_cfg
+from .rl_cfg import gru_rl_cfg, rl_cfg, small_actor_rl_cfg
 from .terrains import stair_only_terrains_cfg
 
 TASK_ID = "SE3-WheelLegged-Rough"
@@ -17,6 +17,9 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 所以对照用任务入口而不是逐实验 commit 区分；对照结束、定下默认值后删除入口，复现用对应 commit。
 # 2026-10-02：M39–M54 与 RJ1 的临时入口已全部删除，默认配置 = RJ1（M54 + 合入 J10 跳跃，env_cfg 模块常量），
 # 各对照的改动与依据见 env_cfg.py 模块 docstring 与 docs/plan/m39_*–m54_*.md、rj1_rough_jump_20261002.md。
+# 2026-10-03（用户定）：actor 隐藏层 128/64/32 的对照（critic 与环境不变，见 rl_cfg.ROUGH_SMALL_ACTOR_HIDDEN_DIMS）。
+# 临时入口：对照结束、定下 actor 尺寸后删除，复现用对应 commit。
+EXP_ACTOR_128_TASK_ID = "SE3-WheelLegged-Rough-Exp-Actor128"
 
 
 def register() -> None:
@@ -42,9 +45,17 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_ACTOR_128_TASK_ID,
+        env_cfg=env_cfg(),
+        play_env_cfg=env_cfg(play=True),
+        rl_cfg=bind_task_name(small_actor_rl_cfg(), EXP_ACTOR_128_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "EXP_ACTOR_128_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",

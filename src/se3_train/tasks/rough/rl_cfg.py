@@ -16,6 +16,7 @@ BPTT 梯度、不截断推理时的记忆长度。假设与验收见 docs/plan/m
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
 from se3_train.tasks.flat.rl_cfg import FLAT_NUM_STEPS_PER_ENV, mlp_rl_cfg
@@ -23,6 +24,8 @@ from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 
 # 地形课程要爬 10 级难度，比平地的 3500 轮长。沿用本仓库非 Flat 线的 5000 轮惯例。
 ROUGH_MAX_ITERATIONS = 5000
+# 2026-10-03 用户定的对照：actor 隐藏层 512/256/128 → 128/64/32，critic 不变（部署跑的是 actor，单变量看小网络够不够）。
+ROUGH_SMALL_ACTOR_HIDDEN_DIMS = (128, 64, 32)
 
 
 def _is_smoke(smoke: bool) -> bool:
@@ -37,6 +40,13 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
+def small_actor_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """`rl_cfg` 的 actor 隐藏层换成 ROUGH_SMALL_ACTOR_HIDDEN_DIMS，其余（含 critic）逐项相同。临时对照入口用。"""
+    cfg = rl_cfg(smoke=smoke)
+    cfg.actor = replace(cfg.actor, hidden_dims=ROUGH_SMALL_ACTOR_HIDDEN_DIMS)
+    return cfg
+
+
 def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成 GRU PPO 训练配置：只换网络，rollout 仍 24 步，其余与 `rl_cfg` 逐项相同（M16）。"""
     cfg = flat_gru_rl_cfg(smoke=smoke)
@@ -46,4 +56,10 @@ def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
-__all__ = ["ROUGH_MAX_ITERATIONS", "gru_rl_cfg", "rl_cfg"]
+__all__ = [
+    "ROUGH_MAX_ITERATIONS",
+    "ROUGH_SMALL_ACTOR_HIDDEN_DIMS",
+    "gru_rl_cfg",
+    "rl_cfg",
+    "small_actor_rl_cfg",
+]
