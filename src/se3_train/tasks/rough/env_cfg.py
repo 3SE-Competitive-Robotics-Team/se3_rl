@@ -42,7 +42,7 @@ M50：台阶列 yaw 指令恒 0、出生朝向正对台阶、yaw 跟踪恢复 Fl
 M51：加随机粗糙、波浪、离散矮障碍三列（terrains.ROUGH_RANDOM_TERRAIN_PROPORTIONS）。
 M53：膝气弹簧电机侧前馈补偿 + 腿部 T-N 包络 ×0.8（见 ROUGH_LEG_TORQUE_ENVELOPE_SCALE 注释）。
 M54：台阶列航向保持 −6、轮前后错位罚 ×0.25、出生朝向 ±15°（见 ROUGH_STAIR_HEADING_HOLD_WEIGHT 注释）。
-RJ1：平地列 30% 跳跃样本合入 J10 跳跃（见 _apply_jump_mimic）。2026-10-02 用户定 RJ1 为默认，M39–M54 与 RJ1 的
+RJ1：合入 J10 跳跃（见 _apply_jump_mimic）；2026-10-03 起跳跃样本为专用平地跳跃列（占全部 env 10%）、触发 0.5 Hz。2026-10-02 用户定 RJ1 为默认，M39–M54 与 RJ1 的
 临时入口全部删除；M40–M46、M48、M52 的对照未采用。复现各对照用对应 commit（M39 a724b49、M47 4398698、M49 d5db384、
 M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab）。
 
@@ -582,7 +582,8 @@ ROUGH_JUMP_PHASE_TIME_SCALE_S = 1.5
 def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     """RJ1（2026-10-02 用户定）：按 J10 合入跳跃——34 维观测里的 jump_flag / 目标高度 / 相位、无 RSI、无下蹲参考。
 
-    只有平地列 30% 的跳跃样本会跳，且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
+    只有跳跃样本会跳（2026-10-03 起为专用平地跳跃列的全部 env，占全部 env 10%；此前为平地列 30%），
+    且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
     四项模仿奖励只计跳跃样本；跳跃期间屏蔽静站罚、接触力罚与速度跟踪的 vz 项（机身高度罚、轮 / 腿离地罚
     本来就按 jump_flag 屏蔽）；偏离参考提前终止不吃摔倒罚。观测维度与 M54 相同。
     """

@@ -25,7 +25,9 @@ from se3_train.mdp.height_default_cache import update_policy_default_from_height
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
 from .columns import column_mask, non_flat_column_mask
+from .curriculums import FLAT_WARMUP_ORIGINAL_TYPES_ATTR
 from .terrains import (
+    ROUGH_JUMP_COLUMN,
     ROUGH_OBSTACLE_COLUMN,
     ROUGH_RANDOM_ROUGH_COLUMN,
     ROUGH_STAIR_LIKE_COLUMNS,
@@ -62,6 +64,8 @@ ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
     ROUGH_RANDOM_ROUGH_COLUMN,
     ROUGH_WAVE_COLUMN,
     ROUGH_OBSTACLE_COLUMN,
+    # 跳跃列按平地发指令（跳跃样本高度另行固定为参考站姿，见 RoughJumpCommandTerm）。
+    ROUGH_JUMP_COLUMN,
 )
 # A7 留下的"非平地列前向指令"，2026-09-15 起已无列使用（stairs_up 被台阶覆盖压在上面），
 # 保留是为了以后再加"需要限速的列"时有现成档位：vx 0.4–0.8 与平地课程脱钩、yaw ±0.2。
@@ -411,12 +415,13 @@ class RoughCommandTerm(JumpCommandTerm):
 
 
 # ---------------------------------------------------------------- 跳跃合入（RJ1，2026-10-02 用户定）
-ROUGH_JUMP_COLUMN_NAMES: tuple[str, ...] = ("flat",)
-"""允许跳跃的子地形列（用户定：只有平地列）。"""
-ROUGH_JUMP_ENV_FRACTION = 0.3
-"""跳跃样本占这些列 env 的比例（每回合 reset 时抽，用户定 30%）。"""
-ROUGH_JUMP_TRIGGER_RATE_HZ = 0.2
-"""跳跃样本站满 min_idle_s 后每秒触发概率（J10 为 0.5，跳跃时间占 29%，rough 降低免得挤占地形训练）。"""
+ROUGH_JUMP_COLUMN_NAMES: tuple[str, ...] = (ROUGH_JUMP_COLUMN,)
+"""跳跃样本所在的子地形列：2026-10-03 起为专用平地跳跃列（占全部 env 的 terrains.ROUGH_JUMP_COLUMN_PROPORTION），
+此前是平地列。按 env 的原始列归属判定（热身期全体在平地列时跳跃 env 照常跳）。"""
+ROUGH_JUMP_ENV_FRACTION = 1.0
+"""跳跃样本占跳跃列 env 的比例：专用列全部是跳跃样本（此前平地列 30%）。"""
+ROUGH_JUMP_TRIGGER_RATE_HZ = 0.5
+"""跳跃样本站满 min_idle_s 后每秒触发概率：2026-10-03 由 0.2 提到 J10 验证过的 0.5（每次循环约 4.5 s、约 1/3 时间在跳）。"""
 ROUGH_JUMP_MAX_LIN_VEL_X = 1.5
 """触发时 vx 指令夹到 ±该值（J10 训练范围）。"""
 
@@ -507,8 +512,18 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         self._fix_jump_env_height(env_ids)
         self.clock.write_dims(self._command)
 
-    def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
+    def _jump_column_mask(self) -> torch.Tensor | None:
+        """按原始列归属判定跳跃列：平地热身期全体被挪到平地列，此时跳跃列 env 仍是跳跃样本（平地上跳，参考成立）。"""
         mask = column_mask(self._env, self.cfg.jump_column_names)
+        original = getattr(self._env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, None)
+        if mask is None or original is None:
+            return mask
+        names = list(self._env.scene.terrain.cfg.terrain_generator.sub_terrains.keys())
+        cols = [names.index(name) for name in self.cfg.jump_column_names if name in names]
+        return torch.isin(original.to(torch.long), torch.tensor(cols, device=original.device))
+
+    def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
+        mask = self._jump_column_mask()
         on_column = (
             torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
             if mask is None

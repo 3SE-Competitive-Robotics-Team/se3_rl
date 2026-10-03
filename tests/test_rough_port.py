@@ -82,6 +82,7 @@ from se3_train.tasks.rough.env_cfg import (
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
+    ROUGH_JUMP_COLUMN,
     ROUGH_PATCH_SIZE,
     ROUGH_PLATFORM_WIDTH,
     ROUGH_RANDOM_TERRAIN_COLUMNS,
@@ -433,6 +434,7 @@ class RoughTerrainTests(unittest.TestCase):
                 "slope_up",
                 "slope_down",
                 *ROUGH_RANDOM_TERRAIN_COLUMNS,
+                ROUGH_JUMP_COLUMN,
             ],
         )
         self.assertEqual(tuple(gen.size), ROUGH_PATCH_SIZE)
@@ -677,7 +679,7 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated_and_masks_agree(self) -> None:
         self.assertEqual(sorted(set(self.types.tolist())), list(range(len(self.names))))
-        self.assertEqual(len(self.names), 10)
+        self.assertEqual(len(self.names), 11)
         self.assertTrue(torch.equal(column_mask(self.env, ("stairs_up",)), self.stairs))
         self.assertTrue(
             torch.equal(column_mask(self.env, ROUGH_STAIR_LIKE_COLUMNS), self.stair_like)
