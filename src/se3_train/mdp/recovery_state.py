@@ -66,13 +66,14 @@ def set_recovery_episode(env: ManagerBasedRlEnv, env_ids: torch.Tensor, mask: to
 
     episode[env_ids] = mask
     active[env_ids] = mask
-    stable_steps[env_ids] = 0
-    time_to_success[env_ids] = -1
-    cache_reset[env_ids] = False
-    cache_type[env_ids] = 0
-    success_updated_step[env_ids] = -1
-    completed[env_ids] = False
-    completed_latched[env_ids] = False
+    # index_fill_ 不把标量从主机拷到 GPU，reset 路径不再同步。
+    stable_steps.index_fill_(0, env_ids, 0)
+    time_to_success.index_fill_(0, env_ids, -1)
+    cache_reset.index_fill_(0, env_ids, False)
+    cache_type.index_fill_(0, env_ids, 0)
+    success_updated_step.index_fill_(0, env_ids, -1)
+    completed.index_fill_(0, env_ids, False)
+    completed_latched.index_fill_(0, env_ids, False)
 
 
 def mark_cache_reset(

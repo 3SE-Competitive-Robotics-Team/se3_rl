@@ -19,6 +19,7 @@ import numpy as np
 
 from .fourbar import output_knee_from_active_angle_np_array, output_knee_from_active_angle_torch
 from .robot import RobotConfig
+from .torch_constants import device_constant
 
 if TYPE_CHECKING:
     import torch
@@ -53,7 +54,7 @@ def policy_default_from_height_torch(
         height.device, height.dtype
     )
     target_x = torch.full_like(height, _BALANCED_WHEEL_X)
-    target_z = torch.as_tensor(_WHEEL_RADIUS, device=height.device, dtype=height.dtype) - height
+    target_z = device_constant(_WHEEL_RADIUS, device=height.device, dtype=height.dtype) - height
     target_length = torch.clamp(
         torch.sqrt(target_x * target_x + target_z * target_z),
         min=length_grid[0],
@@ -137,9 +138,9 @@ def _height_default_lut_np() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
 
 def _leg_vector_torch(output_knee: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     torch = _import_torch()
-    body = torch.as_tensor(_LF1_BODY_XZ, device=output_knee.device, dtype=output_knee.dtype)
-    joint = torch.as_tensor(_LF1_JOINT_XZ, device=output_knee.device, dtype=output_knee.dtype)
-    wheel = torch.as_tensor(_WHEEL_BODY_XZ, device=output_knee.device, dtype=output_knee.dtype)
+    body = device_constant(_LF1_BODY_XZ, device=output_knee.device, dtype=output_knee.dtype)
+    joint = device_constant(_LF1_JOINT_XZ, device=output_knee.device, dtype=output_knee.dtype)
+    wheel = device_constant(_WHEEL_BODY_XZ, device=output_knee.device, dtype=output_knee.dtype)
     cos_q = torch.cos(output_knee)
     sin_q = torch.sin(output_knee)
 

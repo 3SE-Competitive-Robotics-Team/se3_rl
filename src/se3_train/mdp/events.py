@@ -34,6 +34,7 @@ from se3_shared import (
 from se3_shared import (
     RobotConfig as SharedRobotConfig,
 )
+from se3_shared.torch_constants import device_constant
 from se3_train.mdp import recovery_state
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.joint_indices import (
@@ -427,8 +428,8 @@ def reset_root_state_recovery_standard_poses(
 
     def _sample_range(value_range: tuple[float, float], shape: tuple[int, ...]) -> torch.Tensor:
         return sample_uniform(
-            torch.tensor(float(value_range[0]), device=env.device),
-            torch.tensor(float(value_range[1]), device=env.device),
+            device_constant(float(value_range[0]), device=env.device),
+            device_constant(float(value_range[1]), device=env.device),
             shape,
             env.device,
         )
@@ -595,14 +596,14 @@ def reset_root_state_full(
     n = len(env_ids)
     pos = root_states[:, 0:3].clone()
     pos[:, 0] += sample_uniform(
-        torch.tensor(-0.1, device=env.device),
-        torch.tensor(0.1, device=env.device),
+        device_constant(-0.1, device=env.device),
+        device_constant(0.1, device=env.device),
         (n,),
         env.device,
     )
     pos[:, 1] += sample_uniform(
-        torch.tensor(-0.1, device=env.device),
-        torch.tensor(0.1, device=env.device),
+        device_constant(-0.1, device=env.device),
+        device_constant(0.1, device=env.device),
         (n,),
         env.device,
     )
@@ -658,16 +659,14 @@ def reset_root_state_full(
     init_pitch = _ensure_recovery_float_buffer(env, "_recovery_init_pitch")
     init_yaw = _ensure_recovery_float_buffer(env, "_recovery_init_yaw")
     init_tilt = _ensure_recovery_float_buffer(env, "_recovery_init_tilt")
-    init_roll[env_ids] = 0.0
-    init_pitch[env_ids] = 0.0
-    init_yaw[env_ids] = 0.0
-    init_tilt[env_ids] = 0.0
+    for buffer in (init_roll, init_pitch, init_yaw, init_tilt):
+        buffer.index_fill_(0, env_ids, 0.0)
     env._recovery_grace_steps = int(recovery_grace_steps)
 
     # 默认仅随机化 yaw,保持直立；recovery env 额外随机 roll/pitch。
     yaw = sample_uniform(
-        torch.tensor(float(yaw_range[0]), device=env.device),
-        torch.tensor(float(yaw_range[1]), device=env.device),
+        device_constant(float(yaw_range[0]), device=env.device),
+        device_constant(float(yaw_range[1]), device=env.device),
         (n,),
         env.device,
     )
@@ -740,14 +739,14 @@ def reset_root_state_full(
             )
         if n_procedural > 0:
             roll[procedural_recovery_mask] = sample_uniform(
-                torch.tensor(float(recovery_roll_range[0]), device=env.device),
-                torch.tensor(float(recovery_roll_range[1]), device=env.device),
+                device_constant(float(recovery_roll_range[0]), device=env.device),
+                device_constant(float(recovery_roll_range[1]), device=env.device),
                 (n_procedural,),
                 env.device,
             )
             pitch[procedural_recovery_mask] = sample_uniform(
-                torch.tensor(float(recovery_pitch_range[0]), device=env.device),
-                torch.tensor(float(recovery_pitch_range[1]), device=env.device),
+                device_constant(float(recovery_pitch_range[0]), device=env.device),
+                device_constant(float(recovery_pitch_range[1]), device=env.device),
                 (n_procedural,),
                 env.device,
             )
@@ -762,22 +761,22 @@ def reset_root_state_full(
             )
             fallen_sign = torch.where(
                 torch.rand(n_fallen, device=env.device) < 0.5,
-                torch.tensor(-1.0, device=env.device),
-                torch.tensor(1.0, device=env.device),
+                device_constant(-1.0, device=env.device),
+                device_constant(1.0, device=env.device),
             )
             if fallen_roll_pose.any():
                 n_roll = int(fallen_roll_pose.sum().item())
                 roll_indices = fallen_indices[fallen_roll_pose]
                 roll_abs = sample_uniform(
-                    torch.tensor(float(recovery_fallen_roll_abs_range[0]), device=env.device),
-                    torch.tensor(float(recovery_fallen_roll_abs_range[1]), device=env.device),
+                    device_constant(float(recovery_fallen_roll_abs_range[0]), device=env.device),
+                    device_constant(float(recovery_fallen_roll_abs_range[1]), device=env.device),
                     (n_roll,),
                     env.device,
                 )
                 roll[roll_indices] = roll_abs * fallen_sign[fallen_roll_pose]
                 pitch[roll_indices] = sample_uniform(
-                    torch.tensor(float(recovery_fallen_coupled_range[0]), device=env.device),
-                    torch.tensor(float(recovery_fallen_coupled_range[1]), device=env.device),
+                    device_constant(float(recovery_fallen_coupled_range[0]), device=env.device),
+                    device_constant(float(recovery_fallen_coupled_range[1]), device=env.device),
                     (n_roll,),
                     env.device,
                 )
@@ -786,22 +785,22 @@ def reset_root_state_full(
                 n_pitch = int(fallen_pitch_pose.sum().item())
                 pitch_indices = fallen_indices[fallen_pitch_pose]
                 pitch_abs = sample_uniform(
-                    torch.tensor(float(recovery_fallen_pitch_abs_range[0]), device=env.device),
-                    torch.tensor(float(recovery_fallen_pitch_abs_range[1]), device=env.device),
+                    device_constant(float(recovery_fallen_pitch_abs_range[0]), device=env.device),
+                    device_constant(float(recovery_fallen_pitch_abs_range[1]), device=env.device),
                     (n_pitch,),
                     env.device,
                 )
                 pitch[pitch_indices] = pitch_abs * fallen_sign[fallen_pitch_pose]
                 roll[pitch_indices] = sample_uniform(
-                    torch.tensor(float(recovery_fallen_coupled_range[0]), device=env.device),
-                    torch.tensor(float(recovery_fallen_coupled_range[1]), device=env.device),
+                    device_constant(float(recovery_fallen_coupled_range[0]), device=env.device),
+                    device_constant(float(recovery_fallen_coupled_range[1]), device=env.device),
                     (n_pitch,),
                     env.device,
                 )
             pos[fallen_indices, 2] = (
                 sample_uniform(
-                    torch.tensor(float(recovery_fallen_height_range[0]), device=env.device),
-                    torch.tensor(float(recovery_fallen_height_range[1]), device=env.device),
+                    device_constant(float(recovery_fallen_height_range[0]), device=env.device),
+                    device_constant(float(recovery_fallen_height_range[1]), device=env.device),
                     (n_fallen,),
                     env.device,
                 )
@@ -818,21 +817,21 @@ def reset_root_state_full(
                 float(recovery_side_roll_min_abs),
             )
             side_roll_abs = sample_uniform(
-                torch.tensor(float(recovery_side_roll_min_abs), device=env.device),
-                torch.tensor(float(max_abs_roll), device=env.device),
+                device_constant(float(recovery_side_roll_min_abs), device=env.device),
+                device_constant(float(max_abs_roll), device=env.device),
                 (n_side,),
                 env.device,
             )
             side_sign = torch.where(
                 torch.rand(n_side, device=env.device) < 0.5,
-                torch.tensor(-1.0, device=env.device),
-                torch.tensor(1.0, device=env.device),
+                device_constant(-1.0, device=env.device),
+                device_constant(1.0, device=env.device),
             )
             side_indices = recovery_indices[side_roll_mask]
             roll[side_indices] = side_roll_abs * side_sign
             pitch[side_indices] = sample_uniform(
-                torch.tensor(float(recovery_side_pitch_range[0]), device=env.device),
-                torch.tensor(float(recovery_side_pitch_range[1]), device=env.device),
+                device_constant(float(recovery_side_pitch_range[0]), device=env.device),
+                device_constant(float(recovery_side_pitch_range[1]), device=env.device),
                 (n_side,),
                 env.device,
             )
@@ -843,8 +842,8 @@ def reset_root_state_full(
             n_standard = int(standard_recovery_mask.sum().item())
             pos[standard_recovery_mask, 2] = (
                 sample_uniform(
-                    torch.tensor(float(recovery_height_range[0]), device=env.device),
-                    torch.tensor(float(recovery_height_range[1]), device=env.device),
+                    device_constant(float(recovery_height_range[0]), device=env.device),
+                    device_constant(float(recovery_height_range[1]), device=env.device),
                     (n_standard,),
                     env.device,
                 )
@@ -865,14 +864,14 @@ def reset_root_state_full(
     if recovery_mask.any():
         n_recovery = int(recovery_mask.sum().item())
         vel[recovery_mask, 0:3] = sample_uniform(
-            torch.tensor(float(recovery_lin_vel_range[0]), device=env.device),
-            torch.tensor(float(recovery_lin_vel_range[1]), device=env.device),
+            device_constant(float(recovery_lin_vel_range[0]), device=env.device),
+            device_constant(float(recovery_lin_vel_range[1]), device=env.device),
             (n_recovery, 3),
             env.device,
         )
         vel[recovery_mask, 3:6] = sample_uniform(
-            torch.tensor(float(recovery_ang_vel_range[0]), device=env.device),
-            torch.tensor(float(recovery_ang_vel_range[1]), device=env.device),
+            device_constant(float(recovery_ang_vel_range[0]), device=env.device),
+            device_constant(float(recovery_ang_vel_range[1]), device=env.device),
             (n_recovery, 3),
             env.device,
         )
@@ -908,7 +907,7 @@ def reset_root_state_full(
                     env._rsi_traj_frame = torch.full(
                         (env.num_envs,), -1, dtype=torch.long, device=env.device
                     )
-                env._rsi_traj_frame[env_ids] = -1  # 默认不做 RSI
+                env._rsi_traj_frame.index_fill_(0, env_ids, -1)  # 默认不做 RSI
 
                 if rsi_mask.any():
                     # 按 jump_target_height 最近邻匹配轨迹，可从随机帧初始化。
@@ -1228,8 +1227,8 @@ def _sample_full_random_policy_leg_pose(
     active_rod_angle_range: tuple[float, float] | None,
 ) -> torch.Tensor:
     """直接采样 lf0/rf0 与主动杆夹角，并构造 policy 语义下的四个腿部关节。"""
-    default = torch.tensor(
-        _SHARED_ROBOT.default_dof_pos[:4],
+    default = device_constant(
+        tuple(_SHARED_ROBOT.default_dof_pos[:4]),
         device=env.device,
         dtype=torch.float32,
     )
@@ -1245,20 +1244,20 @@ def _sample_full_random_policy_leg_pose(
 
     policy_pos = torch.empty(n, 4, device=env.device)
     policy_pos[:, 0] = default[0] + sample_uniform(
-        torch.tensor(float(front_lo), device=env.device),
-        torch.tensor(float(front_hi), device=env.device),
+        device_constant(float(front_lo), device=env.device),
+        device_constant(float(front_hi), device=env.device),
         (n,),
         env.device,
     )
     policy_pos[:, 2] = default[2] + sample_uniform(
-        torch.tensor(float(front_lo), device=env.device),
-        torch.tensor(float(front_hi), device=env.device),
+        device_constant(float(front_lo), device=env.device),
+        device_constant(float(front_hi), device=env.device),
         (n,),
         env.device,
     )
     active = sample_uniform(
-        torch.tensor(float(lower), device=env.device),
-        torch.tensor(float(upper), device=env.device),
+        device_constant(float(lower), device=env.device),
+        device_constant(float(upper), device=env.device),
         (n, 2),
         env.device,
     )
@@ -1543,7 +1542,7 @@ def reset_joints(
     joint_vel = torch.zeros_like(joint_pos)
 
     wheel_ids = tensor_ids(wheel_joint_ids(asset), device=env.device)
-    joint_pos[:, wheel_ids] = 0.0
+    joint_pos.index_fill_(1, wheel_ids, 0.0)
     wheel_vel_randomization_enabled = (
         abs(float(wheel_joint_vel_range[0])) > 0.0 or abs(float(wheel_joint_vel_range[1])) > 0.0
     )
@@ -1554,8 +1553,8 @@ def reset_joints(
         if wheel_randomize_mask.any():
             wheel_rows = wheel_randomize_mask.nonzero().flatten()
             joint_vel[wheel_rows[:, None], wheel_ids] = sample_uniform(
-                torch.tensor(float(wheel_joint_vel_range[0]), device=env.device),
-                torch.tensor(float(wheel_joint_vel_range[1]), device=env.device),
+                device_constant(float(wheel_joint_vel_range[0]), device=env.device),
+                device_constant(float(wheel_joint_vel_range[1]), device=env.device),
                 (int(wheel_rows.numel()), len(wheel_ids)),
                 env.device,
             )
@@ -1607,8 +1606,8 @@ def reset_joints(
                 full_active_rod_angle_range,
             )
             policy_leg_vel = sample_uniform(
-                torch.tensor(float(joint_vel_range[0]), device=env.device),
-                torch.tensor(float(joint_vel_range[1]), device=env.device),
+                device_constant(float(joint_vel_range[0]), device=env.device),
+                device_constant(float(joint_vel_range[1]), device=env.device),
                 (n_random, len(leg_ids)),
                 env.device,
             )
@@ -1635,8 +1634,8 @@ def reset_joints(
                 knee_joint_offset_range if knee_joint_offset_range is not None else 0.0,
             )
             policy_leg_vel[:] = sample_uniform(
-                torch.tensor(float(joint_vel_range[0]), device=env.device),
-                torch.tensor(float(joint_vel_range[1]), device=env.device),
+                device_constant(float(joint_vel_range[0]), device=env.device),
+                device_constant(float(joint_vel_range[1]), device=env.device),
                 (n_random, len(leg_ids)),
                 env.device,
             )
@@ -1662,8 +1661,8 @@ def reset_joints(
             joint_offset_range,
         )
         policy_leg_vel[:] = sample_uniform(
-            torch.tensor(float(joint_vel_range[0]), device=env.device),
-            torch.tensor(float(joint_vel_range[1]), device=env.device),
+            device_constant(float(joint_vel_range[0]), device=env.device),
+            device_constant(float(joint_vel_range[1]), device=env.device),
             (n_random, len(leg_ids)),
             env.device,
         )
@@ -1706,8 +1705,8 @@ def reset_joints(
                 recovery_joint_offset_range,
             )
             policy_leg_vel[:] = sample_uniform(
-                torch.tensor(float(recovery_joint_vel_range[0]), device=env.device),
-                torch.tensor(float(recovery_joint_vel_range[1]), device=env.device),
+                device_constant(float(recovery_joint_vel_range[0]), device=env.device),
+                device_constant(float(recovery_joint_vel_range[1]), device=env.device),
                 (n_recovery, len(leg_ids)),
                 env.device,
             )
@@ -2145,8 +2144,8 @@ def randomize_knee_spring_force(
         raise ValueError(f"气弹簧 actuator 默认恒力必须为正，实际为 {nominal.tolist()}")
 
     scale = sample_uniform(
-        torch.tensor(float(force_scale_range[0]), device=env.device),
-        torch.tensor(float(force_scale_range[1]), device=env.device),
+        device_constant(float(force_scale_range[0]), device=env.device),
+        device_constant(float(force_scale_range[1]), device=env.device),
         (n, len(spring_ids)),
         env.device,
     )
@@ -2210,8 +2209,8 @@ def randomize_motor_passive_params(
 
     def _scale(value_range: tuple[float, float]) -> torch.Tensor:
         return sample_uniform(
-            torch.tensor(float(value_range[0]), device=env.device),
-            torch.tensor(float(value_range[1]), device=env.device),
+            device_constant(float(value_range[0]), device=env.device),
+            device_constant(float(value_range[1]), device=env.device),
             (n,),
             env.device,
         )

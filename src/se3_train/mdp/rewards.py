@@ -18,6 +18,7 @@ from se3_shared import (
     periodic_policy_action_second_difference_torch,
     policy_leg_position_error_torch,
 )
+from se3_shared.torch_constants import device_constant, device_index
 from se3_train.mdp import recovery_state
 from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.contact_utils import finite_contact_force_norm
@@ -90,7 +91,7 @@ def _should_log_step(
 
 def _policy_leg_pos_and_default(robot) -> tuple[torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的腿部当前位置和默认位置。"""
-    leg_ids = policy_leg_joint_ids(robot)
+    leg_ids = device_index(policy_leg_joint_ids(robot), device=robot.data.joint_pos.device)
     joint_pos = robot.data.joint_pos[:, leg_ids]
     default_pos = robot.data.default_joint_pos[:, leg_ids]
     return joint_pos, default_pos
@@ -169,7 +170,8 @@ def _wheel_pos_body_frame(
     """返回左右轮中心在机身坐标系中的位置。"""
     robot = env.scene[asset_cfg.name]
     body_ids = _wheel_body_ids(env, asset_cfg)
-    delta_w = robot.data.body_link_pos_w[:, body_ids, :] - robot.data.root_link_pos_w[:, None, :]
+    body_index = device_index(body_ids, device=env.device)
+    delta_w = robot.data.body_link_pos_w[:, body_index, :] - robot.data.root_link_pos_w[:, None, :]
     quat = robot.data.root_link_quat_w[:, None, :].expand(-1, len(body_ids), -1)
     return quat_apply_inverse(quat.reshape(-1, 4), delta_w.reshape(-1, 3)).reshape(
         env.num_envs, len(body_ids), 3
@@ -242,7 +244,7 @@ def _policy_leg_acc(
     robot,
 ) -> torch.Tensor:
     """返回 policy 主动杆语义下的腿部加速度。"""
-    return robot.data.joint_acc[:, policy_leg_joint_ids(robot)]
+    return robot.data.joint_acc[:, device_index(policy_leg_joint_ids(robot), device=env.device)]
 
 
 def _policy_leg_mirror_diffs(robot) -> tuple[torch.Tensor, torch.Tensor]:
@@ -407,7 +409,7 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
 
     if hasattr(env, "extras") and _should_log_step(env):
         tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-        upright_15 = tilt < torch.deg2rad(torch.as_tensor(15.0, device=env.device))
+        upright_15 = tilt < torch.deg2rad(device_constant(15.0, device=env.device))
         log = env.extras.setdefault("log", {})
         log.update(
             {
@@ -934,7 +936,9 @@ def wheel_torques(
     max_torque: 轮子电机额定最大力矩 (N·m)。
     """
     robot = env.scene[asset_cfg.name]
-    torques = robot.data.actuator_force[:, wheel_actuator_ids(robot)]
+    torques = robot.data.actuator_force[
+        :, device_index(wheel_actuator_ids(robot), device=env.device)
+    ]
     excess = torch.clamp(torch.abs(torques) - max_torque, min=0.0)
     return torch.sum(excess**2, dim=1)
 
@@ -991,9 +995,9 @@ def action_rate(
         max_abs_wheel_action = torch.max(wheel_action_abs, dim=1).values
         env.extras["log"].update(
             {
-                "Locomotion/max_abs_action": max_abs_action.mean().item(),
-                "Locomotion/max_abs_leg_action": max_abs_leg_action.mean().item(),
-                "Locomotion/max_abs_wheel_action": max_abs_wheel_action.mean().item(),
+                "Locomotion/max_abs_action": max_abs_action.mean(),
+                "Locomotion/max_abs_leg_action": max_abs_leg_action.mean(),
+                "Locomotion/max_abs_wheel_action": max_abs_wheel_action.mean(),
             }
         )
     return penalty

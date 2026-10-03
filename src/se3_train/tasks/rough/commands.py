@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared.torch_constants import device_index
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
@@ -306,12 +307,15 @@ class RoughCommandTerm(JumpCommandTerm):
         if self.cfg.high_stand_transition_prob <= 0.0:
             return
 
+        # 全部用掩码运算写回（与布尔索引写入逐位相同），避免每步 nonzero 同步。
         waiting = self._high_stand_selected & (self._high_stand_steps_left > 0)
-        self._high_stand_steps_left[waiting] -= 1
+        self._high_stand_steps_left.sub_(waiting.to(self._high_stand_steps_left.dtype))
         start_moving = waiting & (self._high_stand_steps_left == 0)
-        self._command[start_moving, 0] = self._high_stand_target_vx[start_moving]
-        self._command[start_moving, 1:4] = 0.0
-        self._standing_mask[start_moving] = False
+        self._command[:, 0] = torch.where(
+            start_moving, self._high_stand_target_vx, self._command[:, 0]
+        )
+        self._command[:, 1:4].masked_fill_(start_moving.unsqueeze(1), 0.0)
+        self._standing_mask.masked_fill_(start_moving, False)
 
         waiting = self._high_stand_selected & (self._high_stand_steps_left > 0)
         moving = self._high_stand_selected & ~waiting
@@ -320,9 +324,9 @@ class RoughCommandTerm(JumpCommandTerm):
         log["Rough/high_stand_transition_moving"] = moving.float().mean()
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        self._high_stand_selected[env_ids] = False
-        self._high_stand_steps_left[env_ids] = 0
-        self._high_stand_target_vx[env_ids] = 0.0
+        self._high_stand_selected.index_fill_(0, env_ids, False)
+        self._high_stand_steps_left.index_fill_(0, env_ids, 0)
+        self._high_stand_target_vx.index_fill_(0, env_ids, 0.0)
         if self._terrain_override_mask is None:
             super()._resample_command(env_ids)
             self._sample_high_stand_transition(env_ids)
@@ -364,7 +368,7 @@ class RoughCommandTerm(JumpCommandTerm):
         height_low, height_high = (float(v) for v in self.cfg.high_stand_height_range)
         duration_low, duration_high = (float(v) for v in self.cfg.high_stand_duration_range_s)
         vx_low, vx_high = (float(v) for v in self.cfg.high_stand_move_vx_range)
-        self._command[ids, 0:4] = 0.0
+        self._command[:, 0:4].index_fill_(0, ids, 0.0)
         self._command[ids, 4] = (
             torch.rand(len(ids), device=self.device) * (height_high - height_low) + height_low
         )
@@ -375,8 +379,8 @@ class RoughCommandTerm(JumpCommandTerm):
         self._high_stand_target_vx[ids] = (
             torch.rand(len(ids), device=self.device) * (vx_high - vx_low) + vx_low
         )
-        self._high_stand_selected[ids] = True
-        self._standing_mask[ids] = True
+        self._high_stand_selected.index_fill_(0, ids, True)
+        self._standing_mask.index_fill_(0, ids, True)
         update_policy_default_from_height_cache(
             self._env,
             "velocity_height",
@@ -520,7 +524,7 @@ class RoughJumpCommandTerm(RoughCommandTerm):
             return mask
         names = list(self._env.scene.terrain.cfg.terrain_generator.sub_terrains.keys())
         cols = [names.index(name) for name in self.cfg.jump_column_names if name in names]
-        return torch.isin(original.to(torch.long), torch.tensor(cols, device=original.device))
+        return torch.isin(original.to(torch.long), device_index(cols, device=original.device))
 
     def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
         mask = self._jump_column_mask()
@@ -537,9 +541,9 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         ids = env_ids[self.jump_env[env_ids]]
         if ids.numel() == 0:
             return
-        self._high_stand_selected[ids] = False
-        self._high_stand_steps_left[ids] = 0
-        self._command[ids, 4] = float(self.library.stand_height)
+        self._high_stand_selected.index_fill_(0, ids, False)
+        self._high_stand_steps_left.index_fill_(0, ids, 0)
+        self._command[:, 4].index_fill_(0, ids, float(self.library.stand_height))
         update_policy_default_from_height_cache(
             self._env,
             "velocity_height",
@@ -560,7 +564,7 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         if fired.numel() > 0:
             vmax = float(self.cfg.jump_max_lin_vel_x)
             self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
-            self._command[fired, 1:4] = 0.0
+            self._command[:, 1:4].index_fill_(0, fired, 0.0)
         self.clock.write_dims(self._command)
 
     def deployment_jump_reference(self) -> dict:

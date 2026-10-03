@@ -12,6 +12,7 @@ except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
 from .robot import RobotConfig
+from .torch_constants import device_constant
 
 _ROBOT_CFG = RobotConfig()
 
@@ -58,7 +59,8 @@ def policy_leg_phase_active_obs_torch(
             f"policy leg shape mismatch: pos={tuple(pos.shape)}, default={tuple(default.shape)}"
         )
 
-    front_delta = pos[:, (0, 2)] - default[:, (0, 2)]
+    # 0::2 取 LF / RF 两列；切片是视图，不像元组索引那样每次从主机拷索引（会同步 GPU）。
+    front_delta = pos[:, 0::2] - default[:, 0::2]
     active_delta = _active_rod_angles_torch(
         pos, active_rod_angle_coeffs
     ) - _active_rod_angles_torch(default, active_rod_angle_coeffs)
@@ -111,7 +113,7 @@ def policy_leg_position_error_torch(
             f"policy leg shape mismatch: target={tuple(target.shape)}, pos={tuple(pos.shape)}"
         )
     coeffs = _active_coeffs_torch(target, active_rod_angle_coeffs)
-    front_error = _wrap_angle_torch(target[:, (0, 2)] - pos[:, (0, 2)])
+    front_error = _wrap_angle_torch(target[:, 0::2] - pos[:, 0::2])
     active_error = _active_rod_angles_torch(target, coeffs) - _active_rod_angles_torch(pos, coeffs)
     out = torch.empty_like(target)
     for side_idx, (front_idx, back_idx) in enumerate(((0, 1), (2, 3))):
@@ -156,7 +158,7 @@ def _active_coeffs_torch(
         return active_rod_angle_coeffs.to(device=reference.device, dtype=reference.dtype).reshape(
             2, 2
         )
-    return torch.tensor(
+    return device_constant(
         _ROBOT_CFG.active_rod_angle_coeffs,
         device=reference.device,
         dtype=reference.dtype,

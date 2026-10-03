@@ -22,6 +22,7 @@ from se3_shared import (
     policy_leg_phase_active_obs_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared.torch_constants import device_constant, device_index
 from se3_train.mdp.contact_utils import (
     contact_force_nonfinite_env_mask,
     finite_contact_force_norm,
@@ -82,15 +83,15 @@ def commands_vx_yaw_height_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     rough 与跳跃 mimic 起 pitch / roll 指令恒 0、不进观测。
     """
     cmd = env.command_manager.get_command("velocity_height")
-    ids = [COMMAND_FIELDS.index(name) for name in NO_ATTITUDE_COMMAND_OBS_FIELDS]
-    scale = torch.tensor([_OBS_CFG.command_scale[i] for i in ids], device=cmd.device)
-    return _finite_clamp(cmd[:, ids] * scale)
+    ids = tuple(COMMAND_FIELDS.index(name) for name in NO_ATTITUDE_COMMAND_OBS_FIELDS)
+    scale = device_constant(tuple(_OBS_CFG.command_scale[i] for i in ids), device=cmd.device)
+    return _finite_clamp(cmd[:, device_index(ids, device=cmd.device)] * scale)
 
 
 def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """腿部主动杆相位和主动杆夹角观测，6D。"""
     robot = env.scene["robot"]
-    leg_ids = policy_leg_joint_ids(robot)
+    leg_ids = device_index(policy_leg_joint_ids(robot), device=env.device)
     return _finite_clamp(
         policy_leg_phase_active_obs_torch(
             robot.data.joint_pos[:, leg_ids],
@@ -102,7 +103,7 @@ def leg_joint_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def leg_joint_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """腿部主动杆速度,缩放 0.25,4D。"""
     robot = env.scene["robot"]
-    leg_ids = policy_leg_joint_ids(robot)
+    leg_ids = device_index(policy_leg_joint_ids(robot), device=env.device)
     return _finite_clamp(robot.data.joint_vel[:, leg_ids] * _OBS_CFG.leg_vel_scale)
 
 
@@ -116,7 +117,8 @@ def wheel_pos_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 def wheel_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """轮子关节速度,缩放 0.05（MJCF 已修正轴方向）。"""
     robot = env.scene["robot"]
-    return _finite_clamp(robot.data.joint_vel[:, wheel_joint_ids(robot)] * _OBS_CFG.wheel_vel_scale)
+    wheel_ids = device_index(wheel_joint_ids(robot), device=env.device)
+    return _finite_clamp(robot.data.joint_vel[:, wheel_ids] * _OBS_CFG.wheel_vel_scale)
 
 
 def last_actions_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

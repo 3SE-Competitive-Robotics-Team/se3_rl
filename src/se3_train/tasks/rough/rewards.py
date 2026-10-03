@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared.torch_constants import device_constant
 from se3_train.mdp.rewards import (
     _DEFAULT_ASSET_CFG,
     _recovery_reset_mask,
@@ -274,8 +275,8 @@ def tracking_lin_vel_terrain_vz(
     if mask is not None:
         weight = torch.where(
             mask,
-            torch.tensor(float(terrain_vz_weight), device=env.device),
-            torch.tensor(float(vz_weight), device=env.device),
+            device_constant(float(terrain_vz_weight), device=env.device),
+            device_constant(float(vz_weight), device=env.device),
         )
     if zero_vz_when_jumping:
         jumping = env.command_manager.get_term(command_name).active

@@ -565,17 +565,21 @@ class SerialLegDelayedAction(ActionTerm):
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         resolved_env_ids = self._resolve_env_ids(env_ids)
-        self._raw_actions[resolved_env_ids] = 0.0
-        self._unclipped_actions[resolved_env_ids] = 0.0
-        self._policy_actions[resolved_env_ids] = 0.0
-        self._delayed_actions[resolved_env_ids] = 0.0
-        self._ctbc_output_bias[resolved_env_ids] = 0.0
-        self._ctbc_action_delta[resolved_env_ids] = 0.0
-        self._ctbc_wheel_delta_xz[resolved_env_ids] = 0.0
-        self._policy_leg_torque[resolved_env_ids] = 0.0
-        self._policy_leg_vel[resolved_env_ids] = 0.0
-        self._knee_gas_spring_compensation_torque[resolved_env_ids] = 0.0
-        self._action_fifo[:, resolved_env_ids] = 0.0
+        # index_fill_ 把 0 当 kernel 参数；`x[ids] = 0.0` 会先从主机拷标量而同步 GPU（reset 几乎每步都有）。
+        for buffer in (
+            self._raw_actions,
+            self._unclipped_actions,
+            self._policy_actions,
+            self._delayed_actions,
+            self._ctbc_output_bias,
+            self._ctbc_action_delta,
+            self._ctbc_wheel_delta_xz,
+            self._policy_leg_torque,
+            self._policy_leg_vel,
+            self._knee_gas_spring_compensation_torque,
+        ):
+            buffer.index_fill_(0, resolved_env_ids, 0.0)
+        self._action_fifo.index_fill_(1, resolved_env_ids, 0.0)
         self._resample_delay(resolved_env_ids)
 
     def _resolve_env_ids(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
@@ -590,7 +594,7 @@ class SerialLegDelayedAction(ActionTerm):
         if num_envs == 0:
             return
         if self._min_delay_steps == self._max_delay_steps:
-            self._delay_steps[env_ids] = int(self._min_delay_steps)
+            self._delay_steps.index_fill_(0, env_ids, int(self._min_delay_steps))
             return
         self._delay_steps[env_ids] = torch.randint(
             low=int(self._min_delay_steps),

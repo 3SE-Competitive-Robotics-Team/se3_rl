@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import policy_leg_position_error_torch
+from se3_shared.torch_constants import device_index
 from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import policy_leg_joint_ids
@@ -36,9 +37,18 @@ def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
     return env.episode_length_buf >= env.max_episode_length
 
 
+def _jump_metrics_enabled(env: ManagerBasedRlEnv, command_name: str) -> bool:
+    """跳跃诊断只由 JumpCommandTerm._update_metrics 上报；指标关闭（如 rough）时算了也没人读，还要逐项 .item() 同步 GPU。"""
+    try:
+        term = env.command_manager.get_term(command_name)
+    except Exception:
+        return True
+    return bool(getattr(getattr(term, "cfg", None), "enable_jump_metrics", True))
+
+
 def _policy_leg_state_and_default(robot) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """返回 policy 主动杆语义下的腿部位置、默认位置和速度。"""
-    leg_ids = policy_leg_joint_ids(robot)
+    leg_ids = device_index(policy_leg_joint_ids(robot), device=robot.data.joint_pos.device)
     leg_pos = robot.data.joint_pos[:, leg_ids]
     leg_default = robot.data.default_joint_pos[:, leg_ids]
     leg_vel = robot.data.joint_vel[:, leg_ids]
@@ -252,7 +262,7 @@ def leg_contact(
 
     # 精细拆分诊断：写入 extras["_leg_contact_diag"]（不是 log，log 在 reset 时会被清空）
     # command_manager._update_metrics 在 reset 之后调用，从此处读取并搬入 extras["log"]
-    if hasattr(env, "extras"):
+    if hasattr(env, "extras") and _jump_metrics_enabled(env, command_name or "velocity_height"):
         try:
             diag_command_name = command_name or "velocity_height"
             cmd = env.command_manager.get_command(diag_command_name)
