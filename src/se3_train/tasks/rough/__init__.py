@@ -20,6 +20,10 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 2026-10-03（用户定）：actor 隐藏层 128/64/32 的对照（critic 与环境不变，见 rl_cfg.ROUGH_SMALL_ACTOR_HIDDEN_DIMS）。
 # 临时入口：对照结束、定下 actor 尺寸后删除，复现用对应 commit。
 EXP_ACTOR_128_TASK_ID = "SE3-WheelLegged-Rough-Exp-Actor128"
+# 2026-10-03（用户定）：推理频率 50 → 100 Hz 的对照——只改 decimation 4 → 2（物理 5 ms 不变），
+# PPO 超参数（γ / λ / 每轮 24 步）与奖励权重都不变。临时入口：对照结束、定下推理频率后删除，复现用对应 commit。
+EXP_DEC2_TASK_ID = "SE3-WheelLegged-Rough-Exp-Dec2"
+EXP_DEC2_DECIMATION = 2
 
 
 def register() -> None:
@@ -52,10 +56,19 @@ def register() -> None:
         rl_cfg=bind_task_name(small_actor_rl_cfg(), EXP_ACTOR_128_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_DEC2_TASK_ID,
+        env_cfg=env_cfg(decimation=EXP_DEC2_DECIMATION),
+        play_env_cfg=env_cfg(play=True, decimation=EXP_DEC2_DECIMATION),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_DEC2_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_ACTOR_128_TASK_ID",
+    "EXP_DEC2_DECIMATION",
+    "EXP_DEC2_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",

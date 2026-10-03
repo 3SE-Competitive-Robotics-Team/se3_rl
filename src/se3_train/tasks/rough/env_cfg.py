@@ -344,12 +344,15 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
+    decimation: int | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
+    decimation：None 时沿用 se3_shared 的 control_decimation（4，物理 5 ms → 推理 50 Hz）；对照实验传 2 即推理 100 Hz，
+    物理步长与 PPO 超参数不变。按秒计的项（奖励 × dt、跳跃时钟、课程时长、摔倒罚）都读 step_dt，自动跟随。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -361,6 +364,11 @@ def env_cfg(
         wheel_action_scale=FLAT_WHEEL_ACTION_SCALE,
         action_smoothness=FLAT_ACTION_SMOOTHNESS_SPRING,
     )
+    # 必须在 _apply_rough_rewards 之前改：摔倒罚权重按 step_dt 反缩放。
+    if decimation is not None:
+        if int(decimation) < 1:
+            raise ValueError(f"decimation 必须 ≥ 1，实际为 {decimation}")
+        cfg.decimation = int(decimation)
 
     cfg.scene.entities = {
         "robot": get_serialleg_closedchain_cfg(
