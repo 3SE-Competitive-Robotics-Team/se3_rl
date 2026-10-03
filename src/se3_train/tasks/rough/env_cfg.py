@@ -344,12 +344,14 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
+    orientation_weight: float | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
+    orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，None 沿用 Flat 的 −12；对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -500,6 +502,10 @@ def env_cfg(
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
+    if orientation_weight is not None:
+        cfg.rewards["tracking_orientation_l2"] = replace(
+            cfg.rewards["tracking_orientation_l2"], weight=float(orientation_weight)
+        )
     # M39：action_rate 权重（只改权重，函数与参数不动）。
     cfg.rewards["action_rate"] = replace(
         cfg.rewards["action_rate"], weight=ROUGH_ACTION_RATE_WEIGHT
