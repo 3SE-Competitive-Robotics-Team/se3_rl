@@ -1958,7 +1958,11 @@ def randomize_restitution(
     restitution_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """随机化几何体恢复系数。"""
+    """恢复系数占位：只采样不写入，并把 geom_margin 置 0（默认就是 0），对物理没有作用。
+
+    2026-10-03 实测确认（.scratch/dr_audit/verify_dr.py）。真正的恢复系数 DR 见
+    `randomize_contact_restitution`；本函数保留给已有任务，换掉会改变它们的基线。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -2089,7 +2093,13 @@ def randomize_pd_gains(
     kd_range: tuple[float, float],
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-    """随机化 PD 增益(缩放默认增益)。"""
+    """缩放 MuJoCo actuator 的 gainprm[0] / biasprm[1:3]——对本仓库的 DcMotor 等于输出力矩缩放。
+
+    2026-10-03 实测（.scratch/dr_audit/verify_dr.py）：DcMotor 的 PD 在 torch 里算，MuJoCo 侧是
+    `<motor>`（gain=1、无 bias），所以 kp_range 实际是 6 个电机输出力矩统一 ×kp_scale（乘在 T-N 限幅之后，
+    再被 forcerange 截断），kd_range 乘在 biasprm[2]=0 上不起作用。真正的 Kp/Kd DR 见
+    `randomize_pd_gains_torch`；本函数保留给已有任务，换掉会改变它们的基线。
+    """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
 
@@ -2129,6 +2139,117 @@ def randomize_pd_gains(
             env.sim.model.actuator_biasprm[env_ids, aid, 2] = default_biasprm[
                 aid, 2
             ] * kd_scale.squeeze(-1)
+
+
+def randomize_pd_gains_torch(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    kp_range: tuple[float, float],
+    kd_range: tuple[float, float],
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+    """真正的 Kp/Kd DR：缩放 torch 侧 PD actuator 的 stiffness / damping（每 env 一个 kp、一个 kd 系数）。
+
+    本仓库的 DcMotor 在 torch 里算 PD 再写 `<motor>` 的 ctrl，增益只存在 actuator 实例上
+    （mjlab `IdealPdActuator.set_gains`，官方 `dr.pd_gains` 对这类 actuator 走同一条路）。
+    每 env 一个系数广播到全部 6 个电机，与 critic 回读 `dr_model_params_obs[8:10]` 的单值布局一致；
+    轮子 kp 名义为 0，缩放后仍为 0。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long)
+    asset: Entity = env.scene[asset_cfg.name]
+    n = len(env_ids)
+    kp_scale = sample_uniform(
+        device_constant(float(kp_range[0]), device=env.device),
+        device_constant(float(kp_range[1]), device=env.device),
+        (n, 1),
+        env.device,
+    )
+    kd_scale = sample_uniform(
+        device_constant(float(kd_range[0]), device=env.device),
+        device_constant(float(kd_range[1]), device=env.device),
+        (n, 1),
+        env.device,
+    )
+    pd_actuators = [act for act in asset.actuators if hasattr(act, "default_stiffness")]
+    if not pd_actuators:
+        raise ValueError(f"实体 {asset_cfg.name} 没有 torch 侧 PD actuator，无法做 Kp/Kd DR")
+    for act in pd_actuators:
+        act.set_gains(
+            env_ids,
+            kp=act.default_stiffness[env_ids] * kp_scale,
+            kd=act.default_damping[env_ids] * kd_scale,
+        )
+
+
+# 接触恢复系数 → 直接式 solref 阻尼比 ζ 的反查表（2026-10-03 标定，.scratch/dr_audit/restitution_scan.py）：
+# mjwarp、timestep 5 ms、pyramidal、Newton、solimp 取 Rough 实测轮-地形混合值，12.7 kg 落球 1.0 m/s 撞击，
+# 刚度固定为基线、只改阻尼。0.5 / 2.0 m/s 撞击下同一 ζ 的恢复系数相差在 ±0.04 内。
+# ζ > 2 时阻尼项 b·dt > 1，显式积分反冲、恢复系数反而回升，所以表只到 ζ = 1.5（恢复系数 0.027）；
+# 采样值低于 0.027 一律按 ζ = 1.5 处理（基线 ζ = 1.25 实测 0.051）。
+_RESTITUTION_TABLE_E = (
+    0.027, 0.051, 0.085, 0.130, 0.161, 0.202, 0.254, 0.324, 0.420,
+    0.479, 0.547, 0.617, 0.694, 0.777, 0.859, 0.948, 1.000,
+)  # fmt: skip
+_RESTITUTION_TABLE_ZETA = (
+    1.50, 1.25, 1.00, 0.80, 0.70, 0.60, 0.50, 0.40, 0.30,
+    0.25, 0.20, 0.16, 0.12, 0.08, 0.05, 0.02, 0.00,
+)  # fmt: skip
+
+
+def restitution_to_damping_ratio(restitution: torch.Tensor) -> torch.Tensor:
+    """按标定表把恢复系数线性插值成直接式 solref 的阻尼比 ζ（表外夹到两端）。"""
+    e_table = torch.tensor(_RESTITUTION_TABLE_E, device=restitution.device)
+    z_table = torch.tensor(_RESTITUTION_TABLE_ZETA, device=restitution.device)
+    e = restitution.clamp(e_table[0], e_table[-1])
+    hi = torch.searchsorted(e_table, e).clamp(1, len(_RESTITUTION_TABLE_E) - 1)
+    lo = hi - 1
+    t = (e - e_table[lo]) / (e_table[hi] - e_table[lo])
+    return z_table[lo] + t * (z_table[hi] - z_table[lo])
+
+
+@requires_model_fields("geom_solref")
+def randomize_contact_restitution(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    restitution_range: tuple[float, float],
+    base_timeconst: float = 0.015,
+    base_dampratio: float = 1.25,
+) -> None:
+    """恢复系数 DR：把该 env 全部 geom 的 solref 换成直接式 (−k, −b)，刚度保持基线、只改阻尼。
+
+    MuJoCo 没有恢复系数参数，碰撞反弹由接触 spring-damper 的阻尼比决定。默认 solref
+    （时间常数, 阻尼比）里阻尼比同时改刚度（k ∝ 1/dampratio²），压到 0 附近刚度发散；
+    直接式 solref 的刚度、阻尼互相独立。k = 1/(tc²·dr²)、b = 2ζ·√k 取自基线的
+    (base_timeconst, base_dampratio)，默认值是 Rough 实测轮-地形混合 solref (0.015, 1.25)
+    （轮子 0.010/1.5 与地形 0.02/1.0 按 solmix 平均，.scratch/dr_audit/contact_baseline.py）。
+    与 randomize_friction 一样写该 env 的全部 geom（地形也在内），接触两侧同值，混合后不变。
+    采样值缓存在 env._contact_restitution，供诊断读取。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long)
+    n = len(env_ids)
+    restitution = sample_uniform(
+        device_constant(float(restitution_range[0]), device=env.device),
+        device_constant(float(restitution_range[1]), device=env.device),
+        (n,),
+        env.device,
+    )
+    stiffness = 1.0 / (float(base_timeconst) ** 2 * float(base_dampratio) ** 2)
+    damping = 2.0 * restitution_to_damping_ratio(restitution) * math.sqrt(stiffness)
+
+    buffer = getattr(env, "_contact_restitution", None)
+    if not isinstance(buffer, torch.Tensor) or buffer.shape != (env.num_envs,):
+        buffer = torch.zeros(env.num_envs, device=env.device)
+        env._contact_restitution = buffer
+    buffer[env_ids] = restitution
+
+    env.sim.model.geom_solref[env_ids, :, 0] = -stiffness
+    env.sim.model.geom_solref[env_ids, :, 1] = -damping.unsqueeze(-1)
 
 
 @requires_model_fields("actuator_biasprm", "actuator_forcerange")

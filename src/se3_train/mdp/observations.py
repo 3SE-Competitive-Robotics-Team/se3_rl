@@ -223,8 +223,22 @@ def _resolve_dr_param_indices(env: ManagerBasedRlEnv) -> dict:
     def _default(field: str) -> torch.Tensor:
         return torch.as_tensor(env.sim.get_default_field(field), device=env.device)
 
+    # torch 侧 PD 增益（randomize_pd_gains_torch 写这里）：取 kp_aid 同名关节所在 actuator 的那一列。
+    robot = env.scene["robot"]
+    leg_name = JointGroup.POLICY_LEG_NAMES[0]
+    pd_actuator, pd_col = None, -1
+    for act in robot.actuators:
+        names = [str(n).split("/")[-1] for n in getattr(act, "target_names", ())]
+        if leg_name in names and hasattr(act, "default_stiffness"):
+            pd_actuator, pd_col = act, names.index(leg_name)
+            break
+    if pd_actuator is None:
+        raise ValueError(f"找不到驱动 {leg_name} 的 torch 侧 PD actuator")
+
     cache = {
         "base_bid": base_bid,
+        "pd_actuator": pd_actuator,
+        "pd_col": pd_col,
         "friction_gid": friction_gid,
         "kp_aid": kp_aid,
         "dof_adr": torch.tensor(dof_adr, device=env.device, dtype=torch.long),
@@ -233,7 +247,6 @@ def _resolve_dr_param_indices(env: ManagerBasedRlEnv) -> dict:
         "default_body_inertia": _default("body_inertia")[base_bid],
         "default_friction": _default("geom_friction")[friction_gid, 0],
         "default_kp": _default("actuator_gainprm")[kp_aid, 0],
-        "default_kd": _default("actuator_biasprm")[kp_aid, 2],
         "default_armature": _default("dof_armature")[dof_adr],
         "default_damping": _default("dof_damping")[dof_adr],
         "default_frictionloss": _default("dof_frictionloss")[dof_adr],
@@ -258,7 +271,9 @@ def dr_model_params_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     [1]     base 质量比值
     [2:5]   base 质心偏移 / 0.05 m
     [5:8]   base 惯量比值
-    [8:10]  腿部 PD kp/kd 缩放（randomize_pd_gains 每 env 单值广播）
+    [8:10]  腿部有效 kp / kd 比值。kp = MuJoCo 输出力矩缩放（randomize_pd_gains）× torch 侧 stiffness 比值，
+            kd = torch 侧 damping 比值（randomize_pd_gains_torch）；都是每 env 单值广播，只读 LF0 一列。
+            未启用 randomize_pd_gains_torch 的任务与 2026-10-03 前逐位相同（旧 kd 读 biasprm[2]=0，恒为 1）。
     [10:28] 六电机 armature/damping/frictionloss 比值（逐关节独立 DR）
     """
     cache = _resolve_dr_param_indices(env)
@@ -271,8 +286,15 @@ def dr_model_params_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     inertia = _ratio_to_default(
         model.body_inertia[:, cache["base_bid"]], cache["default_body_inertia"]
     )
-    kp = _ratio_to_default(model.actuator_gainprm[:, cache["kp_aid"], 0], cache["default_kp"])
-    kd = _ratio_to_default(model.actuator_biasprm[:, cache["kp_aid"], 2], cache["default_kd"])
+    pd_actuator, pd_col = cache["pd_actuator"], cache["pd_col"]
+    stiffness = _ratio_to_default(
+        pd_actuator.stiffness[:, pd_col], pd_actuator.default_stiffness[:, pd_col]
+    )
+    kp = (
+        _ratio_to_default(model.actuator_gainprm[:, cache["kp_aid"], 0], cache["default_kp"])
+        * stiffness
+    )
+    kd = _ratio_to_default(pd_actuator.damping[:, pd_col], pd_actuator.default_damping[:, pd_col])
     dof_adr = cache["dof_adr"]
     armature = _ratio_to_default(model.dof_armature[:, dof_adr], cache["default_armature"])
     damping = _ratio_to_default(model.dof_damping[:, dof_adr], cache["default_damping"])

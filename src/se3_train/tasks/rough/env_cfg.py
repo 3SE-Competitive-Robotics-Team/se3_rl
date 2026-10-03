@@ -77,6 +77,7 @@ from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_train.mdp import events as mdp_events
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
@@ -318,6 +319,23 @@ ROUGH_STAIR_WHEEL_FORE_AFT_SCALE = 0.25
 # 高度区间、静站时长、切换后速度沿用 commands.py 的 A20 默认值 (0.36,0.38)/(1.5,2.5)s/(0.8,2.4)。
 ROUGH_HIGH_STAND_TRANSITION_PROB = 0.5
 
+# 2026-10-03（用户定）：加宽域随机化对照（env_cfg(wide_dr=True)，Exp-WideDR 入口），其余与默认相同。
+# 起因是 DR 审计（.scratch/dr_audit/verify_dr.py）：Flat 继承的 pd_gains 实际是 6 电机输出力矩 ×0.9–1.1、kd 无效，
+# restitution 是空函数；推力、质量、质心、延迟都比复旦 stairs_v3（同尺寸轮腿）窄。本组改动：
+#   Kp/Kd   换成 torch 侧真正的增益 DR（events.randomize_pd_gains_torch），范围仍 ×0.9–1.1；原输出力矩缩放随之去掉
+#   质心    ±5 mm → ±5 cm（复旦同值；±5 cm 曾学出原地摆腿探质心，见 flat/env_cfg.py com 注释，本对照要看是否复发）
+#   质量    base 附加 −0.5…+1.5 → −1…+3 kg
+#   恢复系数 空函数 → 0–1（events.randomize_contact_restitution，实测下限约 0.03）
+#   气弹簧   ×0.9–1.1 → ×0.9–1.5（前馈补偿仍按额定 300 N，残差最大 +150 N 交给策略）
+#   动作延迟 4–6 ms（按 5 ms 物理步取整恒为 1 步）→ 0–10 ms（0/1/2 步各 1/3）；play 与 ONNX 契约同步
+ROUGH_WIDE_DR_KP_RANGE = (0.9, 1.1)
+ROUGH_WIDE_DR_KD_RANGE = (0.9, 1.1)
+ROUGH_WIDE_DR_COM_RANGE_M = 0.05
+ROUGH_WIDE_DR_BASE_MASS_RANGE_KG = (-1.0, 3.0)
+ROUGH_WIDE_DR_RESTITUTION_RANGE = (0.0, 1.0)
+ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE = (0.9, 1.5)
+ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S = (0.0, 0.010)
+
 # critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
 # 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
 ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME = "critic_height_scan"
@@ -345,6 +363,7 @@ def env_cfg(
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
     orientation_weight: float | None = None,
+    wide_dr: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -352,6 +371,7 @@ def env_cfg(
     stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
     orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，None 沿用 Flat 的 −12；对照实验开关。
+    wide_dr：加宽域随机化（见 ROUGH_WIDE_DR_* 注释）；对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -531,6 +551,9 @@ def env_cfg(
     # M47：删倾角终止（见 ROUGH_WHEEL_FORE_AFT_WEIGHT 上方注释）。
     del cfg.terminations["bad_orientation"]
 
+    if wide_dr:
+        _apply_wide_domain_randomization(cfg, play=play)
+
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
@@ -650,6 +673,52 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
         func=jump_mdp.mimic_deviation,
         time_out=False,
         params={"max_height_error": ROUGH_JUMP_MAX_HEIGHT_ERROR},
+    )
+
+
+def _apply_wide_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+    """加宽域随机化（见 ROUGH_WIDE_DR_* 注释）：改 Flat 继承的 startup 事件参数，换两项实现，放宽动作延迟。
+
+    动作延迟属于动作项，play（评测 / ONNX 导出）同样生效，契约随之导出 0–10 ms；
+    其余都是训练期 startup 事件，play 没有这些事件。
+    """
+    delayed_action = cfg.actions["delayed_action"]
+    min_s, max_s = ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S
+    delayed_action.action_delay_enabled = True
+    delayed_action.action_delay_randomize = True
+    delayed_action.action_delay_min_s = float(min_s)
+    delayed_action.action_delay_max_s = float(max_s)
+    delayed_action.action_delay_s = 0.5 * (float(min_s) + float(max_s))
+    if play:
+        return
+
+    def _params(name: str, **overrides) -> dict:
+        return {**(cfg.events[name].params or {}), **overrides}
+
+    cfg.events["pd_gains"] = replace(
+        cfg.events["pd_gains"],
+        func=mdp_events.randomize_pd_gains_torch,
+        params=_params(
+            "pd_gains", kp_range=ROUGH_WIDE_DR_KP_RANGE, kd_range=ROUGH_WIDE_DR_KD_RANGE
+        ),
+    )
+    cfg.events["com"] = replace(
+        cfg.events["com"], params=_params("com", com_range=ROUGH_WIDE_DR_COM_RANGE_M)
+    )
+    cfg.events["base_mass"] = replace(
+        cfg.events["base_mass"],
+        params=_params("base_mass", mass_range=ROUGH_WIDE_DR_BASE_MASS_RANGE_KG),
+    )
+    cfg.events["restitution"] = replace(
+        cfg.events["restitution"],
+        func=mdp_events.randomize_contact_restitution,
+        params={"restitution_range": ROUGH_WIDE_DR_RESTITUTION_RANGE},
+    )
+    cfg.events["knee_spring_force"] = replace(
+        cfg.events["knee_spring_force"],
+        params=_params(
+            "knee_spring_force", force_scale_range=ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE
+        ),
     )
 
 
@@ -801,5 +870,12 @@ __all__ = [
     "ROUGH_UPWARD_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_FORE_AFT_WEIGHT",
+    "ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S",
+    "ROUGH_WIDE_DR_BASE_MASS_RANGE_KG",
+    "ROUGH_WIDE_DR_COM_RANGE_M",
+    "ROUGH_WIDE_DR_KD_RANGE",
+    "ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE",
+    "ROUGH_WIDE_DR_KP_RANGE",
+    "ROUGH_WIDE_DR_RESTITUTION_RANGE",
     "env_cfg",
 ]
