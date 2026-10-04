@@ -54,6 +54,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_NCONMAX,
     ROUGH_NJMAX,
     ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE,
+    ROUGH_ORIENTATION_WEIGHT,
     ROUGH_REWARD_TERRAIN_TYPE_NAMES,
     ROUGH_ROBOT_COLLISION_GEOM_GROUP,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
@@ -109,7 +110,8 @@ _WRAPPED = (
     "stand_still",  # RJ1：跳跃期间置零（jump_mimic.mdp.not_jumping）
     "contact_forces",
 )
-_REWEIGHTED = ("tracking_lin_vel", "action_rate")
+# tracking_orientation_l2：2026-10-04 起 −12 → −24（Orient24 对照，docs/plan/rough_orient24_20261004.md）。
+_REWEIGHTED = ("tracking_lin_vel", "action_rate", "tracking_orientation_l2")
 _ROUGH_ONLY = (
     "stair_climb_progress",
     "stair_support_height",
@@ -260,6 +262,10 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         )
         self.assertAlmostEqual(float(self.cfg.rewards["upward"].weight), ROUGH_UPWARD_WEIGHT)
         self.assertAlmostEqual(ROUGH_UPWARD_WEIGHT, 1.0)
+        self.assertAlmostEqual(
+            float(self.cfg.rewards["tracking_orientation_l2"].weight), ROUGH_ORIENTATION_WEIGHT
+        )
+        self.assertAlmostEqual(ROUGH_ORIENTATION_WEIGHT, -24.0)
         for name, term in self.cfg.rewards.items():
             if name in _ROUGH_ONLY:
                 continue

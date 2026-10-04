@@ -268,6 +268,12 @@ ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.05
 # None = 不加（M37 及之前）。M38-4999 回放：撞面俯仰从 M37 的 −16…−18° 回到 −2…−10°，h=0.38 低速格子从卡变过；
 # 代价是台阶列 vx 0.79–0.86 → 0.72–0.75、落差后摔倒变多（docs/plan/m38_upward_20260928.md）。2026-09-28 起默认 1.0。
 ROUGH_UPWARD_WEIGHT: float | None = 1.0
+# 2026-10-04 起 tracking_orientation_l2（pitch/roll L2）−12 → −24（用户定）。同代码同配置（7 卡 × 1170、actor 128）对照：
+# Base128 `8kjb4vm4`（−12）对 Orient24 `3ix86na3`（−24），sim2x 地形网格 10 种地形 × r3/6/9 平均倾角 8.7° → 4.4°、
+# p95 20.8° → 11.8°、通过率 93% → 100%，平地 vx 误差 0.213 → 0.082、抗推最大倾角 21.3° → 15.6°；
+# 代价是起步到 90% 速度 0.61 → 0.80 s。跳跃落地变差与中等高度跑动站高两条 run 都有，与本项无关
+# （docs/plan/rough_orient24_20261004.md）。
+ROUGH_ORIENTATION_WEIGHT: float = -24.0
 # 从 Flat 继承后整项删除的三项（另三项 rough 自己不再构造）：
 #   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令恒 0 永远开不了，与 tracking_ang_vel 重复计酬；
 #   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线；
@@ -363,7 +369,7 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
-    orientation_weight: float | None = None,
+    orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
     wide_dr: bool = False,
     oracle_dr_obs: bool = False,
 ) -> ManagerBasedRlEnvCfg:
@@ -372,7 +378,8 @@ def env_cfg(
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
-    orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，None 沿用 Flat 的 −12；对照实验开关。
+    orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
+    None 沿用 Flat 的 −12。
     wide_dr：加宽域随机化（见 ROUGH_WIDE_DR_* 注释）；对照实验开关。
     oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     """
@@ -863,6 +870,7 @@ __all__ = [
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
     "ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_ORIENTATION_WEIGHT",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
     "ROUGH_STAIRS_ZEROED_REWARDS",
