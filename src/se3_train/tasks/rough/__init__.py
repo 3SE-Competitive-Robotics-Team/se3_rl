@@ -31,6 +31,9 @@ EXP_WIDE_DR_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Oracle"
 # 2026-10-04（用户定）：WideDR 只把恢复系数收到 0–0.5（离线归因：e > 0.7 断崖，见 env_cfg.ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE）。
 # 临时入口，结论后删除。
 EXP_WIDE_DR_REST05_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Rest05"
+# 2026-10-04（用户定）：WideDR 去掉恢复系数 DR（接触参数保持 MJCF 默认），其余不变；Rest05 只是截断最坏一段的临时对策。
+# 临时入口，结论后删除。
+EXP_WIDE_DR_NOREST_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-NoRest"
 # 2026-10-04：Exp-HighStand01（high_stand_transition_prob 0.1）并入默认（env_cfg.ROUGH_HIGH_STAND_TRANSITION_PROB），
 # 入口删除；复现用 1cb5d77。
 
@@ -85,9 +88,17 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_REST05_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_WIDE_DR_NOREST_TASK_ID,
+        env_cfg=env_cfg(wide_dr=True, wide_dr_restitution_range=None),
+        play_env_cfg=env_cfg(play=True, wide_dr=True, wide_dr_restitution_range=None),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_NOREST_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "EXP_WIDE_DR_NOREST_TASK_ID",
     "EXP_WIDE_DR_ORACLE_TASK_ID",
     "EXP_WIDE_DR_REST05_TASK_ID",
     "EXP_WIDE_DR_TASK_ID",
