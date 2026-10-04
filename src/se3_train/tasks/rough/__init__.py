@@ -5,7 +5,7 @@ from mjlab.tasks.registry import register_mjlab_task
 from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
-from .env_cfg import env_cfg
+from .env_cfg import ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE, env_cfg
 from .rl_cfg import gru_rl_cfg, rl_cfg
 from .terrains import stair_only_terrains_cfg
 
@@ -28,6 +28,9 @@ EXP_WIDE_DR_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR"
 # 2026-10-04（用户定）：WideDR 的 Oracle 诊断——actor 额外观测真实 DR 参数 32 维，其余与 WideDR 相同（见 env_cfg._apply_oracle_dr_obs）。
 # 不可部署；判别 WideDR 退化是信息不足还是容量 / 物理可行性问题。临时入口，结论后删除。
 EXP_WIDE_DR_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Oracle"
+# 2026-10-04（用户定）：WideDR 只把恢复系数收到 0–0.5（离线归因：e > 0.7 断崖，见 env_cfg.ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE）。
+# 临时入口，结论后删除。
+EXP_WIDE_DR_REST05_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Rest05"
 # 2026-10-04（用户定）：高姿态起步序列占比对照——high_stand_transition_prob 0.5 → 0.1，其余与默认（姿态罚 −24）相同。
 # 依据：中等高度（0.26–0.34 m）0.5–1.5 m/s 稳态机身比指令高 4–6 cm，反事实账本显示贴合指令高度时奖励反而更高（没学好），
 # 而任意时刻约 26% env 处在 0.36–0.38 m 高姿态静站 → 前进序列中（docs/plan/rough_orient24_20261004.md）。
@@ -74,6 +77,19 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     register_mjlab_task(
+        task_id=EXP_WIDE_DR_REST05_TASK_ID,
+        env_cfg=env_cfg(
+            wide_dr=True, wide_dr_restitution_range=ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE
+        ),
+        play_env_cfg=env_cfg(
+            play=True,
+            wide_dr=True,
+            wide_dr_restitution_range=ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE,
+        ),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_REST05_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
         task_id=EXP_HIGH_STAND01_TASK_ID,
         env_cfg=env_cfg(high_stand_transition_prob=EXP_HIGH_STAND01_PROB),
         play_env_cfg=env_cfg(play=True, high_stand_transition_prob=EXP_HIGH_STAND01_PROB),
@@ -86,6 +102,7 @@ __all__ = [
     "EXP_HIGH_STAND01_PROB",
     "EXP_HIGH_STAND01_TASK_ID",
     "EXP_WIDE_DR_ORACLE_TASK_ID",
+    "EXP_WIDE_DR_REST05_TASK_ID",
     "EXP_WIDE_DR_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

@@ -340,6 +340,10 @@ ROUGH_WIDE_DR_KD_RANGE = (0.9, 1.1)
 ROUGH_WIDE_DR_COM_RANGE_M = 0.05
 ROUGH_WIDE_DR_BASE_MASS_RANGE_KG = (-1.0, 3.0)
 ROUGH_WIDE_DR_RESTITUTION_RANGE = (0.0, 1.0)
+# 2026-10-04 离线归因（docs/plan/rough_wide_dr_20261003.md）：e 0–0.6 对回报无影响，> 0.7 断崖（0.9–1.0 回报 −76%）。
+# MuJoCo 软接触的阻尼对持续接触一直生效，e → 1 时轮地接触成了无阻尼弹簧持续振荡（PhysX 只在撞击时反弹，语义不同）。
+# Exp-WideDR-Rest05 只把上界收到 0.5，其余 WideDR 不变。
+ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE = (0.0, 0.5)
 ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE = (0.9, 1.5)
 ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S = (0.0, 0.010)
 
@@ -372,6 +376,7 @@ def env_cfg(
     orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
     high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
     wide_dr: bool = False,
+    wide_dr_restitution_range: tuple[float, float] = ROUGH_WIDE_DR_RESTITUTION_RANGE,
     oracle_dr_obs: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
@@ -383,6 +388,7 @@ def env_cfg(
     None 沿用 Flat 的 −12。
     high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
     wide_dr：加宽域随机化（见 ROUGH_WIDE_DR_* 注释）；对照实验开关。
+    wide_dr_restitution_range：wide_dr 时恢复系数 DR 范围，默认 0–1（WideDR），Rest05 对照传 0–0.5。
     oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     """
     if stair_height_reference not in ("support", "window"):
@@ -564,7 +570,9 @@ def env_cfg(
     del cfg.terminations["bad_orientation"]
 
     if wide_dr:
-        _apply_wide_domain_randomization(cfg, play=play)
+        _apply_wide_domain_randomization(
+            cfg, play=play, restitution_range=wide_dr_restitution_range
+        )
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
@@ -690,7 +698,12 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_wide_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+def _apply_wide_domain_randomization(
+    cfg: ManagerBasedRlEnvCfg,
+    *,
+    play: bool,
+    restitution_range: tuple[float, float] = ROUGH_WIDE_DR_RESTITUTION_RANGE,
+) -> None:
     """加宽域随机化（见 ROUGH_WIDE_DR_* 注释）：改 Flat 继承的 startup 事件参数，换两项实现，放宽动作延迟。
 
     动作延迟属于动作项，play（评测 / ONNX 导出）同样生效，契约随之导出 0–10 ms；
@@ -726,7 +739,7 @@ def _apply_wide_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -
     cfg.events["restitution"] = replace(
         cfg.events["restitution"],
         func=mdp_events.randomize_contact_restitution,
-        params={"restitution_range": ROUGH_WIDE_DR_RESTITUTION_RANGE},
+        params={"restitution_range": tuple(float(x) for x in restitution_range)},
     )
     cfg.events["knee_spring_force"] = replace(
         cfg.events["knee_spring_force"],
@@ -909,6 +922,7 @@ __all__ = [
     "ROUGH_WIDE_DR_KD_RANGE",
     "ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE",
     "ROUGH_WIDE_DR_KP_RANGE",
+    "ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE",
     "ROUGH_WIDE_DR_RESTITUTION_RANGE",
     "env_cfg",
 ]
