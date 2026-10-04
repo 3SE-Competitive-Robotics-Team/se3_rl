@@ -53,12 +53,12 @@ ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 # 2026-09-15 用户定：下台阶与上下坡都按平地发——下台阶需要偏航跟踪，新列速度要 ±2.4 而不是只前向 0.4–0.8。
 # 只有上台阶类列留在"非平地覆盖"那一路（再被下面的台阶覆盖压一层，最终是 0.4–2.4 前向、yaw ±0.3）。
 # M24（用户定）：二级台阶的**下行**列按平地待遇（指令与 flat 同），只有上行列算台阶。
+# 2026-10-04（用户定）起下行列移出本名单，改走下面的直行覆盖（ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES）。
 # 副作用：新列也会被 _sample_high_stand_transition 采到（它只在这份名单的列上采样），
 # 即坡上与下台阶也会练高姿起步，这是想要的；若发现下台阶因此摔得多，先把 stairs_down 移出这份名单。
 ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
     "flat",
     "stairs_down",
-    ROUGH_TWO_STEP_DOWN_COLUMN,
     "slope_up",
     "slope_down",
     # M51 的三列随机地形按平地发指令（不在当前地形集里的列名会被跳过，对其他入口无影响）。
@@ -81,6 +81,14 @@ ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_STAIR_LIN_VEL_X_RANGE = (0.4, 2.4)
 ROUGH_STAIR_ANG_VEL_YAW_RANGE = (0.0, 0.0)
 ROUGH_STAIR_HEIGHT_RANGE = (0.20, 0.38)
+
+# 直行列（2026-10-04 用户定）：二级下台阶要练的是「一口气跨过窄棱再连下两级」，而平地指令下这一列很多样本在
+# 边转边过、斜着过或站在出生平台上不动（评测 r6–r9 摔 21%、训练等级与 flat 列同在饱和值 ~5.4，看不出练没练到）。
+# 改为 vx ±2.4（前后都练）、yaw 恒 0、不出静站与高姿起步样本；转向多样性由出生朝向（正对台阶 ±15°，
+# env_cfg.ROUGH_SPAWN_FACING_TERRAIN_NAMES）提供。高度指令仍按平地运动区间采样。
+ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES = (ROUGH_TWO_STEP_DOWN_COLUMN,)
+ROUGH_STRAIGHT_LIN_VEL_X_RANGE = (-2.4, 2.4)
+ROUGH_STRAIGHT_ANG_VEL_YAW_RANGE = (0.0, 0.0)
 
 # 台阶列逐 env 速度上限（2026-09-25 用户定做对照，参考 yly-true/fudan_rl_wheel_leg 的逐 env 指令课程）。
 # 每个 env 记一个 vx 上限，台阶列按 [ROUGH_STAIR_LIN_VEL_X_RANGE[0], 上限] 采样；每个 episode 结束时按
@@ -129,6 +137,11 @@ class RoughCommandCfg(JumpCommandCfg):
     stair_ang_vel_yaw_range: tuple[float, float] = ROUGH_STAIR_ANG_VEL_YAW_RANGE
     stair_height_range: tuple[float, float] = ROUGH_STAIR_HEIGHT_RANGE
     """台阶列的机身高度指令范围(m)，采样下界再与地形感知下限取较大者。"""
+
+    straight_command_terrain_names: tuple[str, ...] = ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES
+    """直行列名：不在 `terrain_command_flat_names` 里（因此不出静站 / 高姿起步样本），速度范围再被下面两项覆盖。"""
+    straight_lin_vel_x_range: tuple[float, float] = ROUGH_STRAIGHT_LIN_VEL_X_RANGE
+    straight_ang_vel_yaw_range: tuple[float, float] = ROUGH_STRAIGHT_ANG_VEL_YAW_RANGE
 
     stair_speed_cap_enabled: bool = ROUGH_STAIR_SPEED_CAP_ENABLED
     """台阶列是否按 env 自适应 vx 上限；打开时还要注册课程项 `curriculums.stair_speed_cap`。"""
@@ -216,7 +229,14 @@ class RoughCommandTerm(JumpCommandTerm):
                 lin_vel_x_range=tuple(self.cfg.terrain_lin_vel_x_range),
                 ang_vel_yaw_range=tuple(self.cfg.terrain_ang_vel_yaw_range),
             )
-        # 台阶列的覆盖压在通用地形覆盖之上，必须后设。
+        # 直行列与台阶列的覆盖都压在通用地形覆盖之上，必须后设。
+        straight = column_mask(self._env, self.cfg.straight_command_terrain_names)
+        if straight is not None and bool(straight.any()):
+            self.set_velocity_ranges(
+                straight.nonzero(as_tuple=False).flatten(),
+                lin_vel_x_range=tuple(self.cfg.straight_lin_vel_x_range),
+                ang_vel_yaw_range=tuple(self.cfg.straight_ang_vel_yaw_range),
+            )
         self._stair_mask = column_mask(self._env, self.cfg.stair_command_terrain_names)
         if self._stair_mask is not None and bool(self._stair_mask.any()):
             ids = self._stair_mask.nonzero(as_tuple=False).flatten()
@@ -604,6 +624,9 @@ __all__ = [
     "ROUGH_STAIR_SPEED_CAP_MIN_EPISODE_S",
     "ROUGH_STAIR_SPEED_CAP_SHRINK_BELOW",
     "ROUGH_STAIR_SPEED_CAP_SHRINK_STEP",
+    "ROUGH_STRAIGHT_ANG_VEL_YAW_RANGE",
+    "ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES",
+    "ROUGH_STRAIGHT_LIN_VEL_X_RANGE",
     "ROUGH_TERRAIN_ANG_VEL_YAW_RANGE",
     "ROUGH_TERRAIN_COMMAND_FLAT_NAMES",
     "ROUGH_TERRAIN_HEIGHT_CLEARANCE",

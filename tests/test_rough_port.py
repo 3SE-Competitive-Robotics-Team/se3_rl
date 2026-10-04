@@ -34,7 +34,11 @@ from se3_train.tasks.jump_mimic.env_cfg import JUMP_MIMIC_REWARD_WEIGHTS
 from se3_train.tasks.rough import curriculums, events
 from se3_train.tasks.rough import rewards as rough_rewards
 from se3_train.tasks.rough.columns import column_mask, non_flat_column_mask
-from se3_train.tasks.rough.commands import RoughCommandCfg
+from se3_train.tasks.rough.commands import (
+    ROUGH_STRAIGHT_ANG_VEL_YAW_RANGE,
+    ROUGH_STRAIGHT_LIN_VEL_X_RANGE,
+    RoughCommandCfg,
+)
 from se3_train.tasks.rough.env_cfg import (
     ROUGH_ACTION_RATE_WEIGHT,
     ROUGH_ALL_TERRAIN_TYPE_NAMES,
@@ -704,7 +708,10 @@ class RoughRuntimeTests(unittest.TestCase):
         # M9：指令侧的"非平地覆盖"只剩 stairs_up，其余列按平地方式发指令（±2.4 + yaw）。
         flat_like = column_mask(self.env, ROUGH_TERRAIN_COMMAND_FLAT_NAMES)
         self.assertTrue(torch.equal(self.term._terrain_override_mask, ~flat_like))
-        self.assertTrue(torch.equal(self.term._terrain_override_mask, self.stair_like))
+        two_step_down = column_mask(self.env, (ROUGH_TWO_STEP_DOWN_COLUMN,))
+        self.assertTrue(
+            torch.equal(self.term._terrain_override_mask, self.stair_like | two_step_down)
+        )
         self.assertTrue(torch.equal(self.term._stair_mask, self.stair_like))
         mask = getattr(self.env, events.CURRICULUM_ENV_MASK_ATTR)
         self.assertTrue(torch.equal(mask, self.flat))
@@ -713,7 +720,7 @@ class RoughRuntimeTests(unittest.TestCase):
         # M9：只有上台阶类列走非平地覆盖（再被台阶覆盖压一层）；M14（751eab3）起台阶覆盖为
         # vx 0.4–2.4 前向、yaw ±0.3（不再恒 0）；M24 起这类列有 stairs_up 与 stairs_two_step 两条。
         # 下台阶与上下坡按平地方式发指令，由 test_new_columns_get_flat_style_commands 钉住。
-        self.assertTrue(torch.equal(self.term._terrain_override_mask, self.stair_like))
+        # 2026-10-04 起二级下台阶走直行覆盖，由 test_two_step_down_gets_straight_commands 钉住。
         yaw_lo, yaw_hi = ROUGH_STAIR_ANG_VEL_YAW_RANGE
         vx_lo, vx_hi = ROUGH_STAIR_LIN_VEL_X_RANGE
         for _ in range(50):  # 多抽几轮，静站样本（10%）若漏进非平地列一定会被抓到
@@ -749,11 +756,26 @@ class RoughRuntimeTests(unittest.TestCase):
             ROUGH_CONTACT_TAX_FREE_COLUMNS,
             (*ROUGH_STAIR_LIKE_COLUMNS, "stairs_down", ROUGH_TWO_STEP_DOWN_COLUMN),
         )
-        # M24：二级台阶的下行列按平地待遇——指令走平地那一路，不进台阶类列。
-        self.assertIn(ROUGH_TWO_STEP_DOWN_COLUMN, ROUGH_TERRAIN_COMMAND_FLAT_NAMES)
+        # M24：二级台阶的下行列不进台阶类列；2026-10-04 起指令改走直行覆盖。
+        self.assertNotIn(ROUGH_TWO_STEP_DOWN_COLUMN, ROUGH_TERRAIN_COMMAND_FLAT_NAMES)
         self.assertNotIn(ROUGH_TWO_STEP_DOWN_COLUMN, ROUGH_STAIR_LIKE_COLUMNS)
         self.assertNotIn(ROUGH_TWO_STEP_DOWN_COLUMN, ROUGH_REWARD_TERRAIN_TYPE_NAMES)
         self.assertIn(ROUGH_TWO_STEP_UP_COLUMN, ROUGH_STAIR_LIKE_COLUMNS)
+
+    def test_two_step_down_gets_straight_commands(self) -> None:
+        """2026-10-04（用户定）：二级下台阶 vx ±2.4、yaw 恒 0、无静站 / 高姿起步样本。"""
+        down = column_mask(self.env, (ROUGH_TWO_STEP_DOWN_COLUMN,))
+        vx_lo, vx_hi = ROUGH_STRAIGHT_LIN_VEL_X_RANGE
+        yaw_lo, yaw_hi = ROUGH_STRAIGHT_ANG_VEL_YAW_RANGE
+        for _ in range(50):
+            self.term._resample_command(_all_ids(self.env))
+            cmd = self.term.command[down]
+            self.assertTrue(bool((cmd[:, 0] >= vx_lo - 1e-6).all()))
+            self.assertTrue(bool((cmd[:, 0] <= vx_hi + 1e-6).all()))
+            self.assertTrue(bool((cmd[:, 1] >= yaw_lo - 1e-6).all()))
+            self.assertTrue(bool((cmd[:, 1] <= yaw_hi + 1e-6).all()))
+            self.assertFalse(bool(self.term._standing_mask[down].any()))
+            self.assertFalse(bool(self.term._high_stand_selected[down].any()))
 
     def test_terrain_vx_is_decoupled_from_the_flat_curriculum(self) -> None:
         lo, hi = ROUGH_STAIR_LIN_VEL_X_RANGE
@@ -1261,10 +1283,12 @@ class FlatWarmupRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(torch.equal(self.terrain.terrain_types, original))
         self.assertTrue(bool((self.terrain.terrain_levels == 0).all()))
-        # M9：override 只覆盖上台阶类列，不再是"所有非平地列"；M24 起是 stairs_up + stairs_two_step。
+        # M9：override 只覆盖上台阶类列，不再是"所有非平地列"；M24 起是 stairs_up + stairs_two_step；
+        # 2026-10-04 起再加二级下台阶的直行覆盖。
         names = list(self.terrain.cfg.terrain_generator.sub_terrains)
         stair_cols = torch.tensor(
-            [names.index(n) for n in ROUGH_STAIR_LIKE_COLUMNS], dtype=original.dtype
+            [names.index(n) for n in (*ROUGH_STAIR_LIKE_COLUMNS, ROUGH_TWO_STEP_DOWN_COLUMN)],
+            dtype=original.dtype,
         )
         self.assertTrue(torch.equal(term._terrain_override_mask, torch.isin(original, stair_cols)))
         self.assertTrue(
