@@ -426,8 +426,9 @@ ROUGH_JUMP_ENV_FRACTION = 1.0
 """跳跃样本占跳跃列 env 的比例：专用列全部是跳跃样本（此前平地列 30%）。"""
 ROUGH_JUMP_TRIGGER_RATE_HZ = 0.5
 """跳跃样本站满 min_idle_s 后每秒触发概率：2026-10-03 由 0.2 提到 J10 验证过的 0.5（每次循环约 4.5 s、约 1/3 时间在跳）。"""
-ROUGH_JUMP_MAX_LIN_VEL_X = 1.5
-"""触发时 vx 指令夹到 ±该值（J10 训练范围）。"""
+ROUGH_JUMP_MAX_LIN_VEL_X: float | None = None
+"""触发时 vx 指令夹到 ±该值；None 不夹。2026-10-04（用户定）由 1.5（J10 训练范围）改为不夹：跳跃样本等待期 vx 跟随平地课程到 ±2.4，
+夹到 ±1.5 会把约 1/3 跳跃堆在 ±1.5 上并让高速 env 起跳时被迫减速；部署运行时（se3_runtime）本来就不夹。"""
 
 
 @dataclass
@@ -444,7 +445,7 @@ class RoughJumpCommandCfg(RoughCommandCfg):
     trigger_rate_hz: float = ROUGH_JUMP_TRIGGER_RATE_HZ
     jump_column_names: tuple[str, ...] = ROUGH_JUMP_COLUMN_NAMES
     jump_env_fraction: float = ROUGH_JUMP_ENV_FRACTION
-    jump_max_lin_vel_x: float = ROUGH_JUMP_MAX_LIN_VEL_X
+    jump_max_lin_vel_x: float | None = ROUGH_JUMP_MAX_LIN_VEL_X
 
     def build(self, env: ManagerBasedRlEnv) -> RoughJumpCommandTerm:
         if self.enable_jump_lifecycle:
@@ -461,7 +462,7 @@ class RoughJumpCommandTerm(RoughCommandTerm):
 
     每回合 reset 时，在允许跳跃的列上按 jump_env_fraction 抽"跳跃样本"：整回合高度指令固定为参考站姿
     （与 J10 一样，用户定）、不参加高姿态起步序列，只有它们会触发跳跃。跳跃期间冻结速度 / 姿态 / 高度指令，
-    触发时 vx 夹到 ±jump_max_lin_vel_x、yaw / pitch / roll 置 0。其余 env 与 M54 完全一样。
+    触发时 yaw / pitch / roll 置 0，vx 保持当前指令（jump_max_lin_vel_x 非 None 时才夹到 ±该值）。其余 env 与 M54 完全一样。
     """
 
     cfg: RoughJumpCommandCfg
@@ -566,8 +567,9 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         super()._update_command()
         fired = self.clock.step(float(self._env.step_dt), allowed=self.jump_env)
         if fired.numel() > 0:
-            vmax = float(self.cfg.jump_max_lin_vel_x)
-            self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
+            if self.cfg.jump_max_lin_vel_x is not None:
+                vmax = float(self.cfg.jump_max_lin_vel_x)
+                self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
             self._command[:, 1:4].index_fill_(0, fired, 0.0)
         self.clock.write_dims(self._command)
 
