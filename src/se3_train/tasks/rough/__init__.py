@@ -28,6 +28,9 @@ EXP_ORIENT24_WEIGHT = -24.0
 # 2026-10-03（用户定）：加宽域随机化对照——真 Kp/Kd、质心 ±5 cm、质量 −1…+3 kg、恢复系数 0–1、气弹簧 ×0.9–1.5、
 # 动作延迟 0–10 ms，其余与默认相同（见 env_cfg.ROUGH_WIDE_DR_* 注释）。临时入口：对照结束、定下默认后删除，复现用对应 commit。
 EXP_WIDE_DR_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR"
+# 2026-10-04（用户定）：WideDR 的 Oracle 诊断——actor 额外观测真实 DR 参数 32 维，其余与 WideDR 相同（见 env_cfg._apply_oracle_dr_obs）。
+# 不可部署；判别 WideDR 退化是信息不足还是容量 / 物理可行性问题。临时入口，结论后删除。
+EXP_WIDE_DR_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Oracle"
 
 
 def register() -> None:
@@ -67,11 +70,19 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_WIDE_DR_ORACLE_TASK_ID,
+        env_cfg=env_cfg(wide_dr=True, oracle_dr_obs=True),
+        play_env_cfg=env_cfg(play=True, wide_dr=True, oracle_dr_obs=True),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_ORACLE_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_ORIENT24_TASK_ID",
     "EXP_ORIENT24_WEIGHT",
+    "EXP_WIDE_DR_ORACLE_TASK_ID",
     "EXP_WIDE_DR_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

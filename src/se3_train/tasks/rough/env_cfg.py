@@ -78,6 +78,7 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
 from se3_train.mdp import events as mdp_events
+from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
@@ -364,6 +365,7 @@ def env_cfg(
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
     orientation_weight: float | None = None,
     wide_dr: bool = False,
+    oracle_dr_obs: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -372,6 +374,7 @@ def env_cfg(
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
     orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，None 沿用 Flat 的 −12；对照实验开关。
     wide_dr：加宽域随机化（见 ROUGH_WIDE_DR_* 注释）；对照实验开关。
+    oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -558,6 +561,8 @@ def env_cfg(
     _apply_jump_mimic(cfg)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
+    if oracle_dr_obs:
+        _apply_oracle_dr_obs(cfg)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -720,6 +725,24 @@ def _apply_wide_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -
             "knee_spring_force", force_scale_range=ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE
         ),
     )
+
+
+def _apply_oracle_dr_obs(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Oracle（2026-10-04，用户定）：actor 观测末尾追加真实 DR 参数 32 维，critic 不变。
+
+    判别 WideDR 退化的根因：若 actor 直接知道参数就能恢复到默认 DR 的跟踪水平，瓶颈是信息（值得做历史隐向量辨识）；
+    恢复不了则是容量或部分 DR 组合物理不可行。追加项与 critic 的同名特权项同源：28 维 DR 回读、气弹簧力 2 维，
+    另加动作延迟与恢复系数各 1 维。不加噪声。导出器不认识这些项，训练期 ONNX 导出会失败（runner 捕获，checkpoint 照存）。
+    """
+    actor = cfg.observations["actor"]
+    terms = dict(actor.terms)
+    terms["oracle_dr_params"] = ObservationTermCfg(func=mdp_observations.dr_model_params_obs)
+    terms["oracle_knee_spring"] = ObservationTermCfg(
+        func=mdp_observations.knee_gas_spring_force_obs
+    )
+    terms["oracle_action_delay"] = ObservationTermCfg(func=mdp_observations.action_delay_obs)
+    terms["oracle_restitution"] = ObservationTermCfg(func=mdp_observations.contact_restitution_obs)
+    cfg.observations["actor"] = replace(actor, terms=terms)
 
 
 def _apply_rough_rewards(
