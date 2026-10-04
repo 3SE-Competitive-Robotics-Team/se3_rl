@@ -31,12 +31,8 @@ EXP_WIDE_DR_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Oracle"
 # 2026-10-04（用户定）：WideDR 只把恢复系数收到 0–0.5（离线归因：e > 0.7 断崖，见 env_cfg.ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE）。
 # 临时入口，结论后删除。
 EXP_WIDE_DR_REST05_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Rest05"
-# 2026-10-04（用户定）：高姿态起步序列占比对照——high_stand_transition_prob 0.5 → 0.1，其余与默认（姿态罚 −24）相同。
-# 依据：中等高度（0.26–0.34 m）0.5–1.5 m/s 稳态机身比指令高 4–6 cm，反事实账本显示贴合指令高度时奖励反而更高（没学好），
-# 而任意时刻约 26% env 处在 0.36–0.38 m 高姿态静站 → 前进序列中（docs/plan/rough_orient24_20261004.md）。
-# 风险：该序列是 M8 为解 0.38 m 静站起步的探索瓶颈加的，评测必须测高姿态静站后起步。临时入口，结论后删除。
-EXP_HIGH_STAND01_TASK_ID = "SE3-WheelLegged-Rough-Exp-HighStand01"
-EXP_HIGH_STAND01_PROB = 0.1
+# 2026-10-04：Exp-HighStand01（high_stand_transition_prob 0.1）并入默认（env_cfg.ROUGH_HIGH_STAND_TRANSITION_PROB），
+# 入口删除；复现用 1cb5d77。
 
 
 def register() -> None:
@@ -89,18 +85,9 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_REST05_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
-    register_mjlab_task(
-        task_id=EXP_HIGH_STAND01_TASK_ID,
-        env_cfg=env_cfg(high_stand_transition_prob=EXP_HIGH_STAND01_PROB),
-        play_env_cfg=env_cfg(play=True, high_stand_transition_prob=EXP_HIGH_STAND01_PROB),
-        rl_cfg=bind_task_name(rl_cfg(), EXP_HIGH_STAND01_TASK_ID),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
 
 
 __all__ = [
-    "EXP_HIGH_STAND01_PROB",
-    "EXP_HIGH_STAND01_TASK_ID",
     "EXP_WIDE_DR_ORACLE_TASK_ID",
     "EXP_WIDE_DR_REST05_TASK_ID",
     "EXP_WIDE_DR_TASK_ID",
