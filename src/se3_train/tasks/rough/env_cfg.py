@@ -370,6 +370,7 @@ def env_cfg(
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
     orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
+    high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
     wide_dr: bool = False,
     oracle_dr_obs: bool = False,
 ) -> ManagerBasedRlEnvCfg:
@@ -380,6 +381,7 @@ def env_cfg(
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
     orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
     None 沿用 Flat 的 −12。
+    high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
     wide_dr：加宽域随机化（见 ROUGH_WIDE_DR_* 注释）；对照实验开关。
     oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     """
@@ -464,7 +466,7 @@ def env_cfg(
         body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
         terrain_step_height_type_names=ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
         terrain_command_flat_names=ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
-        high_stand_transition_prob=ROUGH_HIGH_STAND_TRANSITION_PROB,
+        high_stand_transition_prob=float(high_stand_transition_prob),
         # 上限只由训练期课程项结算；play 时没有课程，打开只会空累计。
         stair_speed_cap_enabled=bool(stair_speed_cap) and not play,
     )
