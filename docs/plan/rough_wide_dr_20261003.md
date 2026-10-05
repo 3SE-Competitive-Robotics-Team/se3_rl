@@ -220,3 +220,33 @@ NoRest 的 DR 并入 rough 默认（`env_cfg.ROUGH_DR_*`，`_apply_rough_domain_
 等价校验：新默认 `SE3-WheelLegged-Rough` 的事件、延迟、观测项、奖励与 NoRest（11f9d40）逐项一致（`.scratch/widedr_eval/dump_cfg.py`）；
 smoke（Rough、Flat-MLP 各 5 轮）通过，ONNX 契约延迟为 0–10 ms。
 待补：同 commit、旧 DR、6×1365 的干净基线，单独量出 DR1 对名义性能的代价。
+
+## 干净基线 OldDR（2026-10-05，用户定）
+
+`SE3-WheelLegged-Rough-Exp-OldDR`：DR1 默认去掉 DR1（退回 Flat 继承的旧 DR、4–6 ms 延迟），其余不动。commit `afda1c0`，
+在独立分支 `xyh/1005-olddr-baseline`（基于 c21d3ea）上——主 checkout 里另一会话有未提交的 commands / env_cfg 改动，不能混进来。
+等价校验：配置与 11f9d40 的默认 Rough 逐项一致（事件、延迟、观测、奖励），与 NoRest（11f9d40 + DR1）只差质量、质心、
+Kp/Kd、气弹簧、延迟五项；`git log 11f9d40..afda1c0 -- src` 只有 3f8db58 与 afda1c0。nulltask1 六卡 × 1365、5000 轮、seed 42，
+W&B `8nv7aaoa`，PID/PGID 805137，state `20261005T053925Z-27281`。
+对照 NoRest `5ji1xq6w`：训练端同轮次指标 + 评测端四套脚本，差值即 DR1 的单独代价 / 收益。
+
+### OldDR 结果（2026-10-05，跑满 5000 轮；DR1 = NoRest 的单独效果）
+
+训练端 4800–4999（OldDR / NoRest）：回报 79.7 / 78.2，地形均级 5.85 / 5.62，stairs_up 6.12 / 5.92，跳跃列 5.68 / 4.68，
+vx 误差 0.56 / 0.65，平地 tracking 0.76 / 0.76，yaw 误差 0.77 / 0.97，catastrophic 0.016 / 0.065，value loss 1.93 / 4.26，
+回合长度 386 / 472。
+
+评测端 model_4999（sim2x 确定性，延迟 1 步；`.scratch/widedr_eval/*_olddr.*`、`dr_slice_od.*`，NoRest 复用 `*_norest.*`、`dr_slice3.*`）：
+- 名义平地：21 组 vx 误差均值 / 最大 0.087 / 0.25 对 0.171 / 0.53，俯仰 std 均值 0.30° 对 1.30°；h0.30 vx 1.0 误差 0.11 对 0.27–0.30
+  且 NoRest 俯仰 std 约 4°（中速前后晃，11 种扰动 plant 里 9 种都有）；h0.38 vx 2.4 误差 0.03 对 0.53；wz 4 误差 0.02 对 0.22。
+  h0.38 静站漂移两者都有（0.8 / 1.0 m），不是 DR1 引起。
+- 地形评分表：通过率都是 96%，vx 误差 0.195 对 0.285，摔 0 对 1。
+- 台阶 1–9 级拆解：OldDR 第 7 级（vx 1.0）与第 9 级（三档速度）卡住出不了 4 m，NoRest 全部通过。
+- 扰动 plant（66 项）：摔 3 对 0；质心 +5 cm 时 h0.30 vx 1.0 误差 0.76 对 0.14、h0.38 vx 2.0 摔对 0.08；组合最坏 plant OldDR
+  摔 2 项、站立漂 11 m，NoRest 全过。
+- 第 2000 轮同轮次评测趋势一致（扰动 plant 摔 3 对 0）。
+
+结论（与预期一致，用户确认）：DR1 换来对质心 / 质量 / 气弹簧等参数偏差的鲁棒性与高台阶通过，代价是名义平地 vx 误差约 2 倍、
+中速前后晃、转向略粗、跳跃课程略慢、catastrophic 略高。中速前后晃疑为质心 ±5 cm 带出的「探测质心」行为
+（见 flat/env_cfg.py com 注释），候选单变量对照：DR1 上质心收到 ±2 cm，或按真机实测误差定范围。
+OldDR 入口留在分支 `xyh/1005-olddr-baseline`（afda1c0），不并入主线。
