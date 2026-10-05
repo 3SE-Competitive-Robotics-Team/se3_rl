@@ -44,6 +44,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
     ROUGH_CONTACT_TAX_FREE_COLUMNS,
     ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+    ROUGH_DR_COM_RANGE_M,
     ROUGH_DROPPED_FLAT_REWARDS,
     ROUGH_FALL_PENALTY,
     ROUGH_FLAT_VZ_WEIGHT,
@@ -384,8 +385,10 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertEqual(self.cfg.rewards["stair_climb_progress"].weight, 3.0)
         self.assertEqual(self.cfg.rewards["stair_support_height"].weight, 4.0)
 
-    def test_domain_randomization_matches_flat(self) -> None:
-        self.assertAlmostEqual(self.cfg.events["com"].params["com_range"], 0.005)
+    def test_domain_randomization_dr1(self) -> None:
+        """DR1（2026-10-05）起 rough 质心 DR 取 ROUGH_DR_COM_RANGE_M，Flat 仍是 ±5 mm。"""
+        self.assertAlmostEqual(self.cfg.events["com"].params["com_range"], ROUGH_DR_COM_RANGE_M)
+        self.assertAlmostEqual(self.flat.events["com"].params["com_range"], 0.005)
 
     def test_m2_stairs_column_pricing_and_fall_penalty(self) -> None:
         """M2：台阶列 is_alive / flat_wheel_contact / collision 置零（权重与原参数沿用 Flat），加一次性摔倒罚；
