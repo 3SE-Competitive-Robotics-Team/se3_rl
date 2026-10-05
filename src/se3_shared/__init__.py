@@ -48,7 +48,12 @@ from .leg_policy import (
     policy_leg_position_error_torch,
 )
 from .motor import DM8009P, M3508_C620_14, M3508_HEXROLL, MotorSpec
-from .observation import ObservationConfig
+from .observation import (
+    COMMAND_FIELDS,
+    NO_ATTITUDE_COMMAND_FIELDS,
+    NO_ATTITUDE_COMMAND_OBS_FIELDS,
+    ObservationConfig,
+)
 from .policy_io import (
     LEG_ACTION_SEMANTICS,
     DecodedPolicyAction,
@@ -73,6 +78,7 @@ from .recovery import (
 from .robot import Joint, JointGroup, RobotConfig, Termination
 
 __all__ = [
+    "COMMAND_FIELDS",
     "DM8009P",
     "FRONT_ACTION_INDICES",
     "FRONT_ACTION_PERIOD",
@@ -81,6 +87,8 @@ __all__ = [
     "LEG_ACTION_SEMANTICS",
     "M3508_C620_14",
     "M3508_HEXROLL",
+    "NO_ATTITUDE_COMMAND_FIELDS",
+    "NO_ATTITUDE_COMMAND_OBS_FIELDS",
     "RECOVERY_ACTION_CLIP",
     "RECOVERY_COMMAND_HEIGHT_M",
     "RECOVERY_COMMAND_HEIGHT_RANGE_M",

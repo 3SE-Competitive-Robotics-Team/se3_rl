@@ -31,16 +31,29 @@ def _column_indices(
 
 
 def column_mask(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]) -> torch.Tensor | None:
-    """返回"在这些子地形列上"的 env 掩码 [N]。"""
+    """返回"在这些子地形列上"的 env 掩码 [N]；返回的是共享缓存张量，调用方不得原地修改。
+
+    rough 每个 env.step 有十几个奖励 / 指令项各自要同一批列掩码。`terrain_types` 只在 reset、课程升降级、
+    平地热身换列时被 torch 原地写入（版本号随之加一），所以按 (列名, 张量身份, 版本号) 缓存，结果与重算逐位相同。
+    """
     if not terrain_type_names:
         return None
-    resolved = _column_indices(env, tuple(terrain_type_names))
+    names = tuple(terrain_type_names)
+    terrain_types = getattr(getattr(env.scene, "terrain", None), "terrain_types", None)
+    cache: dict = env.__dict__.setdefault("_se3_column_mask_cache", {})
+    stamp = (id(terrain_types), getattr(terrain_types, "_version", None))
+    hit = cache.get(names)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    resolved = _column_indices(env, names)
     if resolved is None:
-        return None
-    cols, types = resolved
-    mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-    for col in cols:
-        mask |= types == col
+        mask = None
+    else:
+        cols, types = resolved
+        mask = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        for col in cols:
+            mask |= types == col
+    cache[names] = (stamp, mask)
     return mask
 
 

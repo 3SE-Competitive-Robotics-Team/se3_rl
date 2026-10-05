@@ -23,6 +23,7 @@ from mjlab.terrains import (
 )
 
 import se3_train  # noqa: F401  # 注册任务
+from se3_shared import NO_ATTITUDE_COMMAND_FIELDS
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -43,6 +44,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
     ROUGH_CONTACT_TAX_FREE_COLUMNS,
     ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME,
+    ROUGH_DR_COM_RANGE_M,
     ROUGH_DROPPED_FLAT_REWARDS,
     ROUGH_FALL_PENALTY,
     ROUGH_FLAT_VZ_WEIGHT,
@@ -53,6 +55,7 @@ from se3_train.tasks.rough.env_cfg import (
     ROUGH_NCONMAX,
     ROUGH_NJMAX,
     ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE,
+    ROUGH_ORIENTATION_WEIGHT,
     ROUGH_REWARD_TERRAIN_TYPE_NAMES,
     ROUGH_ROBOT_COLLISION_GEOM_GROUP,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
@@ -81,6 +84,7 @@ from se3_train.tasks.rough.env_cfg import (
 )
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 from se3_train.tasks.rough.terrains import (
+    ROUGH_JUMP_COLUMN,
     ROUGH_PATCH_SIZE,
     ROUGH_PLATFORM_WIDTH,
     ROUGH_RANDOM_TERRAIN_COLUMNS,
@@ -107,7 +111,8 @@ _WRAPPED = (
     "stand_still",  # RJ1：跳跃期间置零（jump_mimic.mdp.not_jumping）
     "contact_forces",
 )
-_REWEIGHTED = ("tracking_lin_vel", "action_rate")
+# tracking_orientation_l2：2026-10-04 起 −12 → −24（Orient24 对照，docs/plan/rough_orient24_20261004.md）。
+_REWEIGHTED = ("tracking_lin_vel", "action_rate", "tracking_orientation_l2")
 _ROUGH_ONLY = (
     "stair_climb_progress",
     "stair_support_height",
@@ -167,10 +172,17 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertEqual(rough.max_iterations, 5000)
 
     def test_gru_variant_only_swaps_the_network(self) -> None:
-        """M16：GRU 入口除网络外与 MLP 入口逐项相同；rollout 保持 24 步，按轮计数的课程才不会平移。"""
+        """M16：GRU 入口除网络外与 MLP 入口逐项相同；rollout 保持 24 步，按轮计数的课程才不会平移。
+
+        2026-10-04 起 MLP 入口 actor 隐藏层默认 128/64/32（ROUGH_ACTOR_HIDDEN_DIMS），GRU 入口仍用 Flat 的 GRU 头，
+        所以 actor.hidden_dims 不再要求相同。
+        """
+        from se3_train.tasks.rough.rl_cfg import ROUGH_ACTOR_HIDDEN_DIMS
+
         mlp = load_rl_cfg(_ROUGH)
         gru = load_rl_cfg(_ROUGH_GRU)
         self.assertEqual(mlp.actor.class_name, "MLPModel")
+        self.assertEqual(tuple(mlp.actor.hidden_dims), ROUGH_ACTOR_HIDDEN_DIMS)
         for model in (gru.actor, gru.critic):
             self.assertEqual(model.class_name, "RNNModel")
             self.assertEqual(model.rnn_type, "gru")
@@ -178,6 +190,8 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
             self.assertEqual(model.rnn_hidden_dim, 512)
         for name in ("actor", "critic"):
             for key in ("hidden_dims", "activation", "obs_normalization", "distribution_cfg"):
+                if name == "actor" and key == "hidden_dims":
+                    continue
                 self.assertEqual(
                     getattr(getattr(gru, name), key),
                     getattr(getattr(mlp, name), key),
@@ -222,11 +236,20 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertIsInstance(command, RoughCommandCfg)
         self.assertEqual(tuple(command.height_range), (0.20, 0.38))
         self.assertEqual(tuple(command.deployment_ranges["height"]), (0.20, 0.38))
-        # actor 观测契约不变：高度扫描只进 critic。
+        # 高度扫描只进 critic。
         self.assertNotIn("height_scan", self.cfg.observations["actor"].terms)
-        self.assertEqual(
-            list(self.cfg.observations["actor"].terms), list(self.flat.observations["actor"].terms)
-        )
+        # 2026-10-02：相对 Flat 只把 commands 换成 [vx, yaw, height]、删 wheel_pos_zero（actor 30 维），
+        # pitch / roll 指令恒 0，部署指令契约六维。
+        expected = [
+            "commands_vx_yaw_height" if name == "commands" else name
+            for name in self.flat.observations["actor"].terms
+            if name != "wheel_pos_zero"
+        ]
+        self.assertEqual(list(self.cfg.observations["actor"].terms), expected)
+        self.assertEqual(tuple(command.pitch_range), (0.0, 0.0))
+        self.assertEqual(tuple(command.roll_range), (0.0, 0.0))
+        self.assertEqual(tuple(command.deployment_fields), NO_ATTITUDE_COMMAND_FIELDS)
+        self.assertEqual(set(command.deployment_ranges), set(NO_ATTITUDE_COMMAND_FIELDS))
 
     def test_rough_only_adds_rewards_drops_three_and_wraps_the_rest(self) -> None:
         """相对 Flat：新增两项台阶专项奖励、摔倒罚、窄核、upward、轮前后错位、航向保持与四项模仿奖励；
@@ -240,6 +263,10 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         )
         self.assertAlmostEqual(float(self.cfg.rewards["upward"].weight), ROUGH_UPWARD_WEIGHT)
         self.assertAlmostEqual(ROUGH_UPWARD_WEIGHT, 1.0)
+        self.assertAlmostEqual(
+            float(self.cfg.rewards["tracking_orientation_l2"].weight), ROUGH_ORIENTATION_WEIGHT
+        )
+        self.assertAlmostEqual(ROUGH_ORIENTATION_WEIGHT, -24.0)
         for name, term in self.cfg.rewards.items():
             if name in _ROUGH_ONLY:
                 continue
@@ -358,8 +385,10 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
         self.assertEqual(self.cfg.rewards["stair_climb_progress"].weight, 3.0)
         self.assertEqual(self.cfg.rewards["stair_support_height"].weight, 4.0)
 
-    def test_domain_randomization_matches_flat(self) -> None:
-        self.assertAlmostEqual(self.cfg.events["com"].params["com_range"], 0.005)
+    def test_domain_randomization_dr1(self) -> None:
+        """DR1（2026-10-05）起 rough 质心 DR 取 ROUGH_DR_COM_RANGE_M，Flat 仍是 ±5 mm。"""
+        self.assertAlmostEqual(self.cfg.events["com"].params["com_range"], ROUGH_DR_COM_RANGE_M)
+        self.assertAlmostEqual(self.flat.events["com"].params["com_range"], 0.005)
 
     def test_m2_stairs_column_pricing_and_fall_penalty(self) -> None:
         """M2：台阶列 is_alive / flat_wheel_contact / collision 置零（权重与原参数沿用 Flat），加一次性摔倒罚；
@@ -423,6 +452,7 @@ class RoughTerrainTests(unittest.TestCase):
                 "slope_up",
                 "slope_down",
                 *ROUGH_RANDOM_TERRAIN_COLUMNS,
+                ROUGH_JUMP_COLUMN,
             ],
         )
         self.assertEqual(tuple(gen.size), ROUGH_PATCH_SIZE)
@@ -667,7 +697,7 @@ class RoughRuntimeTests(unittest.TestCase):
 
     def test_every_column_is_populated_and_masks_agree(self) -> None:
         self.assertEqual(sorted(set(self.types.tolist())), list(range(len(self.names))))
-        self.assertEqual(len(self.names), 10)
+        self.assertEqual(len(self.names), 11)
         self.assertTrue(torch.equal(column_mask(self.env, ("stairs_up",)), self.stairs))
         self.assertTrue(
             torch.equal(column_mask(self.env, ROUGH_STAIR_LIKE_COLUMNS), self.stair_like)

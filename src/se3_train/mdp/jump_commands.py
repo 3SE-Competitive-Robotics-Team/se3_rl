@@ -241,7 +241,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         self._resampling_for_reset = True
         try:
             self._resample(env_ids)
-            self._pre_resampled_for_reset[env_ids] = True
+            self._pre_resampled_for_reset.index_fill_(0, env_ids, True)
         finally:
             self._resampling_for_reset = False
 
@@ -250,21 +250,22 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         assert isinstance(env_ids, torch.Tensor)
         extras = {}
         for metric_name, metric_value in self.metrics.items():
-            extras[metric_name] = torch.mean(metric_value[env_ids]).item()
-            metric_value[env_ids] = 0.0
+            # 保留张量，由 logger 每轮统一取值；.item() 会在 reset 路径上同步 GPU。
+            extras[metric_name] = torch.mean(metric_value[env_ids])
+            metric_value.index_fill_(0, env_ids, 0.0)
 
         pre_mask = self._pre_resampled_for_reset[env_ids]
         pre_ids = env_ids[pre_mask]
         fresh_ids = env_ids[~pre_mask]
 
-        self.command_counter[env_ids] = 0
+        self.command_counter.index_fill_(0, env_ids, 0)
         self._resampling_for_reset = True
         try:
             if len(fresh_ids) > 0:
                 self._resample(fresh_ids)
             if len(pre_ids) > 0:
-                self.command_counter[pre_ids] = 1
-                self._pre_resampled_for_reset[pre_ids] = False
+                self.command_counter.index_fill_(0, pre_ids, 1)
+                self._pre_resampled_for_reset.index_fill_(0, pre_ids, False)
         finally:
             self._resampling_for_reset = False
 
@@ -281,7 +282,7 @@ class JumpCommandTerm(VelocityHeightCommandTerm):
         super()._resample_command(env_ids)
 
         if not self.cfg.enable_jump_lifecycle:
-            self._command[env_ids, 5:8] = 0.0
+            self._command[:, 5:8].index_fill_(0, env_ids, 0.0)
             return
 
         active_jump = self._command[env_ids, 5] > 0.5

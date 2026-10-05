@@ -119,7 +119,7 @@ ROUGH_OBSTACLE_WIDTH_RANGE = (0.4, 1.0)
 ROUGH_OBSTACLE_NUM = 40
 # 十列比例：上台阶两列 0.43 不动；从 flat（0.15 → 0.07）、两坡（各 0.09 → 0.05）、二级下台阶（0.10 → 0.06）
 # 匀出 0.20 给三列新地形；stairs_down 0.14 保留（下台阶是 M38/M39/M42 的共同短板）。
-ROUGH_RANDOM_TERRAIN_PROPORTIONS: dict[str, float] = {
+_M51_TERRAIN_PROPORTIONS: dict[str, float] = {
     "flat": 0.07,
     "stairs_up": 0.28,
     ROUGH_TWO_STEP_UP_COLUMN: 0.15,
@@ -130,6 +130,20 @@ ROUGH_RANDOM_TERRAIN_PROPORTIONS: dict[str, float] = {
     ROUGH_RANDOM_ROUGH_COLUMN: 0.08,
     ROUGH_WAVE_COLUMN: 0.07,
     ROUGH_OBSTACLE_COLUMN: 0.05,
+}
+# 2026-10-03（用户定）：跳跃样本改为全部 env 的固定一部分——新增平地跳跃列，列内 env 全部是跳跃样本
+# （见 commands.ROUGH_JUMP_COLUMN_NAMES）。此前跳跃只在平地列（占 7%）的 30% env 上开放，总 env 8192 时同一时刻
+# 只有约 11 个 env 在跳，6×1365 的两条 run（tnt1j1nw / qtpyzxtf）都没学会跳；七卡 × 8192 约 144–256 个才学得会。
+# 10% × 8192 ≈ 819 个跳跃 env，按 0.5 Hz 触发、每跳 1.46 s 估计同一时刻约 270 个在跳，与 RJ1 前期相当，
+# 且不再随总 env 数变化。其余十列按原比例缩到 90%。跳跃参考与偏离终止按机身离 env 原点的高度计，只在平地成立。
+ROUGH_JUMP_COLUMN = "jump"
+ROUGH_JUMP_COLUMN_PROPORTION = 0.10
+ROUGH_RANDOM_TERRAIN_PROPORTIONS: dict[str, float] = {
+    **{
+        name: p * (1.0 - ROUGH_JUMP_COLUMN_PROPORTION)
+        for name, p in _M51_TERRAIN_PROPORTIONS.items()
+    },
+    ROUGH_JUMP_COLUMN: ROUGH_JUMP_COLUMN_PROPORTION,
 }
 
 # 坡度（rise/run）：上坡 0.4 = 21.8°，摩擦 1.0 下轮式可行；下坡有重力助推更易失控，上界收到 0.35。
@@ -401,6 +415,11 @@ def rough_terrains_cfg(*, num_rows: int = 10, random_terrains: bool = True) -> T
                 hf_pyramid_slope, proportion=p["slope_down"], slope_range=ROUGH_SLOPE_DOWN_RANGE
             ),
             **extra,
+            **(
+                {ROUGH_JUMP_COLUMN: flat(proportion=p[ROUGH_JUMP_COLUMN], size=ROUGH_PATCH_SIZE)}
+                if ROUGH_JUMP_COLUMN in p
+                else {}
+            ),
         },
         add_lights=False,
     )
@@ -428,6 +447,8 @@ def stair_only_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
 
 __all__ = [
     "ROUGH_HFIELD_HORIZONTAL_SCALE",
+    "ROUGH_JUMP_COLUMN",
+    "ROUGH_JUMP_COLUMN_PROPORTION",
     "ROUGH_OBSTACLE_COLUMN",
     "ROUGH_OBSTACLE_HEIGHT_RANGE",
     "ROUGH_OBSTACLE_NUM",

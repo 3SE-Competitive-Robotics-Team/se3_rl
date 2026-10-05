@@ -20,12 +20,15 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared.torch_constants import device_index
 from se3_train.mdp.commands import VelocityHeightCommandCfg, VelocityHeightCommandTerm
 from se3_train.mdp.height_default_cache import update_policy_default_from_height_cache
 from se3_train.mdp.jump_commands import JumpCommandCfg, JumpCommandTerm
 
 from .columns import column_mask, non_flat_column_mask
+from .curriculums import FLAT_WARMUP_ORIGINAL_TYPES_ATTR
 from .terrains import (
+    ROUGH_JUMP_COLUMN,
     ROUGH_OBSTACLE_COLUMN,
     ROUGH_RANDOM_ROUGH_COLUMN,
     ROUGH_STAIR_LIKE_COLUMNS,
@@ -50,6 +53,8 @@ ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 # 2026-09-15 用户定：下台阶与上下坡都按平地发——下台阶需要偏航跟踪，新列速度要 ±2.4 而不是只前向 0.4–0.8。
 # 只有上台阶类列留在"非平地覆盖"那一路（再被下面的台阶覆盖压一层，最终是 0.4–2.4 前向、yaw ±0.3）。
 # M24（用户定）：二级台阶的**下行**列按平地待遇（指令与 flat 同），只有上行列算台阶。
+# 2026-10-04 试过下行列改直行指令（vx ±2.4、yaw 0、无静站 / 高姿起步、出生正对台阶 ±15°，6656fb5，W&B ctw47krj）：
+# 课程等级 5.0 → 6.1 到顶，但确定性回放 r0–r9 摔倒 22 → 29/300、r6–r9 18% → 21%，没有收益，2026-10-05 用户定回退。
 # 副作用：新列也会被 _sample_high_stand_transition 采到（它只在这份名单的列上采样），
 # 即坡上与下台阶也会练高姿起步，这是想要的；若发现下台阶因此摔得多，先把 stairs_down 移出这份名单。
 ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
@@ -62,6 +67,8 @@ ROUGH_TERRAIN_COMMAND_FLAT_NAMES = (
     ROUGH_RANDOM_ROUGH_COLUMN,
     ROUGH_WAVE_COLUMN,
     ROUGH_OBSTACLE_COLUMN,
+    # 跳跃列按平地发指令（跳跃样本高度另行固定为参考站姿，见 RoughJumpCommandTerm）。
+    ROUGH_JUMP_COLUMN,
 )
 # A7 留下的"非平地列前向指令"，2026-09-15 起已无列使用（stairs_up 被台阶覆盖压在上面），
 # 保留是为了以后再加"需要限速的列"时有现成档位：vx 0.4–0.8 与平地课程脱钩、yaw ±0.2。
@@ -302,12 +309,15 @@ class RoughCommandTerm(JumpCommandTerm):
         if self.cfg.high_stand_transition_prob <= 0.0:
             return
 
+        # 全部用掩码运算写回（与布尔索引写入逐位相同），避免每步 nonzero 同步。
         waiting = self._high_stand_selected & (self._high_stand_steps_left > 0)
-        self._high_stand_steps_left[waiting] -= 1
+        self._high_stand_steps_left.sub_(waiting.to(self._high_stand_steps_left.dtype))
         start_moving = waiting & (self._high_stand_steps_left == 0)
-        self._command[start_moving, 0] = self._high_stand_target_vx[start_moving]
-        self._command[start_moving, 1:4] = 0.0
-        self._standing_mask[start_moving] = False
+        self._command[:, 0] = torch.where(
+            start_moving, self._high_stand_target_vx, self._command[:, 0]
+        )
+        self._command[:, 1:4].masked_fill_(start_moving.unsqueeze(1), 0.0)
+        self._standing_mask.masked_fill_(start_moving, False)
 
         waiting = self._high_stand_selected & (self._high_stand_steps_left > 0)
         moving = self._high_stand_selected & ~waiting
@@ -316,9 +326,9 @@ class RoughCommandTerm(JumpCommandTerm):
         log["Rough/high_stand_transition_moving"] = moving.float().mean()
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
-        self._high_stand_selected[env_ids] = False
-        self._high_stand_steps_left[env_ids] = 0
-        self._high_stand_target_vx[env_ids] = 0.0
+        self._high_stand_selected.index_fill_(0, env_ids, False)
+        self._high_stand_steps_left.index_fill_(0, env_ids, 0)
+        self._high_stand_target_vx.index_fill_(0, env_ids, 0.0)
         if self._terrain_override_mask is None:
             super()._resample_command(env_ids)
             self._sample_high_stand_transition(env_ids)
@@ -360,7 +370,7 @@ class RoughCommandTerm(JumpCommandTerm):
         height_low, height_high = (float(v) for v in self.cfg.high_stand_height_range)
         duration_low, duration_high = (float(v) for v in self.cfg.high_stand_duration_range_s)
         vx_low, vx_high = (float(v) for v in self.cfg.high_stand_move_vx_range)
-        self._command[ids, 0:4] = 0.0
+        self._command[:, 0:4].index_fill_(0, ids, 0.0)
         self._command[ids, 4] = (
             torch.rand(len(ids), device=self.device) * (height_high - height_low) + height_low
         )
@@ -371,8 +381,8 @@ class RoughCommandTerm(JumpCommandTerm):
         self._high_stand_target_vx[ids] = (
             torch.rand(len(ids), device=self.device) * (vx_high - vx_low) + vx_low
         )
-        self._high_stand_selected[ids] = True
-        self._standing_mask[ids] = True
+        self._high_stand_selected.index_fill_(0, ids, True)
+        self._standing_mask.index_fill_(0, ids, True)
         update_policy_default_from_height_cache(
             self._env,
             "velocity_height",
@@ -411,14 +421,16 @@ class RoughCommandTerm(JumpCommandTerm):
 
 
 # ---------------------------------------------------------------- 跳跃合入（RJ1，2026-10-02 用户定）
-ROUGH_JUMP_COLUMN_NAMES: tuple[str, ...] = ("flat",)
-"""允许跳跃的子地形列（用户定：只有平地列）。"""
-ROUGH_JUMP_ENV_FRACTION = 0.3
-"""跳跃样本占这些列 env 的比例（每回合 reset 时抽，用户定 30%）。"""
-ROUGH_JUMP_TRIGGER_RATE_HZ = 0.2
-"""跳跃样本站满 min_idle_s 后每秒触发概率（J10 为 0.5，跳跃时间占 29%，rough 降低免得挤占地形训练）。"""
-ROUGH_JUMP_MAX_LIN_VEL_X = 1.5
-"""触发时 vx 指令夹到 ±该值（J10 训练范围）。"""
+ROUGH_JUMP_COLUMN_NAMES: tuple[str, ...] = (ROUGH_JUMP_COLUMN,)
+"""跳跃样本所在的子地形列：2026-10-03 起为专用平地跳跃列（占全部 env 的 terrains.ROUGH_JUMP_COLUMN_PROPORTION），
+此前是平地列。按 env 的原始列归属判定（热身期全体在平地列时跳跃 env 照常跳）。"""
+ROUGH_JUMP_ENV_FRACTION = 1.0
+"""跳跃样本占跳跃列 env 的比例：专用列全部是跳跃样本（此前平地列 30%）。"""
+ROUGH_JUMP_TRIGGER_RATE_HZ = 0.5
+"""跳跃样本站满 min_idle_s 后每秒触发概率：2026-10-03 由 0.2 提到 J10 验证过的 0.5（每次循环约 4.5 s、约 1/3 时间在跳）。"""
+ROUGH_JUMP_MAX_LIN_VEL_X: float | None = None
+"""触发时 vx 指令夹到 ±该值；None 不夹。2026-10-04（用户定）由 1.5（J10 训练范围）改为不夹：跳跃样本等待期 vx 跟随平地课程到 ±2.4，
+夹到 ±1.5 会把约 1/3 跳跃堆在 ±1.5 上并让高速 env 起跳时被迫减速；部署运行时（se3_runtime）本来就不夹。"""
 
 
 @dataclass
@@ -435,7 +447,7 @@ class RoughJumpCommandCfg(RoughCommandCfg):
     trigger_rate_hz: float = ROUGH_JUMP_TRIGGER_RATE_HZ
     jump_column_names: tuple[str, ...] = ROUGH_JUMP_COLUMN_NAMES
     jump_env_fraction: float = ROUGH_JUMP_ENV_FRACTION
-    jump_max_lin_vel_x: float = ROUGH_JUMP_MAX_LIN_VEL_X
+    jump_max_lin_vel_x: float | None = ROUGH_JUMP_MAX_LIN_VEL_X
 
     def build(self, env: ManagerBasedRlEnv) -> RoughJumpCommandTerm:
         if self.enable_jump_lifecycle:
@@ -452,7 +464,7 @@ class RoughJumpCommandTerm(RoughCommandTerm):
 
     每回合 reset 时，在允许跳跃的列上按 jump_env_fraction 抽"跳跃样本"：整回合高度指令固定为参考站姿
     （与 J10 一样，用户定）、不参加高姿态起步序列，只有它们会触发跳跃。跳跃期间冻结速度 / 姿态 / 高度指令，
-    触发时 vx 夹到 ±jump_max_lin_vel_x、yaw / pitch / roll 置 0。其余 env 与 M54 完全一样。
+    触发时 yaw / pitch / roll 置 0，vx 保持当前指令（jump_max_lin_vel_x 非 None 时才夹到 ±该值）。其余 env 与 M54 完全一样。
     """
 
     cfg: RoughJumpCommandCfg
@@ -495,6 +507,10 @@ class RoughJumpCommandTerm(RoughCommandTerm):
     # ---- 生命周期 ----
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         if bool(getattr(self, "_resampling_for_reset", False)):
+            # reset 事件里的预采样早于 command_manager.reset：不先清时钟，下面 write_dims 会把跳跃中途被终止的
+            # env 写成 jump_flag=1，reset 事件随即把它当旧跳跃线 RSI 样本，从旧参考轨迹注入机身与关节状态
+            # （2026-10-03 定位，见 docs/plan/rough_iteration_time_20261003.md）。新 episode 不可能在跳，先清。
+            self.clock.reset(env_ids)
             self._sample_jump_envs(env_ids)
             super()._resample_command(env_ids)
         else:
@@ -507,8 +523,18 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         self._fix_jump_env_height(env_ids)
         self.clock.write_dims(self._command)
 
-    def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
+    def _jump_column_mask(self) -> torch.Tensor | None:
+        """按原始列归属判定跳跃列：平地热身期全体被挪到平地列，此时跳跃列 env 仍是跳跃样本（平地上跳，参考成立）。"""
         mask = column_mask(self._env, self.cfg.jump_column_names)
+        original = getattr(self._env, FLAT_WARMUP_ORIGINAL_TYPES_ATTR, None)
+        if mask is None or original is None:
+            return mask
+        names = list(self._env.scene.terrain.cfg.terrain_generator.sub_terrains.keys())
+        cols = [names.index(name) for name in self.cfg.jump_column_names if name in names]
+        return torch.isin(original.to(torch.long), device_index(cols, device=original.device))
+
+    def _sample_jump_envs(self, env_ids: torch.Tensor) -> None:
+        mask = self._jump_column_mask()
         on_column = (
             torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
             if mask is None
@@ -522,9 +548,9 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         ids = env_ids[self.jump_env[env_ids]]
         if ids.numel() == 0:
             return
-        self._high_stand_selected[ids] = False
-        self._high_stand_steps_left[ids] = 0
-        self._command[ids, 4] = float(self.library.stand_height)
+        self._high_stand_selected.index_fill_(0, ids, False)
+        self._high_stand_steps_left.index_fill_(0, ids, 0)
+        self._command[:, 4].index_fill_(0, ids, float(self.library.stand_height))
         update_policy_default_from_height_cache(
             self._env,
             "velocity_height",
@@ -543,9 +569,10 @@ class RoughJumpCommandTerm(RoughCommandTerm):
         super()._update_command()
         fired = self.clock.step(float(self._env.step_dt), allowed=self.jump_env)
         if fired.numel() > 0:
-            vmax = float(self.cfg.jump_max_lin_vel_x)
-            self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
-            self._command[fired, 1:4] = 0.0
+            if self.cfg.jump_max_lin_vel_x is not None:
+                vmax = float(self.cfg.jump_max_lin_vel_x)
+                self._command[fired, 0] = self._command[fired, 0].clamp(-vmax, vmax)
+            self._command[:, 1:4].index_fill_(0, fired, 0.0)
         self.clock.write_dims(self._command)
 
     def deployment_jump_reference(self) -> dict:

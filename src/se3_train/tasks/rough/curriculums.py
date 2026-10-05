@@ -103,7 +103,7 @@ def flat_warmup(
         _refresh_terrain_dependent_masks(env, command_name)
     return {
         "active": (~done).float().mean(),
-        "progress": torch.tensor(progress, device=env.device),
+        "progress": torch.full((), progress, device=env.device),
     }
 
 

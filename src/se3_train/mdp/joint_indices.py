@@ -9,6 +9,7 @@ import torch
 
 from se3_shared import JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared.torch_constants import device_index
 
 _SHARED_ROBOT = SharedRobotConfig()
 
@@ -86,8 +87,8 @@ def wheel_actuator_ids(entity: Any) -> tuple[int, ...]:
 
 
 def tensor_ids(ids: Sequence[int], *, device: torch.device | str) -> torch.Tensor:
-    """把索引转成当前设备上的 long tensor。"""
-    return torch.tensor(tuple(ids), device=device, dtype=torch.long)
+    """把索引转成当前设备上的 long tensor（按设备缓存，避免每次从主机拷贝触发 GPU 同步）。"""
+    return device_index(tuple(ids), device=device)
 
 
 def joint_ids(

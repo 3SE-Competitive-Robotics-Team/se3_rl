@@ -42,9 +42,12 @@ M50：台阶列 yaw 指令恒 0、出生朝向正对台阶、yaw 跟踪恢复 Fl
 M51：加随机粗糙、波浪、离散矮障碍三列（terrains.ROUGH_RANDOM_TERRAIN_PROPORTIONS）。
 M53：膝气弹簧电机侧前馈补偿 + 腿部 T-N 包络 ×0.8（见 ROUGH_LEG_TORQUE_ENVELOPE_SCALE 注释）。
 M54：台阶列航向保持 −6、轮前后错位罚 ×0.25、出生朝向 ±15°（见 ROUGH_STAIR_HEADING_HOLD_WEIGHT 注释）。
-RJ1：平地列 30% 跳跃样本合入 J10 跳跃（见 _apply_jump_mimic）。2026-10-02 用户定 RJ1 为默认，M39–M54 与 RJ1 的
+RJ1：合入 J10 跳跃（见 _apply_jump_mimic）；2026-10-03 起跳跃样本为专用平地跳跃列（占全部 env 10%）、触发 0.5 Hz。2026-10-02 用户定 RJ1 为默认，M39–M54 与 RJ1 的
 临时入口全部删除；M40–M46、M48、M52 的对照未采用。复现各对照用对应 commit（M39 a724b49、M47 4398698、M49 d5db384、
 M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab）。
+
+DR1（2026-10-05 用户定）：rough 默认域随机化换成真 Kp/Kd、质心 ±5 cm、质量 −1…+3 kg、气弹簧 ×0.9–1.5、延迟 0–10 ms，
+不做恢复系数（见 ROUGH_DR_* 注释，docs/plan/rough_wide_dr_20261003.md）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -77,8 +80,10 @@ from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_train.mdp import events as mdp_events
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_WHEEL_ACTION_SCALE,
@@ -155,7 +160,13 @@ ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
 # A15 非台阶列定价。A13b flat 列账本（96 env，指令 vx 2.0 / h 0.38）：站着不动净 +2.407/s、走路净
 # −2.932/s，走路必然产生的机身起伏被高度罚、核里的 vz 项、姿态罚罚了三遍。σ 0.05→0.10 收回 +3.11/s，
 # 运动核 0.08→0.5 与 vz 2.0→0 合计收回 +2.97/s；违令罚扩到全列只打在"不动"那边。
-ROUGH_BASE_HEIGHT_SIGMA = 0.10
+# 2026-10-05（用户定）σ 0.10 → 0.07（全列，上台阶列窗口口径同样生效）。依据：加速时机身冲高 6–9 cm，反事实账本显示
+# 贴着指令高度加速总奖励更高、加速不慢，但差额只占窗口 3–6%（策略没学好，不是被奖励鼓励）。同代码 4+3 卡对照
+# HeightSigma07 `jrvpex39` 对基线 `h7tyzjql`（f090dbe，均含 DR1，总 env 4680），sim2x 回放：0.30 m 加速峰值高出指令
+# 87–90 → 24–45 mm，0.34 m 低速稳态 +50 → +5…+21 mm；0.38 m 静站后起步到 90% 更快、倾角 11–13° → 4–6°。
+# 代价：0.22/0.26 m 稳态偏低 1–2.4 cm；0.38 m 静站后 vx 0.8 稳态超速到 1.13；下台阶摔倒 4 → 9（r9 低姿态 1.2–2.0 m/s），
+# 嫌疑是下行列单点射线过沿跳变被更陡的罚放大（未验证）。平地 vz 项与独立 vz 罚分不开冲高与贴高，未采用。
+ROUGH_BASE_HEIGHT_SIGMA = 0.07
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -265,6 +276,12 @@ ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.05
 # None = 不加（M37 及之前）。M38-4999 回放：撞面俯仰从 M37 的 −16…−18° 回到 −2…−10°，h=0.38 低速格子从卡变过；
 # 代价是台阶列 vx 0.79–0.86 → 0.72–0.75、落差后摔倒变多（docs/plan/m38_upward_20260928.md）。2026-09-28 起默认 1.0。
 ROUGH_UPWARD_WEIGHT: float | None = 1.0
+# 2026-10-04 起 tracking_orientation_l2（pitch/roll L2）−12 → −24（用户定）。同代码同配置（7 卡 × 1170、actor 128）对照：
+# Base128 `8kjb4vm4`（−12）对 Orient24 `3ix86na3`（−24），sim2x 地形网格 10 种地形 × r3/6/9 平均倾角 8.7° → 4.4°、
+# p95 20.8° → 11.8°、通过率 93% → 100%，平地 vx 误差 0.213 → 0.082、抗推最大倾角 21.3° → 15.6°；
+# 代价是起步到 90% 速度 0.61 → 0.80 s。跳跃落地变差与中等高度跑动站高两条 run 都有，与本项无关
+# （docs/plan/rough_orient24_20261004.md）。
+ROUGH_ORIENTATION_WEIGHT: float = -24.0
 # 从 Flat 继承后整项删除的三项（另三项 rough 自己不再构造）：
 #   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令恒 0 永远开不了，与 tracking_ang_vel 重复计酬；
 #   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线；
@@ -315,7 +332,34 @@ ROUGH_STAIR_WHEEL_FORE_AFT_SCALE = 0.25
 # 值取 A20/A21 验证过的 0.5（commit 5ec1fd7）：A15 在 0.38 m 静站后给 0.8/1.6/2.4 只能跑 0.05 m/s，
 # 加转移后 A21 model_999 达 0.80/1.55/2.14 m/s；代价是 catastrophic 终止 0.03–0.08 → 0.12–0.15/轮。
 # 高度区间、静站时长、切换后速度沿用 commands.py 的 A20 默认值 (0.36,0.38)/(1.5,2.5)s/(0.8,2.4)。
-ROUGH_HIGH_STAND_TRANSITION_PROB = 0.5
+# 2026-10-04 起 0.5 → 0.1（用户定）。0.5 时任意时刻约 26% env 处在高姿态序列中（0.1 时 5.4%）。同代码对照
+# Orient24 `3ix86na3`（0.5）对 HighStand01 `0yeh4dow`（0.1），sim2x 回放：跳跃落地后 |俯仰| 21–22° → 1.6–9.3°、
+# 下沉 40–47 → 7–28 mm、0.5 s 内稳定；平地静站固定俯仰 −5.6/+7.5/−3.3° → −0.8/−0.6/−1.6°（0.22/0.30/0.38 m）；
+# 平地 vx 误差 0.082 → 0.058；中等高度跑动站高减 1–2.5 cm（未根除）。M8 的高姿态起步能力保留（0.38 m 静站后
+# 0.8/1.6/2.4 均能起步，稳态 0.84/1.53/2.12 m/s、到 90% 稍慢）；代价：wave r6/r9 0.6 m/s 卡住、两级下台阶 r9 摔倒、
+# 跳跃离地平均低 1.6 cm（docs/plan/rough_highstand01_20261004.md）。
+ROUGH_HIGH_STAND_TRANSITION_PROB = 0.1
+
+# DR1（2026-10-05 用户定，原 Exp-WideDR-NoRest）：rough 默认域随机化在 Flat 继承的 DR 上改五项，其余（摩擦、惯量、电机被动参数、
+# 默认关节位置、推力课程、观测噪声）不动。起因是 DR 审计（.scratch/dr_audit/verify_dr.py）：Flat 继承的 pd_gains 实际是 6 电机
+# 输出力矩 ×0.9–1.1、kd 无效，质量、质心、延迟都比复旦 stairs_v3（同尺寸轮腿）窄。
+#   Kp/Kd   torch 侧真正的增益 DR（events.randomize_pd_gains_torch），×0.9–1.1；原输出力矩缩放随之去掉
+#   质心    ±5 mm → ±5 cm
+#   质量    base 附加 −0.5…+1.5 → −1…+3 kg
+#   气弹簧   ×0.9–1.1 → ×0.9–1.5（前馈补偿仍按额定 300 N，残差最大 +150 N 交给策略）
+#   动作延迟 4–6 ms（按 5 ms 物理步取整恒为 1 步）→ 0–10 ms（0/1/2 步各 1/3）；play 与 ONNX 契约同步，
+#           真机 runtime 默认把延迟覆盖成 0（se3_runtime_nx --action-delay-steps），不受影响
+# 恢复系数不做：MuJoCo 软接触的阻尼对持续接触一直生效，压低阻尼得到的是轮地接触持续欠阻尼振荡，而不是 PhysX 那种只在撞击时
+# 生效的 restitution。离线归因显示 e > 0.7 回报断崖（0.9–1.0 −76%），是 WideDR 全面退化的主因。
+# 评测（docs/plan/rough_wide_dr_20261003.md）：扰动 plant 11 种 × 6 项 0 摔（旧默认 5 摔），质心 +5 cm 下 vx 误差 0.14（旧 0.56）；
+# 名义平地 vx 误差约为旧默认的 2 倍。注意 NoRest（11f9d40）相对 Orient24 还混入了 3919db7 / b50ef1f / 6656fb5 三处默认改动，
+# DR1 对名义性能的单独代价尚无干净对照。复现各对照：WideDR 80019b8、Oracle 1fa00ca、Rest05 17c91ba、NoRest 11f9d40。
+ROUGH_DR_KP_RANGE = (0.9, 1.1)
+ROUGH_DR_KD_RANGE = (0.9, 1.1)
+ROUGH_DR_COM_RANGE_M = 0.05
+ROUGH_DR_BASE_MASS_RANGE_KG = (-1.0, 3.0)
+ROUGH_DR_KNEE_SPRING_SCALE_RANGE = (0.9, 1.5)
+ROUGH_DR_ACTION_DELAY_RANGE_S = (0.0, 0.010)
 
 # critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
 # 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
@@ -343,12 +387,19 @@ def env_cfg(
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
+    orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
+    high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
+    base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
+    orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
+    None 沿用 Flat 的 −12。
+    high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
+    base_height_sigma：机身高度罚 flat_base_height 的 σ（全列共用，上台阶列的窗口口径同样用它），默认 ROUGH_BASE_HEIGHT_SIGMA；对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -431,7 +482,7 @@ def env_cfg(
         body_collision_bottom_offset=ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
         terrain_step_height_type_names=ROUGH_TERRAIN_STEP_HEIGHT_TYPE_NAMES,
         terrain_command_flat_names=ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
-        high_stand_transition_prob=ROUGH_HIGH_STAND_TRANSITION_PROB,
+        high_stand_transition_prob=float(high_stand_transition_prob),
         # 上限只由训练期课程项结算；play 时没有课程，打开只会空累计。
         stair_speed_cap_enabled=bool(stair_speed_cap) and not play,
     )
@@ -475,6 +526,7 @@ def env_cfg(
         cfg,
         stair_height_reference=stair_height_reference,
         stair_height_dead_zone_m=stair_height_dead_zone_m,
+        base_height_sigma=base_height_sigma,
     )
     # M49 / M54：左右轮心前后错位罚，台阶列 ×0.25（见 ROUGH_WHEEL_FORE_AFT_WEIGHT、ROUGH_STAIR_WHEEL_FORE_AFT_SCALE）。
     cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
@@ -499,6 +551,10 @@ def env_cfg(
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
+    if orientation_weight is not None:
+        cfg.rewards["tracking_orientation_l2"] = replace(
+            cfg.rewards["tracking_orientation_l2"], weight=float(orientation_weight)
+        )
     # M39：action_rate 权重（只改权重，函数与参数不动）。
     cfg.rewards["action_rate"] = replace(
         cfg.rewards["action_rate"], weight=ROUGH_ACTION_RATE_WEIGHT
@@ -524,8 +580,13 @@ def env_cfg(
     # M47：删倾角终止（见 ROUGH_WHEEL_FORE_AFT_WEIGHT 上方注释）。
     del cfg.terminations["bad_orientation"]
 
+    # DR1：rough 默认域随机化（见 ROUGH_DR_* 注释）。
+    _apply_rough_domain_randomization(cfg, play=play)
+
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
+    # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
+    apply_no_attitude_layout(cfg)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -579,7 +640,8 @@ ROUGH_JUMP_PHASE_TIME_SCALE_S = 1.5
 def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     """RJ1（2026-10-02 用户定）：按 J10 合入跳跃——34 维观测里的 jump_flag / 目标高度 / 相位、无 RSI、无下蹲参考。
 
-    只有平地列 30% 的跳跃样本会跳，且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
+    只有跳跃样本会跳（2026-10-03 起为专用平地跳跃列的全部 env，占全部 env 10%；此前为平地列 30%），
+    且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
     四项模仿奖励只计跳跃样本；跳跃期间屏蔽静站罚、接触力罚与速度跟踪的 vz 项（机身高度罚、轮 / 腿离地罚
     本来就按 jump_flag 屏蔽）；偏离参考提前终止不吃摔倒罚。观测维度与 M54 相同。
     """
@@ -643,11 +705,49 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
+def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+    """DR1（见 ROUGH_DR_* 注释）：改 Flat 继承的 startup 事件参数，Kp/Kd 换成 torch 侧实现，放宽动作延迟。
+
+    动作延迟属于动作项，play（评测 / ONNX 导出）同样生效，契约随之导出 0–10 ms；
+    其余都是训练期 startup 事件，play 没有这些事件。
+    """
+    delayed_action = cfg.actions["delayed_action"]
+    min_s, max_s = ROUGH_DR_ACTION_DELAY_RANGE_S
+    delayed_action.action_delay_enabled = True
+    delayed_action.action_delay_randomize = True
+    delayed_action.action_delay_min_s = float(min_s)
+    delayed_action.action_delay_max_s = float(max_s)
+    delayed_action.action_delay_s = 0.5 * (float(min_s) + float(max_s))
+    if play:
+        return
+
+    def _params(name: str, **overrides) -> dict:
+        return {**(cfg.events[name].params or {}), **overrides}
+
+    cfg.events["pd_gains"] = replace(
+        cfg.events["pd_gains"],
+        func=mdp_events.randomize_pd_gains_torch,
+        params=_params("pd_gains", kp_range=ROUGH_DR_KP_RANGE, kd_range=ROUGH_DR_KD_RANGE),
+    )
+    cfg.events["com"] = replace(
+        cfg.events["com"], params=_params("com", com_range=ROUGH_DR_COM_RANGE_M)
+    )
+    cfg.events["base_mass"] = replace(
+        cfg.events["base_mass"],
+        params=_params("base_mass", mass_range=ROUGH_DR_BASE_MASS_RANGE_KG),
+    )
+    cfg.events["knee_spring_force"] = replace(
+        cfg.events["knee_spring_force"],
+        params=_params("knee_spring_force", force_scale_range=ROUGH_DR_KNEE_SPRING_SCALE_RANGE),
+    )
+
+
 def _apply_rough_rewards(
     cfg: ManagerBasedRlEnvCfg,
     *,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
+    base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
 ) -> None:
     """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
     cfg.rewards = dict(cfg.rewards)
@@ -669,7 +769,7 @@ def _apply_rough_rewards(
     height = cfg.rewards["flat_base_height"]
     height_params = {
         **height.params,
-        "sigma": ROUGH_BASE_HEIGHT_SIGMA,
+        "sigma": float(base_height_sigma),
         "support_sensor_name": ROUGH_BASE_HEIGHT_SUPPORT_SENSOR,
         "terrain_type_names": ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS,
     }
@@ -749,6 +849,12 @@ __all__ = [
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_DROPPED_FLAT_REWARDS",
+    "ROUGH_DR_ACTION_DELAY_RANGE_S",
+    "ROUGH_DR_BASE_MASS_RANGE_KG",
+    "ROUGH_DR_COM_RANGE_M",
+    "ROUGH_DR_KD_RANGE",
+    "ROUGH_DR_KNEE_SPRING_SCALE_RANGE",
+    "ROUGH_DR_KP_RANGE",
     "ROUGH_FALL_PENALTY",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
@@ -761,6 +867,7 @@ __all__ = [
     "ROUGH_NCONMAX",
     "ROUGH_NJMAX",
     "ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE",
+    "ROUGH_ORIENTATION_WEIGHT",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
     "ROUGH_STAIRS_ZEROED_REWARDS",

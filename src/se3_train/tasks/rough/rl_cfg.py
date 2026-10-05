@@ -11,27 +11,43 @@ MLP 入口逐项相同。rollout 特意**不用** Flat GRU 的 64 步而保持 2
 （2.7 倍）、按轮计数的平地热身/ramp（env_cfg.ROUGH_STEPS_PER_POLICY_ITER=24）和推力课程的时间轴，
 就不再是单变量对照；rsl_rl 采集期 hidden state 跨 rollout 持续、只在 done 时清零，24 步只截断
 BPTT 梯度、不截断推理时的记忆长度。假设与验收见 docs/plan/m16_gru24_20260920.md。
+
+2026-10-04（用户定）：MLP 入口 actor 隐藏层默认 512/256/128 → 128/64/32（ROUGH_ACTOR_HIDDEN_DIMS），
+critic 不变。依据是 Actor128 对照（nulltask1 `4am48uzq` 五卡 × 8192、`qtpyzxtf` 六卡 × 1365）。
+GRU 入口仍用 Flat 的 GRU 配置。同日删掉推理 100 Hz 对照（Exp-Dec2 / Exp-Dec2-Steps48），维持 50 Hz，
+结论见 docs/plan/rough_dec2_100hz_20261003.md。
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import asdict, replace
 
-from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
 from se3_train.tasks.flat.rl_cfg import FLAT_NUM_STEPS_PER_ENV, mlp_rl_cfg
 from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 
 # 地形课程要爬 10 级难度，比平地的 3500 轮长。沿用本仓库非 Flat 线的 5000 轮惯例。
 ROUGH_MAX_ITERATIONS = 5000
+# 2026-10-04 用户定：actor 隐藏层默认 128/64/32（部署跑的是 actor），critic 沿用 Flat 的 512/256/128。
+ROUGH_ACTOR_HIDDEN_DIMS = (128, 64, 32)
 
 
 def _is_smoke(smoke: bool) -> bool:
     return smoke or os.environ.get("SE3_SMOKE", "0") == "1"
 
 
+def _use_se3_ppo(cfg: RslRlOnPolicyRunnerCfg) -> RslRlOnPolicyRunnerCfg:
+    """算法类换成 se3_train.ppo.Se3PPO（不设 critic 固定 LR，更新与 rsl_rl.PPO 逐位相同），多卡时记录梯度噪声尺度。"""
+    fields = {k: v for k, v in asdict(cfg.algorithm).items() if k != "class_name"}
+    cfg.algorithm = Se3PpoAlgorithmCfg(**fields, critic_learning_rate=None)
+    return cfg
+
+
 def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """生成 MLP PPO 训练配置（超参数与 Flat 基线逐项相同）。"""
-    cfg = mlp_rl_cfg(smoke=smoke)
+    """生成 MLP PPO 训练配置：PPO 超参数与 Flat 基线逐项相同，actor 隐藏层为 ROUGH_ACTOR_HIDDEN_DIMS。"""
+    cfg = _use_se3_ppo(mlp_rl_cfg(smoke=smoke))
+    cfg.actor = replace(cfg.actor, hidden_dims=ROUGH_ACTOR_HIDDEN_DIMS)
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
     return cfg
@@ -39,11 +55,16 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 
 def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成 GRU PPO 训练配置：只换网络，rollout 仍 24 步，其余与 `rl_cfg` 逐项相同（M16）。"""
-    cfg = flat_gru_rl_cfg(smoke=smoke)
+    cfg = _use_se3_ppo(flat_gru_rl_cfg(smoke=smoke))
     cfg.num_steps_per_env = FLAT_NUM_STEPS_PER_ENV
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
     return cfg
 
 
-__all__ = ["ROUGH_MAX_ITERATIONS", "gru_rl_cfg", "rl_cfg"]
+__all__ = [
+    "ROUGH_ACTOR_HIDDEN_DIMS",
+    "ROUGH_MAX_ITERATIONS",
+    "gru_rl_cfg",
+    "rl_cfg",
+]

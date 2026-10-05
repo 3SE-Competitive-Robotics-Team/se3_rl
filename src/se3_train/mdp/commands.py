@@ -34,6 +34,9 @@ class VelocityHeightCommandCfg(CommandTermCfg):
     resampling_time_range: tuple[float, float] = (5.0, 5.0)
     deployment_ranges: dict[str, tuple[float, float]] | None = None
     """部署 command 包络；课程任务应显式填写最终最高难度范围。"""
+    deployment_fields: tuple[str, ...] | None = None
+    """部署指令契约的字段（se3_shared.COMMAND_FIELDS 的子序列）；None = 训练张量的前缀布局（5 或 8 维）。
+    rough / 跳跃 mimic 用 se3_shared.NO_ATTITUDE_COMMAND_FIELDS 六维，训练张量仍是 8 维。"""
     height_resample_on_reset_only: bool = False
     """是否只在 reset 时采样高度指令；普通重采样只更新速度和姿态指令。"""
     constrain_diff_drive_commands: bool = False
@@ -277,14 +280,11 @@ class VelocityHeightCommandTerm(CommandTerm):
         standing_ids = env_ids[standing_mask]
         moving_ids = env_ids[~standing_mask]
 
-        self._standing_mask[standing_ids] = True
-        self._standing_mask[moving_ids] = False
+        self._standing_mask.index_fill_(0, standing_ids, True)
+        self._standing_mask.index_fill_(0, moving_ids, False)
 
-        # 站立环境:零速度,默认姿态,按站立高度范围采样。
-        self._command[standing_ids, 0] = 0.0
-        self._command[standing_ids, 1] = 0.0
-        self._command[standing_ids, 2] = 0.0  # pitch = 0
-        self._command[standing_ids, 3] = 0.0  # roll = 0
+        # 站立环境:零速度,默认姿态（vx / yaw / pitch / roll 四列清零）,按站立高度范围采样。
+        self._command[:, 0:4].index_fill_(0, standing_ids, 0.0)
         if len(standing_ids) > 0 and resample_height:
             standing_height = (
                 torch.rand(len(standing_ids), device=self.device)
@@ -409,16 +409,14 @@ class VelocityHeightCommandTerm(CommandTerm):
             if step_height_range is None:
                 continue
             terrain_mask = types == terrain_index
-            if not torch.any(terrain_mask):
-                continue
-
+            # 逐元素公式算全体再按列 where（与布尔索引写入逐位相同），不需要 any() / nonzero 同步。
             step_low = float(step_height_range[0])
             step_high = float(step_height_range[1])
-            difficulty = difficulty_hi[terrain_mask]
             if terrain_name == "random_stairs":
-                step_height[terrain_mask] = step_high * (0.5 + 0.5 * difficulty)
+                value = step_high * (0.5 + 0.5 * difficulty_hi)
             else:
-                step_height[terrain_mask] = step_low + difficulty * (step_high - step_low)
+                value = step_low + difficulty_hi * (step_high - step_low)
+            step_height = torch.where(terrain_mask, value, step_height)
 
         required = (
             step_height

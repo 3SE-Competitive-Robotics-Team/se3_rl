@@ -22,6 +22,7 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 
 from se3_train.mdp.commands import VelocityHeightCommandCfg
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
     FLAT_WHEEL_ACTION_SCALE,
@@ -103,6 +104,8 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             reference_paths=paths, phase_time_scale_s=JUMP_MIMIC_PHASE_TIME_SCALE_S, **kwargs
         )
     }
+    # 观测 30 维、部署指令六维（去掉 pitch / roll 与 wheel_pos_zero，见 tasks.common.no_attitude）
+    apply_no_attitude_layout(cfg)
 
     # 奖励
     cfg.rewards = dict(cfg.rewards)

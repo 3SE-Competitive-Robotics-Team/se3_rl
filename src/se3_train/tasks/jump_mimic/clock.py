@@ -45,9 +45,10 @@ class JumpReferenceClock:
 
     def reset(self, env_ids: torch.Tensor) -> None:
         """episode reset：回到不在跳、站立时长清零。"""
-        self.active[env_ids] = False
-        self.ref_t[env_ids] = 0.0
-        self.idle_t[env_ids] = 0.0
+        # index_fill_ 把标量当 kernel 参数传入；`x[ids] = 0.0` 会先把标量从主机拷到 GPU 而同步。
+        self.active.index_fill_(0, env_ids, False)
+        self.ref_t.index_fill_(0, env_ids, 0.0)
+        self.idle_t.index_fill_(0, env_ids, 0.0)
 
     def step(self, dt: float, allowed: torch.Tensor | None = None) -> torch.Tensor:
         """推进一个 policy step；allowed 给出可以触发的 env（None 为全部），返回本步新触发的 env id。"""
@@ -67,8 +68,8 @@ class JumpReferenceClock:
         )
         ids = fire.nonzero().flatten()
         if len(ids) > 0:
-            self.active[ids] = True
-            self.ref_t[ids] = 0.0
+            self.active.index_fill_(0, ids, True)
+            self.ref_t.index_fill_(0, ids, 0.0)
             self.ref_id[ids] = torch.randint(
                 0, self.library.num_refs, (len(ids),), device=self.device
             )

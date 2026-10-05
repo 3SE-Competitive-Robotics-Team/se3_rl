@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared.torch_constants import device_index
+
 from .columns import column_mask
 
 if TYPE_CHECKING:
@@ -30,7 +32,11 @@ def reset_stair_rewards(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) ->
         ("_rough_stair_hold", 0.0),
     ):
         if hasattr(env, name):
-            getattr(env, name)[ids] = initial
+            buffer = getattr(env, name)
+            if isinstance(ids, slice):
+                buffer[ids] = initial
+            else:
+                buffer.index_fill_(0, ids, initial)
 
 
 def _geometry(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]):
@@ -51,12 +57,13 @@ def _geometry(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]):
         selected = terrain.terrain_types == index
         # 子地形可以自报等效几何（TwoStepStairsTerrainCfg 这种两级不等高的，默认公式算不对）。
         custom = getattr(cfg, "se3_stair_geometry", None)
+        # 逐元素公式对全体 env 算一遍再按列 where 选取，结果与布尔索引写入逐位相同，但不触发 nonzero 同步。
         if callable(custom):
-            step_h, step_start, step_len, step_count = custom(alpha[selected])
-            height[selected] = step_h
-            start[selected] = step_start
-            length[selected] = step_len
-            count[selected] = step_count
+            step_h, step_start, step_len, step_count = custom(alpha)
+            height = torch.where(selected, step_h, height)
+            start = torch.where(selected, step_start, start)
+            length = torch.where(selected, step_len, length)
+            count = torch.where(selected, step_count, count)
             continue
         n = max(
             0,
@@ -64,12 +71,15 @@ def _geometry(env: ManagerBasedRlEnv, terrain_type_names: tuple[str, ...]):
         )
         inner_half = min(cfg.size) / 2 - cfg.border_width
         # 最外侧边框比最后踏面再高一阶，故总抬升次数是 n+1。
-        height[selected] = cfg.step_height_range[0] + alpha[selected] * (
-            cfg.step_height_range[1] - cfg.step_height_range[0]
+        height = torch.where(
+            selected,
+            cfg.step_height_range[0]
+            + alpha * (cfg.step_height_range[1] - cfg.step_height_range[0]),
+            height,
         )
-        start[selected] = inner_half - n * cfg.step_width
-        length[selected] = n * cfg.step_width
-        count[selected] = n + 1
+        start = torch.where(selected, inner_half - n * cfg.step_width, start)
+        length = torch.where(selected, n * cfg.step_width, length)
+        count = torch.where(selected, n + 1, count)
     return mask, height, start, length, count
 
 
@@ -112,7 +122,7 @@ def stair_support_height(
     robot = env.scene["robot"]
     wheel_ids, _ = robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)
     heights = env.scene[height_sensor_name].data.heights.reshape(env.num_envs, 2)
-    wheel_z = robot.data.body_link_pos_w[:, wheel_ids, 2]
+    wheel_z = robot.data.body_link_pos_w[:, device_index(wheel_ids, device=env.device), 2]
     rise = wheel_z - heights - env.scene.env_origins[:, 2:3]
     sensor = env.scene[contact_sensor_name].data
     force = sensor.force.reshape(env.num_envs, 2, -1, 3)
@@ -136,7 +146,7 @@ def stair_support_height(
     previous_candidate = _buffer(env, "_rough_stair_candidate", 0.0)
     hold = _buffer(env, "_rough_stair_hold", 0.0)
     initialized = paid >= 0
-    paid[~initialized] = candidate[~initialized]
+    paid.copy_(torch.where(initialized, paid, candidate))
     hold.copy_(
         torch.where(
             (candidate > 0) & (candidate == previous_candidate), hold + 1, (candidate > 0).float()
