@@ -383,6 +383,7 @@ def env_cfg(
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
     orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
     high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
+    base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -392,6 +393,7 @@ def env_cfg(
     orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
     None 沿用 Flat 的 −12。
     high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
+    base_height_sigma：机身高度罚 flat_base_height 的 σ（全列共用，上台阶列的窗口口径同样用它），默认 ROUGH_BASE_HEIGHT_SIGMA；对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -518,6 +520,7 @@ def env_cfg(
         cfg,
         stair_height_reference=stair_height_reference,
         stair_height_dead_zone_m=stair_height_dead_zone_m,
+        base_height_sigma=base_height_sigma,
     )
     # M49 / M54：左右轮心前后错位罚，台阶列 ×0.25（见 ROUGH_WHEEL_FORE_AFT_WEIGHT、ROUGH_STAIR_WHEEL_FORE_AFT_SCALE）。
     cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
@@ -738,6 +741,7 @@ def _apply_rough_rewards(
     *,
     stair_height_reference: str = ROUGH_STAIR_HEIGHT_REFERENCE,
     stair_height_dead_zone_m: float = ROUGH_STAIR_HEIGHT_DEAD_ZONE_M,
+    base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
 ) -> None:
     """加两项台阶专项奖励与全列违令罚，把三项 Flat 奖励换成按列包装（权重与未提及的核参数跟随 Flat）。"""
     cfg.rewards = dict(cfg.rewards)
@@ -759,7 +763,7 @@ def _apply_rough_rewards(
     height = cfg.rewards["flat_base_height"]
     height_params = {
         **height.params,
-        "sigma": ROUGH_BASE_HEIGHT_SIGMA,
+        "sigma": float(base_height_sigma),
         "support_sensor_name": ROUGH_BASE_HEIGHT_SUPPORT_SENSOR,
         "terrain_type_names": ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS,
     }

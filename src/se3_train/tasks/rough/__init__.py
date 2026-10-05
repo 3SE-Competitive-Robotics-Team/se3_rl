@@ -26,6 +26,13 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 入口删除；复现用 1cb5d77。
 # 2026-10-05：Exp-WideDR / -Oracle / -Rest05 / -NoRest 临时入口删除，NoRest 的 DR 并入默认（env_cfg.ROUGH_DR_*，DR1）；
 # 复现 WideDR 用 80019b8，Oracle 用 1fa00ca，Rest05 用 17c91ba，NoRest 用 11f9d40。
+# 2026-10-05（用户定）：机身高度罚 σ 0.10 → 0.07（全列）对照。依据：加速时机身冲高 6–8 cm（0.26–0.34 m 指令），
+# 训练环境反事实账本显示贴着指令高度加速总奖励更高、加速不慢（策略没学好，不是被奖励鼓励），但差额只占窗口 3–6%；
+# 离线换算 σ 0.07 把这份差额翻倍（0.52 → 0.92 / 2.5 s），平地稳态多付 0.34/s，上台阶列多付 0.20/s，
+# 走 / 爬仍全面优于原地站（最差余量平地 0.38 m 低速 0.45/s）；平地 vz 项与独立 vz 罚分不开冲高与贴高，未采用。
+# 必测：0.38 m 静站后起步（M8 探索瓶颈）、加速站高（.scratch/dec2/accel_rise.py）、台阶爬升。临时入口，结论后删除。
+EXP_HEIGHT_SIGMA07_TASK_ID = "SE3-WheelLegged-Rough-Exp-HeightSigma07"
+EXP_HEIGHT_SIGMA07 = 0.07
 
 
 def register() -> None:
@@ -51,9 +58,18 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_HEIGHT_SIGMA07_TASK_ID,
+        env_cfg=env_cfg(base_height_sigma=EXP_HEIGHT_SIGMA07),
+        play_env_cfg=env_cfg(play=True, base_height_sigma=EXP_HEIGHT_SIGMA07),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_HEIGHT_SIGMA07_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "EXP_HEIGHT_SIGMA07",
+    "EXP_HEIGHT_SIGMA07_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
