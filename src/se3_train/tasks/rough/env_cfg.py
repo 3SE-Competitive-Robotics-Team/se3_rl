@@ -98,7 +98,6 @@ from .commands import (
     ROUGH_STAIR_HEIGHT_RANGE,
     ROUGH_STAIR_LIN_VEL_X_RANGE,
     ROUGH_STAIR_SPEED_CAP_ENABLED,
-    ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES,
     ROUGH_TERRAIN_ANG_VEL_YAW_RANGE,
     ROUGH_TERRAIN_COMMAND_FLAT_NAMES,
     ROUGH_TERRAIN_HEIGHT_CLEARANCE,
@@ -298,12 +297,6 @@ ROUGH_WHEEL_FORE_AFT_WEIGHT = -50.0
 # 台阶列 yaw 角速度跟踪恢复 Flat 原式（M44 的做法），指令恒 0 时它就是台阶列的 yaw 角速度罚（docs/plan/m50_stair_yaw_20260929.md）。
 # M54 把半宽从 ±30° 收到 ±15°：腿长行程 19.6 cm < 最高台阶 20 cm，斜 30° 不转正只能大侧倾硬爬。
 ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG = 15.0
-# 出生朝向正对台阶 ±ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG 的列：台阶列 + 直行列（2026-10-04 起二级下台阶，
-# 见 commands.ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES）。直行列只借出生朝向，不进台阶分列定价（航向保持、错位罚缩放）。
-ROUGH_SPAWN_FACING_TERRAIN_NAMES = (
-    *ROUGH_REWARD_TERRAIN_TYPE_NAMES,
-    *ROUGH_STRAIGHT_COMMAND_TERRAIN_NAMES,
-)
 # M51（2026-09-29 用户定）：地形集加随机粗糙、波浪、离散矮障碍三列（terrains.ROUGH_RANDOM_TERRAIN_*），
 # 新列 MDP 与 flat 一致：按平地发指令（commands.ROUGH_TERRAIN_COMMAND_FLAT_NAMES 已含三列名）、平地同一套奖励
 # （不进台阶分列定价与接触税置零名单）、高度参考不变（非台阶列仍是机身正下方单点射线）。速度课程信号仍只读 flat 列。
@@ -507,7 +500,7 @@ def env_cfg(
     if delayed_action.knee_gas_spring_force <= 0.0:
         raise ValueError(f"前馈补偿弹簧力必须为正数，实际为 {delayed_action.knee_gas_spring_force}")
     delayed_action.knee_gas_spring_compensation_enabled = True
-    # M50 / M54：台阶列与直行列出生朝向正对台阶 ±15°（见 ROUGH_SPAWN_FACING_TERRAIN_NAMES）。
+    # M50 / M54：台阶列出生朝向正对台阶 ±15°（见 ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG）。
     reset_root = cfg.events["reset_root_state"]
     cfg.events["reset_root_state"] = replace(
         reset_root,
@@ -515,7 +508,7 @@ def env_cfg(
             **(reset_root.params or {}),
             "yaw_sampler": events.stair_facing_yaw,
             "yaw_sampler_params": {
-                "terrain_type_names": ROUGH_SPAWN_FACING_TERRAIN_NAMES,
+                "terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES,
                 "half_range_rad": math.radians(ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG),
             },
         },
@@ -867,7 +860,6 @@ __all__ = [
     "ROUGH_ORIENTATION_WEIGHT",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
-    "ROUGH_SPAWN_FACING_TERRAIN_NAMES",
     "ROUGH_STAIRS_ZEROED_REWARDS",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",
