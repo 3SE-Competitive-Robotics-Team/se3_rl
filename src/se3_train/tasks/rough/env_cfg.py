@@ -392,6 +392,7 @@ def env_cfg(
     high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
     base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
     oracle_dr_obs: bool = False,
+    oracle_base_vel: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -403,6 +404,7 @@ def env_cfg(
     high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
     base_height_sigma：机身高度罚 flat_base_height 的 σ（全列共用，上台阶列的窗口口径同样用它），默认 ROUGH_BASE_HEIGHT_SIGMA；对照实验开关。
     oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
+    oracle_base_vel：actor 额外观测机身系线速度 3 维（critic 同源的 base_lin_vel），只做诊断、不可部署。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -592,6 +594,13 @@ def env_cfg(
     apply_no_attitude_layout(cfg)
     if oracle_dr_obs:
         _apply_oracle_dr_obs(cfg)
+    if oracle_base_vel:
+        # DR1 OracleVel（2026-10-05，用户定）：在 Oracle 之上再给 actor 机身线速度，看 DR1 下平地跟踪变粗是否来自
+        # 速度只能从轮速间接推（质心偏移配平、打滑、延迟都会扰乱轮速→机身速度的换算）。不加噪声。
+        actor = cfg.observations["actor"]
+        terms = dict(actor.terms)
+        terms["oracle_base_lin_vel"] = ObservationTermCfg(func=mdp_observations.base_lin_vel_obs)
+        cfg.observations["actor"] = replace(actor, terms=terms)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)

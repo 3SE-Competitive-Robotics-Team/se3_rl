@@ -31,6 +31,9 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 2026-10-05（用户定）：DR1 Oracle——actor 额外观测真实 DR 参数 31 维，其余与默认相同；前置观测器方案的收益上限诊断，
 # 不可部署。基线为 whtws HeightSigma07（jrvpex39，f090dbe，配置与当前默认逐项一致）。临时入口，结论后删除。
 EXP_DR1_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-DR1-Oracle"
+# 2026-10-05（用户定）：DR1 OracleVel——在 DR1 Oracle 之上再给 actor 机身线速度 3 维（共 34 维特权），与 Oracle 只差这一项。
+# 不可部署；判别 DR1 下平地跟踪变粗是否来自速度估计。临时入口，结论后删除。
+EXP_DR1_ORACLE_VEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-DR1-OracleVel"
 
 
 def register() -> None:
@@ -63,10 +66,18 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_DR1_ORACLE_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_DR1_ORACLE_VEL_TASK_ID,
+        env_cfg=env_cfg(oracle_dr_obs=True, oracle_base_vel=True),
+        play_env_cfg=env_cfg(play=True, oracle_dr_obs=True, oracle_base_vel=True),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_DR1_ORACLE_VEL_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_DR1_ORACLE_TASK_ID",
+    "EXP_DR1_ORACLE_VEL_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
