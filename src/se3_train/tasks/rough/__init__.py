@@ -28,6 +28,9 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 复现 WideDR 用 80019b8，Oracle 用 1fa00ca，Rest05 用 17c91ba，NoRest 用 11f9d40。
 # 2026-10-05：Exp-HeightSigma07（机身高度罚 σ 0.07）并入默认（env_cfg.ROUGH_BASE_HEIGHT_SIGMA），入口删除；
 # 复现 HeightSigma07 与其同代码基线用 f090dbe。
+# 2026-10-05（用户定）：DR1 Oracle——actor 额外观测真实 DR 参数 31 维，其余与默认相同；前置观测器方案的收益上限诊断，
+# 不可部署。基线为 whtws HeightSigma07（jrvpex39，f090dbe，配置与当前默认逐项一致）。临时入口，结论后删除。
+EXP_DR1_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-DR1-Oracle"
 
 
 def register() -> None:
@@ -53,9 +56,17 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_DR1_ORACLE_TASK_ID,
+        env_cfg=env_cfg(oracle_dr_obs=True),
+        play_env_cfg=env_cfg(play=True, oracle_dr_obs=True),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_DR1_ORACLE_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
+    "EXP_DR1_ORACLE_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
