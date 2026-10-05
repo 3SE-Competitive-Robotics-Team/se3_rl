@@ -46,6 +46,9 @@ RJ1：合入 J10 跳跃（见 _apply_jump_mimic）；2026-10-03 起跳跃样本�
 临时入口全部删除；M40–M46、M48、M52 的对照未采用。复现各对照用对应 commit（M39 a724b49、M47 4398698、M49 d5db384、
 M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab）。
 
+DR1（2026-10-05 用户定）：rough 默认域随机化换成真 Kp/Kd、质心 ±5 cm、质量 −1…+3 kg、气弹簧 ×0.9–1.5、延迟 0–10 ms，
+不做恢复系数（见 ROUGH_DR_* 注释，docs/plan/rough_wide_dr_20261003.md）。
+
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
 """
@@ -78,7 +81,6 @@ from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
 from se3_train.mdp import events as mdp_events
-from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
@@ -339,30 +341,26 @@ ROUGH_STAIR_WHEEL_FORE_AFT_SCALE = 0.25
 # 跳跃离地平均低 1.6 cm（docs/plan/rough_highstand01_20261004.md）。
 ROUGH_HIGH_STAND_TRANSITION_PROB = 0.1
 
-# 2026-10-03（用户定）：加宽域随机化对照（env_cfg(wide_dr=True)，Exp-WideDR 入口），其余与默认相同。
-# 起因是 DR 审计（.scratch/dr_audit/verify_dr.py）：Flat 继承的 pd_gains 实际是 6 电机输出力矩 ×0.9–1.1、kd 无效，
-# restitution 是空函数；推力、质量、质心、延迟都比复旦 stairs_v3（同尺寸轮腿）窄。本组改动：
-#   Kp/Kd   换成 torch 侧真正的增益 DR（events.randomize_pd_gains_torch），范围仍 ×0.9–1.1；原输出力矩缩放随之去掉
-#   质心    ±5 mm → ±5 cm（复旦同值；±5 cm 曾学出原地摆腿探质心，见 flat/env_cfg.py com 注释，本对照要看是否复发）
+# DR1（2026-10-05 用户定，原 Exp-WideDR-NoRest）：rough 默认域随机化在 Flat 继承的 DR 上改五项，其余（摩擦、惯量、电机被动参数、
+# 默认关节位置、推力课程、观测噪声）不动。起因是 DR 审计（.scratch/dr_audit/verify_dr.py）：Flat 继承的 pd_gains 实际是 6 电机
+# 输出力矩 ×0.9–1.1、kd 无效，质量、质心、延迟都比复旦 stairs_v3（同尺寸轮腿）窄。
+#   Kp/Kd   torch 侧真正的增益 DR（events.randomize_pd_gains_torch），×0.9–1.1；原输出力矩缩放随之去掉
+#   质心    ±5 mm → ±5 cm
 #   质量    base 附加 −0.5…+1.5 → −1…+3 kg
-#   恢复系数 空函数 → 0–1（events.randomize_contact_restitution，实测下限约 0.03）
 #   气弹簧   ×0.9–1.1 → ×0.9–1.5（前馈补偿仍按额定 300 N，残差最大 +150 N 交给策略）
-#   动作延迟 4–6 ms（按 5 ms 物理步取整恒为 1 步）→ 0–10 ms（0/1/2 步各 1/3）；play 与 ONNX 契约同步
-ROUGH_WIDE_DR_KP_RANGE = (0.9, 1.1)
-ROUGH_WIDE_DR_KD_RANGE = (0.9, 1.1)
-ROUGH_WIDE_DR_COM_RANGE_M = 0.05
-ROUGH_WIDE_DR_BASE_MASS_RANGE_KG = (-1.0, 3.0)
-ROUGH_WIDE_DR_RESTITUTION_RANGE = (0.0, 1.0)
-# 2026-10-04 离线归因（docs/plan/rough_wide_dr_20261003.md）：e 0–0.6 对回报无影响，> 0.7 断崖（0.9–1.0 回报 −76%）。
-# MuJoCo 软接触的阻尼对持续接触一直生效，e → 1 时轮地接触成了无阻尼弹簧持续振荡（PhysX 只在撞击时反弹，语义不同）。
-# Exp-WideDR-Rest05 只把上界收到 0.5，其余 WideDR 不变。
-ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE = (0.0, 0.5)
-# 2026-10-04（用户定）：Rest05 只是截掉最坏一段的临时对策——randomize_contact_restitution 改的是持续接触的阻尼，
-# e = 0.5 时阻尼比仍只有 0.2–0.25（基线 1.25），语义与 PhysX 只在撞击时生效的 restitution 不同。MuJoCo 软接触表达不了
-# 「只在撞击时反弹」，所以 Exp-WideDR-NoRest 去掉这一项（传 None，保留 Flat 的空事件，接触参数即 MJCF 默认，e ≈ 0.05），
-# 其余 WideDR 不变。
-ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE = (0.9, 1.5)
-ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S = (0.0, 0.010)
+#   动作延迟 4–6 ms（按 5 ms 物理步取整恒为 1 步）→ 0–10 ms（0/1/2 步各 1/3）；play 与 ONNX 契约同步，
+#           真机 runtime 默认把延迟覆盖成 0（se3_runtime_nx --action-delay-steps），不受影响
+# 恢复系数不做：MuJoCo 软接触的阻尼对持续接触一直生效，压低阻尼得到的是轮地接触持续欠阻尼振荡，而不是 PhysX 那种只在撞击时
+# 生效的 restitution。离线归因显示 e > 0.7 回报断崖（0.9–1.0 −76%），是 WideDR 全面退化的主因。
+# 评测（docs/plan/rough_wide_dr_20261003.md）：扰动 plant 11 种 × 6 项 0 摔（旧默认 5 摔），质心 +5 cm 下 vx 误差 0.14（旧 0.56）；
+# 名义平地 vx 误差约为旧默认的 2 倍。注意 NoRest（11f9d40）相对 Orient24 还混入了 3919db7 / b50ef1f / 6656fb5 三处默认改动，
+# DR1 对名义性能的单独代价尚无干净对照。复现各对照：WideDR 80019b8、Oracle 1fa00ca、Rest05 17c91ba、NoRest 11f9d40。
+ROUGH_DR_KP_RANGE = (0.9, 1.1)
+ROUGH_DR_KD_RANGE = (0.9, 1.1)
+ROUGH_DR_COM_RANGE_M = 0.05
+ROUGH_DR_BASE_MASS_RANGE_KG = (-1.0, 3.0)
+ROUGH_DR_KNEE_SPRING_SCALE_RANGE = (0.9, 1.5)
+ROUGH_DR_ACTION_DELAY_RANGE_S = (0.0, 0.010)
 
 # critic 特权地形观测：机身系 yaw 对齐网格，x ±0.5 m、y ±0.3 m、间距 0.1 m，11×7 = 77 条射线，
 # 与 yly-true/fudan_rl_wheel_leg 的 measured_points_x/y 一致。只进 critic，actor 契约不变。
@@ -392,9 +390,6 @@ def env_cfg(
     upward_weight: float | None = ROUGH_UPWARD_WEIGHT,
     orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
     high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
-    wide_dr: bool = False,
-    wide_dr_restitution_range: tuple[float, float] | None = ROUGH_WIDE_DR_RESTITUTION_RANGE,
-    oracle_dr_obs: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -404,10 +399,6 @@ def env_cfg(
     orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
     None 沿用 Flat 的 −12。
     high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
-    wide_dr：加宽域随机化（见 ROUGH_WIDE_DR_* 注释）；对照实验开关。
-    wide_dr_restitution_range：wide_dr 时恢复系数 DR 范围，默认 0–1（WideDR），Rest05 对照传 0–0.5；
-        None 表示不做恢复系数 DR（NoRest，接触参数保持 MJCF 默认）。
-    oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -587,17 +578,13 @@ def env_cfg(
     # M47：删倾角终止（见 ROUGH_WHEEL_FORE_AFT_WEIGHT 上方注释）。
     del cfg.terminations["bad_orientation"]
 
-    if wide_dr:
-        _apply_wide_domain_randomization(
-            cfg, play=play, restitution_range=wide_dr_restitution_range
-        )
+    # DR1：rough 默认域随机化（见 ROUGH_DR_* 注释）。
+    _apply_rough_domain_randomization(cfg, play=play)
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
-    if oracle_dr_obs:
-        _apply_oracle_dr_obs(cfg)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -716,19 +703,14 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_wide_domain_randomization(
-    cfg: ManagerBasedRlEnvCfg,
-    *,
-    play: bool,
-    restitution_range: tuple[float, float] | None = ROUGH_WIDE_DR_RESTITUTION_RANGE,
-) -> None:
-    """加宽域随机化（见 ROUGH_WIDE_DR_* 注释）：改 Flat 继承的 startup 事件参数，换两项实现，放宽动作延迟。
+def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+    """DR1（见 ROUGH_DR_* 注释）：改 Flat 继承的 startup 事件参数，Kp/Kd 换成 torch 侧实现，放宽动作延迟。
 
     动作延迟属于动作项，play（评测 / ONNX 导出）同样生效，契约随之导出 0–10 ms；
     其余都是训练期 startup 事件，play 没有这些事件。
     """
     delayed_action = cfg.actions["delayed_action"]
-    min_s, max_s = ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S
+    min_s, max_s = ROUGH_DR_ACTION_DELAY_RANGE_S
     delayed_action.action_delay_enabled = True
     delayed_action.action_delay_randomize = True
     delayed_action.action_delay_min_s = float(min_s)
@@ -743,47 +725,19 @@ def _apply_wide_domain_randomization(
     cfg.events["pd_gains"] = replace(
         cfg.events["pd_gains"],
         func=mdp_events.randomize_pd_gains_torch,
-        params=_params(
-            "pd_gains", kp_range=ROUGH_WIDE_DR_KP_RANGE, kd_range=ROUGH_WIDE_DR_KD_RANGE
-        ),
+        params=_params("pd_gains", kp_range=ROUGH_DR_KP_RANGE, kd_range=ROUGH_DR_KD_RANGE),
     )
     cfg.events["com"] = replace(
-        cfg.events["com"], params=_params("com", com_range=ROUGH_WIDE_DR_COM_RANGE_M)
+        cfg.events["com"], params=_params("com", com_range=ROUGH_DR_COM_RANGE_M)
     )
     cfg.events["base_mass"] = replace(
         cfg.events["base_mass"],
-        params=_params("base_mass", mass_range=ROUGH_WIDE_DR_BASE_MASS_RANGE_KG),
+        params=_params("base_mass", mass_range=ROUGH_DR_BASE_MASS_RANGE_KG),
     )
-    if restitution_range is not None:
-        cfg.events["restitution"] = replace(
-            cfg.events["restitution"],
-            func=mdp_events.randomize_contact_restitution,
-            params={"restitution_range": tuple(float(x) for x in restitution_range)},
-        )
     cfg.events["knee_spring_force"] = replace(
         cfg.events["knee_spring_force"],
-        params=_params(
-            "knee_spring_force", force_scale_range=ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE
-        ),
+        params=_params("knee_spring_force", force_scale_range=ROUGH_DR_KNEE_SPRING_SCALE_RANGE),
     )
-
-
-def _apply_oracle_dr_obs(cfg: ManagerBasedRlEnvCfg) -> None:
-    """Oracle（2026-10-04，用户定）：actor 观测末尾追加真实 DR 参数 32 维，critic 不变。
-
-    判别 WideDR 退化的根因：若 actor 直接知道参数就能恢复到默认 DR 的跟踪水平，瓶颈是信息（值得做历史隐向量辨识）；
-    恢复不了则是容量或部分 DR 组合物理不可行。追加项与 critic 的同名特权项同源：28 维 DR 回读、气弹簧力 2 维，
-    另加动作延迟与恢复系数各 1 维。不加噪声。导出器不认识这些项，训练期 ONNX 导出会失败（runner 捕获，checkpoint 照存）。
-    """
-    actor = cfg.observations["actor"]
-    terms = dict(actor.terms)
-    terms["oracle_dr_params"] = ObservationTermCfg(func=mdp_observations.dr_model_params_obs)
-    terms["oracle_knee_spring"] = ObservationTermCfg(
-        func=mdp_observations.knee_gas_spring_force_obs
-    )
-    terms["oracle_action_delay"] = ObservationTermCfg(func=mdp_observations.action_delay_obs)
-    terms["oracle_restitution"] = ObservationTermCfg(func=mdp_observations.contact_restitution_obs)
-    cfg.observations["actor"] = replace(actor, terms=terms)
 
 
 def _apply_rough_rewards(
@@ -892,6 +846,12 @@ __all__ = [
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_DROPPED_FLAT_REWARDS",
+    "ROUGH_DR_ACTION_DELAY_RANGE_S",
+    "ROUGH_DR_BASE_MASS_RANGE_KG",
+    "ROUGH_DR_COM_RANGE_M",
+    "ROUGH_DR_KD_RANGE",
+    "ROUGH_DR_KNEE_SPRING_SCALE_RANGE",
+    "ROUGH_DR_KP_RANGE",
     "ROUGH_FALL_PENALTY",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
@@ -936,13 +896,5 @@ __all__ = [
     "ROUGH_UPWARD_WEIGHT",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_FORE_AFT_WEIGHT",
-    "ROUGH_WIDE_DR_ACTION_DELAY_RANGE_S",
-    "ROUGH_WIDE_DR_BASE_MASS_RANGE_KG",
-    "ROUGH_WIDE_DR_COM_RANGE_M",
-    "ROUGH_WIDE_DR_KD_RANGE",
-    "ROUGH_WIDE_DR_KNEE_SPRING_SCALE_RANGE",
-    "ROUGH_WIDE_DR_KP_RANGE",
-    "ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE",
-    "ROUGH_WIDE_DR_RESTITUTION_RANGE",
     "env_cfg",
 ]

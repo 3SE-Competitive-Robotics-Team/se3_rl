@@ -266,6 +266,7 @@ critic 在 actor 观测基础上额外包含特权信息（不进部署契约）
 ```
 
 默认动作延迟配置在 `se3_shared.ActionDelayConfig` 中：名义 5 ms，reset 时在 4-6 ms 间随机采样。训练端和 sim2sim 都应使用同一套配置。
+Rough 自 2026-10-05（DR1）起在任务内覆盖为 0–10 ms（`ROUGH_DR_ACTION_DELAY_RANGE_S`），随 ONNX 契约导出；真机 runtime 默认把延迟覆盖为 0。
 
 ## 远程训练机运维 Skill
 

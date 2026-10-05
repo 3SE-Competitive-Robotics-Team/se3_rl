@@ -147,24 +147,6 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
     return _finite_clamp(finite_contact_force_norm(data.force))
 
 
-_DELAY_OBS_SCALE_S = 0.010
-
-
-def action_delay_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """当前 episode 的动作延迟（物理步数 × physics_dt），按 10 ms 归一，1D（特权信息，非部署）。"""
-    term = env.action_manager.get_term("delayed_action")
-    delay_s = term.delay_steps.to(torch.float32) * float(env.physics_dt)
-    return (delay_s / _DELAY_OBS_SCALE_S).unsqueeze(-1)
-
-
-def contact_restitution_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """randomize_contact_restitution 采样的接触恢复系数，1D（特权信息，非部署）；未启用该 DR 时为 0。"""
-    values = getattr(env, "_contact_restitution", None)
-    if not isinstance(values, torch.Tensor) or values.shape[0] != env.num_envs:
-        return torch.zeros(env.num_envs, 1, device=env.device)
-    return values.unsqueeze(-1)
-
-
 def knee_gas_spring_force_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """左右膝气弹簧当前恒力，按额定值归一，2D（特权信息,critic 专用）。
 

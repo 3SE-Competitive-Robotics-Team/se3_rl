@@ -5,7 +5,7 @@ from mjlab.tasks.registry import register_mjlab_task
 from se3_train.rl_cfg import bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
-from .env_cfg import ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE, env_cfg
+from .env_cfg import env_cfg
 from .rl_cfg import gru_rl_cfg, rl_cfg
 from .terrains import stair_only_terrains_cfg
 
@@ -22,20 +22,10 @@ STAIR_EVAL_TASK_ID = "SE3-WheelLegged-Rough-StairEval"
 # 复现 Dec2 用 69fd369，Dec2-Steps48 用 07fe1c2，Actor128 用 1545d9f / 635be5f。
 # 2026-10-04：Exp-Orient24（tracking_orientation_l2 −24）并入默认（env_cfg.ROUGH_ORIENTATION_WEIGHT），入口删除；
 # 复现 Orient24 / Base128 用 aeec423。
-# 2026-10-03（用户定）：加宽域随机化对照——真 Kp/Kd、质心 ±5 cm、质量 −1…+3 kg、恢复系数 0–1、气弹簧 ×0.9–1.5、
-# 动作延迟 0–10 ms，其余与默认相同（见 env_cfg.ROUGH_WIDE_DR_* 注释）。临时入口：对照结束、定下默认后删除，复现用对应 commit。
-EXP_WIDE_DR_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR"
-# 2026-10-04（用户定）：WideDR 的 Oracle 诊断——actor 额外观测真实 DR 参数 32 维，其余与 WideDR 相同（见 env_cfg._apply_oracle_dr_obs）。
-# 不可部署；判别 WideDR 退化是信息不足还是容量 / 物理可行性问题。临时入口，结论后删除。
-EXP_WIDE_DR_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Oracle"
-# 2026-10-04（用户定）：WideDR 只把恢复系数收到 0–0.5（离线归因：e > 0.7 断崖，见 env_cfg.ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE）。
-# 临时入口，结论后删除。
-EXP_WIDE_DR_REST05_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-Rest05"
-# 2026-10-04（用户定）：WideDR 去掉恢复系数 DR（接触参数保持 MJCF 默认），其余不变；Rest05 只是截断最坏一段的临时对策。
-# 临时入口，结论后删除。
-EXP_WIDE_DR_NOREST_TASK_ID = "SE3-WheelLegged-Rough-Exp-WideDR-NoRest"
 # 2026-10-04：Exp-HighStand01（high_stand_transition_prob 0.1）并入默认（env_cfg.ROUGH_HIGH_STAND_TRANSITION_PROB），
 # 入口删除；复现用 1cb5d77。
+# 2026-10-05：Exp-WideDR / -Oracle / -Rest05 / -NoRest 临时入口删除，NoRest 的 DR 并入默认（env_cfg.ROUGH_DR_*，DR1）；
+# 复现 WideDR 用 80019b8，Oracle 用 1fa00ca，Rest05 用 17c91ba，NoRest 用 11f9d40。
 
 
 def register() -> None:
@@ -61,47 +51,9 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), STAIR_EVAL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
-    register_mjlab_task(
-        task_id=EXP_WIDE_DR_TASK_ID,
-        env_cfg=env_cfg(wide_dr=True),
-        play_env_cfg=env_cfg(play=True, wide_dr=True),
-        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_TASK_ID),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
-    register_mjlab_task(
-        task_id=EXP_WIDE_DR_ORACLE_TASK_ID,
-        env_cfg=env_cfg(wide_dr=True, oracle_dr_obs=True),
-        play_env_cfg=env_cfg(play=True, wide_dr=True, oracle_dr_obs=True),
-        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_ORACLE_TASK_ID),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
-    register_mjlab_task(
-        task_id=EXP_WIDE_DR_REST05_TASK_ID,
-        env_cfg=env_cfg(
-            wide_dr=True, wide_dr_restitution_range=ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE
-        ),
-        play_env_cfg=env_cfg(
-            play=True,
-            wide_dr=True,
-            wide_dr_restitution_range=ROUGH_WIDE_DR_REST05_RESTITUTION_RANGE,
-        ),
-        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_REST05_TASK_ID),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
-    register_mjlab_task(
-        task_id=EXP_WIDE_DR_NOREST_TASK_ID,
-        env_cfg=env_cfg(wide_dr=True, wide_dr_restitution_range=None),
-        play_env_cfg=env_cfg(play=True, wide_dr=True, wide_dr_restitution_range=None),
-        rl_cfg=bind_task_name(rl_cfg(), EXP_WIDE_DR_NOREST_TASK_ID),
-        runner_cls=Se3ProfiledOnPolicyRunner,
-    )
 
 
 __all__ = [
-    "EXP_WIDE_DR_NOREST_TASK_ID",
-    "EXP_WIDE_DR_ORACLE_TASK_ID",
-    "EXP_WIDE_DR_REST05_TASK_ID",
-    "EXP_WIDE_DR_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",
