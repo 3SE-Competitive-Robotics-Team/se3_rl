@@ -7,7 +7,7 @@ from se3_train.onnx_metadata import observation_term_width
 from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
-from .env_cfg import ROUGH_VX_OBSERVER_HISTORY_LENGTH, ROUGH_VX_OBSERVER_TARGET_GROUP, env_cfg
+from .env_cfg import ROUGH_VX_OBSERVER_TARGET_GROUP, env_cfg
 from .rl_cfg import gru_rl_cfg, rl_cfg, vx_observer_rl_cfg
 from .terrains import stair_only_terrains_cfg
 
@@ -43,6 +43,10 @@ EXP_VX_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vx"
 # 2026-10-05（用户定）：显式 vx 观测器——actor 16 帧历史 → 估计器 v̂x（MSE 监督，detach 后进 policy），policy 看最新一帧 + v̂x。
 # 可部署（ONNX 输入为 480 维历史）；对照默认基线与 Vx 特权（qnd9o87r）。见 se3_train.vx_observer。临时入口，结论后删除。
 EXP_VX_OBSERVER_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver"
+# 2026-10-06（用户定）：VxObserver 历史帧数 16 → 5（0.1 s，估计器输入 480 → 150），其余与 VxObserver 逐项相同，
+# 对照 VxObserver（agqj496q）。临时入口，结论后删除。
+EXP_VX_OBSERVER_H5_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-H5"
+VX_OBSERVER_H5_HISTORY_LENGTH = 5
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-06（用户定）：轮子 T-N 包络与指令轮速预算，叠在 VxObserver 上（诊断见 .scratch/yaw_diag/：yaw 包络顶端拒转）。
@@ -53,10 +57,11 @@ EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-
 
 
 def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunnerCfg:
-    """单帧各项宽度从 actor 观测组的 term 顺序推出，保证与模型取最新一帧的下标一致。"""
-    actor_terms = vx_env_cfg.observations["actor"].terms
+    """单帧各项宽度与历史帧数都从 actor 观测组推出，保证与模型取最新一帧的下标一致。"""
+    actor = vx_env_cfg.observations["actor"]
+    actor_terms = actor.terms
     return vx_observer_rl_cfg(
-        history_length=ROUGH_VX_OBSERVER_HISTORY_LENGTH,
+        history_length=int(actor.history_length),
         frame_term_dims=tuple(observation_term_width(name) for name in actor_terms),
         target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
     )
@@ -122,6 +127,7 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
     for task_id, overrides in (
+        (EXP_VX_OBSERVER_H5_TASK_ID, {"vx_observer_history_length": VX_OBSERVER_H5_HISTORY_LENGTH}),
         (EXP_VX_OBSERVER_WHEEL_TN_TASK_ID, {"wheel_torque_envelope": "rated_point"}),
         (
             EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID,
@@ -142,6 +148,7 @@ __all__ = [
     "EXP_DR1_ORACLE_TASK_ID",
     "EXP_DR1_ORACLE_VEL_TASK_ID",
     "EXP_VEL_TASK_ID",
+    "EXP_VX_OBSERVER_H5_TASK_ID",
     "EXP_VX_OBSERVER_TASK_ID",
     "EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID",
     "EXP_VX_OBSERVER_WHEEL_TN_TASK_ID",

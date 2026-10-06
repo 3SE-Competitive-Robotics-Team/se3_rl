@@ -407,6 +407,7 @@ def env_cfg(
     oracle_base_vel: bool = False,
     oracle_base_vx: bool = False,
     vx_observer: bool = False,
+    vx_observer_history_length: int = ROUGH_VX_OBSERVER_HISTORY_LENGTH,
     wheel_torque_envelope: str = ROUGH_WHEEL_TORQUE_ENVELOPE,
     command_wheel_budget: str = ROUGH_COMMAND_WHEEL_BUDGET,
 ) -> ManagerBasedRlEnvCfg:
@@ -424,6 +425,7 @@ def env_cfg(
     oracle_base_vx：actor 额外观测机身系前向速度 vx 1 维，只做诊断、不可部署。
     vx_observer：actor 观测改为 ROUGH_VX_OBSERVER_HISTORY_LENGTH 帧历史，并增加估计器监督目标组
     ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；须配 rl_cfg.vx_observer_rl_cfg。可部署。
+    vx_observer_history_length：vx_observer 的 actor 历史帧数，默认 ROUGH_VX_OBSERVER_HISTORY_LENGTH；对照实验开关。
     wheel_torque_envelope：轮子 T-N 包络，"linear_peak" | "rated_point"（见 ROUGH_WHEEL_TORQUE_ENVELOPE）。
     command_wheel_budget：指令差速轮速预算，"legacy" | "rated"（见 ROUGH_COMMAND_WHEEL_BUDGET）。
     """
@@ -638,7 +640,7 @@ def env_cfg(
         )
         cfg.observations["actor"] = replace(actor, terms=terms)
     if vx_observer:
-        _apply_vx_observer_obs(cfg)
+        _apply_vx_observer_obs(cfg, history_length=vx_observer_history_length)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -794,7 +796,7 @@ def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) 
     )
 
 
-def _apply_vx_observer_obs(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_vx_observer_obs(cfg: ManagerBasedRlEnvCfg, *, history_length: int) -> None:
     """显式 vx 观测器（2026-10-05，用户定，见 se3_train.vx_observer）的观测侧改动。
 
     actor 组整组开 16 帧历史（term-major、oldest→newest 展平；reset 后第一帧回填整段，runtime 同样处理），
@@ -803,7 +805,7 @@ def _apply_vx_observer_obs(cfg: ManagerBasedRlEnvCfg) -> None:
     """
     actor = cfg.observations["actor"]
     cfg.observations["actor"] = replace(
-        actor, history_length=ROUGH_VX_OBSERVER_HISTORY_LENGTH, flatten_history_dim=True
+        actor, history_length=int(history_length), flatten_history_dim=True
     )
     cfg.observations[ROUGH_VX_OBSERVER_TARGET_GROUP] = ObservationGroupCfg(
         terms={"base_lin_vel_x": ObservationTermCfg(func=mdp_observations.base_lin_vel_x_obs)},
