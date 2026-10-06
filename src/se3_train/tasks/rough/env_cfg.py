@@ -412,6 +412,7 @@ def env_cfg(
     vx_observer_history_length: int = ROUGH_VX_OBSERVER_HISTORY_LENGTH,
     wheel_torque_envelope: str = ROUGH_WHEEL_TORQUE_ENVELOPE,
     command_wheel_budget: str = ROUGH_COMMAND_WHEEL_BUDGET,
+    yaw_ratio_blend: float | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -430,6 +431,7 @@ def env_cfg(
     vx_observer_history_length：vx_observer 的 actor 历史帧数，默认 ROUGH_VX_OBSERVER_HISTORY_LENGTH；对照实验开关。
     wheel_torque_envelope：轮子 T-N 包络，"linear_peak" | "rated_point"（见 ROUGH_WHEEL_TORQUE_ENVELOPE）。
     command_wheel_budget：指令差速轮速预算，"legacy" | "rated"（见 ROUGH_COMMAND_WHEEL_BUDGET）。
+    yaw_ratio_blend：tracking_ang_vel 的比例项占比（Flat 继承值 0.2）；None = 不改。对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -643,6 +645,13 @@ def env_cfg(
         cfg.observations["actor"] = replace(actor, terms=terms)
     if vx_observer:
         _apply_vx_observer_obs(cfg, history_length=vx_observer_history_length)
+    if yaw_ratio_blend is not None:
+        # yaw 包络顶端拒转（docs/plan/rough_yaw_envelope_20261006.md）：指数核在大误差时没有梯度，
+        # 比例项占比越大，"转到一半"拿到的分越多，填平从不转到转满之间只亏不赚的一段。
+        yaw = cfg.rewards["tracking_ang_vel"]
+        cfg.rewards["tracking_ang_vel"] = replace(
+            yaw, params={**(yaw.params or {}), "ratio_blend": float(yaw_ratio_blend)}
+        )
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
