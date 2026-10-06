@@ -173,9 +173,11 @@ ROUGH_BASE_HEIGHT_SIGMA = 0.07
 # 16 帧 = 0.32 s（50 Hz），用户定；估计器 480→128→64→1 约 7 万次乘加，MCU 上可推。
 ROUGH_VX_OBSERVER_HISTORY_LENGTH = 16
 ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
-# 轮子 T-N 包络（2026-10-06 用户定，见 robot_cfg.get_serialleg_closedchain_cfg 的 wheel_torque_envelope）：
-# 默认仍是旧口径 "linear_peak"（45 rad/s 只剩 1.14 N·m）；"rated_point" 按手册额定点（469 rpm@19:1 出 3 N·m）建平台。
-ROUGH_WHEEL_TORQUE_ENVELOPE = "linear_peak"
+# 轮子 T-N 包络（见 robot_cfg.get_serialleg_closedchain_cfg 的 wheel_torque_envelope）。2026-10-07 起默认 "rated_point"（用户定）：
+# 按手册额定点（469 rpm@19:1 出 3 N·m）建额定 2.21 N·m 平台延续到 66.65 rad/s；旧口径 "linear_peak" 从峰值线性下降，45 rad/s 只剩 1.14 N·m。
+# 依据 WheelTN（xdk0dnoa，七卡 × 1500，4832d15）对 VxObserver（agqj496q）：后期 yaw 误差 2.0 → 1.6、vx 误差 0.55 → 0.52、台阶航向 9.3° → 8.9°，
+# catastrophic 0.03 → 0.06（规模不同，混有规模变量）；诊断见 docs/plan/rough_yaw_envelope_20261006.md。复现旧口径用 4832d15。
+ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
 # 指令可行域的差速轮速预算（2026-10-06 用户定）："legacy" = Flat 继承的 45 rad/s、半轮距 0.20 m；
 # "rated" = M3508 手册额定转速 66.65 rad/s（14:1）、MJCF 实测半轮距 0.2166 m，使用比例都保持 0.9。
 # 旧口径下原地 12 rad/s 实际要 43.3 rad/s 轮速（45 的 96%，超出 0.9 预算），vx = 1 时 yaw 只能采到 7.15。

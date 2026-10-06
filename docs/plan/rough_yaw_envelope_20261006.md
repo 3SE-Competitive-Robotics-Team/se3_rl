@@ -36,3 +36,17 @@ actor 知道 vx 的 run（Vel `fpuf21dr`、Vx `qnd9o87r`、OracleVel `x0xavu14`�
 WheelTN：sim2x 传递曲线顶端（≥ 0.9 × 上限）是否跟得上、训练端 yaw 误差是否降到基线水平；平地 / 台阶指标不差于 VxObserver。
 WheelTN-Budget：新增的 vx–yaw 组合（如 vx = 1、yaw 7–12）能否跟上，其余指标不退化。
 注意 "rated_point" 改的是 plant：真机若 C620 / 电池电压达不到手册额定点，部署端应以实测 T-N 为准。
+
+## 启动记录
+
+WheelTN：whtws 七卡 × 1500、5000 轮、seed 42，4832d15，W&B `xdk0dnoa`，PGID 2289123，state `20261006T094428Z`；第 34 轮 1.34 s/轮。
+注意规模与 VxObserver（`agqj496q`，六卡 × 1170）不同（总 env 10500 对 7020），与之对比混入规模变量。
+
+## WheelTN 结果与并入默认（2026-10-07，用户定）
+
+WheelTN（`xdk0dnoa`，七卡 × 1500）对 VxObserver（`agqj496q`，六卡 × 1170）第 4000–4340 轮：yaw 误差 1.62–1.67 / 1.97–2.05，
+yaw 跟踪奖励 0.54 / 0.48–0.49，vx 误差 0.52–0.53 / 0.55，台阶航向 8.9–9.1° / 9.3–9.4°，catastrophic 0.055–0.074 / 0.025–0.034，
+估计器 vx RMSE 持平（0.106）。规模不同，差值里混有规模变量。用户定 2026-10-07 起 rough 默认轮子包络为 "rated_point"
+（`ROUGH_WHEEL_TORQUE_ENVELOPE`），WheelTN 入口删除；robot_cfg 自身默认（其余任务）仍是 "linear_peak"。WheelTN-Budget 保留，
+现与 VxObserver 只差指令预算一项。
+

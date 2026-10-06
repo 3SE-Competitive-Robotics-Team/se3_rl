@@ -53,10 +53,10 @@ EXP_VX_OBSERVER_Z3_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-Z3"
 VX_OBSERVER_Z3_LATENT_DIM = 3
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
-# 2026-10-06（用户定）：轮子 T-N 包络与指令轮速预算，叠在 VxObserver 上（诊断见 .scratch/yaw_diag/：yaw 包络顶端拒转）。
-# WheelTN：只把轮子 T-N 包络换成手册额定点口径，对照 VxObserver（agqj496q）；
-# WheelTN-Budget：再把指令差速预算换成额定转速 + MJCF 实测轮距，对照 WheelTN。临时入口，结论后删除。
-EXP_VX_OBSERVER_WHEEL_TN_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-WheelTN"
+# 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
+# 入口删除；复现旧包络用 4832d15。
+# 2026-10-06（用户定）：WheelTN-Budget——指令差速预算换成额定转速 + MJCF 实测轮距（诊断见 .scratch/yaw_diag/：yaw 包络顶端拒转），
+# 2026-10-07 起轮子包络已是默认，与 VxObserver 只差预算一项。临时入口，结论后删除。
 EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-WheelTN-Budget"
 
 
@@ -146,11 +146,7 @@ def register() -> None:
     )
     for task_id, overrides in (
         (EXP_VX_OBSERVER_H5_TASK_ID, {"vx_observer_history_length": VX_OBSERVER_H5_HISTORY_LENGTH}),
-        (EXP_VX_OBSERVER_WHEEL_TN_TASK_ID, {"wheel_torque_envelope": "rated_point"}),
-        (
-            EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID,
-            {"wheel_torque_envelope": "rated_point", "command_wheel_budget": "rated"},
-        ),
+        (EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID, {"command_wheel_budget": "rated"}),
     ):
         task_env_cfg = env_cfg(vx_observer=True, **overrides)
         register_mjlab_task(
@@ -169,7 +165,6 @@ __all__ = [
     "EXP_VX_OBSERVER_H5_TASK_ID",
     "EXP_VX_OBSERVER_TASK_ID",
     "EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID",
-    "EXP_VX_OBSERVER_WHEEL_TN_TASK_ID",
     "EXP_VX_OBSERVER_Z3_TASK_ID",
     "EXP_VX_TASK_ID",
     "GRU_TASK_ID",
