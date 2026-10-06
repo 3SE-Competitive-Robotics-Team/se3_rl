@@ -60,11 +60,6 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     active_rod_lower_target_overdrive: float = _SHARED_ROBOT.active_rod_lower_target_overdrive
     knee_gas_spring_force: float = _SHARED_ROBOT.knee_gas_spring_force
     knee_gas_spring_compensation_enabled: bool = _SHARED_ROBOT.knee_gas_spring_compensation_enabled
-    # 前馈补偿用的弹簧力来源："fixed" = knee_gas_spring_force 常数；"estimated" = 观测器每个 policy tick
-    # 给出的左右估计值（set_spring_force_estimate），经限幅、限速后下发，episode reset 置回 knee_gas_spring_force。
-    knee_gas_spring_compensation_source: Literal["fixed", "estimated"] = "fixed"
-    knee_gas_spring_estimate_force_range: tuple[float, float] = (250.0, 500.0)
-    knee_gas_spring_estimate_max_step: float = 5.0
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -104,15 +99,6 @@ class SerialLegDelayedAction(ActionTerm):
             raise ValueError(f"action_clip must be positive or None, got {cfg.action_clip}")
         if cfg.knee_gas_spring_force < 0.0:
             raise ValueError(f"knee_gas_spring_force 必须非负，实际为 {cfg.knee_gas_spring_force}")
-        if cfg.knee_gas_spring_compensation_source == "estimated":
-            low, high = (float(v) for v in cfg.knee_gas_spring_estimate_force_range)
-            if not (0.0 < low <= cfg.knee_gas_spring_force <= high):
-                raise ValueError(
-                    "估计补偿要求 0 < 限幅下界 <= knee_gas_spring_force <= 限幅上界，"
-                    f"实际为 {cfg.knee_gas_spring_estimate_force_range} / {cfg.knee_gas_spring_force}"
-                )
-            if cfg.knee_gas_spring_estimate_max_step <= 0.0:
-                raise ValueError("knee_gas_spring_estimate_max_step 必须为正数")
         self._leg_joint_ids = torch.tensor(leg_ids, device=self.device, dtype=torch.long)
         self._wheel_joint_ids = torch.tensor(wheel_ids, device=self.device, dtype=torch.long)
         self._leg_action_scales = torch.tensor(cfg.leg_scales, device=self.device)
@@ -143,10 +129,6 @@ class SerialLegDelayedAction(ActionTerm):
         self._policy_leg_vel = torch.zeros_like(self._policy_leg_torque)
         self._policy_leg_target = torch.zeros_like(self._policy_leg_torque)
         self._knee_gas_spring_compensation_torque = torch.zeros_like(self._policy_leg_torque)
-        # 当前下发给补偿的左右弹簧力（N）；"fixed" 模式下恒为 knee_gas_spring_force。
-        self._spring_force_applied = torch.full(
-            (self.num_envs, 2), float(cfg.knee_gas_spring_force), device=self.device
-        )
         self._active_rod_angle_target = torch.zeros(self.num_envs, 2, device=self.device)
         self._active_rod_angle_target_clamped = torch.zeros(
             self.num_envs, 2, device=self.device, dtype=torch.bool
@@ -221,30 +203,6 @@ class SerialLegDelayedAction(ActionTerm):
     @property
     def knee_gas_spring_compensation_torque(self) -> torch.Tensor:
         return self._knee_gas_spring_compensation_torque
-
-    @property
-    def spring_force_applied(self) -> torch.Tensor:
-        """当前下发给前馈补偿的左右弹簧力（N），观测项 spring_force_prev 读它。"""
-        return self._spring_force_applied
-
-    def set_spring_force_estimate(self, estimate: torch.Tensor) -> None:
-        """每个 policy tick 在 env.step 之前调用一次：估计值经限速、限幅后成为本拍下发值。
-
-        限速 / 限幅是固定数学运算，sim2x runtime 与固件必须逐项复刻（同 knee_gas_spring_compensation_torque）。
-        """
-        if self.cfg.knee_gas_spring_compensation_source != "estimated":
-            raise RuntimeError(
-                "只有 knee_gas_spring_compensation_source='estimated' 才接受弹簧力估计"
-            )
-        estimate = estimate.to(device=self.device, dtype=self._spring_force_applied.dtype)
-        if estimate.shape != self._spring_force_applied.shape:
-            raise ValueError(
-                f"弹簧力估计形状应为 {tuple(self._spring_force_applied.shape)}，实际为 {tuple(estimate.shape)}"
-            )
-        max_step = float(self.cfg.knee_gas_spring_estimate_max_step)
-        low, high = (float(v) for v in self.cfg.knee_gas_spring_estimate_force_range)
-        step = (estimate - self._spring_force_applied).clamp(-max_step, max_step)
-        self._spring_force_applied[:] = (self._spring_force_applied + step).clamp(low, high)
 
     @property
     def active_rod_angle_target(self) -> torch.Tensor:
@@ -343,13 +301,11 @@ class SerialLegDelayedAction(ActionTerm):
             measured_leg_pos = (
                 current_leg_pos + self._entity.data.encoder_bias[:, self._leg_joint_ids]
             )
-            spring_force = (
-                self._spring_force_applied
-                if self.cfg.knee_gas_spring_compensation_source == "estimated"
-                else self.cfg.knee_gas_spring_force
-            )
             self._knee_gas_spring_compensation_torque[:] = (
-                knee_gas_spring_compensation_torque_torch(measured_leg_pos, spring_force)
+                knee_gas_spring_compensation_torque_torch(
+                    measured_leg_pos,
+                    self.cfg.knee_gas_spring_force,
+                )
             )
         else:
             self._knee_gas_spring_compensation_torque.zero_()
@@ -624,9 +580,6 @@ class SerialLegDelayedAction(ActionTerm):
         ):
             buffer.index_fill_(0, resolved_env_ids, 0.0)
         self._action_fifo.index_fill_(1, resolved_env_ids, 0.0)
-        self._spring_force_applied.index_fill_(
-            0, resolved_env_ids, float(self.cfg.knee_gas_spring_force)
-        )
         self._resample_delay(resolved_env_ids)
 
     def _resolve_env_ids(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:

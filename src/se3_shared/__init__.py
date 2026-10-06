@@ -20,7 +20,6 @@ from .action_history import (
     wrap_front_action_value_delta_torch,
 )
 from .fourbar import (
-    KNEE_GAS_SPRING_ESTIMATE_UNIT_N,
     knee_gas_spring_compensation_torque_np,
     knee_gas_spring_compensation_torque_torch,
     output_leg_length_limits_torch,
@@ -85,7 +84,6 @@ __all__ = [
     "FRONT_ACTION_PERIOD",
     "FRONT_PHYSICAL_PERIOD",
     "HEIGHT_CONDITIONED_DEFAULT_STRATEGY",
-    "KNEE_GAS_SPRING_ESTIMATE_UNIT_N",
     "LEG_ACTION_SEMANTICS",
     "M3508_C620_14",
     "M3508_HEXROLL",

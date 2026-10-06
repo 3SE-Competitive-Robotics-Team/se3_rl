@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from mjlab.rl import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
 
@@ -82,33 +81,6 @@ def validate_iteration_schedules(env_cfg: object, num_steps_per_env: int) -> Non
         )
 
 
-def push_spring_force_estimate(policy: nn.Module, env: object, obs: object) -> None:
-    """模型估计弹簧力时，把本拍估计写进动作项（必须在 env.step 之前，见 se3_train.vx_observer）。"""
-    if not getattr(policy, "estimates_spring_force", False):
-        return
-    term = env.unwrapped.action_manager.get_term("delayed_action")
-    term.set_spring_force_estimate(policy.spring_force_estimate(obs))
-
-
-class _SpringForcePushingPolicy(nn.Module):
-    """推理用包装：每次前向先把弹簧力估计写进 env，再返回动作；其余属性转发给原模型。"""
-
-    def __init__(self, policy: nn.Module, env: object) -> None:
-        super().__init__()
-        self.policy = policy
-        self._env = env
-
-    def forward(self, obs, *args, **kwargs):
-        push_spring_force_estimate(self.policy, self._env, obs)
-        return self.policy(obs, *args, **kwargs)
-
-    def __getattr__(self, name: str):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(super().__getattr__("policy"), name)
-
-
 class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
     """带 SE3 运行时画像的 MJLab on-policy runner。"""
 
@@ -141,13 +113,6 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 f"[SE3 Runtime] check_nan={'enabled' if self._se3_check_nan_enabled else 'disabled'}",
                 flush=True,
             )
-
-    def get_inference_policy(self, device: str | None = None) -> nn.Module:
-        """估计弹簧力的模型返回包装后的策略，保证评测 / play 同样把估计写进动作项。"""
-        policy = super().get_inference_policy(device=device)
-        if getattr(policy, "estimates_spring_force", False):
-            return _SpringForcePushingPolicy(policy, self.env)
-        return policy
 
     def save(self, path: str, infos: dict | None = None) -> None:
         """保存 checkpoint，并为同一迭代生成带部署契约的 ONNX。"""
@@ -248,7 +213,6 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             with torch.inference_mode():
                 for _ in range(num_steps_per_env):
                     actions = self.alg.act(obs)
-                    push_spring_force_estimate(self.alg.get_policy(), self.env, obs)
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                     if self._se3_check_nan_enabled and self.cfg.get("check_for_nan", True):
                         check_nan(obs, rewards, dones)

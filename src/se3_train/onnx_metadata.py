@@ -17,7 +17,6 @@ from se3_shared import (
     COMMAND_FIELDS,
     DM8009P,
     HEIGHT_CONDITIONED_DEFAULT_STRATEGY,
-    KNEE_GAS_SPRING_ESTIMATE_UNIT_N,
     M3508_C620_14,
     NO_ATTITUDE_COMMAND_OBS_FIELDS,
     JointGroup,
@@ -43,9 +42,6 @@ _TERM_WIDTHS = {
     "jump_commands": 3,
     # 跳跃 mimic 参考帧（4 帧 × 5 维，见 se3_train.tasks.jump_mimic.mdp）。runtime 尚未支持，部署前需在 se3_runtime 实现。
     "jump_reference": 20,
-    # 上一拍下发给前馈补偿的左右弹簧力，(F − 额定值) / KNEE_GAS_SPRING_ESTIMATE_UNIT_N（自适应前馈，见 vx_observer）。
-    # runtime 尚未支持，部署前需在 se3_runtime 实现回传与限幅限速。
-    "spring_force_prev": 2,
 }
 _COMMAND_FIELD_NAMES = COMMAND_FIELDS
 _COMMAND_TERMS = {"commands", "commands_vx_yaw_height", "jump_commands"}
@@ -347,23 +343,7 @@ def _build_knee_gas_spring_metadata(runtime_env: Any) -> dict[str, Any]:
         raise ValueError(f"knee_gas_spring_force 必须非负，实际为 {force}")
     if compensation_enabled and force <= 0.0:
         raise ValueError("启用气弹簧补偿时 knee_gas_spring_force 必须为正数")
-    metadata: dict[str, Any] = {"force": force, "compensation_enabled": compensation_enabled}
-    source = str(getattr(cfg, "knee_gas_spring_compensation_source", "fixed"))
-    if source == "estimated":
-        # 自适应前馈：补偿力 = ONNX 输出 spring_force 经限速、限幅后的值，reset 时为 force；
-        # spring_force_prev 观测即上一拍的下发值（见 SerialLegDelayedAction.set_spring_force_estimate）。
-        low, high = (float(v) for v in cfg.knee_gas_spring_estimate_force_range)
-        metadata["compensation_source"] = "estimated"
-        metadata["estimate"] = {
-            "output_name": "spring_force",
-            "force_range": [low, high],
-            "max_step_per_policy_tick": float(cfg.knee_gas_spring_estimate_max_step),
-            "observation_unit": KNEE_GAS_SPRING_ESTIMATE_UNIT_N,
-            "initial_force": force,
-        }
-    elif source != "fixed":
-        raise ValueError(f"未知的 knee_gas_spring_compensation_source {source!r}")
-    return metadata
+    return {"force": force, "compensation_enabled": compensation_enabled}
 
 
 def _build_command_metadata(command_manager: Any) -> dict[str, Any]:
@@ -525,7 +505,6 @@ def _observation_scale(term_name: str, term_cfg: Any) -> list[float]:
         "last_actions": [1.0] * 6,
         "jump_commands": [1.0] * 3,
         "jump_reference": [1.0] * 20,
-        "spring_force_prev": [1.0] * 2,
     }[term_name]
     manager_scale = getattr(term_cfg, "scale", None)
     if manager_scale is None:
@@ -595,10 +574,6 @@ def _validate_onnx_graph(model: onnx.ModelProto, metadata: dict[str, Any]) -> No
     is_rnn = metadata.get("meta", {}).get("training", {}).get("is_rnn")
     expected_inputs = {"obs", "h_in"} if is_rnn else {"obs"}
     expected_outputs = {"actions", "h_out"} if is_rnn else {"actions"}
-    spring = metadata.get("robot", {}).get("knee_gas_spring", {})
-    estimated_spring = spring.get("compensation_source") == "estimated"
-    if estimated_spring:
-        expected_outputs = expected_outputs | {spring["estimate"]["output_name"]}
     if set(inputs) != expected_inputs or set(outputs) != expected_outputs:
         raise ValueError(
             "ONNX I/O 与 policy 类型不一致："
@@ -618,8 +593,6 @@ def _validate_onnx_graph(model: onnx.ModelProto, metadata: dict[str, Any]) -> No
         raise ValueError(
             f"ONNX actions 为 {_static_last_dim(outputs['actions'])}D，descriptor 为 {action_dim}D"
         )
-    if estimated_spring and _static_last_dim(outputs[spring["estimate"]["output_name"]]) != 2:
-        raise ValueError("ONNX spring_force 输出必须为 2D [左, 右]")
 
 
 def _static_last_dim(value: onnx.ValueInfoProto) -> int:

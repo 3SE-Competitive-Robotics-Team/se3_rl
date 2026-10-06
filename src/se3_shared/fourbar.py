@@ -13,10 +13,6 @@ try:
 except ModuleNotFoundError:
     torch = None  # type: ignore[assignment]
 
-# 弹簧力估计（观测器输出、回传观测、监督目标）的归一化单位：x = (F − 额定值) / 100 N。
-# 训练端、sim2x runtime 与固件共用，改动需三边同步。
-KNEE_GAS_SPRING_ESTIMATE_UNIT_N = 100.0
-
 # 这些常量来自闭链 MJCF 的左腿零位几何，单位为 m，投影在运动 x-z 平面。
 _KNEE_X = -0.17993464
 _KNEE_Z = 0.00489576
@@ -119,22 +115,13 @@ def policy_to_closedchain_passive_pos_torch(policy_pos: torch.Tensor) -> torch.T
 
 def knee_gas_spring_compensation_torque_torch(
     policy_pos: torch.Tensor,
-    spring_force: float | torch.Tensor,
+    spring_force: float,
 ) -> torch.Tensor:
-    """计算抵消恒力气弹簧的四个主动电机前馈力矩。
-
-    spring_force：标量（左右同一恒力）或最后一维为 2 的张量 [左, 右]（逐 env 估计值，单位 N）。
-    """
+    """计算抵消恒力气弹簧的四个主动电机前馈力矩。"""
     if policy_pos.shape[-1] != 4:
         raise ValueError(f"policy_pos 最后一维必须为 4，实际为 {policy_pos.shape}")
     original_shape = policy_pos.shape
     rows = policy_pos.reshape(-1, 4)
-    if isinstance(spring_force, torch.Tensor):
-        if spring_force.shape[-1] != 2:
-            raise ValueError(f"spring_force 最后一维必须为 2，实际为 {spring_force.shape}")
-        force = spring_force.reshape(-1, 2).to(rows.dtype)
-    else:
-        force = float(spring_force)
     left_alpha = (rows[:, 0] - rows[:, 1]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
     right_alpha = (rows[:, 3] - rows[:, 2]).clamp(_ACTIVE_LOWER, _ACTIVE_UPPER)
     active_angle = torch.stack((left_alpha, right_alpha), dim=1)
@@ -143,7 +130,7 @@ def knee_gas_spring_compensation_torque_torch(
     output_knee_jacobian = output_knee_jacobian_torch(active_angle, right_side=False)
     # MJCF 里 actuator 正力推长 tendon，弹簧在主动杆坐标下的广义力为 +F·dL/dα；
     # 前馈要抵消它，因此取负号。改这个符号等于换掉策略所处的 plant。
-    compensation = -force * spring_length_jacobian * output_knee_jacobian
+    compensation = -float(spring_force) * spring_length_jacobian * output_knee_jacobian
     out = torch.stack(
         (
             compensation[:, 0],

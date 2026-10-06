@@ -50,8 +50,6 @@ class VxObserverModelCfg(RslRlModelCfg):
     history_length: int = 0
     frame_term_dims: tuple[int, ...] = ()
     estimator_hidden_dims: tuple[int, ...] = ROUGH_VX_ESTIMATOR_HIDDEN_DIMS
-    policy_frame_term_mask: tuple[bool, ...] = ()
-    estimate_spring_force: bool = False
     class_name: str = "se3_train.vx_observer:VxObserverMLPModel"
 
 
@@ -80,14 +78,11 @@ def vx_observer_rl_cfg(
     history_length: int,
     frame_term_dims: tuple[int, ...],
     target_group: str,
-    policy_frame_term_mask: tuple[bool, ...] = (),
-    estimate_spring_force: bool = False,
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
     """生成显式 vx 观测器 PPO 配置：只换 actor 类并打开估计器监督，其余与 `rl_cfg` 逐项相同。
 
-    frame_term_dims / policy_frame_term_mask 按 actor 观测组的 term 顺序给出单帧宽度与"是否进 policy"
-    （由入口从 env_cfg 推出，见 rough.__init__）。estimate_spring_force：估计器再输出左右弹簧力（自适应前馈）。
+    frame_term_dims 必须按 actor 观测组的 term 顺序给出单帧宽度（由入口从 env_cfg 推出，见 rough.__init__）。
     """
     cfg = rl_cfg(smoke=smoke)
     actor_fields = {k: v for k, v in asdict(cfg.actor).items() if k != "class_name"}
@@ -95,8 +90,6 @@ def vx_observer_rl_cfg(
         **actor_fields,
         history_length=int(history_length),
         frame_term_dims=tuple(int(d) for d in frame_term_dims),
-        policy_frame_term_mask=tuple(bool(m) for m in policy_frame_term_mask),
-        estimate_spring_force=bool(estimate_spring_force),
     )
     cfg.algorithm = replace(
         cfg.algorithm,
