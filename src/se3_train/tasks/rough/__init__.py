@@ -1,12 +1,14 @@
 """崎岖地形行走任务（MLP / GRU 两个入口）与台阶定向评测入口。"""
 
+from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.tasks.registry import register_mjlab_task
 
-from se3_train.rl_cfg import bind_task_name
+from se3_train.onnx_metadata import observation_term_width
+from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
-from .env_cfg import env_cfg
-from .rl_cfg import gru_rl_cfg, rl_cfg
+from .env_cfg import ROUGH_VX_OBSERVER_HISTORY_LENGTH, ROUGH_VX_OBSERVER_TARGET_GROUP, env_cfg
+from .rl_cfg import gru_rl_cfg, rl_cfg, vx_observer_rl_cfg
 from .terrains import stair_only_terrains_cfg
 
 TASK_ID = "SE3-WheelLegged-Rough"
@@ -38,6 +40,19 @@ EXP_DR1_ORACLE_VEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-DR1-OracleVel"
 # 对照 OracleVel（x0xavu14）看 DR 参数 31 维是否导致跳跃学不出；Vel 对 Vx 看 vy / vz 的贡献。不可部署，临时入口，结论后删除。
 EXP_VEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vel"
 EXP_VX_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vx"
+# 2026-10-05（用户定）：显式 vx 观测器——actor 16 帧历史 → 估计器 v̂x（MSE 监督，detach 后进 policy），policy 看最新一帧 + v̂x。
+# 可部署（ONNX 输入为 480 维历史）；对照默认基线与 Vx 特权（qnd9o87r）。见 se3_train.vx_observer。临时入口，结论后删除。
+EXP_VX_OBSERVER_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver"
+
+
+def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunnerCfg:
+    """单帧各项宽度从 actor 观测组的 term 顺序推出，保证与模型取最新一帧的下标一致。"""
+    actor_terms = vx_env_cfg.observations["actor"].terms
+    return vx_observer_rl_cfg(
+        history_length=ROUGH_VX_OBSERVER_HISTORY_LENGTH,
+        frame_term_dims=tuple(observation_term_width(name) for name in actor_terms),
+        target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+    )
 
 
 def register() -> None:
@@ -91,12 +106,21 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_VX_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    vx_observer_env_cfg = env_cfg(vx_observer=True)
+    register_mjlab_task(
+        task_id=EXP_VX_OBSERVER_TASK_ID,
+        env_cfg=vx_observer_env_cfg,
+        play_env_cfg=env_cfg(play=True, vx_observer=True),
+        rl_cfg=bind_task_name(_vx_observer_rl_cfg(vx_observer_env_cfg), EXP_VX_OBSERVER_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_DR1_ORACLE_TASK_ID",
     "EXP_DR1_ORACLE_VEL_TASK_ID",
     "EXP_VEL_TASK_ID",
+    "EXP_VX_OBSERVER_TASK_ID",
     "EXP_VX_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

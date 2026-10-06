@@ -47,6 +47,13 @@ _COMMAND_FIELD_NAMES = COMMAND_FIELDS
 _COMMAND_TERMS = {"commands", "commands_vx_yaw_height", "jump_commands"}
 
 
+def observation_term_width(term_name: str) -> int:
+    """部署契约中单帧观测项的宽度（与 runtime 构造观测的宽度一致）。"""
+    if term_name not in _TERM_WIDTHS:
+        raise ValueError(f"暂不支持 observation term {term_name!r}")
+    return _TERM_WIDTHS[term_name]
+
+
 def build_deployment_onnx_metadata(
     env: Any,
     *,
@@ -613,4 +620,5 @@ __all__ = [
     "SCHEMA_NAME",
     "build_deployment_onnx_metadata",
     "embed_onnx_metadata",
+    "observation_term_width",
 ]

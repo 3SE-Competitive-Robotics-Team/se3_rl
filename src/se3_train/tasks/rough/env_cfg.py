@@ -63,7 +63,7 @@ from mjlab.envs.mdp import height_scan
 from mjlab.envs.mdp.rewards import is_terminated
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import (
@@ -168,6 +168,10 @@ ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
 # 代价：0.22/0.26 m 稳态偏低 1–2.4 cm；0.38 m 静站后 vx 0.8 稳态超速到 1.13；下台阶摔倒 4 → 9（r9 低姿态 1.2–2.0 m/s），
 # 嫌疑是下行列单点射线过沿跳变被更陡的罚放大（未验证）。平地 vz 项与独立 vz 罚分不开冲高与贴高，未采用。
 ROUGH_BASE_HEIGHT_SIGMA = 0.07
+# 显式 vx 观测器（2026-10-05 用户定，见 se3_train.vx_observer）：actor 历史帧数与监督目标组名。
+# 16 帧 = 0.32 s（50 Hz），用户定；估计器 480→128→64→1 约 7 万次乘加，MCU 上可推。
+ROUGH_VX_OBSERVER_HISTORY_LENGTH = 16
+ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -394,6 +398,7 @@ def env_cfg(
     oracle_dr_obs: bool = False,
     oracle_base_vel: bool = False,
     oracle_base_vx: bool = False,
+    vx_observer: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -407,6 +412,8 @@ def env_cfg(
     oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     oracle_base_vel：actor 额外观测机身系线速度 3 维（critic 同源的 base_lin_vel），只做诊断、不可部署。
     oracle_base_vx：actor 额外观测机身系前向速度 vx 1 维，只做诊断、不可部署。
+    vx_observer：actor 观测改为 ROUGH_VX_OBSERVER_HISTORY_LENGTH 帧历史，并增加估计器监督目标组
+    ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；须配 rl_cfg.vx_observer_rl_cfg。可部署。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -611,6 +618,8 @@ def env_cfg(
             func=mdp_observations.base_lin_vel_x_obs
         )
         cfg.observations["actor"] = replace(actor, terms=terms)
+    if vx_observer:
+        _apply_vx_observer_obs(cfg)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -763,6 +772,24 @@ def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) 
     cfg.events["knee_spring_force"] = replace(
         cfg.events["knee_spring_force"],
         params=_params("knee_spring_force", force_scale_range=ROUGH_DR_KNEE_SPRING_SCALE_RANGE),
+    )
+
+
+def _apply_vx_observer_obs(cfg: ManagerBasedRlEnvCfg) -> None:
+    """显式 vx 观测器（2026-10-05，用户定，见 se3_train.vx_observer）的观测侧改动。
+
+    actor 组整组开 16 帧历史（term-major、oldest→newest 展平；reset 后第一帧回填整段，runtime 同样处理），
+    噪声逐帧在入历史前施加，与部署端一致。critic 仍是单帧。监督目标单独成组，不加噪声，
+    rsl_rl 的 obs_groups 不引用它，所以只进 rollout storage、不进任何网络输入。
+    """
+    actor = cfg.observations["actor"]
+    cfg.observations["actor"] = replace(
+        actor, history_length=ROUGH_VX_OBSERVER_HISTORY_LENGTH, flatten_history_dim=True
+    )
+    cfg.observations[ROUGH_VX_OBSERVER_TARGET_GROUP] = ObservationGroupCfg(
+        terms={"base_lin_vel_x": ObservationTermCfg(func=mdp_observations.base_lin_vel_x_obs)},
+        concatenate_terms=True,
+        enable_corruption=False,
     )
 
 
@@ -938,6 +965,8 @@ __all__ = [
     "ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT",
     "ROUGH_TRACKING_LIN_VEL_WEIGHT",
     "ROUGH_UPWARD_WEIGHT",
+    "ROUGH_VX_OBSERVER_HISTORY_LENGTH",
+    "ROUGH_VX_OBSERVER_TARGET_GROUP",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_FORE_AFT_WEIGHT",
     "env_cfg",

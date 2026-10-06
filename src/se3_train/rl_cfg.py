@@ -12,9 +12,11 @@ from mjlab.rl import RslRlPpoAlgorithmCfg
 
 @dataclass
 class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
-    """PPO 算法配置：可选固定 critic 学习率（见 se3_train.ppo）。"""
+    """PPO 算法配置：可选固定 critic 学习率、可选显式 vx 估计器监督（见 se3_train.ppo）。"""
 
     critic_learning_rate: float | None = None
+    estimator_learning_rate: float | None = None
+    estimator_target_group: str | None = None
     class_name: str = "se3_train.ppo:Se3PPO"
 
 

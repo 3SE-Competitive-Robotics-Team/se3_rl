@@ -16,6 +16,13 @@ critic 的回归目标与策略信任域无关，不该被同一条规则限速�
 解出真实梯度模长与噪声，B_noise = tr(Σ) / |G|² 是"再加样本仍明显有用"的 batch 量级。两项先按整轮
 mini-batch 求均值再相除（单个 mini-batch 的估计噪声大）。日志键 Loss/grad_noise_scale_actor（样本数），
 Loss/grad_sq_small_actor、Loss/grad_sq_big_actor 供复核。单卡训练不记录。
+
+显式 vx 估计器（2026-10-05，见 se3_train.vx_observer）：`estimator_learning_rate` 非 None 时 actor 必须是
+VxObserverMLPModel。估计器用独立 Adam，在 PPO 各 epoch 结束后用同一批 rollout 做 MSE 回归（epoch 数、mini-batch
+数与 PPO 相同），目标是观测组 `estimator_target_group`（同一时刻的真实机身系 vx）。放在 PPO 之后是为了让 PPO 各
+epoch 的 log prob 与 rollout 时用的是同一个估计器，ratio 从 1 开始；rsl_rl 的 storage.clear() 只复位写指针、不清数据，
+所以 PPO update 之后仍可读同一批 rollout。估计器参数也在 PPO optimizer 里（它属于 actor），但 v̂x 在 policy 前
+detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更新。日志 Loss/estimator_vx_mse、Loss/estimator_vx_rmse。
 """
 
 from __future__ import annotations
@@ -56,14 +63,29 @@ class ActorCriticAdam(torch.optim.Adam):
 
 
 class Se3PPO(PPO):
-    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率。"""
+    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、可选的显式 vx 估计器监督。"""
 
     def __init__(
-        self, *args: Any, critic_learning_rate: float | None = None, **kwargs: Any
+        self,
+        *args: Any,
+        critic_learning_rate: float | None = None,
+        estimator_learning_rate: float | None = None,
+        estimator_target_group: str | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._noise_sq_small: list[float] = []
         self._noise_sq_big: list[float] = []
+        self.estimator_target_group = estimator_target_group
+        self.estimator_optimizer: torch.optim.Adam | None = None
+        if estimator_learning_rate is not None:
+            if not hasattr(self._raw_actor, "estimate_vx"):
+                raise ValueError("estimator_learning_rate 需要 actor 为 VxObserverMLPModel")
+            if estimator_target_group is None:
+                raise ValueError("estimator_learning_rate 需要同时给 estimator_target_group")
+            self.estimator_optimizer = torch.optim.Adam(
+                self._raw_actor.estimator.parameters(), lr=float(estimator_learning_rate)
+            )
         self.critic_learning_rate = (
             None if critic_learning_rate is None else float(critic_learning_rate)
         )
@@ -110,7 +132,56 @@ class Se3PPO(PPO):
             loss_dict["grad_sq_small_actor"] = sq_small
             loss_dict["grad_sq_big_actor"] = sq_big
             loss_dict["grad_noise_scale_actor"] = trace / grad_sq if grad_sq > 0.0 else float("nan")
+        if self.estimator_optimizer is not None:
+            loss_dict.update(self._update_estimator())
         return loss_dict
+
+    def _update_estimator(self) -> dict[str, float]:
+        """用本轮 rollout 对 vx 估计器做 MSE 回归；多卡时梯度跨卡平均，保证各卡估计器一致。"""
+        assert self.estimator_optimizer is not None
+        actor = self._raw_actor
+        params = list(actor.estimator.parameters())
+        mse_sum = torch.zeros((), device=self.device)
+        num_updates = 0
+        for batch in self.storage.mini_batch_generator(
+            self.num_mini_batches, self.num_learning_epochs
+        ):
+            target = batch.observations[self.estimator_target_group]
+            loss = torch.nn.functional.mse_loss(actor.estimate_vx(batch.observations), target)
+            self.estimator_optimizer.zero_grad()
+            loss.backward()
+            if self.is_multi_gpu:
+                grads = torch.cat([p.grad.reshape(-1) for p in params])
+                torch.distributed.all_reduce(grads, op=torch.distributed.ReduceOp.SUM)
+                grads /= self.gpu_world_size
+                offset = 0
+                for p in params:
+                    p.grad.copy_(grads[offset : offset + p.numel()].view_as(p))
+                    offset += p.numel()
+            self.estimator_optimizer.step()
+            mse_sum += loss.detach()
+            num_updates += 1
+        # 梯度置 None，下一轮 PPO 的噪声尺度统计与 reduce_parameters 只看到 PPO 自己的梯度。
+        self.estimator_optimizer.zero_grad(set_to_none=True)
+        mse = float(mse_sum) / max(num_updates, 1)
+        return {"estimator_vx_mse": mse, "estimator_vx_rmse": mse**0.5}
+
+    def save(self) -> dict:
+        saved_dict = super().save()
+        if self.estimator_optimizer is not None:
+            saved_dict["estimator_optimizer_state_dict"] = self.estimator_optimizer.state_dict()
+        return saved_dict
+
+    def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+        load_iteration = super().load(loaded_dict, load_cfg, strict)
+        load_optimizer = load_cfg is None or bool(load_cfg.get("optimizer"))
+        if (
+            self.estimator_optimizer is not None
+            and load_optimizer
+            and "estimator_optimizer_state_dict" in loaded_dict
+        ):
+            self.estimator_optimizer.load_state_dict(loaded_dict["estimator_optimizer_state_dict"])
+        return load_iteration
 
 
 __all__ = ["ActorCriticAdam", "Se3PPO"]
