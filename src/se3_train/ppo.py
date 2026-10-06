@@ -23,6 +23,8 @@ VxObserverMLPModel。估计器用独立 Adam，在 PPO 各 epoch 结束后用同
 epoch 的 log prob 与 rollout 时用的是同一个估计器，ratio 从 1 开始；rsl_rl 的 storage.clear() 只复位写指针、不清数据，
 所以 PPO update 之后仍可读同一批 rollout。估计器参数也在 PPO optimizer 里（它属于 actor），但 v̂x 在 policy 前
 detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更新。日志 Loss/estimator_vx_mse、Loss/estimator_vx_rmse。
+估计器带隐向量时（latent_dim > 0）隐向量不 detach，PPO 梯度经它进入估计器、由 PPO optimizer 一起更新；MSE 只监督 v̂x 一列。
+另记 Loss/estimator_latent_std（隐向量各维 batch 标准差均值，看是否塌缩）。
 """
 
 from __future__ import annotations
@@ -164,7 +166,10 @@ class Se3PPO(PPO):
         # 梯度置 None，下一轮 PPO 的噪声尺度统计与 reduce_parameters 只看到 PPO 自己的梯度。
         self.estimator_optimizer.zero_grad(set_to_none=True)
         mse = float(mse_sum) / max(num_updates, 1)
-        return {"estimator_vx_mse": mse, "estimator_vx_rmse": mse**0.5}
+        log = {"estimator_vx_mse": mse, "estimator_vx_rmse": mse**0.5}
+        if getattr(actor, "latent_dim", 0) > 0:
+            log["estimator_latent_std"] = actor.latent_std(batch.observations)
+        return log
 
     def save(self) -> dict:
         saved_dict = super().save()

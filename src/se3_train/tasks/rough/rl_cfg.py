@@ -50,6 +50,7 @@ class VxObserverModelCfg(RslRlModelCfg):
     history_length: int = 0
     frame_term_dims: tuple[int, ...] = ()
     estimator_hidden_dims: tuple[int, ...] = ROUGH_VX_ESTIMATOR_HIDDEN_DIMS
+    latent_dim: int = 0
     class_name: str = "se3_train.vx_observer:VxObserverMLPModel"
 
 
@@ -78,11 +79,13 @@ def vx_observer_rl_cfg(
     history_length: int,
     frame_term_dims: tuple[int, ...],
     target_group: str,
+    latent_dim: int = 0,
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
     """生成显式 vx 观测器 PPO 配置：只换 actor 类并打开估计器监督，其余与 `rl_cfg` 逐项相同。
 
     frame_term_dims 必须按 actor 观测组的 term 顺序给出单帧宽度（由入口从 env_cfg 推出，见 rough.__init__）。
+    latent_dim：估计器额外输出的隐向量维数（PPO 端到端训练，见 se3_train.vx_observer），0 = 只估 vx。
     """
     cfg = rl_cfg(smoke=smoke)
     actor_fields = {k: v for k, v in asdict(cfg.actor).items() if k != "class_name"}
@@ -90,6 +93,7 @@ def vx_observer_rl_cfg(
         **actor_fields,
         history_length=int(history_length),
         frame_term_dims=tuple(int(d) for d in frame_term_dims),
+        latent_dim=int(latent_dim),
     )
     cfg.algorithm = replace(
         cfg.algorithm,

@@ -47,6 +47,10 @@ EXP_VX_OBSERVER_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver"
 # 对照 VxObserver（agqj496q）。临时入口，结论后删除。
 EXP_VX_OBSERVER_H5_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-H5"
 VX_OBSERVER_H5_HISTORY_LENGTH = 5
+# 2026-10-06（用户定）：VxObserver 估计器在 v̂x 之外再输出 3 维隐向量，不 detach、由 PPO 端到端训练（方案 A），
+# 其余与 VxObserver（16 帧）逐项相同，对照 agqj496q。临时入口，结论后删除。
+EXP_VX_OBSERVER_Z3_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-Z3"
+VX_OBSERVER_Z3_LATENT_DIM = 3
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-06（用户定）：轮子 T-N 包络与指令轮速预算，叠在 VxObserver 上（诊断见 .scratch/yaw_diag/：yaw 包络顶端拒转）。
@@ -56,7 +60,9 @@ EXP_VX_OBSERVER_WHEEL_TN_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-WheelTN
 EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-WheelTN-Budget"
 
 
-def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunnerCfg:
+def _vx_observer_rl_cfg(
+    vx_env_cfg: ManagerBasedRlEnvCfg, *, latent_dim: int = 0
+) -> RslRlOnPolicyRunnerCfg:
     """单帧各项宽度与历史帧数都从 actor 观测组推出，保证与模型取最新一帧的下标一致。"""
     actor = vx_env_cfg.observations["actor"]
     actor_terms = actor.terms
@@ -64,6 +70,7 @@ def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunner
         history_length=int(actor.history_length),
         frame_term_dims=tuple(observation_term_width(name) for name in actor_terms),
         target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+        latent_dim=latent_dim,
     )
 
 
@@ -126,6 +133,17 @@ def register() -> None:
         rl_cfg=bind_task_name(_vx_observer_rl_cfg(vx_observer_env_cfg), EXP_VX_OBSERVER_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    z3_env_cfg = env_cfg(vx_observer=True)
+    register_mjlab_task(
+        task_id=EXP_VX_OBSERVER_Z3_TASK_ID,
+        env_cfg=z3_env_cfg,
+        play_env_cfg=env_cfg(play=True, vx_observer=True),
+        rl_cfg=bind_task_name(
+            _vx_observer_rl_cfg(z3_env_cfg, latent_dim=VX_OBSERVER_Z3_LATENT_DIM),
+            EXP_VX_OBSERVER_Z3_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     for task_id, overrides in (
         (EXP_VX_OBSERVER_H5_TASK_ID, {"vx_observer_history_length": VX_OBSERVER_H5_HISTORY_LENGTH}),
         (EXP_VX_OBSERVER_WHEEL_TN_TASK_ID, {"wheel_torque_envelope": "rated_point"}),
@@ -152,6 +170,7 @@ __all__ = [
     "EXP_VX_OBSERVER_TASK_ID",
     "EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID",
     "EXP_VX_OBSERVER_WHEEL_TN_TASK_ID",
+    "EXP_VX_OBSERVER_Z3_TASK_ID",
     "EXP_VX_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

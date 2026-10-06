@@ -12,6 +12,10 @@
 两路互不干扰。估计器输入与 policy 共用同一个经验归一化（统计量在 rollout 中更新，不受梯度影响）。
 v̂x 以 m/s 原值进入 policy，不再归一化。部署时 ONNX 输入仍是 480 维历史、输出仍是动作，
 runtime 的 History-MLP 契约不变。
+
+隐向量（2026-10-06，用户定，latent_dim > 0）：估计器在 v̂x 之外再输出 latent_dim 维隐向量 z，**不 detach** 直接进 policy，
+由 PPO 梯度端到端训练（没有额外监督）；v̂x 一列仍只由 MSE 监督、detach 后进 policy。因为 z 与 v̂x 共用估计器主干，
+PPO 梯度会进入主干，与 vx 的 MSE 一起塑造主干特征。policy 输入为 [ô_t, sg(v̂x), z]。
 """
 
 from __future__ import annotations
@@ -53,12 +57,16 @@ class VxObserverMLPModel(MLPModel):
         history_length: int,
         frame_term_dims: tuple[int, ...] | list[int],
         estimator_hidden_dims: tuple[int, ...] | list[int] = (128, 64),
+        latent_dim: int = 0,
     ) -> None:
         # 父类 __init__ 里会调用 _get_latent_dim() 建 policy MLP，所以单帧宽度必须先于 super().__init__ 设好
         # （与 rsl_rl CNNModel 先设 cnn_latent_dim 的写法一致）。
         self.history_length = int(history_length)
         self.frame_term_dims = tuple(int(d) for d in frame_term_dims)
         self.frame_dim = sum(self.frame_term_dims)
+        self.latent_dim = int(latent_dim)
+        if self.latent_dim < 0:
+            raise ValueError(f"latent_dim 不得为负，收到 {self.latent_dim}")
         super().__init__(
             obs,
             obs_groups,
@@ -81,26 +89,40 @@ class VxObserverMLPModel(MLPModel):
             _latest_frame_index(self.frame_term_dims, self.history_length),
             persistent=False,
         )
-        self.estimator = MLP(self.obs_dim, 1, estimator_hidden_dims, activation)
+        self.estimator = MLP(self.obs_dim, 1 + self.latent_dim, estimator_hidden_dims, activation)
 
     def _get_latent_dim(self) -> int:
-        """policy MLP 输入：最新一帧 + v̂x。"""
-        return self.frame_dim + 1
+        """policy MLP 输入：最新一帧 + v̂x + 隐向量。"""
+        return self.frame_dim + 1 + self.latent_dim
 
     def _normalized_history(self, obs: TensorDict) -> torch.Tensor:
         return self.obs_normalizer(torch.cat([obs[group] for group in self.obs_groups], dim=-1))
 
     def estimate_vx(self, obs: TensorDict) -> torch.Tensor:
-        """估计器前向（带梯度），供 Se3PPO 的 MSE 更新用；形状 (N, 1)。"""
-        return self.estimator(self._normalized_history(obs))
+        """估计器 v̂x 一列（带梯度），供 Se3PPO 的 MSE 更新用；形状 (N, 1)。"""
+        return self.estimator(self._normalized_history(obs))[:, :1]
+
+    @torch.no_grad()
+    def latent_std(self, obs: TensorDict) -> float:
+        """隐向量各维在 batch 上的标准差均值，用来看 z 是否塌缩成常数；latent_dim = 0 时返回 0。"""
+        if self.latent_dim == 0:
+            return 0.0
+        return float(self.estimator(self._normalized_history(obs))[:, 1:].std(dim=0).mean())
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
-        """policy 输入 [ô_t, sg(v̂x)]：PPO 梯度不回传到估计器。"""
+        """policy 输入 [ô_t, sg(v̂x), z]：PPO 梯度不经 v̂x 回传，只经隐向量 z 回传到估计器。"""
         history = self._normalized_history(obs)
-        vx_hat = self.estimator(history).detach()
-        return torch.cat([history.index_select(-1, self.latest_frame_index), vx_hat], dim=-1)
+        estimate = self.estimator(history)
+        return torch.cat(
+            [
+                history.index_select(-1, self.latest_frame_index),
+                estimate[:, :1].detach(),
+                estimate[:, 1:],
+            ],
+            dim=-1,
+        )
 
     def as_jit(self) -> nn.Module:
         raise NotImplementedError("VxObserverMLPModel 只支持 ONNX 导出")
@@ -129,8 +151,8 @@ class _OnnxVxObserverMLPModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         history = self.obs_normalizer(x)
-        vx_hat = self.estimator(history)
-        latent = torch.cat([history.index_select(-1, self.latest_frame_index), vx_hat], dim=-1)
+        estimate = self.estimator(history)
+        latent = torch.cat([history.index_select(-1, self.latest_frame_index), estimate], dim=-1)
         return self.deterministic_output(self.mlp(latent))
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor]:
