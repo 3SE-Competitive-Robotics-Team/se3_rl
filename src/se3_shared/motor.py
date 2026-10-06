@@ -44,6 +44,8 @@ class MotorSpec:
 
     torque_speed_curve: tuple[tuple[float, float], ...] = ()
     """输出轴 T-N 包络点 ``(速度 rad/s, 最大扭矩 N·m)``，速度必须严格递增。"""
+    rated_speed: float = 0.0
+    """手册额定点转速（额定电压、额定力矩下），输出轴 (rad/s)；0 表示手册未给或未录入。"""
 
     @property
     def no_load_speed_rpm(self) -> float:
@@ -59,6 +61,18 @@ class MotorSpec:
     def rotor_ke(self) -> float:
         """转子级反电动势常数 Ke (V·s/rad)。"""
         return self.rated_voltage / (self.no_load_speed * self.gear_ratio)
+
+    @property
+    def rated_point_stall_torque(self) -> float:
+        """过手册额定点与空载点的反电动势线 τ = T·(1 − ω/ω₀) 的零速截距 T (N·m)。
+
+        额定点 (rated_speed, rated_torque) 与空载点 (no_load_speed, 0) 都是手册实测量，两点定一条线，
+        不依赖 Kt / 相电阻的估计。作 DcMotor 的 saturation_effort、rated_torque 作 effort_limit 时，
+        包络为「额定平台延续到额定转速 + 末端反电动势下降段」。
+        """
+        if not 0.0 < self.rated_speed < self.no_load_speed:
+            raise ValueError(f"{self.name} 未录入有效的手册额定转速：{self.rated_speed}")
+        return self.rated_torque * self.no_load_speed / (self.no_load_speed - self.rated_speed)
 
     @property
     def voltage_limited_stall_torque(self) -> float:
@@ -124,12 +138,22 @@ class MotorSpec:
 _M3508_REFERENCE_GEAR_RATIO = 19.0
 _M3508_WHEEL_GEAR_RATIO = 14.0
 _M3508_19_NO_LOAD_SPEED_RPM = 482.0
+# 手册额定点：19:1 输出轴额定力矩 3 N·m 下转速 469 rpm（2026-10-06 用户核对手册）。
+_M3508_19_RATED_SPEED_RPM = 469.0
 _M3508_19_RATED_TORQUE = 3.0
 _M3508_19_PEAK_TORQUE = 4.5
 
 # 官方 19:1 输出轴参数按减速比换算到 14:1 输出轴。
 _M3508_14_NO_LOAD_SPEED = (
     _M3508_19_NO_LOAD_SPEED_RPM
+    * _M3508_REFERENCE_GEAR_RATIO
+    / _M3508_WHEEL_GEAR_RATIO
+    * 2.0
+    * math.pi
+    / 60.0
+)
+_M3508_14_RATED_SPEED = (
+    _M3508_19_RATED_SPEED_RPM
     * _M3508_REFERENCE_GEAR_RATIO
     / _M3508_WHEEL_GEAR_RATIO
     * 2.0
@@ -150,6 +174,7 @@ M3508_C620_14 = MotorSpec(
     stall_torque=_M3508_14_PEAK_TORQUE,
     no_load_speed=_M3508_14_NO_LOAD_SPEED,
     rated_torque=_M3508_14_RATED_TORQUE,
+    rated_speed=_M3508_14_RATED_SPEED,
     rated_current=20.0,
     stall_current=20.0,
     phase_resistance=0.194,

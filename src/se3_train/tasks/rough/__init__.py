@@ -45,6 +45,11 @@ EXP_VX_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vx"
 EXP_VX_OBSERVER_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver"
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
+# 2026-10-06（用户定）：轮子 T-N 包络与指令轮速预算，叠在 VxObserver 上（诊断见 .scratch/yaw_diag/：yaw 包络顶端拒转）。
+# WheelTN：只把轮子 T-N 包络换成手册额定点口径，对照 VxObserver（agqj496q）；
+# WheelTN-Budget：再把指令差速预算换成额定转速 + MJCF 实测轮距，对照 WheelTN。临时入口，结论后删除。
+EXP_VX_OBSERVER_WHEEL_TN_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-WheelTN"
+EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-WheelTN-Budget"
 
 
 def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunnerCfg:
@@ -116,6 +121,21 @@ def register() -> None:
         rl_cfg=bind_task_name(_vx_observer_rl_cfg(vx_observer_env_cfg), EXP_VX_OBSERVER_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    for task_id, overrides in (
+        (EXP_VX_OBSERVER_WHEEL_TN_TASK_ID, {"wheel_torque_envelope": "rated_point"}),
+        (
+            EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID,
+            {"wheel_torque_envelope": "rated_point", "command_wheel_budget": "rated"},
+        ),
+    ):
+        task_env_cfg = env_cfg(vx_observer=True, **overrides)
+        register_mjlab_task(
+            task_id=task_id,
+            env_cfg=task_env_cfg,
+            play_env_cfg=env_cfg(play=True, vx_observer=True, **overrides),
+            rl_cfg=bind_task_name(_vx_observer_rl_cfg(task_env_cfg), task_id),
+            runner_cls=Se3ProfiledOnPolicyRunner,
+        )
 
 
 __all__ = [
@@ -123,6 +143,8 @@ __all__ = [
     "EXP_DR1_ORACLE_VEL_TASK_ID",
     "EXP_VEL_TASK_ID",
     "EXP_VX_OBSERVER_TASK_ID",
+    "EXP_VX_OBSERVER_WHEEL_TN_BUDGET_TASK_ID",
+    "EXP_VX_OBSERVER_WHEEL_TN_TASK_ID",
     "EXP_VX_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",

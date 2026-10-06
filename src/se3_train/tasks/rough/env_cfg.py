@@ -80,10 +80,11 @@ from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_shared import M3508_C620_14
 from se3_train.mdp import events as mdp_events
 from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
-from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg, serialleg_wheel_half_track
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -172,6 +173,13 @@ ROUGH_BASE_HEIGHT_SIGMA = 0.07
 # 16 帧 = 0.32 s（50 Hz），用户定；估计器 480→128→64→1 约 7 万次乘加，MCU 上可推。
 ROUGH_VX_OBSERVER_HISTORY_LENGTH = 16
 ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
+# 轮子 T-N 包络（2026-10-06 用户定，见 robot_cfg.get_serialleg_closedchain_cfg 的 wheel_torque_envelope）：
+# 默认仍是旧口径 "linear_peak"（45 rad/s 只剩 1.14 N·m）；"rated_point" 按手册额定点（469 rpm@19:1 出 3 N·m）建平台。
+ROUGH_WHEEL_TORQUE_ENVELOPE = "linear_peak"
+# 指令可行域的差速轮速预算（2026-10-06 用户定）："legacy" = Flat 继承的 45 rad/s、半轮距 0.20 m；
+# "rated" = M3508 手册额定转速 66.65 rad/s（14:1）、MJCF 实测半轮距 0.2166 m，使用比例都保持 0.9。
+# 旧口径下原地 12 rad/s 实际要 43.3 rad/s 轮速（45 的 96%，超出 0.9 预算），vx = 1 时 yaw 只能采到 7.15。
+ROUGH_COMMAND_WHEEL_BUDGET = "legacy"
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -399,6 +407,8 @@ def env_cfg(
     oracle_base_vel: bool = False,
     oracle_base_vx: bool = False,
     vx_observer: bool = False,
+    wheel_torque_envelope: str = ROUGH_WHEEL_TORQUE_ENVELOPE,
+    command_wheel_budget: str = ROUGH_COMMAND_WHEEL_BUDGET,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -414,6 +424,8 @@ def env_cfg(
     oracle_base_vx：actor 额外观测机身系前向速度 vx 1 维，只做诊断、不可部署。
     vx_observer：actor 观测改为 ROUGH_VX_OBSERVER_HISTORY_LENGTH 帧历史，并增加估计器监督目标组
     ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；须配 rl_cfg.vx_observer_rl_cfg。可部署。
+    wheel_torque_envelope：轮子 T-N 包络，"linear_peak" | "rated_point"（见 ROUGH_WHEEL_TORQUE_ENVELOPE）。
+    command_wheel_budget：指令差速轮速预算，"legacy" | "rated"（见 ROUGH_COMMAND_WHEEL_BUDGET）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -430,6 +442,7 @@ def env_cfg(
         "robot": get_serialleg_closedchain_cfg(
             collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
             leg_torque_envelope_scale=ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
+            wheel_torque_envelope=wheel_torque_envelope,
         )
     }
     cfg.scene.terrain = TerrainEntityCfg(
@@ -500,6 +513,12 @@ def env_cfg(
         # 上限只由训练期课程项结算；play 时没有课程，打开只会空累计。
         stair_speed_cap_enabled=bool(stair_speed_cap) and not play,
     )
+    if command_wheel_budget == "rated":
+        command = cfg.commands["velocity_height"]
+        command.diff_drive_max_wheel_speed = float(M3508_C620_14.rated_speed)
+        command.diff_drive_half_track = serialleg_wheel_half_track()
+    elif command_wheel_budget != "legacy":
+        raise ValueError(f"未知的 command_wheel_budget {command_wheel_budget!r}")
 
     cfg.events = dict(cfg.events)
     cfg.events["reset_stair_rewards"] = EventTermCfg(
@@ -910,6 +929,7 @@ __all__ = [
     "ROUGH_BASE_HEIGHT_SUPPORT_SENSOR",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
     "ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT",
+    "ROUGH_COMMAND_WHEEL_BUDGET",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
@@ -969,5 +989,6 @@ __all__ = [
     "ROUGH_VX_OBSERVER_TARGET_GROUP",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_FORE_AFT_WEIGHT",
+    "ROUGH_WHEEL_TORQUE_ENVELOPE",
     "env_cfg",
 ]

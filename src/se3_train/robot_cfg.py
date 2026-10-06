@@ -1,7 +1,9 @@
 import functools
 from pathlib import Path
+from typing import Literal
 
 import mujoco
+import numpy as np
 from mjlab.actuator import DcMotorActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
@@ -40,11 +42,25 @@ def _serialleg_spec_for_training(collision_geom_group: int | None = None) -> muj
     return spec
 
 
+@functools.lru_cache(maxsize=1)
+def serialleg_wheel_half_track() -> float:
+    """MJCF 默认姿态下左右轮心横向间距的一半 (m)。腿在机身 x-z 平面内运动，轮距不随姿态变。"""
+    model = mujoco.MjModel.from_xml_path(str(_MJCF_PATH))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    ys = [
+        float(data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name), 1])
+        for name in ("l_wheel_Link", "r_wheel_Link")
+    ]
+    return float(np.abs(ys[0] - ys[1]) / 2.0)
+
+
 def get_serialleg_closedchain_cfg(
     *,
     wheel_kd_override: float | None = None,
     collision_geom_group: int | None = None,
     leg_torque_envelope_scale: float | None = None,
+    wheel_torque_envelope: Literal["linear_peak", "rated_point"] = "linear_peak",
 ) -> EntityCfg:
     """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
 
@@ -52,6 +68,12 @@ def get_serialleg_closedchain_cfg(
     恒扭矩区被额定削平）；给系数 k 时按物理含义取参——saturation_effort = k·电压限零速截距（DM8009P V1.0 @24V 约 132），
     effort_limit = k·峰值 40，即「k·40 平台 + 反电动势下降段」，转折与空载速度不随 k 变。两值随 actuator cfg 写进
     ONNX metadata，sim2x / 真机按同一 T-N 包络限矩。对比图见 scripts/plot_tn_envelope_proposal.py。
+
+    wheel_torque_envelope（2026-10-06 用户定）：轮子 M3508 的 T-N 包络。
+      "linear_peak"（旧口径）：saturation_effort = 峰值 3.32，从零速线性降到空载 68.5 rad/s，再被额定 2.21 截顶，
+                               22.9 rad/s 起就低于额定，45 rad/s 只剩 1.14 N·m；与手册额定点（469 rpm@19:1 仍出 3 N·m）不符。
+      "rated_point"：saturation_effort = 过手册额定点与空载点的反电动势线截距（约 82 N·m），effort_limit = 额定 2.21，
+                     即额定平台延续到额定转速 66.65 rad/s、末端降到空载。低速力矩与旧口径相同，只改高速段。
     """
     if leg_torque_envelope_scale is None:
         leg_saturation_effort = DM8009P.stall_torque
@@ -71,6 +93,12 @@ def get_serialleg_closedchain_cfg(
         effort_limit=leg_effort_limit,
     )
     wheel_kd = _ROBOT_CFG.wheel_kd if wheel_kd_override is None else float(wheel_kd_override)
+    if wheel_torque_envelope == "linear_peak":
+        wheel_saturation_effort = M3508_C620_14.stall_torque
+    elif wheel_torque_envelope == "rated_point":
+        wheel_saturation_effort = M3508_C620_14.rated_point_stall_torque
+    else:
+        raise ValueError(f"未知的 wheel_torque_envelope {wheel_torque_envelope!r}")
     return EntityCfg(
         spec_fn=functools.partial(_serialleg_spec_for_training, collision_geom_group),
         articulation=EntityArticulationInfoCfg(
@@ -80,7 +108,7 @@ def get_serialleg_closedchain_cfg(
                     target_names_expr=_WHEEL_JOINT_NAMES,
                     stiffness=0.0,
                     damping=wheel_kd,
-                    saturation_effort=M3508_C620_14.stall_torque,
+                    saturation_effort=wheel_saturation_effort,
                     velocity_limit=M3508_C620_14.no_load_speed,
                     effort_limit=M3508_C620_14.rated_torque,
                 ),
