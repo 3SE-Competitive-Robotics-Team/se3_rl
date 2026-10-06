@@ -172,6 +172,10 @@ ROUGH_BASE_HEIGHT_SIGMA = 0.07
 # 16 帧 = 0.32 s（50 Hz），用户定；估计器 480→128→64→1 约 7 万次乘加，MCU 上可推。
 ROUGH_VX_OBSERVER_HISTORY_LENGTH = 16
 ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
+# 自适应气弹簧前馈（2026-10-06 用户定，见 se3_train.vx_observer）：下发弹簧力的限幅与每个 policy tick 的限速。
+# 限幅略宽于 DR1 的 270–450 N；5 N/拍 ≈ 0.5 s 走完 DR 范围，防止单步 MSE 学出的高增益修正在噪声与延迟下抖动。
+ROUGH_SPRING_FF_FORCE_RANGE_N = (250.0, 500.0)
+ROUGH_SPRING_FF_MAX_STEP_N = 5.0
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -399,6 +403,7 @@ def env_cfg(
     oracle_base_vel: bool = False,
     oracle_base_vx: bool = False,
     vx_observer: bool = False,
+    adaptive_spring_ff: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -414,6 +419,7 @@ def env_cfg(
     oracle_base_vx：actor 额外观测机身系前向速度 vx 1 维，只做诊断、不可部署。
     vx_observer：actor 观测改为 ROUGH_VX_OBSERVER_HISTORY_LENGTH 帧历史，并增加估计器监督目标组
     ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；须配 rl_cfg.vx_observer_rl_cfg。可部署。
+    adaptive_spring_ff：在 vx_observer 之上，前馈补偿改用观测器估计的左右弹簧力（见 _apply_adaptive_spring_ff）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -618,8 +624,12 @@ def env_cfg(
             func=mdp_observations.base_lin_vel_x_obs
         )
         cfg.observations["actor"] = replace(actor, terms=terms)
+    if adaptive_spring_ff and not vx_observer:
+        raise ValueError("adaptive_spring_ff 需要 vx_observer=True")
     if vx_observer:
         _apply_vx_observer_obs(cfg)
+    if adaptive_spring_ff:
+        _apply_adaptive_spring_ff(cfg)
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -793,6 +803,30 @@ def _apply_vx_observer_obs(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
+def _apply_adaptive_spring_ff(cfg: ManagerBasedRlEnvCfg) -> None:
+    """自适应气弹簧前馈（2026-10-06，用户定）：补偿弹簧力从固定 300 N 改为观测器估计值。
+
+    动作项按 ROUGH_SPRING_FF_* 限幅、限速下发；actor 末尾加上一拍下发值 spring_force_prev（随组级 16 帧历史，
+    闭环可辨识所需，policy 侧由模型掩掉）；监督目标组加真实弹簧力。须在 _apply_vx_observer_obs 之后调用。
+    """
+    action = cfg.actions["delayed_action"]
+    if not action.knee_gas_spring_compensation_enabled:
+        raise ValueError("adaptive_spring_ff 需要已开启气弹簧前馈补偿")
+    action.knee_gas_spring_compensation_source = "estimated"
+    action.knee_gas_spring_estimate_force_range = ROUGH_SPRING_FF_FORCE_RANGE_N
+    action.knee_gas_spring_estimate_max_step = ROUGH_SPRING_FF_MAX_STEP_N
+    actor = cfg.observations["actor"]
+    terms = dict(actor.terms)
+    terms["spring_force_prev"] = ObservationTermCfg(func=mdp_observations.spring_force_prev_obs)
+    cfg.observations["actor"] = replace(actor, terms=terms)
+    target = cfg.observations[ROUGH_VX_OBSERVER_TARGET_GROUP]
+    target_terms = dict(target.terms)
+    target_terms["knee_spring_force"] = ObservationTermCfg(
+        func=mdp_observations.knee_spring_force_target_obs
+    )
+    cfg.observations[ROUGH_VX_OBSERVER_TARGET_GROUP] = replace(target, terms=target_terms)
+
+
 def _apply_oracle_dr_obs(cfg: ManagerBasedRlEnvCfg) -> None:
     """DR1 Oracle（2026-10-05，用户定）：actor 观测末尾追加真实 DR 参数 31 维，critic 不变。
 
@@ -939,6 +973,8 @@ __all__ = [
     "ROUGH_ORIENTATION_WEIGHT",
     "ROUGH_REWARD_TERRAIN_TYPE_NAMES",
     "ROUGH_ROBOT_COLLISION_GEOM_GROUP",
+    "ROUGH_SPRING_FF_FORCE_RANGE_N",
+    "ROUGH_SPRING_FF_MAX_STEP_N",
     "ROUGH_STAIRS_ZEROED_REWARDS",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT",

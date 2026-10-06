@@ -23,6 +23,8 @@ VxObserverMLPModel。估计器用独立 Adam，在 PPO 各 epoch 结束后用同
 epoch 的 log prob 与 rollout 时用的是同一个估计器，ratio 从 1 开始；rsl_rl 的 storage.clear() 只复位写指针、不清数据，
 所以 PPO update 之后仍可读同一批 rollout。估计器参数也在 PPO optimizer 里（它属于 actor），但 v̂x 在 policy 前
 detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更新。日志 Loss/estimator_vx_mse、Loss/estimator_vx_rmse。
+估计器多输出时（如左右弹簧力，见 vx_observer），损失是各列归一化单位下的 MSE 均值，另记各列物理单位的 RMSE
+（Loss/estimator_<列名>_rmse）。
 """
 
 from __future__ import annotations
@@ -79,7 +81,7 @@ class Se3PPO(PPO):
         self.estimator_target_group = estimator_target_group
         self.estimator_optimizer: torch.optim.Adam | None = None
         if estimator_learning_rate is not None:
-            if not hasattr(self._raw_actor, "estimate_vx"):
+            if not hasattr(self._raw_actor, "estimate"):
                 raise ValueError("estimator_learning_rate 需要 actor 为 VxObserverMLPModel")
             if estimator_target_group is None:
                 raise ValueError("estimator_learning_rate 需要同时给 estimator_target_group")
@@ -137,17 +139,20 @@ class Se3PPO(PPO):
         return loss_dict
 
     def _update_estimator(self) -> dict[str, float]:
-        """用本轮 rollout 对 vx 估计器做 MSE 回归；多卡时梯度跨卡平均，保证各卡估计器一致。"""
+        """用本轮 rollout 对估计器做 MSE 回归；多卡时梯度跨卡平均，保证各卡估计器一致。"""
         assert self.estimator_optimizer is not None
         actor = self._raw_actor
         params = list(actor.estimator.parameters())
+        names = tuple(actor.estimator_output_names)
         mse_sum = torch.zeros((), device=self.device)
+        column_sq_sum = torch.zeros(len(names), device=self.device)
         num_updates = 0
         for batch in self.storage.mini_batch_generator(
             self.num_mini_batches, self.num_learning_epochs
         ):
             target = batch.observations[self.estimator_target_group]
-            loss = torch.nn.functional.mse_loss(actor.estimate_vx(batch.observations), target)
+            error = actor.estimate(batch.observations) - target
+            loss = error.square().mean()
             self.estimator_optimizer.zero_grad()
             loss.backward()
             if self.is_multi_gpu:
@@ -160,11 +165,23 @@ class Se3PPO(PPO):
                     offset += p.numel()
             self.estimator_optimizer.step()
             mse_sum += loss.detach()
+            column_sq_sum += error.detach().square().mean(dim=0)
             num_updates += 1
         # 梯度置 None，下一轮 PPO 的噪声尺度统计与 reduce_parameters 只看到 PPO 自己的梯度。
         self.estimator_optimizer.zero_grad(set_to_none=True)
-        mse = float(mse_sum) / max(num_updates, 1)
-        return {"estimator_vx_mse": mse, "estimator_vx_rmse": mse**0.5}
+        count = max(num_updates, 1)
+        column_mse = (column_sq_sum / count).tolist()
+        log = {"estimator_mse": float(mse_sum) / count}
+        for name, unit, value in zip(names, actor.estimator_output_units, column_mse, strict=True):
+            log[f"estimator_{name}_rmse"] = unit * value**0.5
+        log["estimator_vx_mse"] = column_mse[0]
+        if getattr(actor, "estimates_spring_force", False):
+            log.update(
+                actor.spring_feedback_diagnostics(
+                    self.storage.observations, self.storage.observations[self.estimator_target_group]
+                )
+            )
+        return log
 
     def save(self) -> dict:
         saved_dict = super().save()

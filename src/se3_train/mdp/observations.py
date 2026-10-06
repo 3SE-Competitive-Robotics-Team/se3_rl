@@ -15,6 +15,7 @@ import torch
 from se3_shared import (
     COMMAND_FIELDS,
     DM8009P,
+    KNEE_GAS_SPRING_ESTIMATE_UNIT_N,
     M3508_C620_14,
     NO_ATTITUDE_COMMAND_OBS_FIELDS,
     JointGroup,
@@ -173,6 +174,26 @@ def knee_gas_spring_force_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     if not isinstance(values, torch.Tensor) or values.shape[0] != env.num_envs:
         return torch.ones(env.num_envs, 2, device=env.device)
     return _finite_clamp(values / _NOMINAL_KNEE_SPRING_FORCE)
+
+
+def spring_force_prev_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """上一拍实际下发给前馈补偿的左右弹簧力，(F − 额定值) / KNEE_GAS_SPRING_ESTIMATE_UNIT_N，2D（可部署）。
+
+    语义同 last_actions：policy 上一拍的输出（经限幅、限速后的下发值），episode reset 时为额定值（读数 0）。
+    回传给观测器，使弹簧力在估计补偿的闭环下可辨识（见 se3_train.vx_observer）。
+    """
+    term = env.action_manager.get_term("delayed_action")
+    return (
+        term.spring_force_applied - _NOMINAL_KNEE_SPRING_FORCE
+    ) / KNEE_GAS_SPRING_ESTIMATE_UNIT_N
+
+
+def knee_spring_force_target_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """真实左右弹簧力，与 spring_force_prev_obs 同一归一化，2D（观测器监督目标，不进网络输入）。"""
+    values = getattr(env, "_knee_spring_force", None)
+    if not isinstance(values, torch.Tensor) or values.shape[0] != env.num_envs:
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    return (values - _NOMINAL_KNEE_SPRING_FORCE) / KNEE_GAS_SPRING_ESTIMATE_UNIT_N
 
 
 def motor_torque_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

@@ -43,6 +43,11 @@ EXP_VX_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vx"
 # 2026-10-05（用户定）：显式 vx 观测器——actor 16 帧历史 → 估计器 v̂x（MSE 监督，detach 后进 policy），policy 看最新一帧 + v̂x。
 # 可部署（ONNX 输入为 480 维历史）；对照默认基线与 Vx 特权（qnd9o87r）。见 se3_train.vx_observer。临时入口，结论后删除。
 EXP_VX_OBSERVER_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver"
+# 2026-10-06（用户定）：自适应气弹簧前馈——在 VxObserver 上，估计器再输出左右弹簧力并替代固定 300 N 做前馈补偿；
+# actor 带上一拍下发值（闭环可辨识），policy 不看它。对照 VxObserver（agqj496q）。临时入口，结论后删除。
+EXP_VX_OBSERVER_SPRING_FF_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-SpringFF"
+# 只进估计器、不进 policy 的 actor 观测项。
+_ESTIMATOR_ONLY_TERMS = frozenset({"spring_force_prev"})
 
 
 def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunnerCfg:
@@ -52,6 +57,8 @@ def _vx_observer_rl_cfg(vx_env_cfg: ManagerBasedRlEnvCfg) -> RslRlOnPolicyRunner
         history_length=ROUGH_VX_OBSERVER_HISTORY_LENGTH,
         frame_term_dims=tuple(observation_term_width(name) for name in actor_terms),
         target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+        policy_frame_term_mask=tuple(name not in _ESTIMATOR_ONLY_TERMS for name in actor_terms),
+        estimate_spring_force="spring_force_prev" in actor_terms,
     )
 
 
@@ -114,12 +121,23 @@ def register() -> None:
         rl_cfg=bind_task_name(_vx_observer_rl_cfg(vx_observer_env_cfg), EXP_VX_OBSERVER_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    spring_ff_env_cfg = env_cfg(vx_observer=True, adaptive_spring_ff=True)
+    register_mjlab_task(
+        task_id=EXP_VX_OBSERVER_SPRING_FF_TASK_ID,
+        env_cfg=spring_ff_env_cfg,
+        play_env_cfg=env_cfg(play=True, vx_observer=True, adaptive_spring_ff=True),
+        rl_cfg=bind_task_name(
+            _vx_observer_rl_cfg(spring_ff_env_cfg), EXP_VX_OBSERVER_SPRING_FF_TASK_ID
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_DR1_ORACLE_TASK_ID",
     "EXP_DR1_ORACLE_VEL_TASK_ID",
     "EXP_VEL_TASK_ID",
+    "EXP_VX_OBSERVER_SPRING_FF_TASK_ID",
     "EXP_VX_OBSERVER_TASK_ID",
     "EXP_VX_TASK_ID",
     "GRU_TASK_ID",

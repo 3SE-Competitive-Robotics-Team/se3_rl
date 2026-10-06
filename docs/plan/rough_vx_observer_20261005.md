@@ -32,7 +32,31 @@ sim2x runtime 无需改动。STM32 侧需另做：转换器放开 history_length
 对照默认基线与 Vx 特权（`qnd9o87r`，上限）。同轮次比平地 tracking / vx 误差、台阶航向、跳跃列等级、catastrophic，
 外加 `estimator_vx_rmse`；接近 Vx 特权 → 观测器有效；与基线持平 → 查 RMSE 是否学低、16 帧是否不够。
 
+## 启动记录
+
+nulltask1 六卡 × 1170、5000 轮、seed 42、从头训，cdfc7ec，W&B `agqj496q`，PGID 914325，state `20261006T034350Z-23459`。
+规模与 Vx 特权（`qnd9o87r`）相同，便于直接对比。第 37 轮 1.19 s/轮（与 Vel 相同），estimator_vx_rmse 0.052 m/s。
+
 ## 验证
 
 - 本地：最新帧下标与 mjlab 历史布局一致、两路梯度互不泄漏、ONNX 与 PyTorch 前向一致（`.scratch/vx_observer_check.py`）。
 - smoke：`SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Rough-Exp-VxObserver --env.scene.num-envs 1 --gpu-ids None`。
+- 多卡：两进程 gloo 下各 rank 数据不同，估计器更新后权重逐位相同（`.scratch/vxobs_ddp_check.py`）；nulltask1 双卡 × 256 smoke 5 轮通过。
+
+## SpringFF：自适应气弹簧前馈（2026-10-06，用户定）
+
+入口 `SE3-WheelLegged-Rough-Exp-VxObserver-SpringFF`，相对 VxObserver 只改前馈补偿用的弹簧力：固定 300 N → 观测器估计值。
+
+- 估计器输出 3 维 [vx, F_L, F_R]，弹簧力按 (F − 300) / 100 N 归一（`se3_shared.KNEE_GAS_SPRING_ESTIMATE_UNIT_N`），
+  监督目标为 DR 采样的真实弹簧力（`env._knee_spring_force`，startup 采样、每 env 恒定），损失为三列等权 MSE。
+- 可辨识性：只看历史时闭环不可辨识（F 不同的两台车若都估准，净弹簧力矩都为 0、历史相同、估计相同，矛盾），
+  所以 actor 末尾加 `spring_force_prev`（上一拍实际下发值，同归一，随 16 帧历史，每帧 32 维、共 512 维），
+  估计器学"上一拍 + 按残差修正"。policy 不看它（单帧输入掩掉，仍 31 维），只差"补偿改为估计值"一个变量。
+- 下发：runner 每个 policy tick 在 `env.step` 前把估计写进动作项（`set_spring_force_estimate`），
+  限速 5 N/拍、限幅 250–500 N（`ROUGH_SPRING_FF_*`），episode reset 置回 300 N；补偿在每个 physics tick 按当前关节角重算、
+  不过动作延迟。推理 / play 经 `get_inference_policy` 包装同样下发。
+- ONNX：输入 512 维，输出 `actions` + `spring_force [1, 2]`（N，限幅限速前）；metadata `robot.knee_gas_spring` 带
+  `compensation_source: estimated` 与限幅、限速、初值、观测单位。se3_runtime / 固件尚未支持，sim2x 暂不能回放。
+- 日志：`Loss/estimator_spring_{l,r}_rmse`（估计器原始输出，N）、`Loss/spring_applied_rmse` 与 `spring_applied_abs_err_p90`
+  （下发值相对真值，N）、`Loss/spring_step_abs_mean`（每拍变化量，N）。
+- 判据：下发值收敛（RMSE 明显低于固定 300 N 时的 ≈ 79 N（DR1 均匀 270–450 N））且每拍变化不贴限速抖动；平地、台阶指标不差于 VxObserver。
