@@ -34,6 +34,10 @@ EXP_DR1_ORACLE_TASK_ID = "SE3-WheelLegged-Rough-Exp-DR1-Oracle"
 # 2026-10-05（用户定）：DR1 OracleVel——在 DR1 Oracle 之上再给 actor 机身线速度 3 维（共 34 维特权），与 Oracle 只差这一项。
 # 不可部署；判别 DR1 下平地跟踪变粗是否来自速度估计。临时入口，结论后删除。
 EXP_DR1_ORACLE_VEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-DR1-OracleVel"
+# 2026-10-05（用户定）：速度特权的单独效果——在当前默认上只给 actor 机身线速度（Vel：3 维；Vx：只给 vx），不加 DR 参数。
+# 对照 OracleVel（x0xavu14）看 DR 参数 31 维是否导致跳跃学不出；Vel 对 Vx 看 vy / vz 的贡献。不可部署，临时入口，结论后删除。
+EXP_VEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vel"
+EXP_VX_TASK_ID = "SE3-WheelLegged-Rough-Exp-Vx"
 
 
 def register() -> None:
@@ -73,11 +77,27 @@ def register() -> None:
         rl_cfg=bind_task_name(rl_cfg(), EXP_DR1_ORACLE_VEL_TASK_ID),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_VEL_TASK_ID,
+        env_cfg=env_cfg(oracle_base_vel=True),
+        play_env_cfg=env_cfg(play=True, oracle_base_vel=True),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_VEL_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    register_mjlab_task(
+        task_id=EXP_VX_TASK_ID,
+        env_cfg=env_cfg(oracle_base_vx=True),
+        play_env_cfg=env_cfg(play=True, oracle_base_vx=True),
+        rl_cfg=bind_task_name(rl_cfg(), EXP_VX_TASK_ID),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
 
 
 __all__ = [
     "EXP_DR1_ORACLE_TASK_ID",
     "EXP_DR1_ORACLE_VEL_TASK_ID",
+    "EXP_VEL_TASK_ID",
+    "EXP_VX_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
     "TASK_ID",

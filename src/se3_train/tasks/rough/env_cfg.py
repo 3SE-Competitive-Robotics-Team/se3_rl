@@ -393,6 +393,7 @@ def env_cfg(
     base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
     oracle_dr_obs: bool = False,
     oracle_base_vel: bool = False,
+    oracle_base_vx: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -405,6 +406,7 @@ def env_cfg(
     base_height_sigma：机身高度罚 flat_base_height 的 σ（全列共用，上台阶列的窗口口径同样用它），默认 ROUGH_BASE_HEIGHT_SIGMA；对照实验开关。
     oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
     oracle_base_vel：actor 额外观测机身系线速度 3 维（critic 同源的 base_lin_vel），只做诊断、不可部署。
+    oracle_base_vx：actor 额外观测机身系前向速度 vx 1 维，只做诊断、不可部署。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -600,6 +602,14 @@ def env_cfg(
         actor = cfg.observations["actor"]
         terms = dict(actor.terms)
         terms["oracle_base_lin_vel"] = ObservationTermCfg(func=mdp_observations.base_lin_vel_obs)
+        cfg.observations["actor"] = replace(actor, terms=terms)
+    if oracle_base_vx:
+        # DR1 Vx（2026-10-05，用户定）：OracleVel 的 actor 里 vx 敏感度 2.11、vz 0.51、vy 0.28，看只给 vx 能保住多少平地跟踪收益。
+        actor = cfg.observations["actor"]
+        terms = dict(actor.terms)
+        terms["oracle_base_lin_vel_x"] = ObservationTermCfg(
+            func=mdp_observations.base_lin_vel_x_obs
+        )
         cfg.observations["actor"] = replace(actor, terms=terms)
 
     if not play:

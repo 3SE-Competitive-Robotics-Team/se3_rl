@@ -135,6 +135,12 @@ def base_lin_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     return _finite_clamp(robot.data.root_link_lin_vel_b)
 
 
+def base_lin_vel_x_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """基座坐标系下的前向线速度 vx，1D（特权信息，非部署）。"""
+    robot = env.scene["robot"]
+    return _finite_clamp(robot.data.root_link_lin_vel_b[:, :1])
+
+
 def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
     """轮子地面接触力标量,2D（特权信息）。"""
     from mjlab.sensor import ContactSensor
