@@ -7,7 +7,12 @@ from se3_train.onnx_metadata import observation_term_width
 from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
-from .env_cfg import ROUGH_CTS_ROLE_GROUP, ROUGH_VX_OBSERVER_TARGET_GROUP, env_cfg
+from .env_cfg import (
+    ROUGH_CTS_ROLE_GROUP,
+    ROUGH_CTS_TEACHER_GROUP,
+    ROUGH_VX_OBSERVER_TARGET_GROUP,
+    env_cfg,
+)
 from .rl_cfg import cts_rl_cfg, gru_rl_cfg, rl_cfg, vx_observer_rl_cfg
 from .terrains import stair_only_terrains_cfg
 
@@ -57,6 +62,9 @@ EXP_VX_OBSERVER_YAW_RB05_TASK_ID = "SE3-WheelLegged-Rough-Exp-VxObserver-YawRB05
 # 2026-10-07（用户定）：CTS + 显式 vx（见 se3_train.cts_observer）——教师 env 用特权编码器 32 维隐向量 + 真实 vx，
 # 学生 env 用 16 帧历史编码器回归它，共用 policy；部署走学生路径。新默认轮子包络，对照 VxObserver 与 sim2x 扫描。临时入口，结论后删除。
 EXP_CTS_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS"
+# 2026-10-07（用户定）：CTS 单变量对照——教师编码器输入去掉 critic 的 77 点高度扫描（critic 价值函数仍带）。
+# Exp-CTS 的教师隐向量含盲学生推不出的前视地形，学生上台阶失真、师生单步奖励差拉到 0.11。临时入口，结论后删除。
+EXP_CTS_NOSCAN_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan"
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
@@ -156,6 +164,26 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    cts_noscan_env_cfg = env_cfg(vx_observer=True, cts=True, cts_teacher_height_scan=False)
+    cts_noscan_actor = cts_noscan_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_TASK_ID,
+        env_cfg=cts_noscan_env_cfg,
+        play_env_cfg=env_cfg(play=True, vx_observer=True, cts=True, cts_teacher_height_scan=False),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(cts_noscan_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in cts_noscan_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+            ),
+            EXP_CTS_NOSCAN_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     z3_env_cfg = env_cfg(vx_observer=True)
     register_mjlab_task(
         task_id=EXP_VX_OBSERVER_Z3_TASK_ID,
@@ -183,6 +211,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_TASK_ID",
     "EXP_CTS_TASK_ID",
     "EXP_DR1_ORACLE_TASK_ID",
     "EXP_DR1_ORACLE_VEL_TASK_ID",

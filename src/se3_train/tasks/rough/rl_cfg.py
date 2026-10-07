@@ -131,6 +131,7 @@ def cts_rl_cfg(
     frame_term_dims: tuple[int, ...],
     target_group: str,
     role_group: str,
+    teacher_obs_group: str = "critic",
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
     """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。"""
@@ -146,6 +147,7 @@ def cts_rl_cfg(
         frame_term_dims=tuple(int(d) for d in frame_term_dims),
         vx_target_group=target_group,
         role_group=role_group,
+        teacher_obs_group=teacher_obs_group,
     )
     cfg.algorithm = replace(
         cfg.algorithm,

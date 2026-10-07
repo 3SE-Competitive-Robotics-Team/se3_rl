@@ -185,6 +185,9 @@ ROUGH_COMMAND_WHEEL_BUDGET = "legacy"
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
+# CTS-NoScan（2026-10-07 用户定）：教师编码器专用观测组 = critic 去掉高度扫描。前视地形是盲学生从本体历史原理上推不出的信息，
+# 教师隐向量带上它后共用 policy 学会按前视地形提前动作，学生只能回归条件均值，上台阶动作失真（Exp-CTS model_3700 sim2x）。
+ROUGH_CTS_TEACHER_GROUP = "cts_teacher"
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -417,6 +420,7 @@ def env_cfg(
     command_wheel_budget: str = ROUGH_COMMAND_WHEEL_BUDGET,
     yaw_ratio_blend: float | None = None,
     cts: bool = False,
+    cts_teacher_height_scan: bool = True,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -437,6 +441,8 @@ def env_cfg(
     command_wheel_budget：指令差速轮速预算，"legacy" | "rated"（见 ROUGH_COMMAND_WHEEL_BUDGET）。
     yaw_ratio_blend：tracking_ang_vel 的比例项占比（Flat 继承值 0.2）；None = 不改。对照实验开关。
     cts：在 vx_observer 之上加 CTS 分组标记观测组 ROUGH_CTS_ROLE_GROUP；须配 rl_cfg.cts_rl_cfg。
+    cts_teacher_height_scan：False 时另建教师编码器观测组 ROUGH_CTS_TEACHER_GROUP（critic 去掉 height_scan），
+        critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -648,6 +654,8 @@ def env_cfg(
             func=mdp_observations.base_lin_vel_x_obs
         )
         cfg.observations["actor"] = replace(actor, terms=terms)
+    if not cts_teacher_height_scan and not cts:
+        raise ValueError("cts_teacher_height_scan=False 只对 cts=True 有意义")
     if cts and not vx_observer:
         raise ValueError(
             "cts 需要 vx_observer=True（学生编码器用 actor 历史、回归目标含 estimator_target 的 vx）"
@@ -665,6 +673,12 @@ def env_cfg(
             concatenate_terms=True,
             enable_corruption=False,
         )
+    if not cts_teacher_height_scan:
+        critic = cfg.observations["critic"]
+        teacher_terms = {k: v for k, v in critic.terms.items() if k != "height_scan"}
+        if len(teacher_terms) != len(critic.terms) - 1:
+            raise ValueError(f"critic 里没有 height_scan，无法构造 {ROUGH_CTS_TEACHER_GROUP}")
+        cfg.observations[ROUGH_CTS_TEACHER_GROUP] = replace(critic, terms=teacher_terms)
     if yaw_ratio_blend is not None:
         # yaw 包络顶端拒转（docs/plan/rough_yaw_envelope_20261006.md）：指数核在大误差时没有梯度，
         # 比例项占比越大，"转到一半"拿到的分越多，填平从不转到转满之间只亏不赚的一段。
@@ -970,6 +984,7 @@ __all__ = [
     "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
     "ROUGH_CTS_ROLE_GROUP",
     "ROUGH_CTS_STUDENT_EVERY",
+    "ROUGH_CTS_TEACHER_GROUP",
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_DROPPED_FLAT_REWARDS",
