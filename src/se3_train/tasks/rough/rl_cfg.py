@@ -25,7 +25,7 @@ VxObserverMLPModel（policy MLP 仍为 ROUGH_ACTOR_HIDDEN_DIMS，估计器 ROUGH
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 
 from mjlab.rl import RslRlModelCfg
 
@@ -52,6 +52,28 @@ class VxObserverModelCfg(RslRlModelCfg):
     estimator_hidden_dims: tuple[int, ...] = ROUGH_VX_ESTIMATOR_HIDDEN_DIMS
     latent_dim: int = 0
     class_name: str = "se3_train.vx_observer:VxObserverMLPModel"
+
+
+# CTS（2026-10-07 用户定）：隐向量维数与编码器隐藏层。教师编码器照 CTS 论文 512/256；学生编码器 256/128
+# （480 → 256 → 128 → 33 约 16 万次乘加，MCU 50 Hz 可推）。
+ROUGH_CTS_LATENT_DIM = 32
+ROUGH_CTS_TEACHER_HIDDEN_DIMS = (512, 256)
+ROUGH_CTS_STUDENT_HIDDEN_DIMS = (256, 128)
+
+
+@dataclass
+class CTSModelCfg(RslRlModelCfg):
+    """CTSVxObserverModel 的网络配置（见 se3_train.cts_observer）。"""
+
+    history_length: int = 0
+    frame_term_dims: tuple[int, ...] = ()
+    estimator_hidden_dims: tuple[int, ...] = ROUGH_CTS_STUDENT_HIDDEN_DIMS
+    teacher_hidden_dims: tuple[int, ...] = ROUGH_CTS_TEACHER_HIDDEN_DIMS
+    latent_dim: int = ROUGH_CTS_LATENT_DIM
+    teacher_obs_group: str = "critic"
+    vx_target_group: str = "estimator_target"
+    role_group: str = "cts_role"
+    class_name: str = "se3_train.cts_observer:CTSVxObserverModel"
 
 
 def _is_smoke(smoke: bool) -> bool:
@@ -103,6 +125,36 @@ def vx_observer_rl_cfg(
     return cfg
 
 
+def cts_rl_cfg(
+    *,
+    history_length: int,
+    frame_term_dims: tuple[int, ...],
+    target_group: str,
+    role_group: str,
+    smoke: bool = False,
+) -> RslRlOnPolicyRunnerCfg:
+    """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。"""
+    cfg = rl_cfg(smoke=smoke)
+    actor_fields = {
+        k: v
+        for k, v in asdict(cfg.actor).items()
+        if k in {f.name for f in fields(RslRlModelCfg)} and k != "class_name"
+    }
+    cfg.actor = CTSModelCfg(
+        **actor_fields,
+        history_length=int(history_length),
+        frame_term_dims=tuple(int(d) for d in frame_term_dims),
+        vx_target_group=target_group,
+        role_group=role_group,
+    )
+    cfg.algorithm = replace(
+        cfg.algorithm,
+        estimator_learning_rate=ROUGH_VX_ESTIMATOR_LEARNING_RATE,
+        estimator_target_group=target_group,
+    )
+    return cfg
+
+
 def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成 GRU PPO 训练配置：只换网络，rollout 仍 24 步，其余与 `rl_cfg` 逐项相同（M16）。"""
     cfg = _use_se3_ppo(flat_gru_rl_cfg(smoke=smoke))
@@ -114,10 +166,15 @@ def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 
 __all__ = [
     "ROUGH_ACTOR_HIDDEN_DIMS",
+    "ROUGH_CTS_LATENT_DIM",
+    "ROUGH_CTS_STUDENT_HIDDEN_DIMS",
+    "ROUGH_CTS_TEACHER_HIDDEN_DIMS",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_VX_ESTIMATOR_HIDDEN_DIMS",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",
+    "CTSModelCfg",
     "VxObserverModelCfg",
+    "cts_rl_cfg",
     "gru_rl_cfg",
     "rl_cfg",
     "vx_observer_rl_cfg",

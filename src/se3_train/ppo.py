@@ -25,6 +25,9 @@ epoch 的 log prob 与 rollout 时用的是同一个估计器，ratio 从 1 开�
 detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更新。日志 Loss/estimator_vx_mse、Loss/estimator_vx_rmse。
 估计器带隐向量时（latent_dim > 0）隐向量不 detach，PPO 梯度经它进入估计器、由 PPO optimizer 一起更新；MSE 只监督 v̂x 一列。
 另记 Loss/estimator_latent_std（隐向量各维 batch 标准差均值，看是否塌缩）。
+actor 自带 estimator_loss(observations) 时（CTS，见 se3_train.cts_observer）改用它给出的损失（学生编码器的隐向量重建），
+并按 cts_role 分别记教师 / 学生 env 的平均单步奖励（Loss/cts_reward_teacher、Loss/cts_reward_student）：
+训练端其余指标被占多数的教师 env 主导，学生 env 才代表部署路径。
 """
 
 from __future__ import annotations
@@ -143,13 +146,20 @@ class Se3PPO(PPO):
         assert self.estimator_optimizer is not None
         actor = self._raw_actor
         params = list(actor.estimator.parameters())
+        custom_loss = getattr(actor, "estimator_loss", None)
         mse_sum = torch.zeros((), device=self.device)
+        extra_sums: dict[str, torch.Tensor] = {}
         num_updates = 0
         for batch in self.storage.mini_batch_generator(
             self.num_mini_batches, self.num_learning_epochs
         ):
-            target = batch.observations[self.estimator_target_group]
-            loss = torch.nn.functional.mse_loss(actor.estimate_vx(batch.observations), target)
+            if custom_loss is not None:
+                loss, extra = custom_loss(batch.observations)
+                for key, value in extra.items():
+                    extra_sums[key] = extra_sums.get(key, 0.0) + value
+            else:
+                target = batch.observations[self.estimator_target_group]
+                loss = torch.nn.functional.mse_loss(actor.estimate_vx(batch.observations), target)
             self.estimator_optimizer.zero_grad()
             loss.backward()
             if self.is_multi_gpu:
@@ -167,6 +177,18 @@ class Se3PPO(PPO):
         self.estimator_optimizer.zero_grad(set_to_none=True)
         mse = float(mse_sum) / max(num_updates, 1)
         log = {"estimator_vx_mse": mse, "estimator_vx_rmse": mse**0.5}
+        if custom_loss is not None:
+            log = {"estimator_mse": mse}
+            for key, value in extra_sums.items():
+                log[key] = float(value) / max(num_updates, 1)
+            if "estimator_vx_mse" in log:
+                log["estimator_vx_rmse"] = log["estimator_vx_mse"] ** 0.5
+        role_group = getattr(actor, "role_group", None)
+        if role_group is not None:
+            teacher = self.storage.observations[role_group] > 0.5
+            rewards = self.storage.rewards
+            log["cts_reward_teacher"] = float(rewards[teacher].mean())
+            log["cts_reward_student"] = float(rewards[~teacher].mean())
         if getattr(actor, "latent_dim", 0) > 0:
             log["estimator_latent_std"] = actor.latent_std(batch.observations)
         return log

@@ -141,6 +141,15 @@ def base_lin_vel_x_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     return _finite_clamp(robot.data.root_link_lin_vel_b[:, :1])
 
 
+def cts_teacher_role_obs(env: ManagerBasedRlEnv, student_every: int = 4) -> torch.Tensor:
+    """CTS 分组标记，1D：env 编号能被 student_every 整除的是学生（0），其余是教师（1）；整个训练期固定。
+
+    不进任何网络输入，只随 rollout 存进 storage，供 se3_train.cts_observer 按样本选隐向量来源。
+    """
+    ids = torch.arange(env.num_envs, device=env.device)
+    return (ids % int(student_every) != 0).to(torch.float32).unsqueeze(-1)
+
+
 def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
     """轮子地面接触力标量,2D（特权信息）。"""
     from mjlab.sensor import ContactSensor
