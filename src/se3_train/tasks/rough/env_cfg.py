@@ -431,6 +431,7 @@ def env_cfg(
     cts: bool = False,
     cts_teacher_height_scan: bool = True,
     stair_lin_vel_x_min: float | None = None,
+    jump_exit_penalty: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -455,6 +456,8 @@ def env_cfg(
         critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
     stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
         ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
+    jump_exit_penalty：True 时跳跃偏离参考终止（mimic_deviation）也吃摔倒罚 ROUGH_FALL_PENALTY；默认 False 沿用 RJ1
+        "偏离出局免费"。对照实验开关，见 _apply_jump_mimic。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -647,7 +650,7 @@ def env_cfg(
     _apply_rough_domain_randomization(cfg, play=play)
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
-    _apply_jump_mimic(cfg)
+    _apply_jump_mimic(cfg, exit_penalty=jump_exit_penalty)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
     if oracle_dr_obs:
@@ -757,13 +760,17 @@ ROUGH_JUMP_PHASE_TIME_SCALE_S = 1.5
 """RJ1 jump_phase = 参考时刻 / 该常数（同 J10）。"""
 
 
-def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg, *, exit_penalty: bool = False) -> None:
     """RJ1（2026-10-02 用户定）：按 J10 合入跳跃——34 维观测里的 jump_flag / 目标高度 / 相位、无 RSI、无下蹲参考。
 
     只有跳跃样本会跳（2026-10-03 起为专用平地跳跃列的全部 env，占全部 env 10%；此前为平地列 30%），
     且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
     四项模仿奖励只计跳跃样本；跳跃期间屏蔽静站罚、接触力罚与速度跟踪的 vz 项（机身高度罚、轮 / 腿离地罚
     本来就按 jump_flag 屏蔽）；偏离参考提前终止不吃摔倒罚。观测维度与 M54 相同。
+
+    exit_penalty（2026-10-08 用户定，JumpExitPen 对照）：偏离参考终止改为与其他失败终止同价，吃 ROUGH_FALL_PENALTY。
+    依据：偏离出局按 0 自举且免罚，而 M47 起摔倒要躺到超时持续挨罚，不会跳时"一进跳跃就偏离"严格更赚，
+    提前出局又让跳跃后半段采不到样本，形成自我强化的陷阱；6×1170 / 7×1500 / 7×8192 陷住、6×8192 逃出，结果对规模非单调。
     """
     from se3_train.tasks.jump_mimic import mdp as jump_mdp
     from se3_train.tasks.jump_mimic.env_cfg import (
@@ -814,7 +821,7 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards["fall_penalty"] = RewardTermCfg(
         func=rewards.is_terminated_except,
         weight=float(fall.weight),
-        params={"exclude_terms": ("mimic_deviation",)},
+        params={"exclude_terms": () if exit_penalty else ("mimic_deviation",)},
     )
 
     cfg.terminations = dict(cfg.terminations)

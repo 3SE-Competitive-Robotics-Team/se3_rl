@@ -69,6 +69,11 @@ EXP_CTS_NOSCAN_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan"
 # 2026-10-08（用户定）：NoScan 单变量对照——台阶类列前进指令下限 0.4 → 0.8（ROUGH_STAIR_LIN_VEL_X_MIN_VX08）。
 # NoScan-4999 平地 0.4–1.0 超速是台阶列低指令冲速泄漏（见 env_cfg 常量注释）。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08"
+# 2026-10-08（用户定）：StairVx08 单变量对照——跳跃偏离参考终止也吃摔倒罚（env_cfg jump_exit_penalty）。
+# 跳跃学会与否对规模非单调（6×1170 / 7×8192 陷住），归因为"偏离出局免费"的陷阱。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_JUMP_EXIT_PEN_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-JumpExitPen"
+)
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
@@ -214,6 +219,27 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    exit_pen_kwargs = dict(stair_vx08_kwargs, jump_exit_penalty=True)
+    exit_pen_env_cfg = env_cfg(**exit_pen_kwargs)
+    exit_pen_actor = exit_pen_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_JUMP_EXIT_PEN_TASK_ID,
+        env_cfg=exit_pen_env_cfg,
+        play_env_cfg=env_cfg(play=True, **exit_pen_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(exit_pen_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in exit_pen_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_JUMP_EXIT_PEN_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     z3_env_cfg = env_cfg(vx_observer=True)
     register_mjlab_task(
         task_id=EXP_VX_OBSERVER_Z3_TASK_ID,
@@ -241,6 +267,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_JUMP_EXIT_PEN_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",
     "EXP_CTS_NOSCAN_TASK_ID",
     "EXP_CTS_TASK_ID",
