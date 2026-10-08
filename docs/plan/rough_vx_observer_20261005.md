@@ -209,3 +209,14 @@ flat 6.3%；台阶列指令 U(0.4, 2.4)，非台阶列指令均值约 0.6，平�
 （平地 0.4–1.0 超速），中高速段（1.1–1.8 欠速）不在本变量范围内。
 判据：平地密集传递曲线 0.4–1.0 段不再超速且 4999 不劣于 NoScan-2000；台阶列 0.8 起的爬升不退；
 低于 0.8 的指令在台阶列不再出现，需单独看平地 0.4–0.8 是否仍跟准。
+启动：635fc6b，nulltask1 六卡 × 8192、5000 轮、seed 42，worktree `rough-cts-noscan-vx08-635fc6b`，W&B `hvhgfeaq`，
+state `20261008T040758Z-28977`，约 3.05 s/轮。启动前 nulltask1 W&B gateway 主循环又停在 10-07 14:21Z，已 End → boring close/open → Run 修复。
+用户 sim2x 看 VX08 model_4200 后定（2026-10-08）：中高速段轻微欠速（1.5 → 1.33、1.8 → 1.46）可接受，不再单独做
+"平地类列前进指令占比"实验；只要传递曲线不离谱即可。
+
+## rough 默认去掉 catastrophic_state 的腿位置误差判据（2026-10-08，用户定）
+
+`ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR = None`（Flat 及其他任务仍是 3.0）。依据：6×8192 run 的灾难终止几乎全来自
+`Debug/catastrophic_leg_pos`（≈ 2e-5/步，nonfinite ≈ 1e-6）；大腿取最短角差、主动杆夹角物理上 ≤ 1.51，> 3.0 等于大腿翻转约 172°，
+是物理姿态不是数值发散，倒地乱蹬的 env 借它免费退出（VX08 后期 0.18/步，NoScan 0.03）。NaN / 速度 / 高度判据保留。
+副作用：`Debug/catastrophic_leg_pos` 此后恒 0，看不到大腿翻转频率。

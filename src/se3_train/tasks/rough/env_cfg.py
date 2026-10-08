@@ -263,6 +263,11 @@ ROUGH_CONTACT_TAX_FREE_COLUMNS = (
 # 上限 3.0 m 不动：slope_up 最高 +1.2、stairs_up 最高 +0.8，都在内。
 # **以后再加下行地形，先按 (每侧级数 × 最大阶高) 或 (最大坡度 × 可用半径) 核这条下限。**
 ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT = -1.5
+# catastrophic_state 去掉腿位置误差判据（2026-10-08 用户定）。Flat 沿用的 max_leg_pos_error=3.0：大腿取最短角差（≤ π）、
+# 主动杆夹角物理上只有 [0, 1.51]，> 3.0 等于大腿翻转约 172°，是能到达的物理姿态而不是数值发散；6×8192 的 rough run 里
+# 灾难终止几乎全由它触发（Debug/catastrophic_leg_pos ≈ 2e-5/步，nonfinite ≈ 1e-6），倒地乱蹬的 env 借它免费提前退出。
+# NaN / 速度 / 高度判据保留，仍兜底真正的物理发散。
+ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR: float | None = None
 # 摔倒罚（一次性，按事件计）：工资拿掉后台阶列每秒净值接近 0 甚至为负，非超时终止按 0 自举就等于"免费退出"，
 # 提前摔死会变便宜（A10 的自杀策略）。mjlab `is_terminated` 对所有非 time_out 终止（灾难、倾倒）记 1；
 # RewardManager 按 dt 缩放奖励，所以权重取 −ROUGH_FALL_PENALTY / step_dt，使每次终止恰好扣 ROUGH_FALL_PENALTY。
@@ -624,6 +629,7 @@ def env_cfg(
         params={
             **catastrophic.params,
             "min_base_height": ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
+            "max_leg_pos_error": ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR,
         },
     )
     cfg.terminations["terrain_edge_reached"] = TerminationTermCfg(
@@ -990,6 +996,7 @@ __all__ = [
     "ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS",
     "ROUGH_BASE_HEIGHT_SUPPORT_SENSOR",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR",
     "ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT",
     "ROUGH_COMMAND_WHEEL_BUDGET",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
