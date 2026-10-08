@@ -188,6 +188,10 @@ ROUGH_CTS_STUDENT_EVERY = 4
 # CTS-NoScan（2026-10-07 用户定）：教师编码器专用观测组 = critic 去掉高度扫描。前视地形是盲学生从本体历史原理上推不出的信息，
 # 教师隐向量带上它后共用 policy 学会按前视地形提前动作，学生只能回归条件均值，上台阶动作失真（Exp-CTS model_3700 sim2x）。
 ROUGH_CTS_TEACHER_GROUP = "cts_teacher"
+# StairVx08（2026-10-08 用户定）：台阶类列前进指令下限 0.4 → 0.8 的对照值。NoScan 归因（docs/plan/rough_vx_observer_20261005.md
+# "台阶列验证"）：给 0.4 m/s 爬 12 cm 台阶不现实，2000 轮后 policy 学会低指令也冲速靠动量过沿（stairs_up 0.4 → 0.59、
+# 爬升 0.36 → 0.56 m），盲 policy 在立面前分不清平地，同幅度超速泄漏到平地（0.4 → 0.54、0.6 → 0.73）。
+ROUGH_STAIR_LIN_VEL_X_MIN_VX08 = 0.8
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -421,6 +425,7 @@ def env_cfg(
     yaw_ratio_blend: float | None = None,
     cts: bool = False,
     cts_teacher_height_scan: bool = True,
+    stair_lin_vel_x_min: float | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -443,6 +448,8 @@ def env_cfg(
     cts：在 vx_observer 之上加 CTS 分组标记观测组 ROUGH_CTS_ROLE_GROUP；须配 rl_cfg.cts_rl_cfg。
     cts_teacher_height_scan：False 时另建教师编码器观测组 ROUGH_CTS_TEACHER_GROUP（critic 去掉 height_scan），
         critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
+    stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
+        ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -679,6 +686,14 @@ def env_cfg(
         if len(teacher_terms) != len(critic.terms) - 1:
             raise ValueError(f"critic 里没有 height_scan，无法构造 {ROUGH_CTS_TEACHER_GROUP}")
         cfg.observations[ROUGH_CTS_TEACHER_GROUP] = replace(critic, terms=teacher_terms)
+    if stair_lin_vel_x_min is not None:
+        low, high = float(stair_lin_vel_x_min), float(ROUGH_STAIR_LIN_VEL_X_RANGE[1])
+        if not 0.0 <= low < high:
+            raise ValueError(f"stair_lin_vel_x_min 须在 [0, {high}) 内，实际为 {low}")
+        cfg.commands = dict(cfg.commands)
+        cfg.commands["velocity_height"] = replace(
+            cfg.commands["velocity_height"], stair_lin_vel_x_range=(low, high)
+        )
     if yaw_ratio_blend is not None:
         # yaw 包络顶端拒转（docs/plan/rough_yaw_envelope_20261006.md）：指数核在大误差时没有梯度，
         # 比例项占比越大，"转到一半"拿到的分越多，填平从不转到转满之间只亏不赚的一段。
@@ -1017,6 +1032,7 @@ __all__ = [
     "ROUGH_STAIR_HEIGHT_DEAD_ZONE_M",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_HEIGHT_REFERENCE",
+    "ROUGH_STAIR_LIN_VEL_X_MIN_VX08",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
     "ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG",
     "ROUGH_STAIR_SPEED_CAP_ENABLED",
