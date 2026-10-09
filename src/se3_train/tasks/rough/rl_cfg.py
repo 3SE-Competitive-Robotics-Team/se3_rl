@@ -55,10 +55,16 @@ class VxObserverModelCfg(RslRlModelCfg):
 
 
 # CTS（2026-10-07 用户定）：隐向量维数与编码器隐藏层。教师编码器照 CTS 论文 512/256；学生编码器 256/128
-# （480 → 256 → 128 → 33 约 16 万次乘加，MCU 50 Hz 可推）。
+# （480 → 256 → 128 → 33 约 16 万次乘加）。
 ROUGH_CTS_LATENT_DIM = 32
 ROUGH_CTS_TEACHER_HIDDEN_DIMS = (512, 256)
 ROUGH_CTS_STUDENT_HIDDEN_DIMS = (256, 128)
+# 单片机部署版学生编码器（2026-10-09 用户定）：256/128 的部署网络约 18 万参数、FP32 约 720 KB，
+# 加固件代码约 146 KB 超出 STM32H723 片内 768 KiB 权重区；128/128 降到约 10.2 万参数、约 408 KB，片内放得下。
+ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU = (128, 128)
+# 换小学生编码器续训时的预热轮数：新编码器随机初始化，前若干轮只训练学生编码器、不做 PPO 更新，
+# 免得 25% 学生 env 的垃圾隐向量把共享 policy 带偏（见 se3_train.ppo）。
+ROUGH_CTS_STUDENT_WARMUP_ITERATIONS = 200
 
 
 @dataclass
@@ -132,9 +138,14 @@ def cts_rl_cfg(
     target_group: str,
     role_group: str,
     teacher_obs_group: str = "critic",
+    student_hidden_dims: tuple[int, ...] = ROUGH_CTS_STUDENT_HIDDEN_DIMS,
+    estimator_warmup_iterations: int = 0,
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
-    """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。"""
+    """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。
+
+    student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）。
+    """
     cfg = rl_cfg(smoke=smoke)
     actor_fields = {
         k: v
@@ -148,11 +159,13 @@ def cts_rl_cfg(
         vx_target_group=target_group,
         role_group=role_group,
         teacher_obs_group=teacher_obs_group,
+        estimator_hidden_dims=tuple(int(d) for d in student_hidden_dims),
     )
     cfg.algorithm = replace(
         cfg.algorithm,
         estimator_learning_rate=ROUGH_VX_ESTIMATOR_LEARNING_RATE,
         estimator_target_group=target_group,
+        estimator_warmup_iterations=int(estimator_warmup_iterations),
     )
     return cfg
 
@@ -170,6 +183,8 @@ __all__ = [
     "ROUGH_ACTOR_HIDDEN_DIMS",
     "ROUGH_CTS_LATENT_DIM",
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS",
+    "ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU",
+    "ROUGH_CTS_STUDENT_WARMUP_ITERATIONS",
     "ROUGH_CTS_TEACHER_HIDDEN_DIMS",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_VX_ESTIMATOR_HIDDEN_DIMS",

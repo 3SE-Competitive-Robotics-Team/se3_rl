@@ -241,3 +241,16 @@ yaw 实际/指令（0.5 / 0.75 / 0.9 / 1.0）：1.01 / 1.01 / **1.00** / 0.53（
 受批量噪声、KL 自适应学习率、每轮跳跃样本数与按轮数排期的热身（500 + 500 轮）共同影响，表现为对规模非单调
 （4680 学会、7020 七条中六条陷住、8190 学会、10500 陷住、49152 五条学会、57344 一条陷住）。
 判据：6×8192 下跳跃照常学会且不晚于 VX08（mimic_deviation 第 500 轮前降到 < 0.5）；之后放到已知陷住的规模（6×1170）验证刀口消失。
+启动：a5c5fca，nulltask1 六卡 × 8192、5000 轮、seed 42，worktree `rough-jumpexitpen-a5c5fca`，state `20261008T120200Z-00982`。
+单变量对照是同 commit 的 StairVx08（新默认）6×8192——尚未跑；与 VX08（635fc6b）差去腿位置终止 + 出局付费两项，与 whtws 7×8192（33wxoa7k）差规模 + 出局付费。
+
+## StairVx08-Student128：单片机部署版学生编码器（2026-10-09，用户定）
+
+起因：固件 `serialleg2026`（`codex/stm32-onboard-policy`）改为 STM32H723 片上推理（ST Edge AI 4.0.1，权重放片内 Flash 768 KiB）。
+StairVx08 部署网络约 18 万参数、FP32 约 720 KB，加固件代码约 146 KB 超出片内上限；外部 Flash 同规模 RJ1 实测 41.7 ms，超 20 ms 周期。
+入口 `SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128`：学生编码器 480→256→128→33 → 480→128→128→33
+（部署网络 102,053 参数、FP32 408 KB），其余与 StairVx08 相同（当前默认，含去腿位置终止）。
+从 StairVx08 model_4999 续训：`Se3PPO.load` 只重置 `estimator.*` 与估计器优化器（PPO 优化器里估计器参数无状态，原样加载）；
+前 200 轮（`ROUGH_CTS_STUDENT_WARMUP_ITERATIONS`）只训练学生编码器、跳过 PPO 更新，避免随机学生隐向量把共享 policy 带偏。
+本地 CPU 续训 smoke（预热改 2 轮）通过，导出 ONNX 形状核对无误。地形 / 速度课程不随 checkpoint 恢复，会从初值重新爬。
+固件侧另需：历史帧缓冲（16 帧 term-major）、prepare / import / validate 三个脚本放开 30/34 维限制、推理任务栈加大。

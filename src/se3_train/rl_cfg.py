@@ -17,6 +17,7 @@ class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     critic_learning_rate: float | None = None
     estimator_learning_rate: float | None = None
     estimator_target_group: str | None = None
+    estimator_warmup_iterations: int = 0
     class_name: str = "se3_train.ppo:Se3PPO"
 
 

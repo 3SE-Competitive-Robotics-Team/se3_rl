@@ -28,6 +28,12 @@ detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更�
 actor 自带 estimator_loss(observations) 时（CTS，见 se3_train.cts_observer）改用它给出的损失（学生编码器的隐向量重建），
 并按 cts_role 分别记教师 / 学生 env 的平均单步奖励（Loss/cts_reward_teacher、Loss/cts_reward_student）：
 训练端其余指标被占多数的教师 env 主导，学生 env 才代表部署路径。
+
+换学生编码器续训（2026-10-09，单片机部署版 128/128）：`load` 发现 checkpoint 的 estimator 形状与当前不一致时，
+只丢弃 `estimator.*` 参数与估计器独立优化器状态，其余（教师编码器、policy、critic、PPO 优化器）照常加载。
+PPO 优化器能原样加载：估计器参数虽在 actor 里，但从未收到 PPO 梯度，Adam 里没有它们的状态，参数个数也不变。
+`estimator_warmup_iterations` > 0 时本进程前若干轮跳过 PPO 更新、只训练估计器（日志 Loss/estimator_warmup = 1），
+避免随机初始化的学生编码器给 25% 学生 env 的垃圾隐向量把共享 policy 带偏。
 """
 
 from __future__ import annotations
@@ -76,9 +82,11 @@ class Se3PPO(PPO):
         critic_learning_rate: float | None = None,
         estimator_learning_rate: float | None = None,
         estimator_target_group: str | None = None,
+        estimator_warmup_iterations: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self.estimator_warmup_remaining = int(estimator_warmup_iterations)
         self._noise_sq_small: list[float] = []
         self._noise_sq_big: list[float] = []
         self.estimator_target_group = estimator_target_group
@@ -91,6 +99,8 @@ class Se3PPO(PPO):
             self.estimator_optimizer = torch.optim.Adam(
                 self._raw_actor.estimator.parameters(), lr=float(estimator_learning_rate)
             )
+        if self.estimator_warmup_remaining > 0 and self.estimator_optimizer is None:
+            raise ValueError("estimator_warmup_iterations 需要同时给 estimator_learning_rate")
         self.critic_learning_rate = (
             None if critic_learning_rate is None else float(critic_learning_rate)
         )
@@ -121,7 +131,13 @@ class Se3PPO(PPO):
         self._noise_sq_big.append(float(self._actor_grad_sq()))
 
     def update(self) -> dict[str, float]:
-        """原版 update；多卡时附带本轮 actor 梯度噪声尺度。"""
+        """原版 update；多卡时附带本轮 actor 梯度噪声尺度。预热期只训练估计器。"""
+        if self.estimator_warmup_remaining > 0:
+            self.estimator_warmup_remaining -= 1
+            loss_dict = self._update_estimator()
+            loss_dict["estimator_warmup"] = 1.0
+            self.storage.clear()
+            return loss_dict
         b_small = (
             self.storage.num_envs * self.storage.num_transitions_per_env // self.num_mini_batches
         )
@@ -199,12 +215,50 @@ class Se3PPO(PPO):
             saved_dict["estimator_optimizer_state_dict"] = self.estimator_optimizer.state_dict()
         return saved_dict
 
+    def _estimator_shape_changed(self, actor_state: dict) -> bool:
+        """checkpoint 的 estimator.* 与当前 actor 的形状或键集合是否不同（换学生编码器续训）。"""
+        if self.estimator_optimizer is None:
+            return False
+        current = {
+            k: v.shape
+            for k, v in self._raw_actor.state_dict().items()
+            if k.startswith("estimator.")
+        }
+        saved = {k: v.shape for k, v in actor_state.items() if k.startswith("estimator.")}
+        return current != saved
+
     def load(self, loaded_dict: dict, load_cfg: dict | None, strict: bool) -> bool:
+        if load_cfg is None:
+            load_cfg = {
+                "actor": True,
+                "critic": True,
+                "optimizer": True,
+                "iteration": True,
+                "rnd": True,
+            }
+        reset_estimator = bool(load_cfg.get("actor")) and self._estimator_shape_changed(
+            loaded_dict["actor_state_dict"]
+        )
+        if reset_estimator:
+            state = {
+                k: v
+                for k, v in loaded_dict["actor_state_dict"].items()
+                if not k.startswith("estimator.")
+            }
+            missing, unexpected = self._raw_actor.load_state_dict(state, strict=False)
+            bad = [k for k in missing if not k.startswith("estimator.")] + list(unexpected)
+            if bad:
+                raise RuntimeError(f"换学生编码器续训只允许 estimator.* 缺失，实际还缺 / 多：{bad}")
+            print(
+                "[Se3PPO] checkpoint 的学生编码器形状与当前不同：estimator.* 随机初始化，其余照常加载"
+            )
+            load_cfg = {**load_cfg, "actor": False}
         load_iteration = super().load(loaded_dict, load_cfg, strict)
-        load_optimizer = load_cfg is None or bool(load_cfg.get("optimizer"))
+        load_optimizer = bool(load_cfg.get("optimizer"))
         if (
             self.estimator_optimizer is not None
             and load_optimizer
+            and not reset_estimator
             and "estimator_optimizer_state_dict" in loaded_dict
         ):
             self.estimator_optimizer.load_state_dict(loaded_dict["estimator_optimizer_state_dict"])
