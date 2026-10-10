@@ -86,6 +86,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_JUMP_EXIT_PEN_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128"
 )
+# 2026-10-10 用户定：Student128 从零训练，腿 Kp/Kd=30/2、轮 Kd=0.1，动作缩放沿用 0.25/15。
+# 无已训练教师，因此不启用换编码器续训专用的学生预热。对照完成并选定默认增益后删除此实验入口。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-LowGains"
+)
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
@@ -253,6 +258,29 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    low_gains_kwargs = dict(stair_vx08_kwargs, leg_kp=30.0, leg_kd=2.0, wheel_kd=0.1)
+    low_gains_env_cfg = env_cfg(**low_gains_kwargs)
+    low_gains_actor = low_gains_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID,
+        env_cfg=low_gains_env_cfg,
+        play_env_cfg=env_cfg(play=True, **low_gains_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(low_gains_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in low_gains_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                estimator_warmup_iterations=0,
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     exit_pen_kwargs = dict(stair_vx08_kwargs, jump_exit_penalty=True)
     exit_pen_env_cfg = env_cfg(**exit_pen_kwargs)
     exit_pen_actor = exit_pen_env_cfg.observations["actor"]
@@ -302,6 +330,7 @@ def register() -> None:
 
 __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_JUMP_EXIT_PEN_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",
     "EXP_CTS_NOSCAN_TASK_ID",

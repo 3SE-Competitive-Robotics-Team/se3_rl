@@ -425,6 +425,9 @@ def env_cfg(
     oracle_base_vx: bool = False,
     vx_observer: bool = False,
     vx_observer_history_length: int = ROUGH_VX_OBSERVER_HISTORY_LENGTH,
+    leg_kp: float | None = None,
+    leg_kd: float | None = None,
+    wheel_kd: float | None = None,
     wheel_torque_envelope: str = ROUGH_WHEEL_TORQUE_ENVELOPE,
     command_wheel_budget: str = ROUGH_COMMAND_WHEEL_BUDGET,
     yaw_ratio_blend: float | None = None,
@@ -448,6 +451,7 @@ def env_cfg(
     vx_observer：actor 观测改为 ROUGH_VX_OBSERVER_HISTORY_LENGTH 帧历史，并增加估计器监督目标组
     ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；须配 rl_cfg.vx_observer_rl_cfg。可部署。
     vx_observer_history_length：vx_observer 的 actor 历史帧数，默认 ROUGH_VX_OBSERVER_HISTORY_LENGTH；对照实验开关。
+    leg_kp / leg_kd / wheel_kd：任务级名义增益；None 沿用共享配置，动作缩放保持不变。
     wheel_torque_envelope：轮子 T-N 包络，"linear_peak" | "rated_point"（见 ROUGH_WHEEL_TORQUE_ENVELOPE）。
     command_wheel_budget：指令差速轮速预算，"legacy" | "rated"（见 ROUGH_COMMAND_WHEEL_BUDGET）。
     yaw_ratio_blend：tracking_ang_vel 的比例项占比（Flat 继承值 0.2）；None = 不改。对照实验开关。
@@ -472,6 +476,9 @@ def env_cfg(
 
     cfg.scene.entities = {
         "robot": get_serialleg_closedchain_cfg(
+            leg_kp_override=leg_kp,
+            leg_kd_override=leg_kd,
+            wheel_kd_override=wheel_kd,
             collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
             leg_torque_envelope_scale=ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
             wheel_torque_envelope=wheel_torque_envelope,

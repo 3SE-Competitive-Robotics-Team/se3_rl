@@ -57,12 +57,17 @@ def serialleg_wheel_half_track() -> float:
 
 def get_serialleg_closedchain_cfg(
     *,
+    leg_kp_override: float | None = None,
+    leg_kd_override: float | None = None,
     wheel_kd_override: float | None = None,
     collision_geom_group: int | None = None,
     leg_torque_envelope_scale: float | None = None,
     wheel_torque_envelope: Literal["linear_peak", "rated_point"] = "linear_peak",
 ) -> EntityCfg:
     """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
+
+    leg_kp_override / leg_kd_override / wheel_kd_override：任务级名义增益；None 沿用共享配置。
+    增益随机化围绕这些名义值采样，ONNX metadata 从执行器配置导出同一组值。
 
     leg_torque_envelope_scale（M53，2026-09-30）：None = 旧口径（saturation_effort 填峰值 40、effort_limit 填额定 20，
     恒扭矩区被额定削平）；给系数 k 时按物理含义取参——saturation_effort = k·电压限零速截距（DM8009P V1.0 @24V 约 132），
@@ -86,8 +91,8 @@ def get_serialleg_closedchain_cfg(
         leg_effort_limit = scale * DM8009P.stall_torque
     leg_actuator_cfg = DcMotorActuatorCfg(
         target_names_expr=JointGroup.POLICY_LEG_NAMES,
-        stiffness=_ROBOT_CFG.leg_kp,
-        damping=_ROBOT_CFG.leg_kd,
+        stiffness=_ROBOT_CFG.leg_kp if leg_kp_override is None else float(leg_kp_override),
+        damping=_ROBOT_CFG.leg_kd if leg_kd_override is None else float(leg_kd_override),
         saturation_effort=leg_saturation_effort,
         velocity_limit=DM8009P.no_load_speed,
         effort_limit=leg_effort_limit,
