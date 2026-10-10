@@ -83,13 +83,10 @@ class Se3PPO(PPO):
         estimator_learning_rate: float | None = None,
         estimator_target_group: str | None = None,
         estimator_warmup_iterations: int = 0,
-        estimator_only: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.estimator_warmup_remaining = int(estimator_warmup_iterations)
-        self.estimator_only = bool(estimator_only)
-        self._estimator_checkpoint_loaded = False
         self._noise_sq_small: list[float] = []
         self._noise_sq_big: list[float] = []
         self.estimator_target_group = estimator_target_group
@@ -104,12 +101,6 @@ class Se3PPO(PPO):
             )
         if self.estimator_warmup_remaining > 0 and self.estimator_optimizer is None:
             raise ValueError("estimator_warmup_iterations 需要同时给 estimator_learning_rate")
-        if self.estimator_only:
-            if self.estimator_optimizer is None:
-                raise ValueError("estimator_only 需要独立的 estimator_optimizer")
-            self.actor.requires_grad_(False)
-            self.critic.requires_grad_(False)
-            self._raw_actor.estimator.requires_grad_(True)
         self.critic_learning_rate = (
             None if critic_learning_rate is None else float(critic_learning_rate)
         )
@@ -126,20 +117,6 @@ class Se3PPO(PPO):
             critic_lr=self.critic_learning_rate,
         )
 
-    def train_mode(self) -> None:
-        """仅训练估计器时，冻结其他网络及所有观测归一化统计。"""
-        if not self.estimator_only:
-            super().train_mode()
-            return
-        if not self._estimator_checkpoint_loaded:
-            raise RuntimeError("estimator_only 必须从完整且学生形状相同的 checkpoint 续训")
-        self.actor.requires_grad_(False)
-        self.critic.requires_grad_(False)
-        self._raw_actor.estimator.requires_grad_(True)
-        self.actor.eval()
-        self.critic.eval()
-        self._raw_actor.estimator.train()
-
     def _actor_grad_sq(self) -> torch.Tensor:
         grads = [p.grad.reshape(-1) for p in self.actor.parameters() if p.grad is not None]
         return torch.cat(grads).square().sum()
@@ -155,11 +132,6 @@ class Se3PPO(PPO):
 
     def update(self) -> dict[str, float]:
         """原版 update；多卡时附带本轮 actor 梯度噪声尺度。预热期只训练估计器。"""
-        if self.estimator_only:
-            loss_dict = self._update_estimator()
-            loss_dict["estimator_only"] = 1.0
-            self.storage.clear()
-            return loss_dict
         if self.estimator_warmup_remaining > 0:
             self.estimator_warmup_remaining -= 1
             loss_dict = self._update_estimator()
@@ -241,7 +213,6 @@ class Se3PPO(PPO):
         saved_dict = super().save()
         if self.estimator_optimizer is not None:
             saved_dict["estimator_optimizer_state_dict"] = self.estimator_optimizer.state_dict()
-        saved_dict["estimator_only"] = self.estimator_only
         return saved_dict
 
     def _estimator_shape_changed(self, actor_state: dict) -> bool:
@@ -268,10 +239,6 @@ class Se3PPO(PPO):
         reset_estimator = bool(load_cfg.get("actor")) and self._estimator_shape_changed(
             loaded_dict["actor_state_dict"]
         )
-        if self.estimator_only and (
-            reset_estimator or not load_cfg.get("actor") or not load_cfg.get("critic")
-        ):
-            raise ValueError("estimator_only 需要完整加载 actor/critic，且不能随机重置学生编码器")
         if reset_estimator:
             state = {
                 k: v
@@ -293,11 +260,8 @@ class Se3PPO(PPO):
             and load_optimizer
             and not reset_estimator
             and "estimator_optimizer_state_dict" in loaded_dict
-            # 第一次进入学生微调时，新目标使用新 Adam；同模式中断续训才恢复其动量。
-            and (not self.estimator_only or loaded_dict.get("estimator_only", False))
         ):
             self.estimator_optimizer.load_state_dict(loaded_dict["estimator_optimizer_state_dict"])
-        self._estimator_checkpoint_loaded = bool(load_cfg.get("actor") and load_cfg.get("critic"))
         return load_iteration
 
 

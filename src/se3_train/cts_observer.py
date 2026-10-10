@@ -51,9 +51,6 @@ class CTSVxObserverModel(MLPModel):
         teacher_obs_group: str = "critic",
         vx_target_group: str = "estimator_target",
         role_group: str = "cts_role",
-        caps_spatial_weight: float = 0.0,
-        caps_noise_amplitudes: tuple[float, ...] | list[float] = (),
-        caps_clean_history_group: str = "caps_clean_history",
     ) -> None:
         # 父类 __init__ 会调用 _get_latent_dim() 建 policy MLP，相关宽度须先设好（同 rsl_rl CNNModel 的写法）。
         self.history_length = int(history_length)
@@ -63,10 +60,6 @@ class CTSVxObserverModel(MLPModel):
         self.teacher_obs_group = teacher_obs_group
         self.vx_target_group = vx_target_group
         self.role_group = role_group
-        self.caps_spatial_weight = float(caps_spatial_weight)
-        self.caps_clean_history_group = caps_clean_history_group
-        if self.caps_spatial_weight < 0.0:
-            raise ValueError("CAPS 权重不能为负数")
         super().__init__(
             obs,
             obs_groups,
@@ -101,16 +94,6 @@ class CTSVxObserverModel(MLPModel):
         self.estimator = MLP(
             self.obs_dim, self.cts_latent_dim + 1, estimator_hidden_dims, activation
         )
-        if self.caps_spatial_weight > 0.0:
-            if caps_clean_history_group not in obs:
-                raise ValueError("CAPS 需要与 actor 对齐的干净历史观测组")
-            if obs[caps_clean_history_group].shape != obs[self.obs_groups[0]].shape:
-                raise ValueError("CAPS 干净历史与 actor 历史形状不一致")
-            if len(caps_noise_amplitudes) != self.obs_dim:
-                raise ValueError("CAPS 噪声幅值必须与展平的 term-major 历史逐维对应")
-        self.register_buffer(
-            "caps_noise_amplitudes", torch.tensor(caps_noise_amplitudes), persistent=False
-        )
 
     def _get_latent_dim(self) -> int:
         """policy MLP 输入：最新一帧 + 隐向量 z + vx。"""
@@ -127,7 +110,7 @@ class CTSVxObserverModel(MLPModel):
         return torch.cat([z, obs[self.vx_target_group]], dim=-1)
 
     def student_latent(self, obs: TensorDict, history: torch.Tensor | None = None) -> torch.Tensor:
-        """[L2(z_S), v̂x]，形状 (N, latent_dim + 1)；供学生重建及可选 CAPS 损失反传。"""
+        """[L2(z_S), v̂x]，形状 (N, latent_dim + 1)；带梯度（只用于重建损失）。"""
         out = self.estimator(self._normalized_history(obs) if history is None else history)
         return torch.cat(
             [F.normalize(out[:, : self.cts_latent_dim], dim=-1), out[:, self.cts_latent_dim :]],
@@ -165,44 +148,7 @@ class CTSVxObserverModel(MLPModel):
         # 两项各自取均值再相加：若对 33 维拼接整体取均值（官方代码写法），vx 只占 1/33 的权重，
         # 而 vx 是 VxObserver 验证过的主要收益来源，这里保持它与 VxObserver 相同的权重。
         loss = latent_mse + vx_mse
-        metrics = {"cts_latent_mse": latent_mse.detach(), "estimator_vx_mse": vx_mse.detach()}
-        if self.caps_spatial_weight > 0.0:
-            caps_loss, caps_metrics = self._caps_spatial_loss(obs[student])
-            loss = loss + self.caps_spatial_weight * caps_loss
-            metrics.update(caps_metrics)
-        return loss, metrics
-
-    def _caps_spatial_loss(self, obs: TensorDict) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """CAPS 空间项的学生适配：同一干净历史两份噪声，固定 actor 当前帧，只反传历史编码器。
-
-        来源：https://ai.bu.edu/caps/ 。成对均匀噪声、冻结 actor 与学生限定是本项目适配，
-        不等同于原论文完整 CAPS（这里不加入时间平滑项）。噪声在观测归一化之前注入。
-        """
-        if any(p.requires_grad for p in self.mlp.parameters()):
-            raise RuntimeError("学生 CAPS 需要 estimator_only=True，禁止更新共享 actor")
-        clean = obs[self.caps_clean_history_group]
-        with torch.no_grad():
-            history_a = self.obs_normalizer(
-                clean + (2.0 * torch.rand_like(clean) - 1.0) * self.caps_noise_amplitudes
-            )
-            history_b = self.obs_normalizer(
-                clean + (2.0 * torch.rand_like(clean) - 1.0) * self.caps_noise_amplitudes
-            )
-            latest = self._normalized_history(obs).index_select(-1, self.latest_frame_index)
-        # actor 权重冻结，但前向不能包在 no_grad 中：动作损失须经 actor 回到学生编码器。
-        action_a = self.mlp(torch.cat([latest, self.student_latent(obs, history_a)], dim=-1))
-        action_b = self.mlp(torch.cat([latest, self.student_latent(obs, history_b)], dim=-1))
-        if self.distribution is not None:
-            action_a = self.distribution.deterministic_output(action_a)
-            action_b = self.distribution.deterministic_output(action_b)
-        error_sq = (action_a - action_b).square()
-        loss = error_sq.mean()
-        return loss, {
-            "caps_spatial_mse": loss.detach(),
-            "caps_weighted_loss": (self.caps_spatial_weight * loss).detach(),
-            "caps_leg_action_rmse": error_sq[:, :4].mean().sqrt().detach(),
-            "caps_wheel_action_rmse": error_sq[:, 4:].mean().sqrt().detach(),
-        }
+        return loss, {"cts_latent_mse": latent_mse.detach(), "estimator_vx_mse": vx_mse.detach()}
 
     def estimate_vx(self, obs: TensorDict) -> torch.Tensor:
         """学生路径的 v̂x（诊断用）。"""

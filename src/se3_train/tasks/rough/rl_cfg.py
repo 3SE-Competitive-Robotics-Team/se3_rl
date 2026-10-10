@@ -79,9 +79,6 @@ class CTSModelCfg(RslRlModelCfg):
     teacher_obs_group: str = "critic"
     vx_target_group: str = "estimator_target"
     role_group: str = "cts_role"
-    caps_spatial_weight: float = 0.0
-    caps_noise_amplitudes: tuple[float, ...] = ()
-    caps_clean_history_group: str = "caps_clean_history"
     class_name: str = "se3_train.cts_observer:CTSVxObserverModel"
 
 
