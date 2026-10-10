@@ -133,6 +133,9 @@ class Se3PPO(PPO):
             return
         if not self._estimator_checkpoint_loaded:
             raise RuntimeError("estimator_only 必须从完整且学生形状相同的 checkpoint 续训")
+        self.actor.requires_grad_(False)
+        self.critic.requires_grad_(False)
+        self._raw_actor.estimator.requires_grad_(True)
         self.actor.eval()
         self.critic.eval()
         self._raw_actor.estimator.train()

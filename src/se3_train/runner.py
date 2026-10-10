@@ -322,6 +322,12 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
 
     def _freeze_actor_for_iteration(self, iteration: int) -> bool:
         """在保护期内冻结 actor，只更新 critic 和 critic 观测统计。"""
+        if getattr(self.alg, "estimator_only", False):
+            # 学生微调由算法维护部分参数冻结，不能走下面恢复整个 actor 的旧预热逻辑。
+            self.alg.train_mode()
+            if self.logger.writer is not None:
+                self.logger.writer.add_scalar("Runtime/actor_frozen", 1.0, iteration)
+            return False
         freeze_iters = self._actor_freeze_iters()
         should_freeze = (
             self._se3_stage_warm_start_loaded and freeze_iters > 0 and iteration < freeze_iters
