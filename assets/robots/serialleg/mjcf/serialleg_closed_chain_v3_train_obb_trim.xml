@@ -7,7 +7,11 @@
   <default>
     <geom solref="0.010 1.5" solimp="0.85 0.99 0.005" />
     <joint damping="0" />
-    <equality solref="0.010 1.05" solimp="0.2 0.95 0.002 0.9 6" />
+    <!-- 闭链 connect 约束（2026-10-17）：solimp 由 0.2 0.95 0.002 0.9 6 加硬到 0.99 0.999 0.001。旧值在静站负载
+         （体重 + 300 N 气弹簧）下把 coupler 闭链拉开约 9 mm、膝多转约 0.15 rad，与刚性实车连杆不符，策略在实车上
+         平衡点移位、零速后退。训练 5 ms 步长下 solref 时间常数已在下限 0.010，加硬只能靠 solimp。
+         验证：倒地沉降 3×32768 env 无分支错误、冲击峰值间隙 p99 9.8→2.2 mm，Rough 训练每轮耗时不变。 -->
+    <equality solref="0.010 1.05" solimp="0.99 0.999 0.001 0.5 2" />
   </default>
   <asset>
     <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4" />
