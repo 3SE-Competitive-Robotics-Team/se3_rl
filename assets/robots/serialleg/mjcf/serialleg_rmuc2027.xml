@@ -1,0 +1,36 @@
+<mujoco model="serialleg_rmuc2027">
+  <!-- 由 scripts/make_rmuc2027_field_scene.py 生成，请勿手改。
+       RMUC 2027 官方场地 CAD V1.0.0（CC BY-NC-SA 4.0，RoboMaster 高校赛务；网格转换 keilking66/RMUC2027-map）。
+       CAD → 世界平移 -0 -1.6243434 1.6403437：规则矩形中心在原点，地面脊线 z=0。
+       碰撞 = 2 cm 最高点高度场（悬空结构被填实）；视觉 = 同色合并 + 1 cm 顶点聚类。
+       四面围墙不是官方几何，只防掉出高度场。 -->
+  <include file="serialleg_closed_chain_v3_train_obb_trim.xml" />
+  <statistic center="0 0 0" extent="32.2" />
+  <custom>
+    <numeric name="se3_drop_robot_floor" data="1" />
+  </custom>
+  <asset>
+    <hfield name="rmuc2027_hfield" file="rmuc2027/field_hfield.bin" size="13.99 8 3.7079597 0.1" />
+    <mesh name="rmuc2027_visual_00_0" file="rmuc2027/rmuc2027_visual_00_0.stl" maxhullvert="4" inertia="shell" />
+    <mesh name="rmuc2027_visual_01_0" file="rmuc2027/rmuc2027_visual_01_0.stl" maxhullvert="4" inertia="shell" />
+    <mesh name="rmuc2027_visual_02_0" file="rmuc2027/rmuc2027_visual_02_0.stl" maxhullvert="4" inertia="shell" />
+    <mesh name="rmuc2027_visual_03_0" file="rmuc2027/rmuc2027_visual_03_0.stl" maxhullvert="4" inertia="shell" />
+    <mesh name="rmuc2027_visual_03_1" file="rmuc2027/rmuc2027_visual_03_1.stl" maxhullvert="4" inertia="shell" />
+    <mesh name="rmuc2027_visual_04_0" file="rmuc2027/rmuc2027_visual_04_0.stl" maxhullvert="4" inertia="shell" />
+  </asset>
+  <worldbody>
+    <site name="se3_env_000_rmuc2027_r0" pos="-6.5 -1.6 -0.0374471" size="0.001" rgba="0 0 0 0" />
+    <site name="se3_env_001_rmuc2027_r1" pos="6.5 1.6 -0.0373651" size="0.001" rgba="0 0 0 0" />
+    <geom name="rmuc2027_hfield" type="hfield" hfield="rmuc2027_hfield" pos="-0.0099885559 -0.0015654612 -0.21027659" rgba="0.55 0.57 0.6 1" group="3" friction="0.8 0.005 0.0001" condim="3" contype="2" conaffinity="1" />
+    <geom name="rmuc2027_wall_north" type="box" pos="-0.00998856 8.04843 0.0397234" size="14.09 0.05 0.25" rgba="0.75 0.75 0.78 0.35" group="2" friction="0.8 0.005 0.0001" condim="3" contype="2" conaffinity="1" />
+    <geom name="rmuc2027_wall_south" type="box" pos="-0.00998856 -8.05157 0.0397234" size="14.09 0.05 0.25" rgba="0.75 0.75 0.78 0.35" group="2" friction="0.8 0.005 0.0001" condim="3" contype="2" conaffinity="1" />
+    <geom name="rmuc2027_wall_east" type="box" pos="14.03 -0.00156546 0.0397234" size="0.05 8.1 0.25" rgba="0.75 0.75 0.78 0.35" group="2" friction="0.8 0.005 0.0001" condim="3" contype="2" conaffinity="1" />
+    <geom name="rmuc2027_wall_west" type="box" pos="-14.05 -0.00156546 0.0397234" size="0.05 8.1 0.25" rgba="0.75 0.75 0.78 0.35" group="2" friction="0.8 0.005 0.0001" condim="3" contype="2" conaffinity="1" />
+    <geom name="rmuc2027_visual_00_0" type="mesh" mesh="rmuc2027_visual_00_0" rgba="0 0 0 1" contype="0" conaffinity="0" group="2" />
+    <geom name="rmuc2027_visual_01_0" type="mesh" mesh="rmuc2027_visual_01_0" rgba="0.033 0.033 0.033 1" contype="0" conaffinity="0" group="2" />
+    <geom name="rmuc2027_visual_02_0" type="mesh" mesh="rmuc2027_visual_02_0" rgba="0.053 0.053 0.053 1" contype="0" conaffinity="0" group="2" />
+    <geom name="rmuc2027_visual_03_0" type="mesh" mesh="rmuc2027_visual_03_0" rgba="0.55 0.57 0.6 1" contype="0" conaffinity="0" group="2" />
+    <geom name="rmuc2027_visual_03_1" type="mesh" mesh="rmuc2027_visual_03_1" rgba="0.55 0.57 0.6 1" contype="0" conaffinity="0" group="2" />
+    <geom name="rmuc2027_visual_04_0" type="mesh" mesh="rmuc2027_visual_04_0" rgba="0.578 0.578 0.456 1" contype="0" conaffinity="0" group="2" />
+  </worldbody>
+</mujoco>
