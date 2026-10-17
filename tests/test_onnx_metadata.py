@@ -42,6 +42,7 @@ from se3_train.onnx_metadata import (
     build_deployment_onnx_metadata,
     embed_onnx_metadata,
 )
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 
 _TERM_WIDTHS = {
     "base_ang_vel": 3,
@@ -202,6 +203,7 @@ def _fake_env(history_length: int = 1) -> SimpleNamespace:
         cfg=SimpleNamespace(
             decimation=4,
             sim=SimpleNamespace(mujoco=MujocoCfg(timestep=0.005)),
+            scene=SimpleNamespace(entities={"robot": get_serialleg_closedchain_cfg()}),
         ),
         sim=SimpleNamespace(
             mj_model=SimpleNamespace(dof_armature=compiled_armature),

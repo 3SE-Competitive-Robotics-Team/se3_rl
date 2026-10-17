@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 import torch
@@ -125,6 +126,34 @@ def reset_crawl_pose(
     pos[:, 2] += float(support_clearance) - lowest
     asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=env_ids)
     env.sim.forward()
+
+
+def _crawl_deployment_init_state() -> dict[str, list[float]]:
+    """名义趴姿的部署出生状态（不带噪声），随 ONNX metadata 下发给 sim2x。
+
+    机身水平、导轮着地，base 高度 = 趴地高度 + reset_crawl_pose 默认的 support_clearance。
+    """
+    from .env_cfg import CRAWL_BASE_HEIGHT
+
+    support_clearance = float(
+        inspect.signature(reset_crawl_pose).parameters["support_clearance"].default
+    )
+    return {
+        "base_pos": [0.0, 0.0, CRAWL_BASE_HEIGHT + support_clearance],
+        "base_quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "joint_pos": [
+            CRAWL_FRONT_JOINT_POS,
+            CRAWL_FRONT_JOINT_POS - CRAWL_ACTIVE_ROD_ANGLE,
+            -CRAWL_FRONT_JOINT_POS,
+            -(CRAWL_FRONT_JOINT_POS - CRAWL_ACTIVE_ROD_ANGLE),
+            0.0,
+            0.0,
+        ],
+    }
+
+
+# se3_train.onnx_metadata 识别 reset 事件函数上的这个声明，导出为 robot.init_state。
+reset_crawl_pose.deployment_init_state = _crawl_deployment_init_state
 
 
 __all__ = [
