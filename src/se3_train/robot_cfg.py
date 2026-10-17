@@ -13,13 +13,18 @@ from se3_shared import RobotConfig as SharedRobotConfig
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
+# 带底盘导轮的变体（2026-10-17，趴地移动任务用）：在上面正式 MJCF 基础上加 6 个被动导轮、
+# 裁掉下凸的机身凸包。原有 17 维 qpos 顺序不变，导轮 6 维接在末尾。正式 MJCF 改动时要同步到这份。
+_GUIDE_WHEEL_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_guide_wheels.xml"
 
 _ROBOT_CFG = SharedRobotConfig()
 
 _WHEEL_JOINT_NAMES = JointGroup.WHEEL_NAMES
 
 
-def _serialleg_spec_for_training(collision_geom_group: int | None = None) -> mujoco.MjSpec:
+def _serialleg_spec_for_training(
+    collision_geom_group: int | None = None, guide_wheels: bool = False
+) -> mujoco.MjSpec:
     """加载不含独立世界地面的 SerialLeg MJCF。
 
     MJLab 场景单独提供地形。保留 MJCF 的全局平面会覆盖 z=0 的生成台阶坑，
@@ -29,8 +34,10 @@ def _serialleg_spec_for_training(collision_geom_group: int | None = None) -> muj
     只改内存里的 spec，MJCF 文件不动（recovery 状态缓存按文件字节校验）。geom group 只影响
     渲染与射线传感器、不影响碰撞；rough 线用它让 `include_geom_groups=(0,)` 的高度射线只看
     地形，不再打到自己的腿和轮子，与 mjlab 资产库 collision=3 / visual=2 的约定一致。
+
+    guide_wheels：True 时加载带底盘导轮的变体 MJCF（趴地移动任务）。
     """
-    spec = mujoco.MjSpec.from_file(str(_MJCF_PATH))
+    spec = mujoco.MjSpec.from_file(str(_GUIDE_WHEEL_MJCF_PATH if guide_wheels else _MJCF_PATH))
     for geom in list(spec.worldbody.geoms):
         if geom.name == "floor":
             spec.delete(geom)
@@ -63,6 +70,7 @@ def get_serialleg_closedchain_cfg(
     collision_geom_group: int | None = None,
     leg_torque_envelope_scale: float | None = None,
     wheel_torque_envelope: Literal["linear_peak", "rated_point"] = "linear_peak",
+    guide_wheels: bool = False,
 ) -> EntityCfg:
     """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
 
@@ -79,6 +87,9 @@ def get_serialleg_closedchain_cfg(
                                22.9 rad/s 起就低于额定，45 rad/s 只剩 1.14 N·m；与手册额定点（469 rpm@19:1 仍出 3 N·m）不符。
       "rated_point"：saturation_effort = 过手册额定点与空载点的反电动势线截距（约 82 N·m），effort_limit = 额定 2.21，
                      即额定平台延续到额定转速 66.65 rad/s、末端降到空载。低速力矩与旧口径相同，只改高速段。
+
+    guide_wheels：True 时用带 6 个被动底盘导轮的变体 MJCF。导轮关节不在任何 actuator 正则里，
+    init_state 的关节角按 mjlab 规则对未匹配关节取 0。
     """
     if leg_torque_envelope_scale is None:
         leg_saturation_effort = DM8009P.stall_torque
@@ -105,7 +116,7 @@ def get_serialleg_closedchain_cfg(
     else:
         raise ValueError(f"未知的 wheel_torque_envelope {wheel_torque_envelope!r}")
     return EntityCfg(
-        spec_fn=functools.partial(_serialleg_spec_for_training, collision_geom_group),
+        spec_fn=functools.partial(_serialleg_spec_for_training, collision_geom_group, guide_wheels),
         articulation=EntityArticulationInfoCfg(
             actuators=(
                 leg_actuator_cfg,

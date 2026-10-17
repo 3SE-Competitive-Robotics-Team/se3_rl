@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from . import (
+    crawl,
     flat,
     jump_finetune,
     jump_mimic,
@@ -26,6 +27,7 @@ def register_all_tasks() -> None:
     jump_finetune.register()
     jump_mimic.register()
     wheel_dog.register()
+    crawl.register()
 
 
 __all__ = ["register_all_tasks"]
