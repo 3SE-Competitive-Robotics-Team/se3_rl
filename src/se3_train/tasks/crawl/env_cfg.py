@@ -16,11 +16,16 @@
 from __future__ import annotations
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg, GridPatternCfg, ObjRef, RayCastSensorCfg
+from mjlab.tasks.velocity.mdp.curriculums import terrain_levels_vel
+from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain_edge_reached
+from mjlab.terrains import TerrainEntityCfg
 
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat import observations
@@ -30,7 +35,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, rewards
+from . import curriculums, events, rewards, terrains
 
 # 导轮轴心 z = -0.1259、导轮半径 0.010（见 MJCF），机身水平且导轮着地时 base_link 原点离地 0.1359 m。
 CRAWL_BASE_HEIGHT = 0.1359
@@ -135,4 +140,66 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         mode="reset",
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
+    return cfg
+
+
+# ---- 斜坡版（2026-10-17，SE3-WheelLegged-Crawl-Slope-MLP）----
+# 机身下方 3×3 射线（间距 0.15 m）取命中法线均值作局部坡面，供相对坡面的姿态项使用（见 rewards._terrain_relative_gravity_b）。
+CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME = "terrain_normal_sensor"
+# 生成器地形有几百个 geom，接触传感器 secondary 为 terrain 时 64 个匹配槽会溢出；同 Rough 取 500。
+CRAWL_SLOPE_CONTACT_SENSOR_MAXMATCH = 500
+# 出块截断门槛取块半边长，与官方升级判据一致（同 Rough M47 的取值与理由）。
+CRAWL_SLOPE_TERRAIN_EDGE_THRESHOLD_FRACTION = 1.0
+
+
+def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """趴地斜坡版：MDP 与 v5（平地 crawl）完全相同，只改地形与两项姿态计价。
+
+    - 地形：只有上坡的倒金字塔斜坡，坡度 0–0.15，官方 terrain_levels_vel 升降级（terrains.py）。
+    - tracking_orientation_l2 / bad_tilt 换成相对局部坡面的版本，权重与参数不变；平地上与原项等价。
+    - 加出块截断与出网格截断；bad_orientation 终止（绝对 30°）保留，坡度上限 8.5° 碰不到。
+    """
+    cfg = env_cfg(play=play)
+    cfg.scene.terrain = TerrainEntityCfg(
+        terrain_type="generator",
+        terrain_generator=terrains.crawl_slope_terrains_cfg(),
+        max_init_terrain_level=0,
+    )
+    cfg.sim.contact_sensor_maxmatch = CRAWL_SLOPE_CONTACT_SENSOR_MAXMATCH
+    cfg.scene.sensors = (
+        *cfg.scene.sensors,
+        RayCastSensorCfg(
+            name=CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME,
+            frame=ObjRef(type="body", name="base_link", entity="robot"),
+            pattern=GridPatternCfg(size=(0.3, 0.3), resolution=0.15),
+            ray_alignment="yaw",
+            max_distance=1.0,
+            include_geom_groups=(0,),
+        ),
+    )
+
+    orientation = cfg.rewards["tracking_orientation_l2"]
+    orientation.func = rewards.tracking_orientation_l2_terrain
+    orientation.params = {
+        "command_name": orientation.params["command_name"],
+        "sensor_name": CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME,
+    }
+    tilt = cfg.rewards["bad_tilt"]
+    tilt.func = rewards.bad_tilt_terrain
+    tilt.params = {**tilt.params, "sensor_name": CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME}
+
+    cfg.terminations["terrain_edge_reached"] = TerminationTermCfg(
+        func=terrain_edge_reached,
+        params={"threshold_fraction": CRAWL_SLOPE_TERRAIN_EDGE_THRESHOLD_FRACTION},
+        time_out=True,
+    )
+    cfg.terminations["out_of_terrain_bounds"] = TerminationTermCfg(
+        func=out_of_terrain_bounds, time_out=True
+    )
+    if not play:
+        cfg.curriculum = dict(cfg.curriculum)
+        cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
+            func=terrain_levels_vel,
+            params={"command_name": "velocity_height"},
+        )
     return cfg

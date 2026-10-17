@@ -190,9 +190,70 @@ def crawl_pose_deviation(
     return deviation
 
 
+def _terrain_relative_gravity_b(
+    env: ManagerBasedRlEnv, sensor_name: str, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """坡面系下的“重力投影”：机身下方射线命中点法线取平均得局部坡面法线 n，返回机身系里的 −n。
+
+    平地上 n = (0, 0, 1)，结果与 projected_gravity_b 相同，相对坡面的姿态项退化为原项；全部射线落空时按竖直处理。
+    """
+    robot = env.scene[asset_cfg.name]
+    data = env.scene[sensor_name].data
+    hit = (data.distances >= 0.0).unsqueeze(-1)
+    n_sum = (data.normals_w * hit).sum(dim=1)
+    norm = torch.linalg.norm(n_sum, dim=-1, keepdim=True)
+    up = device_constant((0.0, 0.0, 1.0), device=env.device).expand_as(n_sum)
+    n_w = torch.where(norm > 1.0e-6, n_sum / norm.clamp(min=1.0e-6), up)
+    n_w = torch.where(n_w[:, 2:3] < 0.0, -n_w, n_w)
+    return -quat_apply_inverse(robot.data.root_link_quat_w, n_w)
+
+
+def tracking_orientation_l2_terrain(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """mdp.rewards.tracking_orientation_l2 的相对坡面版：pitch/roll 按机身相对局部坡面计算，再减指令。
+
+    趴着上坡时机身倾角等于坡角、无法也不该消除；原项按绝对水平计价，0.15 坡（8.5°）每秒白扣约 −0.26。
+    """
+    cmd = env.command_manager.get_command(command_name)
+    pg = _terrain_relative_gravity_b(env, sensor_name, asset_cfg)
+    pitch = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0))
+    roll = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0))
+    log = _crawl_log(env)
+    if isinstance(log, dict):
+        robot = env.scene[asset_cfg.name]
+        abs_tilt = torch.acos(torch.clamp(-robot.data.projected_gravity_b[:, 2], -1.0, 1.0))
+        rel_tilt = torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0))
+        log["Crawl/body_tilt_abs_deg"] = torch.rad2deg(abs_tilt).mean()
+        log["Crawl/body_tilt_rel_terrain_deg"] = torch.rad2deg(rel_tilt).mean()
+    return (pitch - cmd[:, 2]) ** 2 + (roll - cmd[:, 3]) ** 2
+
+
+def bad_tilt_terrain(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    soft_limit_deg: float,
+    hard_limit_deg: float,
+    max_penalty: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """mdp.rewards.bad_tilt 的相对坡面版：机身 z 轴与局部坡面法线的夹角超过 soft_limit 后按 barrier 计价。"""
+    pg = _terrain_relative_gravity_b(env, sensor_name, asset_cfg)
+    tilt = torch.acos(torch.clamp(-pg[:, 2], -1.0, 1.0))
+    soft = torch.deg2rad(torch.tensor(float(soft_limit_deg), device=env.device))
+    hard = torch.deg2rad(torch.tensor(float(hard_limit_deg), device=env.device))
+    excess = torch.clamp((tilt - soft) / torch.clamp(hard - soft, min=1.0e-6), min=0.0)
+    return torch.clamp(excess**2, max=float(max_penalty))
+
+
 __all__ = [
+    "bad_tilt_terrain",
     "crawl_pose_deviation",
     "crawl_spring_sag",
     "guide_wheel_support",
+    "tracking_orientation_l2_terrain",
     "wheel_symmetry_offset",
 ]

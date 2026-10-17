@@ -40,15 +40,11 @@
     <mesh name="visual_r_coupler" file="rf_calf_2_link.STL" />
     <mesh name="visual_r_calf" file="rf_calf_3_link.STL" />
     <mesh name="stair_base_visual_coacd_mesh_00" file="stair_base_visual_coacd_32/base_visual_coacd_part_00.stl" />
-    <mesh name="stair_base_visual_coacd_mesh_01" file="stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_01.stl" />
     <mesh name="stair_base_visual_coacd_mesh_02" file="stair_base_visual_coacd_32/base_visual_coacd_part_02.stl" />
     <mesh name="stair_base_visual_coacd_mesh_03" file="stair_base_visual_coacd_32/base_visual_coacd_part_03.stl" />
-    <mesh name="stair_base_visual_coacd_mesh_04" file="stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_04.stl" />
     <mesh name="stair_base_visual_coacd_mesh_05" file="stair_base_visual_coacd_32/base_visual_coacd_part_05.stl" />
     <mesh name="stair_base_visual_coacd_mesh_06" file="stair_base_visual_coacd_32/base_visual_coacd_part_06.stl" />
     <mesh name="stair_base_visual_coacd_mesh_07" file="stair_base_visual_coacd_32/base_visual_coacd_part_07.stl" />
-    <mesh name="stair_base_visual_coacd_mesh_08" file="stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_08.stl" />
-    <mesh name="stair_base_visual_coacd_mesh_09" file="stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_09.stl" />
     <mesh name="stair_base_visual_coacd_mesh_10" file="stair_base_visual_coacd_32/base_visual_coacd_part_10.stl" />
     <mesh name="stair_base_visual_coacd_mesh_11" file="stair_base_visual_coacd_32/base_visual_coacd_part_11.stl" />
     <mesh name="stair_base_visual_coacd_mesh_12" file="stair_base_visual_coacd_32/base_visual_coacd_part_12.stl" />
@@ -64,10 +60,8 @@
     <mesh name="stair_base_visual_coacd_mesh_22" file="stair_base_visual_coacd_32/base_visual_coacd_part_22.stl" />
     <mesh name="stair_base_visual_coacd_mesh_23" file="stair_base_visual_coacd_32/base_visual_coacd_part_23.stl" />
     <mesh name="stair_base_visual_coacd_mesh_24" file="stair_base_visual_coacd_32/base_visual_coacd_part_24.stl" />
-    <mesh name="stair_base_visual_coacd_mesh_25" file="stair_base_visual_coacd_32/base_visual_coacd_part_25.stl" />
     <mesh name="stair_base_visual_coacd_mesh_26" file="stair_base_visual_coacd_32/base_visual_coacd_part_26.stl" />
     <mesh name="stair_base_visual_coacd_mesh_27" file="stair_base_visual_coacd_32/base_visual_coacd_part_27.stl" />
-    <mesh name="stair_base_visual_coacd_mesh_28" file="stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_28.stl" />
     <mesh name="stair_base_visual_coacd_mesh_29" file="stair_base_visual_coacd_32/base_visual_coacd_part_29.stl" />
     <mesh name="stair_base_visual_coacd_mesh_30" file="stair_base_visual_coacd_32/base_visual_coacd_part_30.stl" />
     <mesh name="stair_base_visual_coacd_mesh_31" file="stair_base_visual_coacd_32/base_visual_coacd_part_31.stl" />
@@ -93,6 +87,31 @@
     <mesh name="legcoacd_r_coupler_Link_01" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_01.stl" />
     <mesh name="legcoacd_r_coupler_Link_02" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_02.stl" />
     <mesh name="legcoacd_r_coupler_Link_03" file="leg_coacd_v1/r_coupler_Link/r_coupler_Link_coacd_03.stl" />
+    <!-- 机身底部凸包分段（2026-10-17）：见下方 base_link 内注释与 meshes/base_bottom_sliced_v1/slices.json。 -->
+    <mesh name="base_bottom_sliced_04_00" file="base_bottom_sliced_v1/part_04_00.stl" />
+    <mesh name="base_bottom_sliced_04_01" file="base_bottom_sliced_v1/part_04_01.stl" />
+    <mesh name="base_bottom_sliced_04_02" file="base_bottom_sliced_v1/part_04_02.stl" />
+    <mesh name="base_bottom_sliced_04_03" file="base_bottom_sliced_v1/part_04_03.stl" />
+    <mesh name="base_bottom_sliced_04_04" file="base_bottom_sliced_v1/part_04_04.stl" />
+    <mesh name="base_bottom_sliced_04_05" file="base_bottom_sliced_v1/part_04_05.stl" />
+    <mesh name="base_bottom_sliced_09_00" file="base_bottom_sliced_v1/part_09_00.stl" />
+    <mesh name="base_bottom_sliced_09_01" file="base_bottom_sliced_v1/part_09_01.stl" />
+    <mesh name="base_bottom_sliced_09_02" file="base_bottom_sliced_v1/part_09_02.stl" />
+    <mesh name="base_bottom_sliced_09_03" file="base_bottom_sliced_v1/part_09_03.stl" />
+    <mesh name="base_bottom_sliced_09_04" file="base_bottom_sliced_v1/part_09_04.stl" />
+    <mesh name="base_bottom_sliced_09_05" file="base_bottom_sliced_v1/part_09_05.stl" />
+    <mesh name="base_bottom_sliced_28_00" file="base_bottom_sliced_v1/part_28_00.stl" />
+    <mesh name="base_bottom_sliced_28_01" file="base_bottom_sliced_v1/part_28_01.stl" />
+    <mesh name="base_bottom_sliced_28_02" file="base_bottom_sliced_v1/part_28_02.stl" />
+    <mesh name="base_bottom_sliced_28_03" file="base_bottom_sliced_v1/part_28_03.stl" />
+    <mesh name="base_bottom_sliced_08_00" file="base_bottom_sliced_v1/part_08_00.stl" />
+    <mesh name="base_bottom_sliced_08_01" file="base_bottom_sliced_v1/part_08_01.stl" />
+    <mesh name="base_bottom_sliced_08_02" file="base_bottom_sliced_v1/part_08_02.stl" />
+    <mesh name="base_bottom_sliced_01_00" file="base_bottom_sliced_v1/part_01_00.stl" />
+    <mesh name="base_bottom_sliced_01_01" file="base_bottom_sliced_v1/part_01_01.stl" />
+    <mesh name="base_bottom_sliced_25_00" file="base_bottom_sliced_v1/part_25_00.stl" />
+    <mesh name="base_bottom_sliced_25_01" file="base_bottom_sliced_v1/part_25_01.stl" />
+    <mesh name="base_bottom_sliced_25_02" file="base_bottom_sliced_v1/part_25_02.stl" />
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="0 0 .05" material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1" />
@@ -114,15 +133,11 @@
       <geom name="base_link_sw_raw_visual_11" type="mesh" mesh="visual_swbase_base_link_11" contype="0" conaffinity="0" group="1" />
       <geom name="base_link_sw_raw_visual_12" type="mesh" mesh="visual_swbase_base_link_12" contype="0" conaffinity="0" group="1" />
       <geom name="base_link_collision_visual_coacd_00" type="mesh" mesh="stair_base_visual_coacd_mesh_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
-      <geom name="base_link_collision_visual_coacd_01" type="mesh" mesh="stair_base_visual_coacd_mesh_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_02" type="mesh" mesh="stair_base_visual_coacd_mesh_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_03" type="mesh" mesh="stair_base_visual_coacd_mesh_03" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
-      <geom name="base_link_collision_visual_coacd_04" type="mesh" mesh="stair_base_visual_coacd_mesh_04" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_05" type="mesh" mesh="stair_base_visual_coacd_mesh_05" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_06" type="mesh" mesh="stair_base_visual_coacd_mesh_06" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_07" type="mesh" mesh="stair_base_visual_coacd_mesh_07" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
-      <geom name="base_link_collision_visual_coacd_08" type="mesh" mesh="stair_base_visual_coacd_mesh_08" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
-      <geom name="base_link_collision_visual_coacd_09" type="mesh" mesh="stair_base_visual_coacd_mesh_09" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_10" type="mesh" mesh="stair_base_visual_coacd_mesh_10" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_11" type="mesh" mesh="stair_base_visual_coacd_mesh_11" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_12" type="mesh" mesh="stair_base_visual_coacd_mesh_12" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
@@ -138,13 +153,39 @@
       <geom name="base_link_collision_visual_coacd_22" type="mesh" mesh="stair_base_visual_coacd_mesh_22" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_23" type="mesh" mesh="stair_base_visual_coacd_mesh_23" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_24" type="mesh" mesh="stair_base_visual_coacd_mesh_24" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
-      <geom name="base_link_collision_visual_coacd_25" type="mesh" mesh="stair_base_visual_coacd_mesh_25" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_26" type="mesh" mesh="stair_base_visual_coacd_mesh_26" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_27" type="mesh" mesh="stair_base_visual_coacd_mesh_27" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
-      <geom name="base_link_collision_visual_coacd_28" type="mesh" mesh="stair_base_visual_coacd_mesh_28" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_29" type="mesh" mesh="stair_base_visual_coacd_mesh_29" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_30" type="mesh" mesh="stair_base_visual_coacd_mesh_30" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <geom name="base_link_collision_visual_coacd_31" type="mesh" mesh="stair_base_visual_coacd_mesh_31" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <!-- 机身底部凸包分段（2026-10-17，趴地斜坡版）：凸包 01/04/08/09/28/25 原本把导轮支架处的最低面（z = -0.1305）
+           铺满 x -0.17~+0.26，真实结构在支架以外要高 1.5~3 cm。沿 x 在 -0.2/-0.08/-0.05/+0.05/+0.08/+0.2 处切开，每段底面裁到
+           该段视觉 mesh 的真实最低点（-1 mm 余量），6 块 → 24 段。名义趴姿下接近角 3.1°→6.6°、纵向通过角 6.1°→12.1°
+           （视觉 mesh 7.8° / 17.6°）。生成脚本思路与每段范围见 slices.json。 -->
+      <geom name="base_link_collision_bottom_04_00" type="mesh" mesh="base_bottom_sliced_04_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_04_01" type="mesh" mesh="base_bottom_sliced_04_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_04_02" type="mesh" mesh="base_bottom_sliced_04_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_04_03" type="mesh" mesh="base_bottom_sliced_04_03" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_04_04" type="mesh" mesh="base_bottom_sliced_04_04" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_04_05" type="mesh" mesh="base_bottom_sliced_04_05" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_09_00" type="mesh" mesh="base_bottom_sliced_09_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_09_01" type="mesh" mesh="base_bottom_sliced_09_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_09_02" type="mesh" mesh="base_bottom_sliced_09_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_09_03" type="mesh" mesh="base_bottom_sliced_09_03" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_09_04" type="mesh" mesh="base_bottom_sliced_09_04" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_09_05" type="mesh" mesh="base_bottom_sliced_09_05" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_28_00" type="mesh" mesh="base_bottom_sliced_28_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_28_01" type="mesh" mesh="base_bottom_sliced_28_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_28_02" type="mesh" mesh="base_bottom_sliced_28_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_28_03" type="mesh" mesh="base_bottom_sliced_28_03" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_08_00" type="mesh" mesh="base_bottom_sliced_08_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_08_01" type="mesh" mesh="base_bottom_sliced_08_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_08_02" type="mesh" mesh="base_bottom_sliced_08_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_01_00" type="mesh" mesh="base_bottom_sliced_01_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_01_01" type="mesh" mesh="base_bottom_sliced_01_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_25_00" type="mesh" mesh="base_bottom_sliced_25_00" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_25_01" type="mesh" mesh="base_bottom_sliced_25_01" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
+      <geom name="base_link_collision_bottom_25_02" type="mesh" mesh="base_bottom_sliced_25_02" group="0" contype="1" conaffinity="2" friction="0.8 0.005 0.0001" rgba="0.05 0.65 1.0 0.40" />
       <body name="lf0_Link" pos="0 0.16885 0">
         <joint name="lf0_Joint" type="hinge" axis="0 1 0" armature="0.01" damping="0.02" frictionloss="0.3" />
         <inertial pos="-0.09968276 0.00404879 0.00282013" mass="0.32242010" fullinertia="0.00013496 0.00177872 0.00170006 0.00007976 0.00009393 -0.00000238" />
@@ -235,7 +276,8 @@
            （x = +0.0239 / +0.0019 / -0.0200，z = -0.1259，轴向 |y| 0.1053–0.1281，取中点 0.1167）。
            导轮直径 20 mm、宽 10 mm（用户给定），无驱动被动 hinge 绕 y 自由滚动；质量 10 g 为估计值，惯量按实心圆柱。
            机身 CoACD 凸包 01/04/08/09/28 原本比真实 mesh 最低面（z = -0.1305）多凸出最多 7 mm，会把导轮整个包住、导轮着不了地；
-           本变体改用裁到 z = -0.1305 的版本（meshes/stair_base_visual_coacd_32_guide_wheels/），导轮比机身最低面低 5.4 mm。
+           本变体先改用裁到 z = -0.1305 的版本，2026-10-17 起再按 x 分段贴合真实底面（见 base_link 内“机身底部凸包分段”注释），
+           导轮比机身最低面低 5.4 mm。
            导轮 body 排在 base_link 子树末尾，原有 17 维 qpos 顺序不变，导轮 6 维接在最后。 -->
       <body name="l_guide_wheel_0_Link" pos="0.0239 0.1167 -0.1259">
         <joint name="l_guide_wheel_0_Joint" type="hinge" axis="0 1 0" damping="0.00001" />
