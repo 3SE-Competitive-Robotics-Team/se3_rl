@@ -9,6 +9,7 @@
   tracking_ang_vel 照常计酬即奖励保持航向；tracking_lin_yaw_joint 只在 |yaw 指令| ≥ 0.5 时生效，恒为 0，删除。
 - 新增导轮承重罚 guide_wheel_support 与左右主轮对称罚 wheel_symmetry_offset（见 rewards.py 与下方权重注释），
   critic 额外看左右导轮接触力。
+- 速度课程加导轮承重门控：导轮总承重 EMA 达标前不推进 vx 上限（见 curriculums.py）。
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import events, rewards
+from . import curriculums, events, rewards
 
 # 导轮轴心 z = -0.1259、导轮半径 0.010（见 MJCF），机身水平且导轮着地时 base_link 原点离地 0.1359 m。
 CRAWL_BASE_HEIGHT = 0.1359
@@ -45,6 +46,8 @@ CRAWL_GUIDE_WHEEL_SIDE_SHARE_TARGET = 0.25
 # 左右主轮对称罚（2026-10-17）：机身系 Δx² + Δz²，定价沿用 Rough M49 的 −50/m²。
 # model_3499（Δx 0.18、Δz 0.056 m）−1.8/s；model_500（Δx 0.35、Δz 0.07 m）−6.4/s；对称趴姿为 0。
 CRAWL_WHEEL_SYMMETRY_WEIGHT = -50.0
+# 速度课程门控（2026-10-17）：导轮总承重 EMA ≥ 0.5（每侧目标 25% 之和）后才推进 vx 上限，见 curriculums.py。
+CRAWL_VEL_CURRICULUM_GUIDE_SHARE_THRESHOLD = 0.5
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -109,7 +112,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     if not play:
-        cfg.curriculum["command_vel"].params["max_lin_vel_x"] = CRAWL_MAX_LIN_VEL_X
+        # 速度课程改由导轮承重门控（见 curriculums.py），其余参数沿用 Flat。
+        command_vel = cfg.curriculum["command_vel"]
+        command_vel.func = curriculums.commands_vel_after_crawl_posture
+        command_vel.params["max_lin_vel_x"] = CRAWL_MAX_LIN_VEL_X
+        command_vel.params["guide_share_threshold"] = CRAWL_VEL_CURRICULUM_GUIDE_SHARE_THRESHOLD
 
     cfg.events["reset_joints"] = EventTermCfg(
         func=events.reset_crawl_pose,

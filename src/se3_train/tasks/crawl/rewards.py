@@ -16,12 +16,25 @@ from mjlab.utils.lab_api.math import quat_apply_inverse
 
 from se3_shared.torch_constants import device_index
 from se3_train.mdp.contact_utils import finite_contact_force_norm
+from se3_train.mdp.diagnostic_logging import should_log_diagnostics
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 _ROBOT_WEIGHT_ATTR = "_crawl_robot_weight_n"
 _MAIN_WHEEL_IDS_ATTR = "_crawl_main_wheel_body_ids"
+# 与 mdp.rewards 的诊断日志同一节流：每 64 个 policy step 写一次，速度课程门控也按这个节奏取样。
+_LOG_INTERVAL_STEPS = 64
+_LOG_INTERVAL_ATTR = "_se3_reward_log_interval_steps"
+
+
+def _crawl_log(env: ManagerBasedRlEnv) -> dict | None:
+    """本步需要写诊断标量时返回 env.extras["log"]，否则 None。"""
+    if not hasattr(env, "extras") or not should_log_diagnostics(
+        env, _LOG_INTERVAL_STEPS, attr_name=_LOG_INTERVAL_ATTR
+    ):
+        return None
+    return env.extras.setdefault("log", {})
 
 
 def _robot_weight_n(env: ManagerBasedRlEnv, asset_name: str) -> float:
@@ -67,7 +80,7 @@ def guide_wheel_support(
         shares.append(finite_contact_force_norm(force).sum(dim=1) / weight)
     share = torch.stack(shares, dim=1)
     deficit = torch.clamp(target - share, min=0.0) / target
-    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    log = _crawl_log(env)
     if isinstance(log, dict):
         log["Crawl/guide_share_left"] = share[:, 0].mean()
         log["Crawl/guide_share_right"] = share[:, 1].mean()
@@ -97,7 +110,7 @@ def wheel_symmetry_offset(
     wheel_b = quat_apply_inverse(quat.reshape(-1, 4), delta_w.reshape(-1, 3)).reshape(-1, 2, 3)
     dx = wheel_b[:, 0, 0] - wheel_b[:, 1, 0]
     dz = wheel_b[:, 0, 2] - wheel_b[:, 1, 2]
-    log = env.extras.setdefault("log", {}) if hasattr(env, "extras") else None
+    log = _crawl_log(env)
     if isinstance(log, dict):
         log["Crawl/wheel_dx_abs"] = dx.abs().mean()
         log["Crawl/wheel_dz_body_abs"] = dz.abs().mean()
