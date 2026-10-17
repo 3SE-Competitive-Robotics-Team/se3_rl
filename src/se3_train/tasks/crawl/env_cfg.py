@@ -10,6 +10,7 @@
 - 新增导轮承重罚 guide_wheel_support 与左右主轮对称罚 wheel_symmetry_offset（见 rewards.py 与下方权重注释），
   critic 额外看左右导轮接触力。
 - 速度课程加导轮承重门控：导轮总承重 EMA 达标前不推进 vx 上限（见 curriculums.py）。
+- v4：实体默认姿态（即动作零点）改为名义趴姿，并加趴姿姿态罚 crawl_pose_deviation。
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ CRAWL_GUIDE_WHEEL_SIDE_SHARE_TARGET = 0.25
 CRAWL_WHEEL_SYMMETRY_WEIGHT = -50.0
 # 速度课程门控（2026-10-17）：导轮总承重 EMA ≥ 0.5（每侧目标 25% 之和）后才推进 vx 上限，见 curriculums.py。
 CRAWL_VEL_CURRICULUM_GUIDE_SHARE_THRESHOLD = 0.5
+# 趴姿姿态罚（2026-10-17 v4）：四个 policy 腿关节偏离“零动作沉降趴姿”（名义趴姿 + 气弹簧沉降偏移）的 L2 范数，
+# 权重同 stair 线 joint_pos_penalty。零动作约为 0；若硬顶回名义角约 −0.6/s；旧站姿零点约 −2.2/s。
+CRAWL_POSE_DEVIATION_WEIGHT = -1.0
 
 
 def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -59,10 +63,13 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         max_ang_vel_yaw=CRAWL_MAX_ANG_VEL_YAW,
     )
 
-    cfg.scene.entities["robot"] = get_serialleg_closedchain_cfg(
+    robot_cfg = get_serialleg_closedchain_cfg(
         collision_geom_group=CRAWL_ROBOT_COLLISION_GEOM_GROUP,
         guide_wheels=True,
     )
+    # v4：实体默认姿态改为名义趴姿，动作零点随之变成趴姿（ONNX 按实体默认姿态导出 offset）。
+    robot_cfg.init_state.joint_pos = events.crawl_default_model_joint_pos()
+    cfg.scene.entities["robot"] = robot_cfg
 
     command_cfg = cfg.commands["velocity_height"]
     command_cfg.height_range = (CRAWL_BASE_HEIGHT, CRAWL_BASE_HEIGHT)
@@ -109,6 +116,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.rewards["wheel_symmetry_offset"] = RewardTermCfg(
         func=rewards.wheel_symmetry_offset,
         weight=CRAWL_WHEEL_SYMMETRY_WEIGHT,
+    )
+    cfg.rewards["crawl_pose_deviation"] = RewardTermCfg(
+        func=rewards.crawl_pose_deviation,
+        weight=CRAWL_POSE_DEVIATION_WEIGHT,
+        params={"nominal_policy_leg_pos": events.crawl_policy_leg_pos()},
     )
 
     if not play:

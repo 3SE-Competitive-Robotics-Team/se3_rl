@@ -15,7 +15,7 @@ _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
 _MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_train_obb_trim.xml"
 # 带底盘导轮的变体（2026-10-17，趴地移动任务用）：在上面正式 MJCF 基础上加 6 个被动导轮、
 # 裁掉下凸的机身凸包。原有 17 维 qpos 顺序不变，导轮 6 维接在末尾。正式 MJCF 改动时要同步到这份。
-_GUIDE_WHEEL_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_guide_wheels.xml"
+GUIDE_WHEEL_MJCF_PATH = _MJCF_DIR / "serialleg_closed_chain_v3_guide_wheels.xml"
 
 _ROBOT_CFG = SharedRobotConfig()
 
@@ -37,7 +37,7 @@ def _serialleg_spec_for_training(
 
     guide_wheels：True 时加载带底盘导轮的变体 MJCF（趴地移动任务）。
     """
-    spec = mujoco.MjSpec.from_file(str(_GUIDE_WHEEL_MJCF_PATH if guide_wheels else _MJCF_PATH))
+    spec = mujoco.MjSpec.from_file(str(GUIDE_WHEEL_MJCF_PATH if guide_wheels else _MJCF_PATH))
     for geom in list(spec.worldbody.geoms):
         if geom.name == "floor":
             spec.delete(geom)

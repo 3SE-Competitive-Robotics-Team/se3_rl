@@ -109,6 +109,27 @@ sigma_stand，姿态没学会也能过 0.5）；姿态在 300–700 轮才形成
 只停推进、不回退。crawl 两项奖励的日志同时改为每 64 步写一次。验证：mjlab 环境里给恒定名义趴姿动作，
 导轮总承重 0.88，门控打开；随机策略 smoke 中门控保持关闭、vx 上限停在 0。
 
+## v4：动作零点改为趴姿 + 趴姿姿态罚
+
+v3（9qjvkgb3，速度课程门控）在只给 0 指令时姿态学得比 v2 慢约 300 轮：第 600 轮导轮承重罚才从 −5 开始下降。
+根因是动作零点：腿目标 = 实体默认姿态 + 动作 × 0.25，默认是站姿，趴姿要一直输出 (3.1, 5.3, −3.1, −5.3) 的大偏置；
+初始化时零动作把机器人拉成站姿，探索也以站姿为中心。
+
+改法（用户 2026-10-17 定，与姿态罚绑定为一个变量）：
+
+- crawl 实体 `init_state.joint_pos` 改为名义趴姿（`events.crawl_default_model_joint_pos`，被动关节按解析闭链补齐），
+  零动作即趴姿。mjlab 训练配置（含 DR）给零动作 250 步：机身 0.136 m、直立、导轮承重罚 0、左右对称。
+- ONNX 的 `policy_io.action.offset` 与 `references.joint_pos_ref` 改为从 robot 实体 `init_state.joint_pos` 读名义值
+  （`onnx_metadata._policy_default_joint_pos`），不再写死 `RobotConfig().default_dof_pos`；不读运行时
+  `default_joint_pos`，因为 startup DR 会逐 env 叠 ±0.05 rad。Flat 导出值不变；crawl 导出
+  (0.611, −0.156, −0.611, 0.156)，sim2x 按 `entity_default_joint_position` 解码，无需改 runtime。
+  **真机固件若写死站姿默认角，上车前要改成读 metadata。**
+- 新增 `crawl_pose_deviation`（−1.0）：四个 policy 腿关节偏离“零动作沉降趴姿”的 L2 范数。参考 = 实体默认姿态 +
+  气弹簧沉降偏移 `crawl_spring_sag`（原生 MuJoCo 名义 PD 静置 3 s 实算并缓存，(−0.285, +0.318, +0.285, −0.318) rad）。
+  直接以名义趴姿为参考时零动作就偏 0.54–0.68 rad，策略只能一直出力顶弹簧（约 8.6 N·m/关节）；改成沉降姿态后
+  零动作残差 0.06–0.18 rad（弹簧力、PD、电机被动参数 DR）。不复用 `joint_pos_penalty`：它按高度指令查站姿默认表。
+- 速度课程门控（v3）保留。远端速度误差罚（轮速环路增益约 1.2 的问题）不在本版，单独做。
+
 ## 未做
 
 - sim2x：`se3_runtime` 的资产名固定为正式 MJCF，趴地策略在 sim2sim 里会跑在没有导轮的模型上，验证前要让

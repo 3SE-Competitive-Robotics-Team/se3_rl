@@ -5,10 +5,13 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import sample_uniform
 
+from se3_shared import JointGroup
+from se3_shared.fourbar import policy_to_closedchain_passive_pos_np
 from se3_shared.torch_constants import device_constant
 from se3_train.mdp.events import (
     _apply_policy_leg_reset,
@@ -35,6 +38,30 @@ if TYPE_CHECKING:
 # 整机质心（x ≈ -0.03）落在导轮（x ∈ [-0.020, +0.024]）与主轮之间，静止即稳定，夹角两侧都留足余量。
 CRAWL_FRONT_JOINT_POS = 0.611
 CRAWL_ACTIVE_ROD_ANGLE = 0.767
+
+
+def crawl_policy_leg_pos() -> tuple[float, float, float, float]:
+    """名义趴姿的 policy 腿部关节角，顺序 lf0 / l_drive_bar / rf0 / r_drive_bar；左夹角 = lf0 − l_drive_bar，右侧镜像取反。"""
+    front, active = CRAWL_FRONT_JOINT_POS, CRAWL_ACTIVE_ROD_ANGLE
+    return (front, front - active, -front, -(front - active))
+
+
+def crawl_default_model_joint_pos() -> dict[str, float]:
+    """名义趴姿展开成 MJCF 关节名 → 角度（含闭链被动关节与轮子），用作趴地任务实体的默认姿态。
+
+    动作零点取实体默认姿态（target = default + action × scale），因此零动作即趴姿；被动关节按解析闭链补齐，
+    与 reset 时 _apply_policy_leg_reset 的口径一致。导轮关节不在表里，按 mjlab 规则取 0。
+    """
+    policy = np.asarray(crawl_policy_leg_pos(), dtype=np.float64)
+    passive = policy_to_closedchain_passive_pos_np(policy)
+    joint_pos = dict(zip(JointGroup.POLICY_LEG_NAMES, (float(v) for v in policy), strict=True))
+    joint_pos.update(
+        zip(JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES, (float(v) for v in passive), strict=True)
+    )
+    joint_pos.update({name: 0.0 for name in JointGroup.WHEEL_NAMES})
+    return joint_pos
+
+
 # 支撑点半径，与 serialleg_closed_chain_v3_guide_wheels.xml 的碰撞 geom 一致。
 _MAIN_WHEEL_RADIUS_M = 0.060
 _GUIDE_WHEEL_RADIUS_M = 0.010

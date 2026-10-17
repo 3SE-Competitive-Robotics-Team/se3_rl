@@ -115,7 +115,7 @@ def build_deployment_onnx_metadata(
                 source_groups,
             ),
             "references": {
-                "joint_pos_ref": list(robot.default_dof_pos),
+                "joint_pos_ref": _policy_default_joint_pos(runtime_env),
                 "joint_vel_ref": [0.0] * len(JointGroup.POLICY_JOINT_NAMES),
             },
             "action": _build_action_metadata(runtime_env),
@@ -216,6 +216,23 @@ def _robot_asset_name(runtime_env: Any) -> str:
             "runtime 无法按资产名找到它"
         )
     return asset_name
+
+
+def _policy_default_joint_pos(runtime_env: Any) -> list[float]:
+    """policy-order 6D 名义默认姿态，取自 robot 实体配置的 init_state.joint_pos（动作零点与 joint_pos_ref 共用）。
+
+    动作解码 target = 实体 default_joint_pos + action × scale，实体默认姿态由 init_state 决定；趴地任务把它改成了
+    趴姿（2026-10-17 v4），不能再写死 RobotConfig().default_dof_pos。不读运行时 data.default_joint_pos：
+    startup DR（randomize_default_dof_pos）会逐 env 叠 ±0.05 rad 扰动，部署端要的是名义值。
+    """
+    try:
+        joint_pos = runtime_env.cfg.scene.entities["robot"].init_state.joint_pos
+    except (AttributeError, KeyError, TypeError) as error:
+        raise TypeError("live env 缺少 cfg.scene.entities['robot'].init_state.joint_pos") from error
+    missing = [name for name in JointGroup.POLICY_JOINT_NAMES if name not in (joint_pos or {})]
+    if missing:
+        raise ValueError(f"robot init_state.joint_pos 缺少 policy 关节的精确键 {missing}")
+    return [float(joint_pos[name]) for name in JointGroup.POLICY_JOINT_NAMES]
 
 
 def _build_env_group_metadata(runtime_env: Any) -> dict[str, str]:
@@ -618,7 +635,7 @@ def _build_action_metadata(runtime_env: Any) -> dict[str, Any]:
     return {
         "name": type(term).__name__,
         "scale": scale,
-        "offset": list(RobotConfig().default_dof_pos),
+        "offset": _policy_default_joint_pos(runtime_env),
         "clip": None if clip is None else [abs(float(clip))] * 6,
         # B18：动作零点语义。True = 高度条件默认姿态（随 height 指令变化），
         # False = 固定 entity 默认姿态。部署端必须按此选择 decode 策略。

@@ -7,16 +7,22 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 import mujoco
+import numpy as np
 import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply_inverse
 
-from se3_shared.torch_constants import device_index
+from se3_shared import DM8009P, JointGroup, RobotConfig
+from se3_shared.fourbar import policy_to_closedchain_passive_pos_np
+from se3_shared.torch_constants import device_constant, device_index
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.diagnostic_logging import should_log_diagnostics
+from se3_train.mdp.joint_indices import policy_leg_joint_ids
+from se3_train.robot_cfg import GUIDE_WHEEL_MJCF_PATH
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -117,4 +123,76 @@ def wheel_symmetry_offset(
     return dx.square() + dz.square()
 
 
-__all__ = ["guide_wheel_support", "wheel_symmetry_offset"]
+@functools.lru_cache(maxsize=4)
+def crawl_spring_sag(
+    target: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """名义腿 PD 以 target 为目标、零动作静置 3 s 后，policy 腿关节相对 target 的稳态偏移（rad）。
+
+    偏移来自膝气弹簧（300 N）把折叠的腿撑开、kp 60 的 PD 被顶开约 0.3 rad/关节（2026-10-17 实测）。
+    在带导轮 MJCF 上用原生 MuJoCo 实算一次并缓存：名义 kp/kd、额定扭矩限幅、无弹簧补偿前馈，
+    与训练默认一致；MJCF 或弹簧改了自动跟着变，不写死常数。
+    """
+    rc = RobotConfig()
+    model = mujoco.MjModel.from_xml_path(str(GUIDE_WHEEL_MJCF_PATH))
+    model.opt.timestep = rc.sim_dt
+    data = mujoco.MjData(model)
+    q = np.asarray(target, dtype=np.float64)
+    leg = [model.joint(name).id for name in JointGroup.POLICY_LEG_NAMES]
+    qadr = [int(model.jnt_qposadr[j]) for j in leg]
+    dadr = [int(model.jnt_dofadr[j]) for j in leg]
+    passive = [int(model.joint(n).qposadr[0]) for n in JointGroup.CLOSEDCHAIN_PASSIVE_JOINT_NAMES]
+    data.qpos[3] = 1.0
+    data.qpos[qadr] = q
+    data.qpos[passive] = policy_to_closedchain_passive_pos_np(q)
+    mujoco.mj_forward(model, data)
+    data.qpos[2] -= _lowest_support_z(model, data) - 0.002
+    limit = float(DM8009P.rated_torque)
+    for _ in range(int(3.0 / model.opt.timestep)):
+        tau = rc.leg_kp * (q - data.qpos[qadr]) - rc.leg_kd * data.qvel[dadr]
+        data.qfrc_applied[:] = 0.0
+        data.qfrc_applied[dadr] = np.clip(tau, -limit, limit)
+        mujoco.mj_step(model, data)
+    return tuple(float(v) for v in data.qpos[qadr] - q)
+
+
+def _lowest_support_z(model: mujoco.MjModel, data: mujoco.MjData) -> float:
+    """主轮底与导轮底的最低世界高度，用于把静置仿真的初始机身放到地面上。"""
+    lows = [data.xpos[model.body(n).id][2] - 0.060 for n in ("l_wheel_Link", "r_wheel_Link")]
+    lows += [
+        data.xpos[model.body(f"{side}_guide_wheel_{i}_Link").id][2] - 0.010
+        for side in "lr"
+        for i in range(3)
+    ]
+    return float(min(lows))
+
+
+def crawl_pose_deviation(
+    env: ManagerBasedRlEnv,
+    nominal_policy_leg_pos: tuple[float, float, float, float],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """四个 policy 腿关节偏离“零动作沉降趴姿”的 L2 范数（rad），始终生效。
+
+    参考 = 实体默认姿态（v4 起即名义趴姿，含 startup DR 的 ±0.05 rad）+ 气弹簧沉降偏移 crawl_spring_sag。
+    这样零动作就是本项的最优点：策略不必一直出力顶弹簧（约 8.6 N·m/关节）去追名义角，真机电机不长期带载；
+    偏离零动作姿态才扣分。弹簧力与 PD 增益的 DR（各 ±10%）只留下约 ±0.03 rad 的残差。
+    不复用 mdp.rewards.joint_pos_penalty：它按高度指令查站姿默认表，0.136 m 查出来的不是趴姿。
+    """
+    robot = env.scene[asset_cfg.name]
+    leg_ids = device_index(policy_leg_joint_ids(robot), device=env.device)
+    sag = device_constant(crawl_spring_sag(tuple(nominal_policy_leg_pos)), device=env.device)
+    reference = robot.data.default_joint_pos[:, leg_ids] + sag
+    deviation = torch.linalg.norm(robot.data.joint_pos[:, leg_ids] - reference, dim=1)
+    log = _crawl_log(env)
+    if isinstance(log, dict):
+        log["Crawl/pose_deviation_rad"] = deviation.mean()
+    return deviation
+
+
+__all__ = [
+    "crawl_pose_deviation",
+    "crawl_spring_sag",
+    "guide_wheel_support",
+    "wheel_symmetry_offset",
+]

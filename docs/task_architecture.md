@@ -13,7 +13,7 @@
 | `jump_mimic/` | `SE3-WheelLegged-Jump-Mimic-MLP` | 单独的跳跃 mimic 策略（MLP、34 维观测、从头训、平地前进跳）：无下蹲参考 0.20–0.50 m、四项模仿奖励（腿长 / 机身高度 / 竖直速度 / 接触）、偏离参考 0.12 m 提前终止、无 RSI、jump_phase 一维相位。参考时钟 `clock.JumpReferenceClock` 与 rough 共用。J1–J10 的对照入口与 J5/J6 的 `jump_flag/` 任务已于 2026-10-02 删除，J10 配置成为默认；复现用对应 commit（J7 09493b2、J9 4c7ce37、J10 e3c3a0a），结论见 `docs/plan/j7_*` 至 `j10_*`。参考由 `uv run se3-jump-to` 生成（默认即训练用的四条）。 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
-| `crawl/` | `SE3-WheelLegged-Crawl-MLP` | 趴地移动（2026-10-17）：机身压在底盘导轮上、主轮在后方推动的平地 vx 跟踪（不转向）。Flat-MLP 薄覆盖：带导轮变体 MJCF `serialleg_closed_chain_v3_guide_wheels.xml`、高度指令固定 0.1359 m、出生即趴姿、删 `stand_still`、课程终值 vx 1.5、不给转向指令（yaw 恒 0）、导轮承重罚 −5 与左右主轮 Δx²+Δz² 对称罚 −50、速度课程在导轮承重达标后才推进。详见 `docs/plan/crawl_guide_wheels_20261017.md`。 |
+| `crawl/` | `SE3-WheelLegged-Crawl-MLP` | 趴地移动（2026-10-17）：机身压在底盘导轮上、主轮在后方推动的平地 vx 跟踪（不转向）。Flat-MLP 薄覆盖：带导轮变体 MJCF `serialleg_closed_chain_v3_guide_wheels.xml`、高度指令固定 0.1359 m、出生即趴姿、删 `stand_still`、课程终值 vx 1.5、不给转向指令（yaw 恒 0）、导轮承重罚 −5 与左右主轮 Δx²+Δz² 对称罚 −50、速度课程在导轮承重达标后才推进、动作零点（实体默认姿态）为趴姿并加趴姿姿态罚 −1。详见 `docs/plan/crawl_guide_wheels_20261017.md`。 |
 | `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
