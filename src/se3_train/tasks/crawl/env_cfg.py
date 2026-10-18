@@ -23,7 +23,6 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, GridPatternCfg, ObjRef, RayCastSensorCfg
-from mjlab.tasks.velocity.mdp.curriculums import terrain_levels_vel
 from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain_edge_reached
 from mjlab.terrains import TerrainEntityCfg
 
@@ -149,8 +148,11 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME = "terrain_normal_sensor"
 # 生成器地形有几百个 geom，接触传感器 secondary 为 terrain 时 64 个匹配槽会溢出；同 Rough 取 500。
 CRAWL_SLOPE_CONTACT_SENSOR_MAXMATCH = 500
-# 出块截断门槛取块半边长，与官方升级判据一致（同 Rough M47 的取值与理由）。
-CRAWL_SLOPE_TERRAIN_EDGE_THRESHOLD_FRACTION = 1.0
+# 出块截断门槛取 0.9 倍半块（2026-10-18 起）：直线坡的平台在块 +x 边缘与下一块低平地之间是落差、块 -x 边缘是
+# 上一块平台的立面，机身在离边缘 0.45 m 处截断，主轮（机身后方约 0.23 m）碰不到边缘。升级判据另见 terrains。
+CRAWL_SLOPE_TERRAIN_EDGE_THRESHOLD_FRACTION = 0.9
+# 出生 yaw：坡沿世界系 +x，趴地技能没有转向指令，航向偏差会一直保持，只给 ±0.2 rad 的小扰动。
+CRAWL_SLOPE_SPAWN_YAW_RANGE = (-0.2, 0.2)
 # 速度课程回退门槛：跟踪 EMA 跌破它退一步（推进门槛沿用 Flat 的 0.5），取 mdp.curriculums 的默认值。
 CRAWL_SLOPE_VEL_RETREAT_THRESHOLD = 0.35
 
@@ -158,10 +160,11 @@ CRAWL_SLOPE_VEL_RETREAT_THRESHOLD = 0.35
 def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """趴地斜坡版：MDP 与 v5（平地 crawl）完全相同，只改地形与两项姿态计价。
 
-    - 地形：只有上坡的倒金字塔斜坡，坡度 0–0.15，官方 terrain_levels_vel 升降级（terrains.py）。
+    - 地形：自建「平地 → 上坡 → 平台」直线坡，坡度 0–15°，出生朝 +x（yaw ±0.2），按前进距离升降级（terrains.py，
+      2026-10-18 起替换 mjlab 倒金字塔 0–0.15）。
     - tracking_orientation_l2 / bad_tilt 换成相对局部坡面的版本，权重与参数不变；平地上与原项等价。
     - 删除导轮承重罚 guide_wheel_support；速度课程去掉导轮承重门控，改为可回退的 commands_vel_adaptive（2026-10-18）。
-    - 加出块截断与出网格截断；bad_orientation 终止（绝对 30°）保留，坡度上限 8.5° 碰不到。
+    - 加出块截断与出网格截断；bad_orientation 终止（绝对 30°）保留，坡度上限 15° 碰不到。
     """
     cfg = env_cfg(play=play)
     cfg.scene.terrain = TerrainEntityCfg(
@@ -170,6 +173,7 @@ def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         max_init_terrain_level=0,
     )
     cfg.sim.contact_sensor_maxmatch = CRAWL_SLOPE_CONTACT_SENSOR_MAXMATCH
+    cfg.events["reset_root_state"].params["yaw_range"] = CRAWL_SLOPE_SPAWN_YAW_RANGE
     cfg.scene.sensors = (
         *cfg.scene.sensors,
         RayCastSensorCfg(
@@ -219,7 +223,10 @@ def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         command_vel.params["retreat_enabled"] = True
         command_vel.params["retreat_threshold"] = CRAWL_SLOPE_VEL_RETREAT_THRESHOLD
         cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
-            func=terrain_levels_vel,
-            params={"command_name": "velocity_height"},
+            func=curriculums.terrain_levels_forward,
+            params={
+                "command_name": "velocity_height",
+                "promote_distance": terrains.CRAWL_SLOPE_PROMOTE_DISTANCE,
+            },
         )
     return cfg
