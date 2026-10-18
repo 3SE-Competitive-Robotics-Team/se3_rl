@@ -27,6 +27,7 @@ from mjlab.tasks.velocity.mdp.curriculums import terrain_levels_vel
 from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain_edge_reached
 from mjlab.terrains import TerrainEntityCfg
 
+from se3_train.mdp.curriculums import commands_vel_adaptive
 from se3_train.robot_cfg import get_serialleg_closedchain_cfg
 from se3_train.tasks.flat import observations
 from se3_train.tasks.flat.env_cfg import (
@@ -150,6 +151,8 @@ CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME = "terrain_normal_sensor"
 CRAWL_SLOPE_CONTACT_SENSOR_MAXMATCH = 500
 # 出块截断门槛取块半边长，与官方升级判据一致（同 Rough M47 的取值与理由）。
 CRAWL_SLOPE_TERRAIN_EDGE_THRESHOLD_FRACTION = 1.0
+# 速度课程回退门槛：跟踪 EMA 跌破它退一步（推进门槛沿用 Flat 的 0.5），取 mdp.curriculums 的默认值。
+CRAWL_SLOPE_VEL_RETREAT_THRESHOLD = 0.35
 
 
 def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -157,6 +160,7 @@ def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     - 地形：只有上坡的倒金字塔斜坡，坡度 0–0.15，官方 terrain_levels_vel 升降级（terrains.py）。
     - tracking_orientation_l2 / bad_tilt 换成相对局部坡面的版本，权重与参数不变；平地上与原项等价。
+    - 删除导轮承重罚 guide_wheel_support；速度课程去掉导轮承重门控，改为可回退的 commands_vel_adaptive（2026-10-18）。
     - 加出块截断与出网格截断；bad_orientation 终止（绝对 30°）保留，坡度上限 8.5° 碰不到。
     """
     cfg = env_cfg(play=play)
@@ -188,6 +192,9 @@ def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     tilt.func = rewards.bad_tilt_terrain
     tilt.params = {**tilt.params, "sensor_name": CRAWL_SLOPE_TERRAIN_NORMAL_SENSOR_NAME}
 
+    # 斜坡版删除导轮承重罚（2026-10-18 用户定）：上坡要靠主轮摩擦出牵引力，承重下限只会把重量压在自由滚动的导轮上。
+    del cfg.rewards["guide_wheel_support"]
+
     cfg.terminations["terrain_edge_reached"] = TerminationTermCfg(
         func=terrain_edge_reached,
         params={"threshold_fraction": CRAWL_SLOPE_TERRAIN_EDGE_THRESHOLD_FRACTION},
@@ -198,6 +205,19 @@ def slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
+        # 速度课程（2026-10-18 用户定）：去掉导轮承重门控（承重罚已删、该日志不再产生），换回 Flat 的
+        # commands_vel_adaptive 并打开回退：跟踪 EMA 过 0.5 推进一步、跌破 0.35 回退一步（滞回）。
+        # 门控只防“姿态没学会就推速度”；v4 起零动作即趴姿、姿态几十轮就成形，回退则能在
+        # 上坡跟不上时把速度上限退下来，而不是像斜坡 v1 那样锁在 1.5。
+        command_vel = cfg.curriculum["command_vel"]
+        command_vel.func = commands_vel_adaptive
+        command_vel.params = {
+            key: value
+            for key, value in command_vel.params.items()
+            if key != "guide_share_threshold"
+        }
+        command_vel.params["retreat_enabled"] = True
+        command_vel.params["retreat_threshold"] = CRAWL_SLOPE_VEL_RETREAT_THRESHOLD
         cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
             func=terrain_levels_vel,
             params={"command_name": "velocity_height"},
