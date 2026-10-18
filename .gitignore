@@ -57,3 +57,7 @@ sw_probe.txt
 remote_artifacts/
 serialleg2026/
 ckpt_*/
+
+# RMUC 2027 场地：原始下载与生成物（scripts/make_rmuc2027_field_scene.py 重新生成）
+assets/fields/rmuc2027/raw/
+assets/robots/serialleg/meshes/rmuc2027/

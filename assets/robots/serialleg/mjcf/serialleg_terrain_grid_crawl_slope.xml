@@ -1,0 +1,53 @@
+<mujoco model="serialleg_terrain_grid">
+  <!-- 由 scripts/make_terrain_grid_scene.py 生成，请勿手改。
+       几何取自 mjlab TerrainGenerator 编译趴地斜坡版训练地形 se3_train.tasks.crawl.terrains.crawl_slope_terrains_cfg()（平地-上坡-平台，坡度 0–15°，沿 +x 上坡）后的整张网格，逐块与训练一致。
+       列：flat_ramp_flat；行（难度等级）：0, 1, 2, 3, 4, 5, 6, 7, 8, 9。
+       每块一个 site `se3_env_<index>_<列>_r<行>`（出生点，含地面 z），sim2x 按 site 建 env。 -->
+  <include file="serialleg_closed_chain_v3_guide_wheels.xml" />
+  <statistic center="0 0 0" extent="100" />
+  <custom>
+    <numeric name="se3_drop_robot_floor" data="1" />
+  </custom>
+  <worldbody>
+    <site name="se3_env_000_flat_ramp_flat_r0" pos="-40.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_001_flat_ramp_flat_r1" pos="-31.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_002_flat_ramp_flat_r2" pos="-22.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_003_flat_ramp_flat_r3" pos="-13.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_004_flat_ramp_flat_r4" pos="-4.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_005_flat_ramp_flat_r5" pos="4.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_006_flat_ramp_flat_r6" pos="13.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_007_flat_ramp_flat_r7" pos="22.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_008_flat_ramp_flat_r8" pos="31.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <site name="se3_env_009_flat_ramp_flat_r9" pos="40.5 0 0" size="0.02" rgba="0 0 0 0" />
+    <geom name="se3_tg_box_0" type="box" size="4.5 4.5 0.5" pos="-40.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_1" type="box" size="4.5 4.5 0.5" pos="-31.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_2" type="box" size="0.750317 4.5 0.25" pos="-29.7427 0 -0.228071" quat="0.999894 0 -0.0145439 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_3" type="box" size="1 4.5 0.0218228" pos="-28 0 0.0218228" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_4" type="box" size="4.5 4.5 0.5" pos="-22.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_5" type="box" size="0.751271 4.5 0.25" pos="-20.7355 0 -0.205895" quat="0.999577 0 -0.0290847 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_6" type="box" size="1 4.5 0.0436825" pos="-19 0 0.0436825" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_7" type="box" size="4.5 4.5 0.5" pos="-13.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_8" type="box" size="0.752865 4.5 0.25" pos="-11.7282 0 -0.183432" quat="0.999048 0 -0.0436194 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_9" type="box" size="1 4.5 0.0656165" pos="-10 0 0.0656165" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_10" type="box" size="4.5 4.5 0.5" pos="-4.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_11" type="box" size="0.755106 4.5 0.25" pos="-2.72098 0 -0.160647" quat="0.998308 0 -0.0581448 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_12" type="box" size="1 4.5 0.0876624" pos="-1 0 0.0876624" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_13" type="box" size="4.5 4.5 0.5" pos="4.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_14" type="box" size="0.758003 4.5 0.25" pos="6.28623 0 -0.137502" quat="0.997357 0 -0.072658 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_15" type="box" size="1 4.5 0.109859" pos="8 0 0.109859" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_16" type="box" size="4.5 4.5 0.5" pos="13.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_17" type="box" size="0.76157 4.5 0.25" pos="15.2934 0 -0.113957" quat="0.996195 0 -0.0871557 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_18" type="box" size="1 4.5 0.132245" pos="17 0 0.132245" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_19" type="box" size="4.5 4.5 0.5" pos="22.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_20" type="box" size="0.765821 4.5 0.25" pos="24.3006 0 -0.0899726" quat="0.994822 0 -0.101635 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_21" type="box" size="1 4.5 0.154863" pos="26 0 0.154863" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_22" type="box" size="4.5 4.5 0.5" pos="31.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_23" type="box" size="0.770776 4.5 0.25" pos="33.3077 0 -0.065508" quat="0.993238 0 -0.116093 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_24" type="box" size="1 4.5 0.177753" pos="35 0 0.177753" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_25" type="box" size="4.5 4.5 0.5" pos="40.5 0 -0.5" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_26" type="box" size="0.776457 4.5 0.25" pos="42.3147 0 -0.0405196" quat="0.991445 0 -0.130526 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_27" type="box" size="1 4.5 0.200962" pos="44 0 0.200962" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_30" type="box" size="2.5 4.5 0.5" pos="-47.5 0 -0.5" quat="1 0 0 0" rgba="0.2 0.2 0.2 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+    <geom name="se3_tg_box_31" type="box" size="2.5 4.5 0.5" pos="47.5 0 -0.5" quat="1 0 0 0" rgba="0.2 0.2 0.2 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" contype="1" conaffinity="1" />
+  </worldbody>
+</mujoco>

@@ -63,7 +63,7 @@ from mjlab.envs.mdp import height_scan
 from mjlab.envs.mdp.rewards import is_terminated
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import (
@@ -80,9 +80,11 @@ from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_shared import M3508_C620_14
 from se3_train.mdp import events as mdp_events
+from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
-from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.robot_cfg import get_serialleg_closedchain_cfg, serialleg_wheel_half_track
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -167,6 +169,29 @@ ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
 # 代价：0.22/0.26 m 稳态偏低 1–2.4 cm；0.38 m 静站后 vx 0.8 稳态超速到 1.13；下台阶摔倒 4 → 9（r9 低姿态 1.2–2.0 m/s），
 # 嫌疑是下行列单点射线过沿跳变被更陡的罚放大（未验证）。平地 vz 项与独立 vz 罚分不开冲高与贴高，未采用。
 ROUGH_BASE_HEIGHT_SIGMA = 0.07
+# 显式 vx 观测器（2026-10-05 用户定，见 se3_train.vx_observer）：actor 历史帧数与监督目标组名。
+# 16 帧 = 0.32 s（50 Hz），用户定；估计器 480→128→64→1 约 7 万次乘加，MCU 上可推。
+ROUGH_VX_OBSERVER_HISTORY_LENGTH = 16
+ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
+# 轮子 T-N 包络（见 robot_cfg.get_serialleg_closedchain_cfg 的 wheel_torque_envelope）。2026-10-07 起默认 "rated_point"（用户定）：
+# 按手册额定点（469 rpm@19:1 出 3 N·m）建额定 2.21 N·m 平台延续到 66.65 rad/s；旧口径 "linear_peak" 从峰值线性下降，45 rad/s 只剩 1.14 N·m。
+# 依据 WheelTN（xdk0dnoa，七卡 × 1500，4832d15）对 VxObserver（agqj496q）：后期 yaw 误差 2.0 → 1.6、vx 误差 0.55 → 0.52、台阶航向 9.3° → 8.9°，
+# catastrophic 0.03 → 0.06（规模不同，混有规模变量）；诊断见 docs/plan/rough_yaw_envelope_20261006.md。复现旧口径用 4832d15。
+ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
+# 指令可行域的差速轮速预算（2026-10-06 用户定）："legacy" = Flat 继承的 45 rad/s、半轮距 0.20 m；
+# "rated" = M3508 手册额定转速 66.65 rad/s（14:1）、MJCF 实测半轮距 0.2166 m，使用比例都保持 0.9。
+# 旧口径下原地 12 rad/s 实际要 43.3 rad/s 轮速（45 的 96%，超出 0.9 预算），vx = 1 时 yaw 只能采到 7.15。
+ROUGH_COMMAND_WHEEL_BUDGET = "legacy"
+# CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
+ROUGH_CTS_ROLE_GROUP = "cts_role"
+ROUGH_CTS_STUDENT_EVERY = 4
+# CTS-NoScan（2026-10-07 用户定）：教师编码器专用观测组 = critic 去掉高度扫描。前视地形是盲学生从本体历史原理上推不出的信息，
+# 教师隐向量带上它后共用 policy 学会按前视地形提前动作，学生只能回归条件均值，上台阶动作失真（Exp-CTS model_3700 sim2x）。
+ROUGH_CTS_TEACHER_GROUP = "cts_teacher"
+# StairVx08（2026-10-08 用户定）：台阶类列前进指令下限 0.4 → 0.8 的对照值。NoScan 归因（docs/plan/rough_vx_observer_20261005.md
+# "台阶列验证"）：给 0.4 m/s 爬 12 cm 台阶不现实，2000 轮后 policy 学会低指令也冲速靠动量过沿（stairs_up 0.4 → 0.59、
+# 爬升 0.36 → 0.56 m），盲 policy 在立面前分不清平地，同幅度超速泄漏到平地（0.4 → 0.54、0.6 → 0.73）。
+ROUGH_STAIR_LIN_VEL_X_MIN_VX08 = 0.8
 # 非台阶列运动核。A15 定 0.5；M6（2026-09-14）为补高姿起步梯度放到 1.0；
 # M11（2026-09-15 用户定）退回 0.5——高姿起步已由 M8 的 high_stand_transition 解决，
 # 而 1.0 的副作用是中高速段没有分辨率：M10-4000 实测五列在指令 2.0 下全线欠速 0.48–0.74
@@ -238,6 +263,11 @@ ROUGH_CONTACT_TAX_FREE_COLUMNS = (
 # 上限 3.0 m 不动：slope_up 最高 +1.2、stairs_up 最高 +0.8，都在内。
 # **以后再加下行地形，先按 (每侧级数 × 最大阶高) 或 (最大坡度 × 可用半径) 核这条下限。**
 ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT = -1.5
+# catastrophic_state 去掉腿位置误差判据（2026-10-08 用户定）。Flat 沿用的 max_leg_pos_error=3.0：大腿取最短角差（≤ π）、
+# 主动杆夹角物理上只有 [0, 1.51]，> 3.0 等于大腿翻转约 172°，是能到达的物理姿态而不是数值发散；6×8192 的 rough run 里
+# 灾难终止几乎全由它触发（Debug/catastrophic_leg_pos ≈ 2e-5/步，nonfinite ≈ 1e-6），倒地乱蹬的 env 借它免费提前退出。
+# NaN / 速度 / 高度判据保留，仍兜底真正的物理发散。
+ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR: float | None = None
 # 摔倒罚（一次性，按事件计）：工资拿掉后台阶列每秒净值接近 0 甚至为负，非超时终止按 0 自举就等于"免费退出"，
 # 提前摔死会变便宜（A10 的自杀策略）。mjlab `is_terminated` 对所有非 time_out 终止（灾难、倾倒）记 1；
 # RewardManager 按 dt 缩放奖励，所以权重取 −ROUGH_FALL_PENALTY / step_dt，使每次终止恰好扣 ROUGH_FALL_PENALTY。
@@ -390,6 +420,21 @@ def env_cfg(
     orientation_weight: float | None = ROUGH_ORIENTATION_WEIGHT,
     high_stand_transition_prob: float = ROUGH_HIGH_STAND_TRANSITION_PROB,
     base_height_sigma: float = ROUGH_BASE_HEIGHT_SIGMA,
+    oracle_dr_obs: bool = False,
+    oracle_base_vel: bool = False,
+    oracle_base_vx: bool = False,
+    vx_observer: bool = False,
+    vx_observer_history_length: int = ROUGH_VX_OBSERVER_HISTORY_LENGTH,
+    leg_kp: float | None = None,
+    leg_kd: float | None = None,
+    wheel_kd: float | None = None,
+    wheel_torque_envelope: str = ROUGH_WHEEL_TORQUE_ENVELOPE,
+    command_wheel_budget: str = ROUGH_COMMAND_WHEEL_BUDGET,
+    yaw_ratio_blend: float | None = None,
+    cts: bool = False,
+    cts_teacher_height_scan: bool = True,
+    stair_lin_vel_x_min: float | None = None,
+    jump_exit_penalty: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -400,6 +445,23 @@ def env_cfg(
     None 沿用 Flat 的 −12。
     high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
     base_height_sigma：机身高度罚 flat_base_height 的 σ（全列共用，上台阶列的窗口口径同样用它），默认 ROUGH_BASE_HEIGHT_SIGMA；对照实验开关。
+    oracle_dr_obs：actor 额外观测真实 DR 参数（见 _apply_oracle_dr_obs），只做诊断、不可部署。
+    oracle_base_vel：actor 额外观测机身系线速度 3 维（critic 同源的 base_lin_vel），只做诊断、不可部署。
+    oracle_base_vx：actor 额外观测机身系前向速度 vx 1 维，只做诊断、不可部署。
+    vx_observer：actor 观测改为 ROUGH_VX_OBSERVER_HISTORY_LENGTH 帧历史，并增加估计器监督目标组
+    ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；须配 rl_cfg.vx_observer_rl_cfg。可部署。
+    vx_observer_history_length：vx_observer 的 actor 历史帧数，默认 ROUGH_VX_OBSERVER_HISTORY_LENGTH；对照实验开关。
+    leg_kp / leg_kd / wheel_kd：任务级名义增益；None 沿用共享配置，动作缩放保持不变。
+    wheel_torque_envelope：轮子 T-N 包络，"linear_peak" | "rated_point"（见 ROUGH_WHEEL_TORQUE_ENVELOPE）。
+    command_wheel_budget：指令差速轮速预算，"legacy" | "rated"（见 ROUGH_COMMAND_WHEEL_BUDGET）。
+    yaw_ratio_blend：tracking_ang_vel 的比例项占比（Flat 继承值 0.2）；None = 不改。对照实验开关。
+    cts：在 vx_observer 之上加 CTS 分组标记观测组 ROUGH_CTS_ROLE_GROUP；须配 rl_cfg.cts_rl_cfg。
+    cts_teacher_height_scan：False 时另建教师编码器观测组 ROUGH_CTS_TEACHER_GROUP（critic 去掉 height_scan），
+        critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
+    stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
+        ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
+    jump_exit_penalty：True 时跳跃偏离参考终止（mimic_deviation）也吃摔倒罚 ROUGH_FALL_PENALTY；默认 False 沿用 RJ1
+        "偏离出局免费"。对照实验开关，见 _apply_jump_mimic。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -414,8 +476,12 @@ def env_cfg(
 
     cfg.scene.entities = {
         "robot": get_serialleg_closedchain_cfg(
+            leg_kp_override=leg_kp,
+            leg_kd_override=leg_kd,
+            wheel_kd_override=wheel_kd,
             collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
             leg_torque_envelope_scale=ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
+            wheel_torque_envelope=wheel_torque_envelope,
         )
     }
     cfg.scene.terrain = TerrainEntityCfg(
@@ -486,6 +552,12 @@ def env_cfg(
         # 上限只由训练期课程项结算；play 时没有课程，打开只会空累计。
         stair_speed_cap_enabled=bool(stair_speed_cap) and not play,
     )
+    if command_wheel_budget == "rated":
+        command = cfg.commands["velocity_height"]
+        command.diff_drive_max_wheel_speed = float(M3508_C620_14.rated_speed)
+        command.diff_drive_half_track = serialleg_wheel_half_track()
+    elif command_wheel_budget != "legacy":
+        raise ValueError(f"未知的 command_wheel_budget {command_wheel_budget!r}")
 
     cfg.events = dict(cfg.events)
     cfg.events["reset_stair_rewards"] = EventTermCfg(
@@ -567,6 +639,7 @@ def env_cfg(
         params={
             **catastrophic.params,
             "min_base_height": ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT,
+            "max_leg_pos_error": ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR,
         },
     )
     cfg.terminations["terrain_edge_reached"] = TerminationTermCfg(
@@ -584,9 +657,66 @@ def env_cfg(
     _apply_rough_domain_randomization(cfg, play=play)
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
-    _apply_jump_mimic(cfg)
+    _apply_jump_mimic(cfg, exit_penalty=jump_exit_penalty)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
+    if oracle_dr_obs:
+        _apply_oracle_dr_obs(cfg)
+    if oracle_base_vel:
+        # DR1 OracleVel（2026-10-05，用户定）：在 Oracle 之上再给 actor 机身线速度，看 DR1 下平地跟踪变粗是否来自
+        # 速度只能从轮速间接推（质心偏移配平、打滑、延迟都会扰乱轮速→机身速度的换算）。不加噪声。
+        actor = cfg.observations["actor"]
+        terms = dict(actor.terms)
+        terms["oracle_base_lin_vel"] = ObservationTermCfg(func=mdp_observations.base_lin_vel_obs)
+        cfg.observations["actor"] = replace(actor, terms=terms)
+    if oracle_base_vx:
+        # DR1 Vx（2026-10-05，用户定）：OracleVel 的 actor 里 vx 敏感度 2.11、vz 0.51、vy 0.28，看只给 vx 能保住多少平地跟踪收益。
+        actor = cfg.observations["actor"]
+        terms = dict(actor.terms)
+        terms["oracle_base_lin_vel_x"] = ObservationTermCfg(
+            func=mdp_observations.base_lin_vel_x_obs
+        )
+        cfg.observations["actor"] = replace(actor, terms=terms)
+    if not cts_teacher_height_scan and not cts:
+        raise ValueError("cts_teacher_height_scan=False 只对 cts=True 有意义")
+    if cts and not vx_observer:
+        raise ValueError(
+            "cts 需要 vx_observer=True（学生编码器用 actor 历史、回归目标含 estimator_target 的 vx）"
+        )
+    if vx_observer:
+        _apply_vx_observer_obs(cfg, history_length=vx_observer_history_length)
+    if cts:
+        cfg.observations[ROUGH_CTS_ROLE_GROUP] = ObservationGroupCfg(
+            terms={
+                "teacher": ObservationTermCfg(
+                    func=mdp_observations.cts_teacher_role_obs,
+                    params={"student_every": ROUGH_CTS_STUDENT_EVERY},
+                )
+            },
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
+    if not cts_teacher_height_scan:
+        critic = cfg.observations["critic"]
+        teacher_terms = {k: v for k, v in critic.terms.items() if k != "height_scan"}
+        if len(teacher_terms) != len(critic.terms) - 1:
+            raise ValueError(f"critic 里没有 height_scan，无法构造 {ROUGH_CTS_TEACHER_GROUP}")
+        cfg.observations[ROUGH_CTS_TEACHER_GROUP] = replace(critic, terms=teacher_terms)
+    if stair_lin_vel_x_min is not None:
+        low, high = float(stair_lin_vel_x_min), float(ROUGH_STAIR_LIN_VEL_X_RANGE[1])
+        if not 0.0 <= low < high:
+            raise ValueError(f"stair_lin_vel_x_min 须在 [0, {high}) 内，实际为 {low}")
+        cfg.commands = dict(cfg.commands)
+        cfg.commands["velocity_height"] = replace(
+            cfg.commands["velocity_height"], stair_lin_vel_x_range=(low, high)
+        )
+    if yaw_ratio_blend is not None:
+        # yaw 包络顶端拒转（docs/plan/rough_yaw_envelope_20261006.md）：指数核在大误差时没有梯度，
+        # 比例项占比越大，"转到一半"拿到的分越多，填平从不转到转满之间只亏不赚的一段。
+        yaw = cfg.rewards["tracking_ang_vel"]
+        cfg.rewards["tracking_ang_vel"] = replace(
+            yaw, params={**(yaw.params or {}), "ratio_blend": float(yaw_ratio_blend)}
+        )
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -637,13 +767,17 @@ ROUGH_JUMP_PHASE_TIME_SCALE_S = 1.5
 """RJ1 jump_phase = 参考时刻 / 该常数（同 J10）。"""
 
 
-def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg, *, exit_penalty: bool = False) -> None:
     """RJ1（2026-10-02 用户定）：按 J10 合入跳跃——34 维观测里的 jump_flag / 目标高度 / 相位、无 RSI、无下蹲参考。
 
     只有跳跃样本会跳（2026-10-03 起为专用平地跳跃列的全部 env，占全部 env 10%；此前为平地列 30%），
     且整回合高度指令固定 0.22（指令项见 commands.RoughJumpCommandTerm）；
     四项模仿奖励只计跳跃样本；跳跃期间屏蔽静站罚、接触力罚与速度跟踪的 vz 项（机身高度罚、轮 / 腿离地罚
     本来就按 jump_flag 屏蔽）；偏离参考提前终止不吃摔倒罚。观测维度与 M54 相同。
+
+    exit_penalty（2026-10-08 用户定，JumpExitPen 对照）：偏离参考终止改为与其他失败终止同价，吃 ROUGH_FALL_PENALTY。
+    依据：偏离出局按 0 自举且免罚，而 M47 起摔倒要躺到超时持续挨罚，不会跳时"一进跳跃就偏离"严格更赚，
+    提前出局又让跳跃后半段采不到样本，形成自我强化的陷阱；6×1170 / 7×1500 / 7×8192 陷住、6×8192 逃出，结果对规模非单调。
     """
     from se3_train.tasks.jump_mimic import mdp as jump_mdp
     from se3_train.tasks.jump_mimic.env_cfg import (
@@ -694,7 +828,7 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards["fall_penalty"] = RewardTermCfg(
         func=rewards.is_terminated_except,
         weight=float(fall.weight),
-        params={"exclude_terms": ("mimic_deviation",)},
+        params={"exclude_terms": () if exit_penalty else ("mimic_deviation",)},
     )
 
     cfg.terminations = dict(cfg.terminations)
@@ -740,6 +874,42 @@ def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) 
         cfg.events["knee_spring_force"],
         params=_params("knee_spring_force", force_scale_range=ROUGH_DR_KNEE_SPRING_SCALE_RANGE),
     )
+
+
+def _apply_vx_observer_obs(cfg: ManagerBasedRlEnvCfg, *, history_length: int) -> None:
+    """显式 vx 观测器（2026-10-05，用户定，见 se3_train.vx_observer）的观测侧改动。
+
+    actor 组整组开 16 帧历史（term-major、oldest→newest 展平；reset 后第一帧回填整段，runtime 同样处理），
+    噪声逐帧在入历史前施加，与部署端一致。critic 仍是单帧。监督目标单独成组，不加噪声，
+    rsl_rl 的 obs_groups 不引用它，所以只进 rollout storage、不进任何网络输入。
+    """
+    actor = cfg.observations["actor"]
+    cfg.observations["actor"] = replace(
+        actor, history_length=int(history_length), flatten_history_dim=True
+    )
+    cfg.observations[ROUGH_VX_OBSERVER_TARGET_GROUP] = ObservationGroupCfg(
+        terms={"base_lin_vel_x": ObservationTermCfg(func=mdp_observations.base_lin_vel_x_obs)},
+        concatenate_terms=True,
+        enable_corruption=False,
+    )
+
+
+def _apply_oracle_dr_obs(cfg: ManagerBasedRlEnvCfg) -> None:
+    """DR1 Oracle（2026-10-05，用户定）：actor 观测末尾追加真实 DR 参数 31 维，critic 不变。
+
+    前置观测器（历史 → 隐向量）方案的收益上限：actor 直接知道 DR1 下的真实参数，看名义平地跟踪 / 中速前后晃能否
+    回到旧 DR 水平。追加项与 critic 同源：28 维 DR 回读、气弹簧力 2 维、动作延迟 1 维（DR1 不做恢复系数，不加那一维）。
+    不加噪声。导出器不认识这些项，训练期 ONNX 导出会失败（runner 捕获，checkpoint 照存）。
+    此前 WideDR 上的 Oracle（1fa00ca）受恢复系数实现问题污染，结论不适用于 DR1。
+    """
+    actor = cfg.observations["actor"]
+    terms = dict(actor.terms)
+    terms["oracle_dr_params"] = ObservationTermCfg(func=mdp_observations.dr_model_params_obs)
+    terms["oracle_knee_spring"] = ObservationTermCfg(
+        func=mdp_observations.knee_gas_spring_force_obs
+    )
+    terms["oracle_action_delay"] = ObservationTermCfg(func=mdp_observations.action_delay_obs)
+    cfg.observations["actor"] = replace(actor, terms=terms)
 
 
 def _apply_rough_rewards(
@@ -840,12 +1010,17 @@ __all__ = [
     "ROUGH_BASE_HEIGHT_SUPPORT_COLUMNS",
     "ROUGH_BASE_HEIGHT_SUPPORT_SENSOR",
     "ROUGH_BODY_COLLISION_BOTTOM_OFFSET",
+    "ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR",
     "ROUGH_CATASTROPHIC_MIN_BASE_HEIGHT",
+    "ROUGH_COMMAND_WHEEL_BUDGET",
     "ROUGH_CONTACT_SENSOR_MAXMATCH",
     "ROUGH_CONTACT_TAX_FREE_COLUMNS",
     "ROUGH_CRITIC_HEIGHT_SCAN_RESOLUTION_M",
     "ROUGH_CRITIC_HEIGHT_SCAN_SENSOR_NAME",
     "ROUGH_CRITIC_HEIGHT_SCAN_SIZE_M",
+    "ROUGH_CTS_ROLE_GROUP",
+    "ROUGH_CTS_STUDENT_EVERY",
+    "ROUGH_CTS_TEACHER_GROUP",
     "ROUGH_CURRICULUM_SIGNAL_TERRAIN_NAMES",
     "ROUGH_CURRICULUM_TRACKING_LOG_KEY",
     "ROUGH_DROPPED_FLAT_REWARDS",
@@ -878,6 +1053,7 @@ __all__ = [
     "ROUGH_STAIR_HEIGHT_DEAD_ZONE_M",
     "ROUGH_STAIR_HEIGHT_RANGE",
     "ROUGH_STAIR_HEIGHT_REFERENCE",
+    "ROUGH_STAIR_LIN_VEL_X_MIN_VX08",
     "ROUGH_STAIR_LIN_VEL_X_RANGE",
     "ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG",
     "ROUGH_STAIR_SPEED_CAP_ENABLED",
@@ -896,7 +1072,10 @@ __all__ = [
     "ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT",
     "ROUGH_TRACKING_LIN_VEL_WEIGHT",
     "ROUGH_UPWARD_WEIGHT",
+    "ROUGH_VX_OBSERVER_HISTORY_LENGTH",
+    "ROUGH_VX_OBSERVER_TARGET_GROUP",
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_FORE_AFT_WEIGHT",
+    "ROUGH_WHEEL_TORQUE_ENVELOPE",
     "env_cfg",
 ]

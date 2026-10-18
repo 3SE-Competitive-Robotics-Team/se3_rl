@@ -28,7 +28,9 @@ ONNX_METADATA_KEY = "se3.meta.v2"
 SCHEMA_NAME = "se3.deployment"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ASSET_NAME = "serialleg_closed_chain_v3_train_obb_trim"
+# 资产名取 robot 实体 MJCF 的 <mujoco model="...">，且必须与 _MJCF_DIR 下的文件名一致；
+# runtime 按白名单把资产名映射到同一路径，未登记的资产直接拒绝加载。
+_MJCF_DIR = _REPO_ROOT / "assets" / "robots" / "serialleg" / "mjcf"
 _TERM_WIDTHS = {
     "base_ang_vel": 3,
     "projected_gravity": 3,
@@ -45,6 +47,13 @@ _TERM_WIDTHS = {
 }
 _COMMAND_FIELD_NAMES = COMMAND_FIELDS
 _COMMAND_TERMS = {"commands", "commands_vx_yaw_height", "jump_commands"}
+
+
+def observation_term_width(term_name: str) -> int:
+    """部署契约中单帧观测项的宽度（与 runtime 构造观测的宽度一致）。"""
+    if term_name not in _TERM_WIDTHS:
+        raise ValueError(f"暂不支持 observation term {term_name!r}")
+    return _TERM_WIDTHS[term_name]
 
 
 def build_deployment_onnx_metadata(
@@ -71,7 +80,7 @@ def build_deployment_onnx_metadata(
     metadata = {
         "meta": {
             "schema_name": SCHEMA_NAME,
-            "assets": _build_assets_metadata(actuator_metadata),
+            "assets": _build_assets_metadata(runtime_env, actuator_metadata),
             "training": _build_training_metadata(runtime_env),
             "env_groups": _build_env_group_metadata(runtime_env),
             "sim": {
@@ -106,7 +115,7 @@ def build_deployment_onnx_metadata(
                 source_groups,
             ),
             "references": {
-                "joint_pos_ref": list(robot.default_dof_pos),
+                "joint_pos_ref": _policy_default_joint_pos(runtime_env),
                 "joint_vel_ref": [0.0] * len(JointGroup.POLICY_JOINT_NAMES),
             },
             "action": _build_action_metadata(runtime_env),
@@ -175,17 +184,55 @@ def _build_training_metadata(runtime_env: Any) -> dict[str, Any]:
     }
 
 
-def _build_assets_metadata(actuator_metadata: dict[str, Any]) -> dict[str, Any]:
+def _build_assets_metadata(runtime_env: Any, actuator_metadata: dict[str, Any]) -> dict[str, Any]:
     commit = _git_output("rev-parse", "HEAD")
     short_commit = commit[:12] if commit else None
+    asset_name = _robot_asset_name(runtime_env)
     return {
         "repo": "se3_wheel_leg",
         "version": commit,
-        "lookup_key": f"{_ASSET_NAME}@{short_commit}" if short_commit else _ASSET_NAME,
-        "asset_name": _ASSET_NAME,
+        "lookup_key": f"{asset_name}@{short_commit}" if short_commit else asset_name,
+        "asset_name": asset_name,
         "dirty": bool(_git_output("status", "--porcelain")),
         "robot_config_overridden": bool(actuator_metadata["robot_config_overridden"]),
     }
+
+
+def _robot_asset_name(runtime_env: Any) -> str:
+    """从 robot 实体的 spec_fn 重新加载一次 MJCF，取其 model 名作为部署资产名。
+
+    spec_fn 正是训练时编译机器人用的同一个入口（含 guide_wheels 等变体选择），
+    这样导出的资产名不可能与训练实际用的 MJCF 漂移。
+    """
+    try:
+        robot_cfg = runtime_env.cfg.scene.entities["robot"]
+        spec = robot_cfg.spec_fn()
+    except (AttributeError, KeyError, TypeError) as error:
+        raise TypeError("live env 缺少 cfg.scene.entities['robot'].spec_fn") from error
+    asset_name = str(spec.modelname)
+    if not (_MJCF_DIR / f"{asset_name}.xml").is_file():
+        raise ValueError(
+            f"robot MJCF 的 model 名 {asset_name!r} 与 {_MJCF_DIR} 下的文件名对不上，"
+            "runtime 无法按资产名找到它"
+        )
+    return asset_name
+
+
+def _policy_default_joint_pos(runtime_env: Any) -> list[float]:
+    """policy-order 6D 名义默认姿态，取自 robot 实体配置的 init_state.joint_pos（动作零点与 joint_pos_ref 共用）。
+
+    动作解码 target = 实体 default_joint_pos + action × scale，实体默认姿态由 init_state 决定；趴地任务把它改成了
+    趴姿（2026-10-17 v4），不能再写死 RobotConfig().default_dof_pos。不读运行时 data.default_joint_pos：
+    startup DR（randomize_default_dof_pos）会逐 env 叠 ±0.05 rad 扰动，部署端要的是名义值。
+    """
+    try:
+        joint_pos = runtime_env.cfg.scene.entities["robot"].init_state.joint_pos
+    except (AttributeError, KeyError, TypeError) as error:
+        raise TypeError("live env 缺少 cfg.scene.entities['robot'].init_state.joint_pos") from error
+    missing = [name for name in JointGroup.POLICY_JOINT_NAMES if name not in (joint_pos or {})]
+    if missing:
+        raise ValueError(f"robot init_state.joint_pos 缺少 policy 关节的精确键 {missing}")
+    return [float(joint_pos[name]) for name in JointGroup.POLICY_JOINT_NAMES]
 
 
 def _build_env_group_metadata(runtime_env: Any) -> dict[str, str]:
@@ -196,6 +243,15 @@ def _build_env_group_metadata(runtime_env: Any) -> dict[str, str]:
 
 
 def _build_initial_state(runtime_env: Any, robot: RobotConfig) -> dict[str, list[float]]:
+    """导出部署 reset 状态。
+
+    默认取 robot 实体 init_state 的 base 位姿；若某个 reset 事件函数声明了
+    `deployment_init_state()`（如趴地任务的 reset_crawl_pose），以它返回的名义出生状态为准，
+    其中可选的 `joint_pos` 是 policy-order 6D 关节位置，runtime 据此替换站立零点作为出生姿态。
+    """
+    declared = _declared_reset_init_state(runtime_env)
+    if declared is not None:
+        return declared
     try:
         scene_cfg = runtime_env.cfg.scene
         robot_cfg = getattr(scene_cfg, "robot", None)
@@ -211,6 +267,37 @@ def _build_initial_state(runtime_env: Any, robot: RobotConfig) -> dict[str, list
         "base_pos": [float(value) for value in init_state.pos],
         "base_quat_wxyz": [float(value) for value in init_state.rot],
     }
+
+
+def _declared_reset_init_state(runtime_env: Any) -> dict[str, list[float]] | None:
+    """收集 reset 事件函数上的 deployment_init_state 声明；最多允许一个。"""
+    events = getattr(getattr(runtime_env, "cfg", None), "events", None)
+    if not isinstance(events, Mapping):
+        return None
+    declared: list[tuple[str, dict[str, Any]]] = []
+    for name, term in events.items():
+        if term is None or getattr(term, "mode", None) != "reset":
+            continue
+        hook = getattr(getattr(term, "func", None), "deployment_init_state", None)
+        if callable(hook):
+            declared.append((str(name), hook()))
+    if not declared:
+        return None
+    if len(declared) > 1:
+        raise ValueError(f"多个 reset 事件声明了部署出生状态：{[name for name, _ in declared]}")
+    state = declared[0][1]
+    result = {
+        "base_pos": [float(value) for value in state["base_pos"]],
+        "base_quat_wxyz": [float(value) for value in state["base_quat_wxyz"]],
+    }
+    if len(result["base_pos"]) != 3 or len(result["base_quat_wxyz"]) != 4:
+        raise ValueError("deployment_init_state 的 base_pos / base_quat_wxyz 维度不对")
+    if "joint_pos" in state:
+        joint_pos = [float(value) for value in state["joint_pos"]]
+        if len(joint_pos) != len(JointGroup.POLICY_JOINT_NAMES):
+            raise ValueError("deployment_init_state.joint_pos 必须是 policy-order 6D")
+        result["joint_pos"] = joint_pos
+    return result
 
 
 def _build_actuator_metadata(runtime_env: Any) -> dict[str, Any]:
@@ -548,7 +635,7 @@ def _build_action_metadata(runtime_env: Any) -> dict[str, Any]:
     return {
         "name": type(term).__name__,
         "scale": scale,
-        "offset": list(RobotConfig().default_dof_pos),
+        "offset": _policy_default_joint_pos(runtime_env),
         "clip": None if clip is None else [abs(float(clip))] * 6,
         # B18：动作零点语义。True = 高度条件默认姿态（随 height 指令变化），
         # False = 固定 entity 默认姿态。部署端必须按此选择 decode 策略。
@@ -613,4 +700,5 @@ __all__ = [
     "SCHEMA_NAME",
     "build_deployment_onnx_metadata",
     "embed_onnx_metadata",
+    "observation_term_width",
 ]

@@ -371,7 +371,7 @@ def stair_heading_hold(
 
 
 def is_terminated_except(env: ManagerBasedRlEnv, exclude_terms: tuple[str, ...]) -> torch.Tensor:
-    """非超时终止，但不算 exclude_terms 里的终止项（RJ1：偏离参考提前终止不吃 −500 摔倒罚）。"""
+    """非超时终止，但不算 exclude_terms 里的终止项（RJ1 默认排除偏离参考终止；JumpExitPen 对照传空元组）。"""
     manager = env.termination_manager
     done = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     for name in manager.active_terms:

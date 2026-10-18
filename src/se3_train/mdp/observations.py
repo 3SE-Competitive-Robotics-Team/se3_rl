@@ -135,6 +135,21 @@ def base_lin_vel_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     return _finite_clamp(robot.data.root_link_lin_vel_b)
 
 
+def base_lin_vel_x_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """基座坐标系下的前向线速度 vx，1D（特权信息，非部署）。"""
+    robot = env.scene["robot"]
+    return _finite_clamp(robot.data.root_link_lin_vel_b[:, :1])
+
+
+def cts_teacher_role_obs(env: ManagerBasedRlEnv, student_every: int = 4) -> torch.Tensor:
+    """CTS 分组标记，1D：env 编号能被 student_every 整除的是学生（0），其余是教师（1）；整个训练期固定。
+
+    不进任何网络输入，只随 rollout 存进 storage，供 se3_train.cts_observer 按样本选隐向量来源。
+    """
+    ids = torch.arange(env.num_envs, device=env.device)
+    return (ids % int(student_every) != 0).to(torch.float32).unsqueeze(-1)
+
+
 def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
     """轮子地面接触力标量,2D（特权信息）。"""
     from mjlab.sensor import ContactSensor
@@ -145,6 +160,16 @@ def wheel_contact_force_obs(env: ManagerBasedRlEnv, sensor_name: str) -> torch.T
         return torch.zeros(env.num_envs, 2, device=env.device)
     _record_wheel_contact_force_nonfinite(env, data.force)
     return _finite_clamp(finite_contact_force_norm(data.force))
+
+
+_DELAY_OBS_SCALE_S = 0.010
+
+
+def action_delay_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """当前 episode 的动作延迟（物理步数 × physics_dt），按 10 ms 归一，1D（特权信息，非部署）。"""
+    term = env.action_manager.get_term("delayed_action")
+    delay_s = term.delay_steps.to(torch.float32) * float(env.physics_dt)
+    return (delay_s / _DELAY_OBS_SCALE_S).unsqueeze(-1)
 
 
 def knee_gas_spring_force_obs(env: ManagerBasedRlEnv) -> torch.Tensor:

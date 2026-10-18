@@ -1,0 +1,230 @@
+{
+ "04": {
+  "source": "stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_04.stl",
+  "orig_zmin": -0.1305,
+  "pieces": [
+   {
+    "file": "part_04_00.stl",
+    "x": [
+     -0.159,
+     -0.08
+    ],
+    "zmin": -0.1147
+   },
+   {
+    "file": "part_04_01.stl",
+    "x": [
+     -0.08,
+     -0.05
+    ],
+    "zmin": -0.1268
+   },
+   {
+    "file": "part_04_02.stl",
+    "x": [
+     -0.05,
+     0.05
+    ],
+    "zmin": -0.1305
+   },
+   {
+    "file": "part_04_03.stl",
+    "x": [
+     0.05,
+     0.08
+    ],
+    "zmin": -0.1281
+   },
+   {
+    "file": "part_04_04.stl",
+    "x": [
+     0.08,
+     0.2
+    ],
+    "zmin": -0.116
+   },
+   {
+    "file": "part_04_05.stl",
+    "x": [
+     0.2,
+     0.264
+    ],
+    "zmin": -0.1126
+   }
+  ]
+ },
+ "09": {
+  "source": "stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_09.stl",
+  "orig_zmin": -0.1305,
+  "pieces": [
+   {
+    "file": "part_09_00.stl",
+    "x": [
+     -0.159,
+     -0.08
+    ],
+    "zmin": -0.1147
+   },
+   {
+    "file": "part_09_01.stl",
+    "x": [
+     -0.08,
+     -0.05
+    ],
+    "zmin": -0.119
+   },
+   {
+    "file": "part_09_02.stl",
+    "x": [
+     -0.05,
+     0.05
+    ],
+    "zmin": -0.1301
+   },
+   {
+    "file": "part_09_03.stl",
+    "x": [
+     0.05,
+     0.08
+    ],
+    "zmin": -0.1041
+   },
+   {
+    "file": "part_09_04.stl",
+    "x": [
+     0.08,
+     0.2
+    ],
+    "zmin": -0.1041
+   },
+   {
+    "file": "part_09_05.stl",
+    "x": [
+     0.2,
+     0.264
+    ],
+    "zmin": -0.0995
+   }
+  ]
+ },
+ "28": {
+  "source": "stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_28.stl",
+  "orig_zmin": -0.1305,
+  "pieces": [
+   {
+    "file": "part_28_00.stl",
+    "x": [
+     -0.075,
+     -0.05
+    ],
+    "zmin": -0.1205
+   },
+   {
+    "file": "part_28_01.stl",
+    "x": [
+     -0.05,
+     0.05
+    ],
+    "zmin": -0.1305
+   },
+   {
+    "file": "part_28_02.stl",
+    "x": [
+     0.05,
+     0.08
+    ],
+    "zmin": -0.103
+   },
+   {
+    "file": "part_28_03.stl",
+    "x": [
+     0.08,
+     0.162
+    ],
+    "zmin": -0.103
+   }
+  ]
+ },
+ "08": {
+  "source": "stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_08.stl",
+  "orig_zmin": -0.1305,
+  "pieces": [
+   {
+    "file": "part_08_00.stl",
+    "x": [
+     -0.159,
+     -0.08
+    ],
+    "zmin": -0.1147
+   },
+   {
+    "file": "part_08_01.stl",
+    "x": [
+     -0.08,
+     -0.05
+    ],
+    "zmin": -0.1041
+   },
+   {
+    "file": "part_08_02.stl",
+    "x": [
+     -0.05,
+     -0.022
+    ],
+    "zmin": -0.1213
+   }
+  ]
+ },
+ "01": {
+  "source": "stair_base_visual_coacd_32_guide_wheels/base_visual_coacd_part_01.stl",
+  "orig_zmin": -0.1305,
+  "pieces": [
+   {
+    "file": "part_01_00.stl",
+    "x": [
+     -0.17,
+     -0.08
+    ],
+    "zmin": -0.1147
+   },
+   {
+    "file": "part_01_01.stl",
+    "x": [
+     -0.08,
+     -0.051
+    ],
+    "zmin": -0.119
+   }
+  ]
+ },
+ "25": {
+  "source": "stair_base_visual_coacd_32/base_visual_coacd_part_25.stl",
+  "orig_zmin": -0.1198,
+  "pieces": [
+   {
+    "file": "part_25_00.stl",
+    "x": [
+     -0.153,
+     -0.08
+    ],
+    "zmin": -0.1074
+   },
+   {
+    "file": "part_25_01.stl",
+    "x": [
+     -0.08,
+     -0.05
+    ],
+    "zmin": -0.1041
+   },
+   {
+    "file": "part_25_02.stl",
+    "x": [
+     -0.05,
+     -0.015
+    ],
+    "zmin": -0.119
+   }
+  ]
+ }
+}
