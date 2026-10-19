@@ -51,9 +51,8 @@ ROUGH_CTS_STUDENT_HIDDEN_DIMS = (256, 128)
 # 单片机部署版学生编码器（2026-10-09 用户定）：256/128 的部署网络约 18 万参数、FP32 约 720 KB，
 # 加固件代码约 146 KB 超出 STM32H723 片内 768 KiB 权重区；128/128 降到约 10.2 万参数、约 408 KB，片内放得下。
 ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU = (128, 128)
-# 换小学生编码器续训时的预热轮数：新编码器随机初始化，前若干轮只训练学生编码器、不做 PPO 更新，
-# 免得 25% 学生 env 的垃圾隐向量把共享 policy 带偏（见 se3_train.ppo）。
-ROUGH_CTS_STUDENT_WARMUP_ITERATIONS = 200
+# 2026-10-19 用户定：Student128 入口删掉「换编码器续训」用的 200 轮学生预热默认值，改为与 LowGains 一样从零训；
+# 预热机制本身仍在 cts_rl_cfg(estimator_warmup_iterations=...) / se3_train.ppo，续训时按需显式传。
 
 
 @dataclass
@@ -147,7 +146,6 @@ __all__ = [
     "ROUGH_CTS_LATENT_DIM",
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS",
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU",
-    "ROUGH_CTS_STUDENT_WARMUP_ITERATIONS",
     "ROUGH_CTS_TEACHER_HIDDEN_DIMS",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",
