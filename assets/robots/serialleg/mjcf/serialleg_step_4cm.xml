@@ -1,0 +1,23 @@
+<mujoco model="serialleg_adjustable_step">
+  <!-- 训练模型原样 include，动力学逐位不变；只在 worldbody 上加一级可调台阶。
+       必须与被 include 的文件同目录：compiler 的 meshdir="../meshes" 按主模型所在目录解析。
+
+       台阶挂在一个**静态 body**（无 joint）上，几何体永远不变，只靠 body_pos 移动：
+       - 盒子半高 0.30、局部 z = -0.30，所以盒子顶面恰好等于 body 的 z。
+         body_pos[2] 就是台阶高度，slider 直接写它。
+       - body_pos[0] 减去半长 3.0 就是立面（台阶前沿）到原点的距离。
+       静态 body 的位姿每帧由 mj_forward 从 model.body_pos 读，改它物理与渲染同时生效；
+       盒子沉到地面以下的部分与 floor 平面不发生接触（两者都是 contype=2/conaffinity=1，
+       (2&1)|(2&1)=0），也看不见。
+
+       碰撞组与摩擦跟 floor 完全一致；机器人碰撞组是 contype=1/conaffinity=2。
+       viewer 的 Terrain 面板按 body 名 "se3_adjustable_step" 认这块地形。 -->
+  <include file="serialleg_closed_chain_v3_train_obb_trim.xml" />
+  <worldbody>
+    <body name="se3_adjustable_step" pos="4.0 0 0.04">
+      <geom name="se3_adjustable_step_geom" type="box" pos="0 0 -0.30" size="3.0 3.0 0.30"
+            material="grid" friction="0.8 0.005 0.0001" contype="2" conaffinity="1"
+            rgba="0.35 0.55 0.75 1" />
+    </body>
+  </worldbody>
+</mujoco>

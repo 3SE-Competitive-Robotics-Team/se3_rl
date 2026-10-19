@@ -1,0 +1,37 @@
+<mujoco model="serialleg_fudan_sim2sim_steps">
+  <!-- 复旦 sim2sim mjmodel.xml 的 worldbody 障碍，源提交 8204e853dfd2ed06d85a322e1a998c3d20a3be2c。
+       原机器人出生点 x=-2.8，本项目出生点 x=0；所有障碍 x 整体加 2.8，保持相对距离。
+       hfield 仅在源 asset 中声明、未作为 geom 使用，因此不复制。 -->
+  <include file="serialleg_closed_chain_v3_train_obb_trim.xml" />
+  <asset>
+    <texture name="fudan_blue_checker_tex" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.2 0.4 0.9" rgb2="0.8 0.9 1.0" />
+    <material name="fudan_blue_checker_mat" texture="fudan_blue_checker_tex"
+              texrepeat="20 20" reflectance="0.1" />
+  </asset>
+  <worldbody>
+    <site name="se3_spawn_surface" pos="0 0 0.30" size="0.001" rgba="0 0 0 0" />
+    <geom name="fudan_floor" type="plane" size="40 40 0.1" material="fudan_blue_checker_mat"
+          friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2"
+          condim="3" priority="0" group="2" contype="2" conaffinity="1" />
+    <geom name="fudan_step_20cm" type="box" pos="-7.2 0 0.10" size="0.30 4 0.10"
+          rgba="0.9 0.6 0.2 1" friction="1 0.005 0.0001" solref="0.02 1"
+          solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" group="2" contype="2" conaffinity="1" />
+    <geom name="fudan_step_20rightcm" type="box" pos="-7.2 6 0.10" size="6 4 0.10"
+          rgba="0.9 0.6 0.2 1" friction="1 0.005 0.0001" solref="0.02 1"
+          solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" group="2" contype="2" conaffinity="1" />
+    <geom name="fudan_step_35cm" type="box" pos="-6.825 0 0.175" size="0.075 4 0.175"
+          rgba="0.92 0.28 0.18 1" friction="1 0.005 0.0001" solref="0.02 1"
+          solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" group="2" contype="2" conaffinity="1" />
+    <geom name="fudan_platform_30cm" type="box" pos="-5.25 0 0.15" size="1.5 4 0.15"
+          rgba="0.16 0.62 0.78 1" friction="1 0.005 0.0001" solref="0.02 1"
+          solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" group="2" contype="2" conaffinity="1" />
+    <geom name="fudan_fly_ramp_1" type="box" pos="-3.31 0 0.46" euler="0 -0.296706 0"
+          size="0.5986 10 0.01" rgba="0.6 0.6 0.6 1" friction="1 0.005 0.0001"
+          solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" group="2"
+          contype="2" conaffinity="1" />
+    <geom name="fudan_landing_box" type="box" pos="-0.58 0 0.15" size="1.5 10 0.15"
+          rgba="0.16 0.62 0.78 1" friction="1 0.005 0.0001" solref="0.02 1"
+          solimp="0.9 0.95 0.001 0.5 2" condim="3" priority="0" group="2" contype="2" conaffinity="1" />
+  </worldbody>
+</mujoco>
