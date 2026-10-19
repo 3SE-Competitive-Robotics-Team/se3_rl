@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -1749,33 +1748,6 @@ def flat_leg_contact_penalty(
         )
 
     return has_contact.float() * active.float()
-
-
-def same_feet_x_position(
-    env: ManagerBasedRlEnv,
-    command_name: str | None = None,
-    scale_m: float = 0.01,
-    max_penalty: float = 20.0,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """指数惩罚左右轮在机身坐标系 x 方向的前后错位。"""
-    del command_name
-    wheel_pos_b = _wheel_pos_body_frame(env, asset_cfg)
-    offset = torch.abs(wheel_pos_b[:, 0, 0] - wheel_pos_b[:, 1, 0])
-    penalty_cap = math.log1p(max(float(max_penalty), 0.0))
-    normalized = torch.clamp(offset / max(float(scale_m), 1.0e-6), min=0.0, max=penalty_cap)
-    penalty = torch.expm1(normalized)
-
-    if hasattr(env, "extras") and isinstance(env.extras.get("log"), dict) and _should_log_step(env):
-        active = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
-        env.extras["log"].update(
-            {
-                "Locomotion/same_feet_x_position_m": _masked_mean(offset, active),
-                "Locomotion/same_feet_x_position_penalty": _masked_mean(penalty, active),
-            }
-        )
-
-    return penalty
 
 
 def flat_wheel_contact_penalty(

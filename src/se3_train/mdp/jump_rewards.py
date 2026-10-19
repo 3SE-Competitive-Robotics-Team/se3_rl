@@ -1,6 +1,6 @@
 """跳跃相关的共享奖励函数。
 
-旧跳跃线（Jump-PreTrain / FineTune）2026-10-19 删除后，这里只保留 Flat、Rough、Stair 与 flow_match
+旧跳跃线（Jump-PreTrain / FineTune）2026-10-19 删除后，这里只保留 Flat、Rough、Stair
 仍在引用的项；旧线专属的奖励项见 git 历史（846c4fcd）。
 """
 
@@ -17,7 +17,7 @@ from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import (
     wheel_joint_ids,
 )
-from se3_train.mdp.jump_commands import JumpCommandTerm, ideal_takeoff_vel
+from se3_train.mdp.jump_commands import JumpCommandTerm
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -62,20 +62,6 @@ def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[i
     return body_ids
 
 
-def _wheel_bottom_heights(
-    env: ManagerBasedRlEnv,
-    asset_cfg: SceneEntityCfg,
-    wheel_radius: float,
-) -> torch.Tensor:
-    """返回左右轮底部相对地面的高度。"""
-    robot = env.scene[asset_cfg.name]
-    body_ids = _wheel_body_ids(env, asset_cfg)
-    wheel_pos_w = robot.data.body_link_pos_w[:, body_ids, :]
-    ground_z = env.scene.env_origins[:, 2].unsqueeze(1)
-    wheel_bottom_h = wheel_pos_w[:, :, 2] - ground_z - float(wheel_radius)
-    return wheel_bottom_h
-
-
 def _wheel_alignment_error(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg,
@@ -99,128 +85,6 @@ def _wheel_alignment_error(
 # ---------------------------------------------------------------------------
 # 阶段1(PreTrain)奖励
 # ---------------------------------------------------------------------------
-
-
-def jump_vel_encourage(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    weight_scale: float = 1.0,
-) -> torch.Tensor:
-    """跳跃奖励:参考空中阶段奖励 vz,防止地面期 vz 套利。
-
-    RSI 配套设计:
-    - reset_root_state_full 给 jump_flag=1 的 episode 注入 vz 初速度
-    - reset_joints 同时设置空中收腿姿态
-    - 策略从 reference stage=1(airborne)开始,立刻拿到此奖励
-    - 地面期 vz 无奖励(策略通过探索和 RSI 体验学会自主起跳)
-    """
-
-    robot = env.scene["robot"]
-    vz_w = robot.data.root_link_lin_vel_w[:, 2]
-    jump_flag = env.command_manager.get_command(command_name)[:, 5] > 0.5
-
-    term = _get_jump_term(env, command_name)
-    in_air = term.jump_stage == 1
-
-    # reference 空中阶段奖励正向 vz,下降段不额外惩罚。
-    active = jump_flag & in_air
-    return torch.clamp(vz_w, min=0.0) * active.float() * weight_scale
-
-
-def jump_takeoff_drive(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    min_ref_takeoff_vz: float = 0.05,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """起跳驱动奖励:在参考蹬地期奖励质心向上速度,解决地面期梯度断链。
-
-    【为什么用质心 vz 而不是腿部关节速度】
-    原实现奖励关节速度负分量(伸腿方向),可被"原地抖腿"hack:
-    抖腿时关节速度正负交替,负分量均值非零,策略无需真正起跳即可套利。
-    质心 vz > 0 只有一种来源:身体整体向上运动(真实起跳)。
-    原地震荡时 vz 均值为 0,无法套利。
-
-    【激活条件】
-    - jump_flag=1(有跳跃指令)
-    - reference takeoff 子相位(grounded 且参考 vz 已进入上升段)
-    - vz > 0(质心已经向上运动,奖励蹬腿有效果的那一帧)
-
-    jump_stage 由 reference motion 时间推进,蹬地辅助项只覆盖上升蹬地段。
-    """
-    from se3_train.mdp.jump_commands import JumpCommandTerm
-
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-
-    # reference 子相位门控:只在 grounded 内的上升蹬地段激活。
-    term = env.command_manager.get_term(command_name)
-    if isinstance(term, JumpCommandTerm):
-        phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
-    else:
-        phase_takeoff = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
-
-    # 质心向上速度:按目标起跳速度归一化,避免 0.05m/s 与 1.4m/s 获得近似声量。
-    robot = env.scene[asset_cfg.name]
-    vz_w = robot.data.root_link_lin_vel_w[:, 2]
-    h_target = cmd[:, 6]
-    vz_ref = ideal_takeoff_vel(h_target).clamp_min(0.1)
-    takeoff_signal = torch.clamp(vz_w / vz_ref, min=0.0, max=1.0)
-
-    active = jump_flag & phase_takeoff
-    return takeoff_signal * active.float()
-
-
-def jump_takeoff_vz_tracking(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    tolerance: float = 0.35,
-    min_vz_ratio: float = 0.3,
-    min_ref_takeoff_vz: float = 0.05,
-    progress_power: float = 1.0,
-    tracking_mix: float = 0.6,
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """地面起跳速度目标奖励:低速给进度引导,高速做目标速度 tracking。
-
-    旧版在 `vz > min_vz_ratio * vz_ref` 后才激活。当前策略只能产生
-    0.02~0.11m/s,低于 0.1m 目标高度的激活阈值,因此速度目标奖励长期为 0。
-    这里改成两段式:
-    - 低于阈值:奖励 `(vz / vz_ref)^p`,从 0 开始提供密集探索梯度
-    - 高于阈值:混合进 exp tracking,继续推动接近目标起跳速度
-
-    2026-05-21 PostTrain 经验:
-    旧版 L1 tracking 在 tolerance 较宽时会让 1.0m/s 弱跳也拿到较高奖励,
-    PPO 会逐步把 1.4m/s 起跳收敛成 1.0m/s 稳定弱跳。这里提高阈值并加入
-    progress_power,让弱跳仍有梯度,但分数明显低于接近目标起跳速度的样本。
-    """
-    from se3_train.mdp.jump_commands import JumpCommandTerm
-
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-    h_target = cmd[:, 6]
-
-    term = env.command_manager.get_term(command_name)
-    if isinstance(term, JumpCommandTerm):
-        phase_takeoff = term.reference_takeoff_active(min_ref_takeoff_vz)
-    else:
-        phase_takeoff = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
-
-    robot = env.scene[asset_cfg.name]
-    vz_w = robot.data.root_link_lin_vel_w[:, 2]
-    vz_ref = ideal_takeoff_vel(h_target).clamp_min(0.1)
-    threshold = min_vz_ratio * vz_ref
-
-    progress = torch.clamp(vz_w / vz_ref, min=0.0, max=1.0)
-    progress_reward = progress ** float(progress_power)
-    tracking_reward = torch.exp(-((vz_w - vz_ref) ** 2) / (float(tolerance) ** 2))
-    mixed_tracking = (1.0 - float(tracking_mix)) * progress_reward + float(
-        tracking_mix
-    ) * tracking_reward
-
-    reward = torch.where(vz_w < threshold, progress_reward, mixed_tracking)
-    active = jump_flag & phase_takeoff
-    return reward * active.float()
 
 
 def jump_orientation(
@@ -326,27 +190,6 @@ def jump_tilt_barrier(
         )
 
     return penalty * stage_scale * active.float()
-
-
-def jump_ang_vel_xy(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-) -> torch.Tensor:
-    """飞行阶段横滚/俯仰角速度平方和,抑制空中翻滚。
-
-    仅在 reference flight 阶段激活。
-    """
-    robot = env.scene["robot"]
-    ang_vel = robot.data.root_link_ang_vel_b
-
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-
-    term = _get_jump_term(env, command_name)
-    in_air = term.jump_stage == 1
-    active = jump_flag & in_air
-
-    return (ang_vel[:, 0] ** 2 + ang_vel[:, 1] ** 2) * active.float()
 
 
 # ---------------------------------------------------------------------------
@@ -677,60 +520,3 @@ def flat_wheel_contact_penalty_no_jump(
 # ---------------------------------------------------------------------------
 # 「原地垂直跳」专项约束
 # ---------------------------------------------------------------------------
-
-
-def _landing_recovery_reward(
-    stillness: torch.Tensor, height_recovery: torch.Tensor
-) -> torch.Tensor:
-    """落地恢复奖励的组合方式:加权和,让两项各自独立传梯度。
-
-    乘积形式在高度未恢复时 height_recovery≈0,会阻断 stillness 梯度传播;
-    加权和确保静止和高度恢复各自都有梯度,不会互相屏蔽。
-    """
-    return 0.6 * stillness + 0.4 * height_recovery
-
-
-def jump_landing_recovery(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    sigma_vxy: float = 0.4,
-    sigma_h: float = 0.03,
-    target_height: float = 0.26,
-    height_sensor_name: str = "base_height_sensor",
-    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-    """落地恢复奖励:landing 阶段同时奖励水平速度归零和高度回到站立位。
-
-    设计目标:落地后机器人停在原地,而不是继续滑行或倒地。
-    奖励 = stillness × height_recovery:两项同时为好才拿满分。
-
-    激活阶段:reference landing。真实腿部接触只用于日志留档,不参与奖励阶段判断。
-    """
-
-    from se3_train.mdp.jump_commands import JumpCommandTerm
-
-    cmd = env.command_manager.get_command(command_name)
-    jump_flag = cmd[:, 5] > 0.5
-
-    term = env.command_manager.get_term(command_name)
-    if isinstance(term, JumpCommandTerm):
-        in_landing = term.jump_stage == 2
-    else:
-        in_landing = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-
-    active = jump_flag & in_landing
-    if not active.any():
-        return torch.zeros(env.num_envs, device=env.device)
-
-    robot = env.scene[asset_cfg.name]
-    vel = robot.data.root_link_lin_vel_w
-    vxy_sq = vel[:, 0] ** 2 + vel[:, 1] ** 2
-    stillness = torch.exp(-vxy_sq / (sigma_vxy**2))
-
-    sensor: TerrainHeightSensor = env.scene[height_sensor_name]
-    h = sensor.data.heights[:, 0]
-    h_err_sq = (h - target_height) ** 2
-    height_recovery = torch.exp(-h_err_sq / (sigma_h**2))
-
-    # 加权和替代乘积:两项独立传梯度,防止高度未恢复时阻断水平静止梯度传播
-    return _landing_recovery_reward(stillness, height_recovery) * active.float()
