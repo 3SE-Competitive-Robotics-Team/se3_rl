@@ -11,7 +11,6 @@ from . import (
     flat,
     jump_mimic,
     rough,
-    stair,
     wheel_dog,
 )
 
@@ -20,7 +19,6 @@ def register_all_tasks() -> None:
     """注册当前包内全部训练任务。"""
     rough.register()
     flat.register()
-    stair.register()
     jump_mimic.register()
     wheel_dog.register()
     crawl.register()

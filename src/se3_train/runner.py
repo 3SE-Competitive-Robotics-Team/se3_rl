@@ -433,14 +433,3 @@ class Se3WarmStartRunner(Se3ProfiledOnPolicyRunner):
 
 
 Se3PretrainWarmStartRunner = Se3WarmStartRunner
-
-
-class Se3StairWarmStartRunner(Se3WarmStartRunner):
-    """台阶任务专用 warm-start runner。"""
-
-    warm_start_load_critic_default = True
-    warm_start_load_critic_env = "SE3_STAIR_WARMSTART_LOAD_CRITIC"
-    actor_freeze_iters_default = 0
-    actor_freeze_iters_env = "SE3_STAIR_ACTOR_FREEZE_ITERS"
-    save_warmstart_snapshot_default = True
-    save_warmstart_snapshot_env = "SE3_STAIR_SAVE_WARMSTART_SNAPSHOT"
