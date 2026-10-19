@@ -17,8 +17,8 @@ critic 的回归目标与策略信任域无关，不该被同一条规则限速�
 mini-batch 求均值再相除（单个 mini-batch 的估计噪声大）。日志键 Loss/grad_noise_scale_actor（样本数），
 Loss/grad_sq_small_actor、Loss/grad_sq_big_actor 供复核。单卡训练不记录。
 
-显式 vx 估计器（2026-10-05，见 se3_train.vx_observer）：`estimator_learning_rate` 非 None 时 actor 必须是
-VxObserverMLPModel。估计器用独立 Adam，在 PPO 各 epoch 结束后用同一批 rollout 做 MSE 回归（epoch 数、mini-batch
+显式 vx 估计器（2026-10-05 起；单独的 VxObserverMLPModel 2026-10-19 删除，现只有 CTS 用）：`estimator_learning_rate` 非 None 时 actor
+必须带估计器。估计器用独立 Adam，在 PPO 各 epoch 结束后用同一批 rollout 做 MSE 回归（epoch 数、mini-batch
 数与 PPO 相同），目标是观测组 `estimator_target_group`（同一时刻的真实机身系 vx）。放在 PPO 之后是为了让 PPO 各
 epoch 的 log prob 与 rollout 时用的是同一个估计器，ratio 从 1 开始；rsl_rl 的 storage.clear() 只复位写指针、不清数据，
 所以 PPO update 之后仍可读同一批 rollout。估计器参数也在 PPO optimizer 里（它属于 actor），但 v̂x 在 policy 前
@@ -93,7 +93,9 @@ class Se3PPO(PPO):
         self.estimator_optimizer: torch.optim.Adam | None = None
         if estimator_learning_rate is not None:
             if not hasattr(self._raw_actor, "estimate_vx"):
-                raise ValueError("estimator_learning_rate 需要 actor 为 VxObserverMLPModel")
+                raise ValueError(
+                    "estimator_learning_rate 需要 actor 带估计器（CTSVxObserverModel）"
+                )
             if estimator_target_group is None:
                 raise ValueError("estimator_learning_rate 需要同时给 estimator_target_group")
             self.estimator_optimizer = torch.optim.Adam(
