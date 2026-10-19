@@ -41,6 +41,23 @@
 quick 16 进程以上就卡在最长一条（30 s 静站 + 起步）上；full 32 进程最快，再多反而被进程启动开销拖慢。
 训练钩子默认 worker 数 = CPU 核数的 1/4，128 核 Pod 上正好是 32。
 
+## 结果怎么看
+
+W&B 上每个训练 run 对应一个同 group 的 `<run>-bench` 评测 run，横轴是 iteration：
+
+- **曲线面板**按 A–E 分组：`A_flat/`、`B_standing/`、`C_stairs/`、`D_jump/`、`E_robust/`，外加 `bench_meta/errors`。
+  多个实验放进同一个 W&B 视图就能直接叠曲线对比。
+- **诊断图**（`figures/`，每次评测各一张，可用滑块翻看不同 iteration）：
+  - `A_flat_tracking`：vx 误差、高度误差两张 vx × 高度热力图，yaw 跟踪比的 yaw × 高度热力图；
+  - `B_standing`：各高度 30 s 静站的位移与 yaw 漂移，静站后 / 冷起步跟到 90% 指令的时间；
+  - `C_stairs`：台阶四列分级图（每格 = 一条用例：绿 = 走出、黄 = 卡住、红 = 摔倒，格内数字为走出的最远距离 m；
+    上行列最右一栏是带噪声回放的通过率），以及上行台阶每级的立面姿态占比（目标姿态 / 跳上去 / 其他）；
+  - `D_jump`：各目标高度实际达到的离地间隙；
+  - `E_robust`：扰动 plant × 测试矩阵（平地 vx 误差、静站漂移、侧推最大倾角、第 6 级台阶距离）。
+- **逐条结果表** `cases/all`，**录像** `videos/`（Pod 目前录不了，见下）。
+
+本地同样的图在 ONNX 旁的 `bench/figures/<model>_<suite>/` 下。
+
 ## 用法
 
 ```bash

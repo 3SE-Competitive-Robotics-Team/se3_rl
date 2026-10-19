@@ -143,10 +143,21 @@ def standing(results: list[dict], path: Path) -> Path | None:
     labels = [f"h{r['params']['height']:.2f}\nvx{r['params']['vx']:g}" for r in s30]
     x = np.arange(len(s30))
     fig, axes = plt.subplots(1, 3, figsize=(15, 4), layout="constrained")
-    axes[0].bar(x, [r.get("drift_m", np.nan) for r in s30], color="#4c78a8")
-    axes[0].set_title("30 s zero-command drift (m)", fontsize=10)
-    axes[1].bar(x, [r.get("yaw_drift_deg", np.nan) for r in s30], color="#72b7b2")
-    axes[1].set_title("30 s zero-command yaw drift (deg)", fontsize=10)
+    # 静站段与随后的前进指令无关，同一高度只画一根（取该高度第一条）。
+    by_height: dict[float, dict] = {}
+    for r in s30:
+        by_height.setdefault(r["params"]["height"], r)
+    hx = np.arange(len(by_height))
+    for ax, key, title, color in (
+        (axes[0], "drift_m", "30 s zero-command drift (m)", "#4c78a8"),
+        (axes[1], "yaw_drift_deg", "30 s zero-command yaw drift (deg)", "#72b7b2"),
+    ):
+        ax.bar(hx, [r.get(key, np.nan) for r in by_height.values()], color=color)
+        ax.set_title(title, fontsize=10)
+        ax.set_xticks(hx, [f"h{h:.2f}" for h in by_height], fontsize=8)
+        for i, r in enumerate(by_height.values()):
+            if r.get("fell"):
+                ax.text(i, 0, "FELL", ha="center", va="bottom", color=FELL_COLOR, fontsize=8)
 
     def t90(r):
         return min(float(r.get("t90_s", math.inf)), 5.0) if not r.get("fell") else np.nan
@@ -175,12 +186,10 @@ def standing(results: list[dict], path: Path) -> Path | None:
     axes[2].axhline(5.0, color=FELL_COLOR, lw=0.8, ls="--")
     axes[2].set_title("time to 90% of vx command (s, 5 = never)", fontsize=10)
     axes[2].legend(fontsize=8)
-    for ax in axes:
-        ax.set_xticks(x, labels, fontsize=8)
+    axes[2].set_xticks(x, labels, fontsize=8)
     for i, r in enumerate(s30):
         if r.get("fell"):
-            for ax in axes:
-                ax.text(i, 0, "FELL", ha="center", va="bottom", color=FELL_COLOR, fontsize=8)
+            axes[2].text(i, 0, "FELL", ha="center", va="bottom", color=FELL_COLOR, fontsize=8)
     fig.savefig(path, dpi=110)
     plt.close(fig)
     return path
