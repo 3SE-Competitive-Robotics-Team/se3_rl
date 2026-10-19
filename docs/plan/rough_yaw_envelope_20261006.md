@@ -50,3 +50,10 @@ yaw 跟踪奖励 0.54 / 0.48–0.49，vx 误差 0.52–0.53 / 0.55，台阶航�
 （`ROUGH_WHEEL_TORQUE_ENVELOPE`），WheelTN 入口删除；robot_cfg 自身默认（其余任务）仍是 "linear_peak"。WheelTN-Budget 保留，
 现与 VxObserver 只差指令预算一项。
 
+## YawRB05：tracking_ang_vel ratio_blend 0.2 → 0.5（2026-10-07，用户定）
+
+入口 `SE3-WheelLegged-Rough-Exp-VxObserver-YawRB05`（ac81d37）：VxObserver（16 帧）+ 新默认轮子包络 + ratio_blend 0.5，奖励项只差这一个参数。
+指令 12 rad/s 时"转一半"每秒得分 0.3 → 0.75、误差 3 rad/s 时 0.45 → 1.1，转满仍为 3。nulltask1 六卡 × 1170、5000 轮、seed 42，W&B `dnicbmt0`。
+注意：没有"新默认包络 + ratio_blend 0.2"的同规模 VxObserver 对照，对比 `agqj496q`（旧包络）时混有包络变量；WheelTN `xdk0dnoa` 有新包络但规模为七卡 × 1500。
+判据：sim2x yaw 传递曲线顶端是否跟上、训练端 yaw 误差；低 / 中速 yaw 精度（比例项让近零误差的奖励变钝）与平地 vx 跟踪不退化。
+

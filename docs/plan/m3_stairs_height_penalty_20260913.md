@@ -24,3 +24,8 @@ M2-4999 的确定性回放在平地中速指令（0.8–2.0 m/s）掉进 0.8 Hz 
 - 四卡 GPU 0–3、每卡 8192、5000 轮、save 200、seed 42，与 M1 同口径（M2 是两卡，比较 M3 与 M2 带批量混杂，与 M1 不带）。
 - 验收同 M2：每个 checkpoint 跑 `.scratch/m2_eval/final/` 的确定性套件（平地 0.4–2.4 扫描看弹跳环、停走探针看不动点、
   1–9 级通关看台阶能力并按 far<4.5/≥4.5 拆摔倒），W&B 看 `Rough/rw_flat_base_height_stairs` 的量级与台阶列 vx。
+
+- commit b48ddf2；run `2026-09-14_11-32-28_rough-M3-stairheightpen-seed42-4x8192-5k`，W&B thna9gyx，nulltask1 GPU 0–3，PGID 335738，
+  state `/workspace/.se3-training-state/nulltask1/20260914T033222Z-01920`。
+- 首轮核验（迭代 14）：无 Traceback，flat_warmup active=1（全员平地，台阶列各项分列均 0 属预期），
+  `Episode_Reward/flat_base_height` −0.73/回合、fall_penalty −0.19/回合、单轮 1.85 s、ETA 2 h 40 min。台阶列高度罚的量级要到 500 轮热身结束后看。

@@ -254,3 +254,7 @@ StairVx08 部署网络约 18 万参数、FP32 约 720 KB，加固件代码约 14
 前 200 轮（`ROUGH_CTS_STUDENT_WARMUP_ITERATIONS`）只训练学生编码器、跳过 PPO 更新，避免随机学生隐向量把共享 policy 带偏。
 本地 CPU 续训 smoke（预热改 2 轮）通过，导出 ONNX 形状核对无误。地形 / 速度课程不随 checkpoint 恢复，会从初值重新爬。
 固件侧另需：历史帧缓冲（16 帧 term-major）、prepare / import / validate 三个脚本放开 30/34 维限制、推理任务栈加大。
+启动：c40ab76，nulltask1 六卡 × 8192，从 StairVx08 model_4999（`hvhgfeaq`）续训 2000 轮（5000 → 6999，前 200 轮学生预热），
+worktree `rough-student128-c40ab76`，W&B `2fw8o4iy`，state `20261009T072443Z-16292`，约 3.0 s/轮。
+用户改为七卡 Pod：nulltask1 这条在第 5007 轮停掉（`2fw8o4iy` 作废）；改在 whtws 七卡 × 8192 续训 2000 轮（c40ab76，主 checkout），
+W&B `u6ka1a0w`，state `20261009T072810Z`。注意 7×8192 曾让从零训的跳跃陷住（New7x），这次从已会跳的 checkpoint 续训，需盯 mimic_deviation。
