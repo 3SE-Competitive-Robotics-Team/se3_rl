@@ -2,15 +2,15 @@
 
 训练后自动评测：在原生 MuJoCo + `se3_runtime` 部署链路上回放训练导出的 ONNX，按固定场景出指标，
 不用每次把模型拉回本地开 sim2x。只读 ONNX 契约，MLP / GRU / History-MLP（CTS 学生）都能跑。
-代码在 `src/se3_tools/bench/`，当前版本 `rough-v1`（`spec.BENCH_VERSION`）。
+代码在 `src/se3_tools/bench/`，当前版本 `rough-v2`（`spec.BENCH_VERSION`）。
 
 ## 五项评测
 
 | 项 | 场景 | 头条指标（W&B `bench/<suite>/...`） |
 |---|---|---|
 | A 平地跟踪 | 平地 vx × 高度网格、yaw 网格（含包络顶端 ±12 rad/s），阶跃后取最后 5 s 稳态 | `A/vx_err_mean`、`A/yaw_top_ratio`、`A/height_abs_err_mean`、`A/pitch_rate_band_rms_max`（5–15 Hz 俯仰角速度）、`A/falls` |
-| B 静站与起步 | 零指令静站 30 s，再阶跃前进；对照只站 1 s 的冷起步 | `B/drift_speed_max`、`B/drift_m_max`、`B/yaw_drift_deg_max`、`B/t90_after_stand_mean_s`、`B/t90_degrade_mean_s` |
-| C 台阶 | 训练地形台阶四列（上行 / 二级上行 / 下行 / 二级下行）逐级，助跑开局与静止开局；上行列记立面事件 | `C/stairs_up_max_level`、`C/stairs_up_r<N>_clear_rate`、`C/static_start_gap`、`C/target_style_rate`、`C/jump_onto_rate`、`C/down_fall_rate` |
+| B 静站与起步 | 零指令静站 30 s，再阶跃前进；对照只站 1 s 的冷起步 | `B/drift_m_mean`、`B/drift_m_p90`、`B/drift_speed_mean`、`B/yaw_drift_deg_mean`、`B/drift_m_worst_height_mean`、`B/t90_after_stand_mean_s`、`B/t90_degrade_mean_s` |
+| C 台阶 | 训练地形台阶四列（上行 / 二级上行 / 下行 / 二级下行）逐级，助跑开局与静止开局；上行列记立面事件 | `C/stairs_up_max_level`、`C/stairs_up_r<N>_clear_rate`、`C/static_start_gap`、`C/target_style_rate`、`C/jump_onto_rate`、`C/down_fall_rate`（含噪声样本）、`C/down_fall_rate_noise` |
 | D 跳跃 | 平地站 2 s 后按参考目标离地间隙起跳（0.2–0.5 m） | `D/success_rate`、`D/clearance_err_mean_m` |
 | E 鲁棒 | WideDR 那组 11 种扰动 plant × 平地跟踪 / 静站 / 侧推 / 第 6 级台阶 | `E/falls`、`E/flat_vx_err_mean`、`E/stairs_r6_clear_rate` |
 
@@ -21,14 +21,17 @@
   `C/static_start_gap` = 助跑通过率 − 静止通过率。
 - 立面事件：触面前 0.5 s 双轮同时离地 > 2 cm 记「跳上去」；机身前沿过沿早于双轮抬起 6 cm 记「机身先过沿」；
   左右轮抬起时间差 ≤ 0.1 s 且前两者满足记「目标上台阶姿态」（`C/target_style_rate`）。
-- 摔倒 = 机身倾角 > 60°。默认确定性回放；full 档台阶另加 σ = 0.21 的训练式动作噪声各 3 次（`C/noise_up_clear_rate`）。
+- 摔倒 = 机身倾角 > 60°。默认确定性回放；静站（各高度）、上行与下行台阶另加 σ = 0.21 的训练式动作噪声，种子 1/2/3 各一次
+  （`spec.NOISE_SEEDS`）。上行噪声通过率单列 `C/noise_up_clear_rate`；静站漂移与下台阶摔倒率把确定性和噪声样本合起来算，
+  避免单条用例翻转就让曲线跳台阶（rough-v2 起；rough-v1 的 `*_max` 漂移与只含确定性用例的下台阶摔倒率主要是单样本噪声）。
+  起步 t90 只用确定性样本。
 
 ## 两档
 
-- **quick**（只用于手动快速检查）：A 粗网格、B、C 第 3/6/9 级、D 两档目标。约 50 条。
-- **full**（训练中每 1000 轮、训练结束、手动）：A 全网格、B、C 全部 9 级 + 噪声重复、D 全部、E。约 320 条。
+- **quick**（只用于手动快速检查）：A 粗网格、B、C 第 3/6/9 级、D 两档目标。76 条（rough-v2）。
+- **full**（训练中每 1000 轮、训练结束、手动）：A 全网格、B、C 全部 9 级 + 噪声重复、D 全部、E。369 条（rough-v2；rough-v1 为 324 条）。
 
-实测耗时（2026-10-19，nulltask1 128 核，StairVx08 model_4999）：
+实测耗时（2026-10-19，nulltask1 128 核，StairVx08 model_4999，rough-v1 用例数；rough-v2 full 多 14%，32 进程估计约 17 s，未实测）：
 
 | 进程数 | quick（52 条） | full（324 条） |
 |---|---|---|
@@ -49,7 +52,7 @@ W&B 上每个训练 run 对应一个同 group 的 `<run>-bench` 评测 run，横
   多个实验放进同一个 W&B 视图就能直接叠曲线对比。
 - **诊断图**（`figures/`，每次评测各一张，可用滑块翻看不同 iteration）：
   - `A_flat_tracking`：vx 误差、高度误差两张 vx × 高度热力图，yaw 跟踪比的 yaw × 高度热力图；
-  - `B_standing`：各高度 30 s 静站的位移与 yaw 漂移，静站后 / 冷起步跟到 90% 指令的时间；
+  - `B_standing`：各高度 30 s 静站的位移与 yaw 漂移（柱 = 确定性 + 噪声样本均值，误差棒 = 最小–最大，n = 样本数），静站后 / 冷起步跟到 90% 指令的时间；
   - `C_stairs`：台阶四列分级图（每格 = 一条用例：绿 = 走出、黄 = 卡住、红 = 摔倒，格内数字为走出的最远距离 m；
     上行列最右一栏是带噪声回放的通过率），以及上行台阶每级的立面姿态占比（目标姿态 / 跳上去 / 其他）；
   - `D_jump`：各目标高度实际达到的离地间隙；

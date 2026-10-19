@@ -136,28 +136,38 @@ def flat_tracking(results: list[dict], path: Path) -> Path | None:
 
 def standing(results: list[dict], path: Path) -> Path | None:
     stand = [r for r in results if r["suite"] == "B" and _ok(r)]
-    s30 = [r for r in stand if r["params"]["stand_s"] > 1.0]
-    if not s30:
+    s30_all = [r for r in stand if r["params"]["stand_s"] > 1.0]
+    # 起步时间只画确定性样本；漂移画全部样本（确定性 + 带噪声重复）的均值与范围。
+    s30 = [r for r in s30_all if not r.get("noise_std")]
+    if not s30_all:
         return None
     plt = _plt()
     labels = [f"h{r['params']['height']:.2f}\nvx{r['params']['vx']:g}" for r in s30]
     x = np.arange(len(s30))
     fig, axes = plt.subplots(1, 3, figsize=(15, 4), layout="constrained")
-    # 静站段与随后的前进指令无关，同一高度只画一根（取该高度第一条）。
-    by_height: dict[float, dict] = {}
-    for r in s30:
-        by_height.setdefault(r["params"]["height"], r)
+    by_height: dict[float, list[dict]] = {}
+    for r in s30_all:
+        by_height.setdefault(r["params"]["height"], []).append(r)
     hx = np.arange(len(by_height))
     for ax, key, title, color in (
-        (axes[0], "drift_m", "30 s zero-command drift (m)", "#4c78a8"),
-        (axes[1], "yaw_drift_deg", "30 s zero-command yaw drift (deg)", "#72b7b2"),
+        (axes[0], "drift_m", "30 s zero-command drift (m), mean & range", "#4c78a8"),
+        (axes[1], "yaw_drift_deg", "30 s zero-command yaw drift (deg), mean & range", "#72b7b2"),
     ):
-        ax.bar(hx, [r.get(key, np.nan) for r in by_height.values()], color=color)
+        vals = [[r[key] for r in rs if key in r] for rs in by_height.values()]
+        means = [float(np.mean(v)) if v else np.nan for v in vals]
+        lows = [m - min(v) if v else 0 for m, v in zip(means, vals, strict=True)]
+        highs = [max(v) - m if v else 0 for m, v in zip(means, vals, strict=True)]
+        ax.bar(hx, means, color=color, yerr=[lows, highs], capsize=4)
         ax.set_title(title, fontsize=10)
-        ax.set_xticks(hx, [f"h{h:.2f}" for h in by_height], fontsize=8)
-        for i, r in enumerate(by_height.values()):
-            if r.get("fell"):
-                ax.text(i, 0, "FELL", ha="center", va="bottom", color=FELL_COLOR, fontsize=8)
+        ax.set_xticks(
+            hx, [f"h{h:.2f}\nn={len(v)}" for h, v in zip(by_height, vals, strict=True)], fontsize=8
+        )
+        for i, rs in enumerate(by_height.values()):
+            fell = sum(bool(r.get("fell")) for r in rs)
+            if fell:
+                ax.text(
+                    i, 0, f"FELL x{fell}", ha="center", va="bottom", color=FELL_COLOR, fontsize=8
+                )
 
     def t90(r):
         return min(float(r.get("t90_s", math.inf)), 5.0) if not r.get("fell") else np.nan

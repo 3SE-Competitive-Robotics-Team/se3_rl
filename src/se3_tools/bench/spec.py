@@ -16,7 +16,11 @@ from dataclasses import asdict, dataclass, field
 
 from se3_tools.bench.sim import Plant
 
-BENCH_VERSION = "rough-v1"
+BENCH_VERSION = "rough-v2"
+"""rough-v2（2026-10-19）：下台阶与 30 s 静站各加 NOISE_SEEDS 次带训练式动作噪声的重复，摔倒率与漂移按全部样本汇总。
+v1 每格只有一条确定性回放，一条用例翻转就让下台阶摔倒率跳 8%、漂移最大值跟着单一高度走，读不出趋势。"""
+NOISE_SEEDS = (1, 2, 3)
+"""带噪声重复用的种子（下台阶、静站、上行台阶噪声重复共用）。"""
 
 # ---- 判据常量 ----
 STAIR_CLEAR_DISTANCE_M = 4.0
@@ -151,6 +155,18 @@ def _standing_cases(full: bool) -> list[Case]:
                         dict(height=h, vx=v, stand_s=stand_s),
                     )
                 )
+        # 带噪声重复：只重复静站 30 s + vx 1.0（静站段与后续前进指令无关，漂移看静站段即可）。
+        for seed in NOISE_SEEDS:
+            cases.append(
+                Case(
+                    "B",
+                    f"stand30_h{h:.2f}_vx1.0_noise{seed}",
+                    "standing",
+                    dict(height=h, vx=1.0, stand_s=30.0),
+                    noise_std=ACTION_NOISE_STD,
+                    seed=seed,
+                )
+            )
     return cases
 
 
@@ -181,7 +197,7 @@ def _stair_cases(full: bool, rules: StairRules) -> list[Case]:
             # 带训练式探索噪声的重复：确定性回放可能卡在不动点，噪声下能走才说明能力还在。
             for r in up_rows:
                 floor = rules.height_floor(column, r)
-                for seed in range(3):
+                for seed in NOISE_SEEDS:
                     cases.append(
                         Case(
                             "C",
@@ -190,7 +206,7 @@ def _stair_cases(full: bool, rules: StairRules) -> list[Case]:
                             dict(column=column, row=r, vx=1.2, height=floor, mode="running"),
                             scene="stairs",
                             noise_std=ACTION_NOISE_STD,
-                            seed=seed + 1,
+                            seed=seed,
                         )
                     )
     for column in ("stairs_down", "stairs_two_step_down"):
@@ -205,6 +221,18 @@ def _stair_cases(full: bool, rules: StairRules) -> list[Case]:
                         scene="stairs",
                     )
                 )
+                for seed in NOISE_SEEDS:
+                    cases.append(
+                        Case(
+                            "C",
+                            f"{column}_r{r}_vx{v:.1f}_h0.30_noise{seed}",
+                            "stairs",
+                            dict(column=column, row=r, vx=v, height=0.30, mode="running"),
+                            scene="stairs",
+                            noise_std=ACTION_NOISE_STD,
+                            seed=seed,
+                        )
+                    )
     return cases
 
 

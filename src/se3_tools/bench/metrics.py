@@ -58,13 +58,19 @@ def headline(results: list[dict]) -> dict[str, float]:
 
     # B 静站与起步
     stand = by_suite["B"]
-    stand30 = [r for r in stand if r["name"].startswith("stand30")]
-    out["B/drift_speed_max"] = max(
-        (r["drift_speed"] for r in stand30 if "drift_speed" in r), default=None
-    )
-    out["B/drift_m_max"] = max((r["drift_m"] for r in stand30 if "drift_m" in r), default=None)
-    out["B/yaw_drift_deg_max"] = max(
-        (r["yaw_drift_deg"] for r in stand30 if "yaw_drift_deg" in r), default=None
+    # rough-v2：30 s 静站含确定性 + 带噪声重复，漂移按全部样本汇总；起步时间只看确定性样本。
+    stand30_all = [r for r in stand if r["name"].startswith("stand30") and "drift_m" in r]
+    stand30 = [r for r in stand30_all if "_noise" not in r["name"]]
+    drifts = [r["drift_m"] for r in stand30_all]
+    out["B/drift_m_mean"] = _mean(drifts)
+    out["B/drift_m_p90"] = float(np.percentile(drifts, 90)) if drifts else None
+    out["B/drift_speed_mean"] = _mean(r["drift_speed"] for r in stand30_all)
+    out["B/yaw_drift_deg_mean"] = _mean(r["yaw_drift_deg"] for r in stand30_all)
+    per_height: dict[float, list[float]] = {}
+    for r in stand30_all:
+        per_height.setdefault(r["params"]["height"], []).append(r["drift_m"])
+    out["B/drift_m_worst_height_mean"] = max(
+        (float(np.mean(v)) for v in per_height.values()), default=None
     )
 
     def t90(r: dict) -> float:
@@ -108,10 +114,13 @@ def headline(results: list[dict]) -> dict[str, float]:
     out["C/jump_onto_rate"] = _rate(e["jumped"] for e in events)
     out["C/body_first_rate"] = _rate(e["body_first"] for e in events)
     out["C/lift_dt_mean_s"] = _mean(e["lift_dt_s"] for e in events)
-    down = [r for r in det if r["name"].startswith(("stairs_down_", "stairs_two_step_down_"))]
+    # rough-v2：下台阶含确定性 + 带噪声重复，摔倒 / 走出率按全部样本汇总。
+    down = [r for r in stairs if r["name"].startswith(("stairs_down_", "stairs_two_step_down_"))]
     out["C/down_fall_rate"] = _rate(r["fell"] for r in down)
     out["C/down_clear_rate"] = _rate(r["cleared"] for r in down)
-    noisy = [r for r in stairs if "_noise" in r["name"]]
+    out["C/down_fall_rate_noise"] = _rate(r["fell"] for r in down if "_noise" in r["name"])
+    out["C/down_samples"] = float(len(down)) if down else None
+    noisy = [r for r in stairs if "_noise" in r["name"] and r["name"].startswith("stairs_up_")]
     out["C/noise_up_clear_rate"] = _rate(r["cleared"] for r in noisy)
     out["C/up_fall_rate"] = _rate(r["fell"] for r in up_cols)
 
