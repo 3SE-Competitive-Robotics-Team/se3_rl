@@ -1,0 +1,10 @@
+<mujoco model="serialleg_no_knee_spring">
+  <!-- sim2x 回放无膝气弹簧训练的策略（M52 起 knee_gas_spring=False）：
+       include 正式训练 MJCF（hash 校验不变），se3_drop_knee_gas_spring 标记让 sim2x adapter
+       在内存 spec 里删掉 l/r_knee_gas_spring 两个恒力 actuator，与训练端同一做法。地面沿用机器人 MJCF 的 floor。
+       用法：scripts/run_sim2x.sh 的 scene 参数指向本文件。 -->
+  <include file="serialleg_closed_chain_v3_train_obb_trim.xml" />
+  <custom>
+    <numeric name="se3_drop_knee_gas_spring" data="1" />
+  </custom>
+</mujoco>
