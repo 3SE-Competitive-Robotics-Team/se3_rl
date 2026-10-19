@@ -10,6 +10,15 @@ from pathlib import Path
 from se3_tools.bench.spec import BENCH_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+SECTIONS = {
+    "A": "A_flat",
+    "B": "B_standing",
+    "C": "C_stairs",
+    "D": "D_jump",
+    "E": "E_robust",
+    "meta": "bench_meta",
+}
+"""头条指标前缀 → W&B 面板分组（W&B 按 key 第一个 `/` 前的段分组）。"""
 
 
 def git_state() -> dict[str, str | bool]:
@@ -44,7 +53,7 @@ def log_wandb(
     group: str,
     id_file: Path,
 ) -> str | None:
-    """记到 `<run_name>-bench`（同 group）：以 iteration 为横轴写头条指标、逐条结果表与视频。"""
+    """记到 `<run_name>-bench`（同 group）：以 iteration 为横轴，头条指标按 A–E 分组成面板，另贴诊断图、逐条结果表与视频。"""
     if os.environ.get("WANDB_MODE", "").lower() == "disabled":
         return None
     import wandb
@@ -68,10 +77,14 @@ def log_wandb(
     )
     try:
         wandb.define_metric("iteration")
-        wandb.define_metric("bench/*", step_metric="iteration")
+        for section in (*SECTIONS.values(), "figures", "cases", "videos"):
+            wandb.define_metric(f"{section}/*", step_metric="iteration")
         record: dict = {"iteration": payload["iteration"]}
         for key, value in payload["headline"].items():
-            record[f"bench/{payload['suite']}/{key}"] = value
+            prefix, _, metric = key.partition("/")
+            record[f"{SECTIONS.get(prefix, 'bench_meta')}/{metric}"] = value
+        for name, path in payload.get("figures", {}).items():
+            record[f"figures/{name}"] = wandb.Image(path)
         columns = ["suite", "name", "plant", "fell", "summary"]
         table = wandb.Table(columns=columns)
         for r in payload["results"]:
@@ -83,10 +96,10 @@ def log_wandb(
             table.add_data(
                 r["suite"], r["name"], r["plant"], r.get("fell"), json.dumps(summary, default=float)
             )
-        record[f"bench/{payload['suite']}/cases"] = table
+        record["cases/all"] = table
         for r in payload["results"]:
             if r.get("video"):
-                record[f"bench/video/{r['name']}"] = wandb.Video(r["video"], format="mp4")
+                record[f"videos/{r['name']}"] = wandb.Video(r["video"], format="mp4")
         wandb.log(record)
         return run.url
     finally:

@@ -317,6 +317,8 @@ def run_case(job: dict) -> dict:
         "name": case["name"],
         "kind": case["kind"],
         "plant": case["plant"],
+        "params": dict(case["params"]),
+        "noise_std": case["noise_std"],
     }
     try:
         ep = Episode(cfg)

@@ -3,7 +3,7 @@
     se3-bench run --onnx <model_N.onnx> [--suite quick|full] [--workers N]
     se3-bench compare <a.json> <b.json>
 
-结果默认写到 ONNX 旁的 `bench/<model>_<suite>.json`（视频在 `bench/videos/<model>_<suite>/`）。
+结果默认写到 ONNX 旁的 `bench/<model>_<suite>.json`（诊断图在 `bench/figures/<model>_<suite>/`，视频在 `bench/videos/<model>_<suite>/`）。
 给了 `--wandb-project` 就额外记到同 group 的 `<run>-bench` 评测 run（见 report.log_wandb）。
 训练中由 se3_train.bench_hook 以独立进程调用本命令（`--lock` 让两次评测排队，不重叠）。
 """
@@ -149,6 +149,10 @@ def _run(args: argparse.Namespace, onnx: Path, out_dir: Path) -> int:
         "headline": metrics.headline(results),
         "results": results,
     }
+    if not args.no_figures:
+        from se3_tools.bench.figures import render_all
+
+        payload["figures"] = render_all(payload, out_dir / "figures" / tag)
     json_path = out_dir / f"{tag}.json"
     report.write_json(json_path, payload)
     print(f"[se3-bench] 用时 {payload['elapsed_s']} s → {json_path}", flush=True)
@@ -202,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--iteration", type=int, default=None)
     run.add_argument("--no-video", action="store_true")
+    run.add_argument("--no-figures", action="store_true", help="不出诊断图")
     run.add_argument("--lock", action="store_true", help="训练旁路调用时加锁，避免两次评测重叠")
     run.add_argument("--wandb-project", default=None)
     run.add_argument("--wandb-run-name", default=None)
