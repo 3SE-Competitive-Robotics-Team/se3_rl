@@ -93,7 +93,7 @@ def _side_active_angles_torch(policy_pos: torch.Tensor) -> torch.Tensor:
     """左右两侧主动杆夹角 [N, 2]（左 LF−LB、右 RB−RF，夹到机构行程）。
 
     四连杆换算全是逐元素运算，左右拼成一个张量算一次与分开算逐位相同，但 kernel 发起数减半
-    （rough 训练受 CPU 发起 kernel 的速度限制，见 docs/plan/rough_iteration_time_20261003.md）。
+    （rough 训练受 CPU 发起 kernel 的速度限制，见 rough_iteration_time_20261003）。
     """
     return torch.stack(
         (policy_pos[:, 0] - policy_pos[:, 1], policy_pos[:, 3] - policy_pos[:, 2]), dim=1

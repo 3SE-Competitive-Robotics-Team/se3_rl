@@ -61,3 +61,7 @@ ckpt_*/
 # RMUC 2027 场地：原始下载与生成物（scripts/make_rmuc2027_field_scene.py 重新生成）
 assets/fields/rmuc2027/raw/
 assets/robots/serialleg/meshes/rmuc2027/
+
+# 复旦 AMP / CTBC 数据（视频、pkl，几十 MB；main 已无 AMP 代码，只留本机）
+assets/amp/
+assets/ctbc_profiles/fudan_step20_20260907/

@@ -3,7 +3,7 @@
 覆盖层里能用 mjlab 官方件的都用官方件：地形 preset 与课程模式生成器（terrains.py）、地形难度升降级
 `terrain_levels_vel`（走过半块升级、走不到指令距离一半降级、到顶后随机回级）、出块截断
 `terrain_edge_reached` 与出网格截断 `out_of_terrain_bounds`、critic 的高度扫描 `height_scan`。
-本仓库自己的部分只剩有实验证据的几项（证据见 docs/plan/stair_training_wandb_review_20260913.md）：
+本仓库自己的部分只剩有实验证据的几项（证据见 stair_training_wandb_review_20260913）：
 
 - 指令（commands.py）：机身高度指令 + 地形感知高度下限；上台阶列独立采样前进与偏航速度，其余列沿用平地指令。
 - 奖励（stair_rewards.py / rewards.py）：台阶进度与双轮支撑两项专项奖励；台阶列置零高度罚与 yaw 工资、
@@ -33,7 +33,7 @@ M21：上台阶列机身高度罚的地面参考改为轮子支撑面（见 ROUG
 M27/M34：上台阶列高度参考改为复旦窗口口径 + 有界罚，两项轮几何罚死区归零（见 ROUGH_STAIR_HEIGHT_REFERENCE 注释）。
 M35：窗口高度罚加 ±5 cm 死区（见 ROUGH_STAIR_HEIGHT_DEAD_ZONE_M 注释）。
 M37：删五项重叠定价——command_velocity_error、tracking_lin_yaw_joint、bad_tilt、wheel_fore_aft_offset、
-wheel_height_diff（见 ROUGH_DROPPED_FLAT_REWARDS 注释，docs/plan/m37_reward_prune_20260927.md）。
+wheel_height_diff（见 ROUGH_DROPPED_FLAT_REWARDS 注释，m37_reward_prune_20260927）。
 M38：加全局向上奖励 upward 权重 1.0（见 ROUGH_UPWARD_WEIGHT 注释）。2026-09-28 用户定 M38 为默认，临时入口全部删除，
 复现各对照用对应 commit（M34 1a10b73、M35 5af0d00、M37 9e07b44、M38 25ca875）。
 M39：action_rate −0.48 → −0.10（见 ROUGH_ACTION_RATE_WEIGHT 注释）。M47：删 bad_orientation 终止。
@@ -47,7 +47,7 @@ RJ1：合入 J10 跳跃（见 _apply_jump_mimic）；2026-10-03 起跳跃样本�
 M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab）。
 
 DR1（2026-10-05 用户定）：rough 默认域随机化换成真 Kp/Kd、质心 ±5 cm、质量 −1…+3 kg、气弹簧 ×0.9–1.5、延迟 0–10 ms，
-不做恢复系数（见 ROUGH_DR_* 注释，docs/plan/rough_wide_dr_20261003.md）。
+不做恢复系数（见 ROUGH_DR_* 注释，rough_wide_dr_20261003）。
 
 机器人实体与 Flat 同一个 MJCF，只把碰撞 geom 从 group 0 改到 group 3（内存里改，不动文件），
 让 `include_geom_groups=(0,)` 的高度射线只看地形，不再打到自己的腿和轮子。
@@ -158,7 +158,7 @@ ROUGH_ALL_TERRAIN_TYPE_NAMES = tuple(ROUGH_RANDOM_TERRAIN_PROPORTIONS)
 ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
 ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
 # 速度违令二次罚（A6 起台阶列，A15 起全六列，lin_vel_scale 3.0）M37 起删除：3.0 下 1.0 m/s 误差只罚 0.20、
-# 斜率不到 1，是常数税不是远端梯度（docs/plan/m37_reward_prune_20260927.md）。
+# 斜率不到 1，是常数税不是远端梯度（m37_reward_prune_20260927）。
 # A15 非台阶列定价。A13b flat 列账本（96 env，指令 vx 2.0 / h 0.38）：站着不动净 +2.407/s、走路净
 # −2.932/s，走路必然产生的机身起伏被高度罚、核里的 vz 项、姿态罚罚了三遍。σ 0.05→0.10 收回 +3.11/s，
 # 运动核 0.08→0.5 与 vz 2.0→0 合计收回 +2.97/s；违令罚扩到全列只打在"不动"那边。
@@ -176,7 +176,7 @@ ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
 # 轮子 T-N 包络（见 robot_cfg.get_serialleg_closedchain_cfg 的 wheel_torque_envelope）。2026-10-07 起默认 "rated_point"（用户定）：
 # 按手册额定点（469 rpm@19:1 出 3 N·m）建额定 2.21 N·m 平台延续到 66.65 rad/s；旧口径 "linear_peak" 从峰值线性下降，45 rad/s 只剩 1.14 N·m。
 # 依据 WheelTN（xdk0dnoa，七卡 × 1500，4832d15）对 VxObserver（agqj496q）：后期 yaw 误差 2.0 → 1.6、vx 误差 0.55 → 0.52、台阶航向 9.3° → 8.9°，
-# catastrophic 0.03 → 0.06（规模不同，混有规模变量）；诊断见 docs/plan/rough_yaw_envelope_20261006.md。复现旧口径用 4832d15。
+# catastrophic 0.03 → 0.06（规模不同，混有规模变量）；诊断见 rough_yaw_envelope_20261006。复现旧口径用 4832d15。
 ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
 # 指令可行域的差速轮速预算（2026-10-06 用户定）："legacy" = Flat 继承的 45 rad/s、半轮距 0.20 m；
 # "rated" = M3508 手册额定转速 66.65 rad/s（14:1）、MJCF 实测半轮距 0.2166 m，使用比例都保持 0.9。
@@ -188,7 +188,7 @@ ROUGH_CTS_STUDENT_EVERY = 4
 # CTS-NoScan（2026-10-07 用户定）：教师编码器专用观测组 = critic 去掉高度扫描。前视地形是盲学生从本体历史原理上推不出的信息，
 # 教师隐向量带上它后共用 policy 学会按前视地形提前动作，学生只能回归条件均值，上台阶动作失真（Exp-CTS model_3700 sim2x）。
 ROUGH_CTS_TEACHER_GROUP = "cts_teacher"
-# StairVx08（2026-10-08 用户定）：台阶类列前进指令下限 0.4 → 0.8 的对照值。NoScan 归因（docs/plan/rough_vx_observer_20261005.md
+# StairVx08（2026-10-08 用户定）：台阶类列前进指令下限 0.4 → 0.8 的对照值。NoScan 归因（rough_vx_observer_20261005
 # "台阶列验证"）：给 0.4 m/s 爬 12 cm 台阶不现实，2000 轮后 policy 学会低指令也冲速靠动量过沿（stairs_up 0.4 → 0.59、
 # 爬升 0.36 → 0.56 m），盲 policy 在立面前分不清平地，同幅度超速泄漏到平地（0.4 → 0.54、0.6 → 0.73）。
 ROUGH_STAIR_LIN_VEL_X_MIN_VX08 = 0.8
@@ -201,7 +201,7 @@ ROUGH_STAIR_LIN_VEL_X_MIN_VX08 = 0.8
 # 这一项是 M6 单独改的，退回去不影响 M7 的跟踪权重 6 与 M8 的起步转移。
 ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 0.5
 # M7（2026-09-14 用户定）：速度跟踪权重 4 → 6（Flat 基线是 4）。M6-1200 在真实 env 的全项账本
-# （平地列、去 push，docs/plan/m6_ledger_full_20260914.md）：高姿站着不动 171.25/s、低姿跑 1.7 m/s
+# （平地列、去 push，m6_ledger_full_20260914）：高姿站着不动 171.25/s、低姿跑 1.7 m/s
 # 156.22/s —— 站着不动是全局最优，不是局部最优。跑起来赚 tracking +111.6，却亏掉轮离地 −36.9、
 # 高度 −25.9、摔倒 −20.8、碰撞 −16.7、腿触地 −12.0 等共 −136，净亏 15。缺口只有 15/s：
 # 权重 4→6 让运动那侧多 +71.7 而静止只多 +15.9，差值 −15 → +41，余量够覆盖策略不成熟期。
@@ -209,7 +209,7 @@ ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE = 0.5
 ROUGH_TRACKING_LIN_VEL_WEIGHT = 6.0
 # 叠加精细速度跟踪，静站与运动均生效；0.04 对应 0.2 m/s 误差尺度。
 # M17（2026-09-20 用户定）：权重 1.0 → 3.0，相对 M15（4flo3d80）的唯一改动。依据是 M15-7999 的反事实账本
-# （docs/plan/m15_tracking_diagnosis_20260920.md 评测四）：奖励最优已经是"跟上指令"，但跟准比策略自己选的冻结/慢模态
+# （m15_tracking_diagnosis_20260920 评测四）：奖励最优已经是"跟上指令"，但跟准比策略自己选的冻结/慢模态
 # 每秒只多赚 +1.1…+2.3（总回报约 10/s），宽核 σ=0.5 在 ±0.4 m/s 内近似平顶；w=3 把这份激励抬到 +2.4…+3.7/s
 # （30 cm/0.4：1.8 → 3.3；38 cm/0.4：1.1 → 2.4；38 cm/−0.4：2.3 → 3.7）。σ 不动，宽核不动。
 # 验收：30 cm 的 0.2–1.2 传递曲线是否离开 0.08/0.32/0.59/1.76 的台阶；台阶 0.34 下 0.8–1.4 通关不退。
@@ -220,7 +220,7 @@ ROUGH_TRACKING_LIN_VEL_NARROW_WEIGHT = 3.0
 # 0.15 m/s），w=3 的窄核把掉速罚贵了，策略改成不掉速的走梯（M17，双腿分开）或起跳（M18，台阶列轮离地罚 M2 起为零、跳是免费的）。
 # 台阶列窄核奖励 M15 0.07 → M17 0.68 是它在台阶上为窄核优化的证据。
 # M22（2026-09-21 用户定）：台阶列从"置零"恢复到 **w=1**（M15 的值，不是 M17 的 3），其余四列仍是 3；
-# 这是相对 M21（ee88a1d）的唯一改动。依据是 M21-2600 的评测与归因（docs/plan/m21_height_support_ref_20260921.md 末两节）：
+# 这是相对 M21（ee88a1d）的唯一改动。依据是 M21-2600 的评测与归因（m21_height_support_ref_20260921 末两节）：
 # 置零后台阶列只剩 σ=1.44 的宽核与违令罚，策略在 v=1.0 下每道立面要 2.0 s（M15-7999 是 0.75 s）、爬升段均速 0.38
 # （M15 0.86），抬轮从触面后 0.06 s 推迟到 0.30 s；给 v=1.4 时立面间隔回到 0.9–1.3 s、抬轮 0.12–0.20 s，
 # 说明慢是"没有速度激励"而不是姿态缺陷。同一慢推姿态泄漏到平地低速段（指令 0.4 实速 0.23，M17-2000 是 0.41；
@@ -231,7 +231,7 @@ ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_COLUMNS: tuple[str, ...] = ROUGH_STAIR_LIKE_
 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT = 1.0
 # M18/M19（左右轮前后错位罚 Δx²，平地列、10 cm 死区）与 M23（上台阶列左右轮高度差罚 Δz²、8 cm 死区）
 # 于 M37 删除：用户决定对称只保留 joint_mirror 一条关节空间定价；M34 曾把两项死区归零。
-# 历史与定价推导见 docs/plan/m18_wheel_offset_20260921.md、m23_wheel_dz_20260921.md、m37_reward_prune_20260927.md。
+# 历史与定价推导见 m18_wheel_offset_20260921、m23_wheel_dz_20260921、m37_reward_prune_20260927。
 ROUGH_TRACKING_LIN_VEL_NARROW_SIGMA = 0.04
 ROUGH_FLAT_VZ_WEIGHT = 0.0
 # 台阶列运动核分母（A11）：误差约 1 m/s 时仍有半额奖励，给低速前进提供可区分的回报。
@@ -242,7 +242,7 @@ ROUGH_TERRAIN_VZ_WEIGHT = 0.0
 # （is_alive +1.0、零速时跟踪核仍 +0.54、违令罚 −0.60），而"努力爬"在 1600 轮净 −0.4/s：轮离地罚 −0.7、
 # base 碰地形罚 −0.5 正好罚在抬轮跨立面这个动作上，is_alive 则是"站着的工资"（与 A10 删掉 yaw 工资同理）。
 # 官方升降级把台阶 env 堆在成功率约一半的行，按此账本"尝试"要成功率超过约 40% 才划算，去掉工资后约 12%。
-# 确定性回放在 1400 轮长出常数动作不动点（docs/plan/m1_model800_vs_1400_20260913.md）就是这个失衡的产物。
+# 确定性回放在 1400 轮长出常数动作不动点（m1_model800_vs_1400_20260913）就是这个失衡的产物。
 ROUGH_STAIRS_ZEROED_REWARDS = ("is_alive", "flat_wheel_contact", "collision")
 # 三项接触税在哪些列置零（2026-09-15）：上下台阶都会抬轮跨立面、机身也会蹭到台阶，
 # 坡面不给——坡上轮子本来就该一直着地，置零等于放掉唯一的接触约束。
@@ -279,7 +279,7 @@ ROUGH_FALL_PENALTY = 10.0
 # M21（2026-09-21 用户定）：上台阶列的地面参考从"base_link 正下方射线（base_height_sensor）"改为"两轮下方射线"
 # （轮子支撑面，现成的 stair_reward_height 传感器，取有效命中均值）。旧口径下机身沿一越过台阶边，参考地面瞬间抬一阶，
 # 误差夹满 0.15 → 峰值 −9/s，直到机身升完这一阶：M15-7999 第 9 级每道 20 cm 立面跌落 20.3–20.5 cm、恢复 0.38–0.40 s、
-# 每道累计 −2.7…−3.1，整段四级 −10，而台阶列专项奖励只有约 +2.7/s（docs/plan/m20_narrow_off_stairs_20260921.md 末段）。
+# 每道累计 −2.7…−3.1，整段四级 −10，而台阶列专项奖励只有约 +2.7/s（m20_narrow_off_stairs_20260921 末段）。
 # 它把用户要的"机身先过沿、轮子随后收腿提上来"的过渡期按最高费率罚，过渡越慢罚越多，奖励天然偏向缩短过渡的
 # 起跳（M18）/走梯（M17）。支撑面口径：轮子还在下一阶时参考不跳，机身前倾压紧时误差只是几厘米，轮子过沿时机身已随之升起。
 # 平地上两种口径逐位相同；其余四列仍用原口径。σ、夹紧、权重 −4 不变，不加死区（单变量）。
@@ -291,11 +291,11 @@ ROUGH_BASE_HEIGHT_SUPPORT_SENSOR = "stair_reward_height"
 #               见 rewards.base_height_penalty_window_on_terrain。σ、权重 −4、生效列与 support 相同。
 ROUGH_STAIR_HEIGHT_REFERENCE = "window"
 # M35（2026-09-26 用户定）：窗口口径高度罚在上台阶列的死区（m），只在 "window" 口径下有意义；0 = 原样。
-# 依据 M34-7800 反事实账本（docs/plan/m35_m36_stair_speed_20260926.md）：窗口高度罚是唯一随爬升速度明显上涨的罚项，
+# 依据 M34-7800 反事实账本（m35_m36_stair_speed_20260926）：窗口高度罚是唯一随爬升速度明显上涨的罚项，
 # 误差以过沿时机身偏低为主，±5 cm 死区去掉其 85%，动作罚（action_rate / action_smoothness）在 0.73–0.89 m/s 间不变。
 ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.05
 # M37（2026-09-27 用户定）：在 M35 基线上整组删掉五项重叠定价，其余逐位不变。
-# 依据 docs/plan/m37_reward_prune_20260927.md 的形状分析：
+# 依据 m37_reward_prune_20260927 的形状分析：
 #   command_velocity_error  lin_vel_scale 3.0 下 1.0 m/s 误差只罚 0.20、斜率不到 1，是常数税不是远端梯度（台阶列实付 −0.68/s）；
 #   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令 ±0.3 永远开不了，与 tracking_ang_vel 重复计酬；
 #   bad_tilt                15° 以上与 tracking_orientation_l2 是同一量的两条曲线，30° 以上已由 bad_orientation 终止接手；
@@ -304,13 +304,13 @@ ROUGH_STAIR_HEIGHT_DEAD_ZONE_M = 0.05
 # 形状：0–20° 内几乎是 +4/s 常数工资（18° 只少 0.2/s，是 orientation_l2 同角度的 1/6），45° 以上才有量；
 # 它不受列掩码，等于给台阶列重新发 4 倍 is_alive 的工资（M2 曾把 is_alive 在台阶列置零），判据里要盯台阶列低速冻住。
 # None = 不加（M37 及之前）。M38-4999 回放：撞面俯仰从 M37 的 −16…−18° 回到 −2…−10°，h=0.38 低速格子从卡变过；
-# 代价是台阶列 vx 0.79–0.86 → 0.72–0.75、落差后摔倒变多（docs/plan/m38_upward_20260928.md）。2026-09-28 起默认 1.0。
+# 代价是台阶列 vx 0.79–0.86 → 0.72–0.75、落差后摔倒变多（m38_upward_20260928）。2026-09-28 起默认 1.0。
 ROUGH_UPWARD_WEIGHT: float | None = 1.0
 # 2026-10-04 起 tracking_orientation_l2（pitch/roll L2）−12 → −24（用户定）。同代码同配置（7 卡 × 1170、actor 128）对照：
 # Base128 `8kjb4vm4`（−12）对 Orient24 `3ix86na3`（−24），sim2x 地形网格 10 种地形 × r3/6/9 平均倾角 8.7° → 4.4°、
 # p95 20.8° → 11.8°、通过率 93% → 100%，平地 vx 误差 0.213 → 0.082、抗推最大倾角 21.3° → 15.6°；
 # 代价是起步到 90% 速度 0.61 → 0.80 s。跳跃落地变差与中等高度跑动站高两条 run 都有，与本项无关
-# （docs/plan/rough_orient24_20261004.md）。
+# （rough_orient24_20261004）。
 ROUGH_ORIENTATION_WEIGHT: float = -24.0
 # 从 Flat 继承后整项删除的三项（另三项 rough 自己不再构造）：
 #   tracking_lin_yaw_joint  只在 |vx|≥0.2 且 |yaw|≥0.5 时开，台阶列 yaw 指令恒 0 永远开不了，与 tracking_ang_vel 重复计酬；
@@ -318,19 +318,19 @@ ROUGH_ORIENTATION_WEIGHT: float = -24.0
 #   joint_mirror            M49 起对称只罚水平分量，改由 wheel_fore_aft_offset 计价（见 ROUGH_WHEEL_FORE_AFT_WEIGHT）。
 ROUGH_DROPPED_FLAT_REWARDS: tuple[str, ...] = ("tracking_lin_yaw_joint", "bad_tilt", "joint_mirror")
 # M39（2026-09-28 用户定）：action_rate 权重 −0.48 → −0.10（Flat 是 −0.48）。M34-7800 账本里 action_rate 在 0.73–0.89 m/s
-# 间不随速度变（−0.55…−0.58/s），M38 台阶列实付 −0.85/s，是台阶列第二大罚项（docs/plan/m39_action_rate_20260928.md）。
+# 间不随速度变（−0.55…−0.58/s），M38 台阶列实付 −0.85/s，是台阶列第二大罚项（m39_action_rate_20260928）。
 ROUGH_ACTION_RATE_WEIGHT = -0.10
 # M47（2026-09-29 用户定）：删 bad_orientation 终止（倾角 > 30° 连续 100 步即终止并吃 fall_penalty）。
 # 失败终止只剩数值发散的 catastrophic_state，倒地 env 躺到超时，由姿态 / 触地 / upward 等奖励项计价
-# （docs/plan/m47_no_bad_orientation_20260929.md）。
+# （m47_no_bad_orientation_20260929）。
 # M49（2026-09-29 用户定）：对称只罚水平分量——删 joint_mirror（M48 曾把它从 −0.179 加到 −5，左右差 22° 时每秒只扣
 # 0.03 → 0.76），加 wheel_fore_aft_offset（左右轮心机身系前后错位 Δx²，全列、无死区、直立门控）。竖直分量（左右腿长差）
 # 留给 roll 指令，平地侧倾由 tracking_orientation_l2 计价。w −50/m²：Δx 5/10/20 cm 每秒 0.13/0.5/2.0
-# （docs/plan/m48_joint_mirror_20260929.md、m49_wheel_fore_aft_20260929.md）。
+# （m48_joint_mirror_20260929、m49_wheel_fore_aft_20260929）。
 ROUGH_WHEEL_FORE_AFT_WEIGHT = -50.0
 # M50（2026-09-29 用户定）：台阶列（stairs_up、stairs_two_step_up）不再采样 yaw 角速度指令（commands.ROUGH_STAIR_ANG_VEL_YAW_RANGE
 # = (0, 0)），转向多样性改由初始朝向提供：初始朝向从全向均匀收窄为「正对某一面台阶 ± 半宽」（events.stair_facing_yaw）；
-# 台阶列 yaw 角速度跟踪恢复 Flat 原式（M44 的做法），指令恒 0 时它就是台阶列的 yaw 角速度罚（docs/plan/m50_stair_yaw_20260929.md）。
+# 台阶列 yaw 角速度跟踪恢复 Flat 原式（M44 的做法），指令恒 0 时它就是台阶列的 yaw 角速度罚（m50_stair_yaw_20260929）。
 # M54 把半宽从 ±30° 收到 ±15°：腿长行程 19.6 cm < 最高台阶 20 cm，斜 30° 不转正只能大侧倾硬爬。
 ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG = 15.0
 # M51（2026-09-29 用户定）：地形集加随机粗糙、波浪、离散矮障碍三列（terrains.ROUGH_RANDOM_TERRAIN_*），
@@ -343,14 +343,14 @@ ROUGH_STAIR_SPAWN_YAW_HALF_RANGE_DEG = 15.0
 # M53 第二处改动：腿部电机 T-N 包络按物理含义取参并整体 ×0.8——saturation_effort = 0.8·电压限零速截距
 # （DM8009P V1.0 @24V 约 132 → 106）、effort_limit = 0.8·峰值 40 = 32，即 32 N·m 平台到约 11.7 rad/s 再沿反电动势下降、
 # 16.76 rad/s 过零（旧口径恒扭矩区被额定 20 削平，100 rpm 下只有 15 N·m，低于达妙官方实测的至少 25 N·m）。
-# 用户确认真机至少 30、35 肯定可给。见 robot_cfg.get_serialleg_closedchain_cfg（docs/plan/m53_knee_spring_feedforward_20260930.md）。
+# 用户确认真机至少 30、35 肯定可给。见 robot_cfg.get_serialleg_closedchain_cfg（m53_knee_spring_feedforward_20260930）。
 ROUGH_LEG_TORQUE_ENVELOPE_SCALE = 0.8
 # M54（2026-09-30 用户定）：斜向上台阶不靠被动扭转转正。M53 记账（.scratch/m53_yaw_ledger/）显示先触立面的轮子
 # 被挡住、另一侧继续走，机身被动转正（出生偏 30° 转 −24°，强制左右轮同速转 −32°），原定价只按瞬时角速度收 0.6、转完不计价；
 # 而单轮先上会被轮前后错位罚持续扣分。两处改动，均只作用于台阶列（stairs_up、stairs_two_step_up）：
 #   1. stair_heading_hold：航向误差平方（rad²）×(−6)，目标 = 出生朝向 + ∫yaw 指令；偏 15°/30° 每秒 −0.41/−1.64。
 #   2. wheel_fore_aft_offset 在台阶列 ×0.25（Δx 20 cm 每秒 −2.0 → −0.5），给单轮先上留余地；其余列 −50 不变。
-# 见 docs/plan/m54_stair_heading_hold_20260930.md。
+# 见 m54_stair_heading_hold_20260930。
 ROUGH_STAIR_HEADING_HOLD_WEIGHT = -6.0
 ROUGH_STAIR_WHEEL_FORE_AFT_SCALE = 0.25
 # M8（2026-09-14 用户定）：平地列注入高姿起步转移。M7-1200 的噪声扫描（.scratch/m7_explore.py，
@@ -367,7 +367,7 @@ ROUGH_STAIR_WHEEL_FORE_AFT_SCALE = 0.25
 # 下沉 40–47 → 7–28 mm、0.5 s 内稳定；平地静站固定俯仰 −5.6/+7.5/−3.3° → −0.8/−0.6/−1.6°（0.22/0.30/0.38 m）；
 # 平地 vx 误差 0.082 → 0.058；中等高度跑动站高减 1–2.5 cm（未根除）。M8 的高姿态起步能力保留（0.38 m 静站后
 # 0.8/1.6/2.4 均能起步，稳态 0.84/1.53/2.12 m/s、到 90% 稍慢）；代价：wave r6/r9 0.6 m/s 卡住、两级下台阶 r9 摔倒、
-# 跳跃离地平均低 1.6 cm（docs/plan/rough_highstand01_20261004.md）。
+# 跳跃离地平均低 1.6 cm（rough_highstand01_20261004）。
 ROUGH_HIGH_STAND_TRANSITION_PROB = 0.1
 
 # DR1（2026-10-05 用户定，原 Exp-WideDR-NoRest）：rough 默认域随机化在 Flat 继承的 DR 上改五项，其余（摩擦、惯量、电机被动参数、
@@ -381,7 +381,7 @@ ROUGH_HIGH_STAND_TRANSITION_PROB = 0.1
 #           真机 runtime 默认把延迟覆盖成 0（se3_runtime_nx --action-delay-steps），不受影响
 # 恢复系数不做：MuJoCo 软接触的阻尼对持续接触一直生效，压低阻尼得到的是轮地接触持续欠阻尼振荡，而不是 PhysX 那种只在撞击时
 # 生效的 restitution。离线归因显示 e > 0.7 回报断崖（0.9–1.0 −76%），是 WideDR 全面退化的主因。
-# 评测（docs/plan/rough_wide_dr_20261003.md）：扰动 plant 11 种 × 6 项 0 摔（旧默认 5 摔），质心 +5 cm 下 vx 误差 0.14（旧 0.56）；
+# 评测（rough_wide_dr_20261003）：扰动 plant 11 种 × 6 项 0 摔（旧默认 5 摔），质心 +5 cm 下 vx 误差 0.14（旧 0.56）；
 # 名义平地 vx 误差约为旧默认的 2 倍。注意 NoRest（11f9d40）相对 Orient24 还混入了 3919db7 / b50ef1f / 6656fb5 三处默认改动，
 # DR1 对名义性能的单独代价尚无干净对照。复现各对照：WideDR 80019b8、Oracle 1fa00ca、Rest05 17c91ba、NoRest 11f9d40。
 ROUGH_DR_KP_RANGE = (0.9, 1.1)
@@ -711,7 +711,7 @@ def env_cfg(
             cfg.commands["velocity_height"], stair_lin_vel_x_range=(low, high)
         )
     if yaw_ratio_blend is not None:
-        # yaw 包络顶端拒转（docs/plan/rough_yaw_envelope_20261006.md）：指数核在大误差时没有梯度，
+        # yaw 包络顶端拒转（rough_yaw_envelope_20261006）：指数核在大误差时没有梯度，
         # 比例项占比越大，"转到一半"拿到的分越多，填平从不转到转满之间只亏不赚的一段。
         yaw = cfg.rewards["tracking_ang_vel"]
         cfg.rewards["tracking_ang_vel"] = replace(

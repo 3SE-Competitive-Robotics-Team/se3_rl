@@ -10,6 +10,12 @@
         --output-dir <run>/onnx --checkpoint <run>/model_100.pt [--checkpoint ...]
 
 一次进程只构造一次 env（MuJoCo-Warp CPU 编译约 1 分钟），可批量传入同一 run 的多个 checkpoint。
+
+部署契约覆盖（2026-09-30，M52 起）：`--deploy-knee-gas-spring-compensation 300` 把导出契约的
+`knee_gas_spring` 改成 `{force: 300, compensation_enabled: true}`，产物名加 `_kneecomp300` 后缀。
+用于无弹簧 plant 训练的策略（env_cfg(knee_gas_spring=False)）部署到带 300 N 气弹簧的 MJCF / 真机：
+runtime 在电机侧叠加 −F·dL/dα 前馈抵消弹簧，策略面对的仍是训练时的无弹簧 plant。
+env 只用于导出、不步进，覆盖只影响契约；任务本身已开补偿或训练 plant 带弹簧时拒绝覆盖。
 """
 
 from __future__ import annotations
@@ -46,6 +52,24 @@ def _build_runner(task_id: str, log_dir: Path):
     return runner_cls(env, asdict(agent_cfg), str(log_dir), "cpu")
 
 
+def _apply_deploy_knee_compensation(env, force: float) -> str | None:
+    """把导出契约的膝气弹簧改成「部署端补偿 force」；前提是训练 plant 无弹簧、任务未开补偿。"""
+    from se3_shared import JointGroup
+
+    robot = env.scene["robot"]
+    springs = [
+        name for name in JointGroup.KNEE_SPRING_ACTUATOR_NAMES if name in robot.actuator_names
+    ]
+    if springs:
+        return f"任务 plant 带膝气弹簧 {springs}，补偿应在训练端配置，不能只改部署契约"
+    cfg = env.action_manager.get_term("delayed_action").cfg
+    if cfg.knee_gas_spring_compensation_enabled:
+        return "任务已开启膝气弹簧补偿，无需覆盖"
+    cfg.knee_gas_spring_force = float(force)
+    cfg.knee_gas_spring_compensation_enabled = True
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -62,6 +86,13 @@ def main() -> int:
         "--checkpoint", action="append", required=True, type=Path, help="model_N.pt，可重复"
     )
     parser.add_argument("--overwrite", action="store_true", help="已存在同名 ONNX 时覆盖")
+    parser.add_argument(
+        "--deploy-knee-gas-spring-compensation",
+        type=float,
+        default=None,
+        metavar="FORCE_N",
+        help="部署契约打开膝气弹簧前馈补偿（弹簧力 N），只允许无弹簧 plant 训练的任务",
+    )
     args = parser.parse_args()
 
     for checkpoint in args.checkpoint:
@@ -70,11 +101,22 @@ def main() -> int:
             return 2
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    compensation_force = args.deploy_knee_gas_spring_compensation
+    if compensation_force is not None and compensation_force <= 0.0:
+        print(f"错误：补偿弹簧力必须为正数，实际为 {compensation_force}", file=sys.stderr)
+        return 2
+    suffix = "" if compensation_force is None else f"_kneecomp{compensation_force:g}"
+
     with tempfile.TemporaryDirectory(prefix="se3-export-") as tmp:
         runner = _build_runner(args.task, Path(tmp))
+        if compensation_force is not None:
+            error = _apply_deploy_knee_compensation(runner.env.unwrapped, compensation_force)
+            if error is not None:
+                print(f"错误：{error}", file=sys.stderr)
+                return 2
         exported = 0
         for checkpoint in args.checkpoint:
-            target = args.output_dir / f"{checkpoint.stem}.onnx"
+            target = args.output_dir / f"{checkpoint.stem}{suffix}.onnx"
             if target.exists() and not args.overwrite:
                 print(f"[跳过] 已存在 {target}")
                 continue

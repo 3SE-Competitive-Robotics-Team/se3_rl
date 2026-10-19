@@ -28,7 +28,6 @@
 - `domain randomization`（域随机化）：训练时随机扰动质量、摩擦、PD 增益等参数，提升策略鲁棒性
 - `sim2sim gap`：训练仿真器（MJLab/MuJoCo-Warp）与验证仿真器（原生 MuJoCo）之间的行为差异
 - `privileged observation`：训练时 critic 可见但 actor 不可见的观测（如 base 线速度、接触力、base 高度），部署时不可用
-- `EFGCL`（External Force Guided Curriculum Learning）：训练早期通过外部物理辅助让策略经历成功状态，再按成功率逐步撤掉辅助。本仓库当前用于跳跃 PreTrain 的空中姿态 spotting，详见 `docs/efgcl_spotting.md`。
 
 ## 核心命令
 
@@ -155,9 +154,9 @@ SerialLeg 的传动不是简单串联链，实际结构为：
 - 所有电机在**机身内部**，通过**共轴链轮**传动
 - 膝关节通过**四连杆机构**（驱动杆 AB → 连杆 BC → 小腿上段 CD）传动
 - 膝关节安装有**气弹簧**，MJCF 里建模为 300 N **恒力** tendon actuator，挂点 P₁ 在大腿 `lf0_Link`、P₂ 在小腿 `lf1_Link`（跨过膝轴，不接驱动杆）
-- 电机侧保留一份气弹簧等效力矩前馈 `-F·dL/dα`（抵消弹簧，使策略面对无弹簧 plant）：`se3_shared.fourbar.knee_gas_spring_compensation_torque_{torch,np}`，训练端与 sim2sim 都在 PD 之后、T-N 限幅之前叠加，**默认关闭**（策略直面带弹簧 plant，见 `docs/plan/knee_spring_modeling.md`）。sim2sim 侧是 `se3_runtime/_serialleg_v1.py` 的独立复刻，**两份实现的符号与算法必须同步改**
+- 电机侧保留一份气弹簧等效力矩前馈 `-F·dL/dα`（抵消弹簧，使策略面对无弹簧 plant）：`se3_shared.fourbar.knee_gas_spring_compensation_torque_{torch,np}`，训练端与 sim2sim 都在 PD 之后、T-N 限幅之前叠加，**默认关闭**（策略直面带弹簧 plant）。sim2sim 侧是 `se3_runtime/_serialleg_v1.py` 的独立复刻，**两份实现的符号与算法必须同步改**
 
-运行 `scripts/plot_spring_geometry.py` 可生成带真实 MuJoCo FK 的机构示意图，理解四连杆拓扑和弹簧挂点位置关系。详细方案见 `docs/plan/knee_spring_modeling.md`。
+运行 `scripts/plot_spring_geometry.py` 可生成带真实 MuJoCo FK 的机构示意图，理解四连杆拓扑和弹簧挂点位置关系。
 
 ## 架构关键点
 
@@ -203,7 +202,6 @@ se3_train/
     ├── jump_commands.py    # 跳跃指令 + 状态机（JumpCommandTerm，8 维）
     ├── curriculums.py      # 行走课程
     ├── jump_curriculums.py # 跳跃课程（jump_prob 动态调度）
-    ├── efgcl_stabilizer.py # EFGCL 空中姿态 spotting 辅助（仅 PreTrain）
     ├── jump_traj_tracking.py  # 参考轨迹跟踪奖励
     ├── events.py           # 域随机化事件 + RSI 轨迹注入
     └── terminations.py     # 超时终止 + 腿部接触终止

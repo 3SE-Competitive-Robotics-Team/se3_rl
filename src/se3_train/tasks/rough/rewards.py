@@ -1,7 +1,7 @@
 """本任务的奖励包装：数学全部复用 Flat 基线，只按地形列改生效范围或核参数。
 
 1. （已删除）`command_velocity_error_on_terrain`：A6–M35 用的速度违令二次罚。M37 起删除：lin_vel_scale 3.0 下
-   1.0 m/s 误差只罚 0.20、斜率不到 1，是常数税不是远端梯度（docs/plan/m37_reward_prune_20260927.md）。
+   1.0 m/s 误差只罚 0.20、斜率不到 1，是常数税不是远端梯度（m37_reward_prune_20260927）。
 2. `base_height_penalty_support_on_terrain`（M21）：机身高度罚，在指定列（上台阶列）把地面参考从 base_link
    正下方射线换成两轮下方射线（轮子支撑面），其余列与 Flat 原函数逐位相同。旧口径下机身沿一越过台阶边，
    参考地面瞬间抬一阶，误差夹满 0.15 就按封顶 −9/s 罚到机身升完这一阶，把"机身先过沿、轮子随后收腿提上来"
@@ -18,8 +18,8 @@
 5b. `column_scaled`：同一件事的连续版，指定列乘一个系数而不是置零。M22 用它给窄核速度跟踪分列定权
    （台阶列 w=1、其余四列 w=3，见 env_cfg.py 的 ROUGH_TRACKING_LIN_VEL_NARROW_STAIR_WEIGHT 注释）。
 6. （已删除）`wheel_fore_aft_offset`（M18/M19）与 `wheel_height_diff`（M23）：左右轮心前后错位 Δx² 与高度差 Δz² 的几何罚。
-   M37 起删除：用户决定对称只保留 joint_mirror 一条关节空间定价。推导见 docs/plan/m18_wheel_offset_20260921.md、
-   m23_wheel_dz_20260921.md；复现用 commit 5af0d00（M35，最后一个带这两项的入口）。
+   M37 起删除：用户决定对称只保留 joint_mirror 一条关节空间定价。推导见 m18_wheel_offset_20260921、
+   m23_wheel_dz_20260921；复现用 commit 5af0d00（M35，最后一个带这两项的入口）。
 
 掩码为 None（非课程地形、平面地形、列名对不上）时全部退化成 Flat 基线的行为。
 """

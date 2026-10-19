@@ -1,0 +1,153 @@
+<mujoco model="serialleg_stairs_1to9">
+  <!-- 由 scripts/make_stair_scene.py 生成，请勿手改。
+       几何取自 mjlab TerrainGenerator 编译 rough_terrains_cfg() 后 stairs_up 列的对应行，
+       与训练时机器人踩到的那块地形逐块一致。每级平移使坑底出生点落在世界原点。
+       台阶高 = 0.02 + (级/9) × 0.18 m。 -->
+  <include file="serialleg_closed_chain_v3_train_obb_trim.xml" />
+  <worldbody>
+    <!-- 第 1 级：difficulty 1/9，台阶高 0.0400 m，13 个 box -->
+    <body name="se3_stair_level_1" mocap="true" pos="0 0 0">
+      <geom name="stair_1_0" type="box" pos="0 4.25 0.095" size="4.5 0.25 0.025" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_1" type="box" pos="0 -4.25 0.095" size="4.5 0.25 0.025" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_2" type="box" pos="-4.25 0 0.095" size="0.25 4 0.025" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_3" type="box" pos="4.25 0 0.095" size="0.25 4 0.025" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_4" type="box" pos="0 3.25 0.04" size="4 0.75 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_5" type="box" pos="0 -3.25 0.04" size="4 0.75 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_6" type="box" pos="3.25 0 0.04" size="0.75 2.5 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_7" type="box" pos="-3.25 0 0.04" size="0.75 2.5 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_8" type="box" pos="0 1.75 0.02" size="2.5 0.75 0.02" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_9" type="box" pos="0 -1.75 0.02" size="2.5 0.75 0.02" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_10" type="box" pos="1.75 0 0.02" size="0.75 1 0.02" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_11" type="box" pos="-1.75 0 0.02" size="0.75 1 0.02" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_1_12" type="box" pos="0 0 -0.02" size="1 1 0.02" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 2 级：difficulty 2/9，台阶高 0.0600 m，13 个 box -->
+    <body name="se3_stair_level_2" mocap="true" pos="0 1000 0">
+      <geom name="stair_2_0" type="box" pos="0 4.25 0.15" size="4.5 0.25 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_1" type="box" pos="0 -4.25 0.15" size="4.5 0.25 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_2" type="box" pos="-4.25 0 0.15" size="0.25 4 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_3" type="box" pos="4.25 0 0.15" size="0.25 4 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_4" type="box" pos="0 3.25 0.06" size="4 0.75 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_5" type="box" pos="0 -3.25 0.06" size="4 0.75 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_6" type="box" pos="3.25 0 0.06" size="0.75 2.5 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_7" type="box" pos="-3.25 0 0.06" size="0.75 2.5 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_8" type="box" pos="0 1.75 0.03" size="2.5 0.75 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_9" type="box" pos="0 -1.75 0.03" size="2.5 0.75 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_10" type="box" pos="1.75 0 0.03" size="0.75 1 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_11" type="box" pos="-1.75 0 0.03" size="0.75 1 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_2_12" type="box" pos="0 0 -0.03" size="1 1 0.03" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 3 级：difficulty 3/9，台阶高 0.0800 m，13 个 box -->
+    <body name="se3_stair_level_3" mocap="true" pos="0 1000 0">
+      <geom name="stair_3_0" type="box" pos="0 4.25 0.2" size="4.5 0.25 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_1" type="box" pos="0 -4.25 0.2" size="4.5 0.25 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_2" type="box" pos="-4.25 0 0.2" size="0.25 4 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_3" type="box" pos="4.25 0 0.2" size="0.25 4 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_4" type="box" pos="0 3.25 0.08" size="4 0.75 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_5" type="box" pos="0 -3.25 0.08" size="4 0.75 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_6" type="box" pos="3.25 0 0.08" size="0.75 2.5 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_7" type="box" pos="-3.25 0 0.08" size="0.75 2.5 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_8" type="box" pos="0 1.75 0.04" size="2.5 0.75 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_9" type="box" pos="0 -1.75 0.04" size="2.5 0.75 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_10" type="box" pos="1.75 0 0.04" size="0.75 1 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_11" type="box" pos="-1.75 0 0.04" size="0.75 1 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_3_12" type="box" pos="0 0 -0.04" size="1 1 0.04" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 4 级：difficulty 4/9，台阶高 0.1000 m，13 个 box -->
+    <body name="se3_stair_level_4" mocap="true" pos="0 1000 0">
+      <geom name="stair_4_0" type="box" pos="0 4.25 0.25" size="4.5 0.25 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_1" type="box" pos="0 -4.25 0.25" size="4.5 0.25 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_2" type="box" pos="-4.25 0 0.25" size="0.25 4 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_3" type="box" pos="4.25 0 0.25" size="0.25 4 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_4" type="box" pos="0 3.25 0.1" size="4 0.75 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_5" type="box" pos="0 -3.25 0.1" size="4 0.75 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_6" type="box" pos="3.25 0 0.1" size="0.75 2.5 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_7" type="box" pos="-3.25 0 0.1" size="0.75 2.5 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_8" type="box" pos="0 1.75 0.05" size="2.5 0.75 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_9" type="box" pos="0 -1.75 0.05" size="2.5 0.75 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_10" type="box" pos="1.75 0 0.05" size="0.75 1 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_11" type="box" pos="-1.75 0 0.05" size="0.75 1 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_4_12" type="box" pos="0 0 -0.05" size="1 1 0.05" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 5 级：difficulty 5/9，台阶高 0.1200 m，13 个 box -->
+    <body name="se3_stair_level_5" mocap="true" pos="0 1000 0">
+      <geom name="stair_5_0" type="box" pos="0 4.25 0.3" size="4.5 0.25 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_1" type="box" pos="0 -4.25 0.3" size="4.5 0.25 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_2" type="box" pos="-4.25 0 0.3" size="0.25 4 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_3" type="box" pos="4.25 0 0.3" size="0.25 4 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_4" type="box" pos="0 3.25 0.12" size="4 0.75 0.12" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_5" type="box" pos="0 -3.25 0.12" size="4 0.75 0.12" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_6" type="box" pos="3.25 0 0.12" size="0.75 2.5 0.12" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_7" type="box" pos="-3.25 0 0.12" size="0.75 2.5 0.12" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_8" type="box" pos="0 1.75 0.06" size="2.5 0.75 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_9" type="box" pos="0 -1.75 0.06" size="2.5 0.75 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_10" type="box" pos="1.75 0 0.06" size="0.75 1 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_11" type="box" pos="-1.75 0 0.06" size="0.75 1 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_5_12" type="box" pos="0 0 -0.06" size="1 1 0.06" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 6 级：difficulty 6/9，台阶高 0.1400 m，13 个 box -->
+    <body name="se3_stair_level_6" mocap="true" pos="0 1000 0">
+      <geom name="stair_6_0" type="box" pos="0 4.25 0.35" size="4.5 0.25 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_1" type="box" pos="0 -4.25 0.35" size="4.5 0.25 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_2" type="box" pos="-4.25 0 0.35" size="0.25 4 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_3" type="box" pos="4.25 0 0.35" size="0.25 4 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_4" type="box" pos="0 3.25 0.14" size="4 0.75 0.14" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_5" type="box" pos="0 -3.25 0.14" size="4 0.75 0.14" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_6" type="box" pos="3.25 0 0.14" size="0.75 2.5 0.14" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_7" type="box" pos="-3.25 0 0.14" size="0.75 2.5 0.14" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_8" type="box" pos="0 1.75 0.07" size="2.5 0.75 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_9" type="box" pos="0 -1.75 0.07" size="2.5 0.75 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_10" type="box" pos="1.75 0 0.07" size="0.75 1 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_11" type="box" pos="-1.75 0 0.07" size="0.75 1 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_6_12" type="box" pos="0 0 -0.07" size="1 1 0.07" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 7 级：difficulty 7/9，台阶高 0.1600 m，13 个 box -->
+    <body name="se3_stair_level_7" mocap="true" pos="0 1000 0">
+      <geom name="stair_7_0" type="box" pos="0 4.25 0.4" size="4.5 0.25 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_1" type="box" pos="0 -4.25 0.4" size="4.5 0.25 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_2" type="box" pos="-4.25 0 0.4" size="0.25 4 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_3" type="box" pos="4.25 0 0.4" size="0.25 4 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_4" type="box" pos="0 3.25 0.16" size="4 0.75 0.16" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_5" type="box" pos="0 -3.25 0.16" size="4 0.75 0.16" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_6" type="box" pos="3.25 0 0.16" size="0.75 2.5 0.16" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_7" type="box" pos="-3.25 0 0.16" size="0.75 2.5 0.16" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_8" type="box" pos="0 1.75 0.08" size="2.5 0.75 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_9" type="box" pos="0 -1.75 0.08" size="2.5 0.75 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_10" type="box" pos="1.75 0 0.08" size="0.75 1 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_11" type="box" pos="-1.75 0 0.08" size="0.75 1 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_7_12" type="box" pos="0 0 -0.08" size="1 1 0.08" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 8 级：difficulty 8/9，台阶高 0.1800 m，13 个 box -->
+    <body name="se3_stair_level_8" mocap="true" pos="0 1000 0">
+      <geom name="stair_8_0" type="box" pos="0 4.25 0.45" size="4.5 0.25 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_1" type="box" pos="0 -4.25 0.45" size="4.5 0.25 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_2" type="box" pos="-4.25 0 0.45" size="0.25 4 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_3" type="box" pos="4.25 0 0.45" size="0.25 4 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_4" type="box" pos="0 3.25 0.18" size="4 0.75 0.18" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_5" type="box" pos="0 -3.25 0.18" size="4 0.75 0.18" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_6" type="box" pos="3.25 0 0.18" size="0.75 2.5 0.18" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_7" type="box" pos="-3.25 0 0.18" size="0.75 2.5 0.18" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_8" type="box" pos="0 1.75 0.09" size="2.5 0.75 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_9" type="box" pos="0 -1.75 0.09" size="2.5 0.75 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_10" type="box" pos="1.75 0 0.09" size="0.75 1 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_11" type="box" pos="-1.75 0 0.09" size="0.75 1 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_8_12" type="box" pos="0 0 -0.09" size="1 1 0.09" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+    <!-- 第 9 级：difficulty 9/9，台阶高 0.2000 m，13 个 box -->
+    <body name="se3_stair_level_9" mocap="true" pos="0 1000 0">
+      <geom name="stair_9_0" type="box" pos="0 4.25 0.5" size="4.5 0.25 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_1" type="box" pos="0 -4.25 0.5" size="4.5 0.25 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_2" type="box" pos="-4.25 0 0.5" size="0.25 4 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_3" type="box" pos="4.25 0 0.5" size="0.25 4 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_4" type="box" pos="0 3.25 0.2" size="4 0.75 0.2" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_5" type="box" pos="0 -3.25 0.2" size="4 0.75 0.2" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_6" type="box" pos="3.25 0 0.2" size="0.75 2.5 0.2" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_7" type="box" pos="-3.25 0 0.2" size="0.75 2.5 0.2" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_8" type="box" pos="0 1.75 0.1" size="2.5 0.75 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_9" type="box" pos="0 -1.75 0.1" size="2.5 0.75 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_10" type="box" pos="1.75 0 0.1" size="0.75 1 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_11" type="box" pos="-1.75 0 0.1" size="0.75 1 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+      <geom name="stair_9_12" type="box" pos="0 0 -0.1" size="1 1 0.1" quat="1 0 0 0" rgba="0.5 0.5 0.5 1" friction="1 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" condim="3" priority="0" contype="1" conaffinity="1" />
+    </body>
+  </worldbody>
+</mujoco>

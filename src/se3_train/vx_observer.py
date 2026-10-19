@@ -1,7 +1,7 @@
 """显式 vx 观测器 + MLP 策略（concurrent state estimator，Ji et al. 2022 RA-L / HIMLoco 写法）。
 
 背景（2026-10-05，用户定）：DR1 下平地跟踪变粗主要来自 actor 不知道机身前向速度（Vx 特权 `qnd9o87r`
-拿回 3 维速度特权的大部分收益，见 docs/plan/rough_dr1_oracle_20261005.md）。部署端没有 vx，用 actor 历史估。
+拿回 3 维速度特权的大部分收益，见 rough_dr1_oracle_20261005）。部署端没有 vx，用 actor 历史估。
 
 结构（actor 观测组按 term-major、oldest→newest 展平的 16 帧历史，30 × 16 = 480 维）：
 

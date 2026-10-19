@@ -8,13 +8,13 @@
 
 | 目录 | task id | 用途 |
 | --- | --- | --- |
-| `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-GRU` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认配置 2026-10-02 起 = RJ1：M38（A15 基础上：上台阶列窗口口径高度罚 + 5 cm 死区、两项轮几何罚与违令罚/lin_yaw_joint/bad_tilt 删除、upward 1.0）+ M39–M54（action_rate −0.10、删 bad_orientation 终止、删 joint_mirror 改轮心前后错位罚 −50、台阶列 yaw 指令恒 0 且出生正对台阶 ±15°、台阶列航向保持 −6、随机粗糙/波浪/障碍三列地形、膝气弹簧前馈补偿 + 腿 T-N 包络 ×0.8）+ 合入 J10 跳跃（`commands.RoughJumpCommandTerm`；2026-10-03 起跳跃样本为专用平地跳跃列 `jump`，占全部 env 10%、触发 0.5 Hz，此前为平地列 30%、0.2 Hz），推导链见 `docs/plan/m35_m36_stair_speed_20260926.md` 至 `m54_stair_heading_hold_20260930.md` 与 `rj1_rough_jump_20261002.md`；A15 定价的来源见 `docs/plan/stair_training_wandb_review_20260913.md` 与 `rough_official_base_survey_20260913.md`。`-GRU` 入口（M16，2026-09-20）与 MLP 共用同一份 env_cfg，只把 actor/critic 换成单层 GRU 512、rollout 仍 24 步（`rough/rl_cfg.py`）。历史实验用对应 Git commit 复现。 |
+| `rough/` | `SE3-WheelLegged-Rough` / `SE3-WheelLegged-Rough-GRU` / `SE3-WheelLegged-Rough-StairEval` | 冻结的 Flat 基线 + 一层薄覆盖（2026-09-13 重写）。地形 preset、升降级课程 `terrain_levels_vel`、出块截断 `terrain_edge_reached` / `out_of_terrain_bounds`、critic 高度扫描 `height_scan` 全部用 mjlab 官方件；自己的部分只有高度指令的地形感知下限与分列指令覆盖（`commands.py`）、台阶进度/支撑奖励与按列奖励包装（`stair_rewards.py` / `rewards.py`）、平地热身（`curriculums.py`）。默认配置 2026-10-02 起 = RJ1：M38（A15 基础上：上台阶列窗口口径高度罚 + 5 cm 死区、两项轮几何罚与违令罚/lin_yaw_joint/bad_tilt 删除、upward 1.0）+ M39–M54（action_rate −0.10、删 bad_orientation 终止、删 joint_mirror 改轮心前后错位罚 −50、台阶列 yaw 指令恒 0 且出生正对台阶 ±15°、台阶列航向保持 −6、随机粗糙/波浪/障碍三列地形、膝气弹簧前馈补偿 + 腿 T-N 包络 ×0.8）+ 合入 J10 跳跃（`commands.RoughJumpCommandTerm`；2026-10-03 起跳跃样本为专用平地跳跃列 `jump`，占全部 env 10%、触发 0.5 Hz，此前为平地列 30%、0.2 Hz），推导链见 m35_m36_stair_speed_20260926 至 m54_stair_heading_hold_20260930 与 rj1_rough_jump_20261002；A15 定价的来源见 stair_training_wandb_review_20260913 与 rough_official_base_survey_20260913。`-GRU` 入口（M16，2026-09-20）与 MLP 共用同一份 env_cfg，只把 actor/critic 换成单层 GRU 512、rollout 仍 24 步（`rough/rl_cfg.py`）。历史实验用对应 Git commit 复现。 |
 | `rough/`（临时，已清空） | 无 | M25–M38 的对照入口于 2026-09-28 删除、M38 成为默认（复现：M34 1a10b73、M35 5af0d00、M37 9e07b44、M38 25ca875）；M39–M54 与 RJ1 的对照入口（`...-Exp-ActionRate010*`、`-Exp-Fudan*`、`-Exp-M50`–`-Exp-M54`、`-Exp-RJ1`）于 2026-10-02 删除、RJ1 成为默认。采用的改动复现用对应 commit：M39 a724b49、M47 4398698、M49 d5db384、M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab；未采用的 M40–M46、M48、M52 见 `docs/plan/m40_*` 至 `m52_*`。 |
 | `jump_mimic/` | `SE3-WheelLegged-Jump-Mimic-MLP` | 单独的跳跃 mimic 策略（MLP、34 维观测、从头训、平地前进跳）：无下蹲参考 0.20–0.50 m、四项模仿奖励（腿长 / 机身高度 / 竖直速度 / 接触）、偏离参考 0.12 m 提前终止、无 RSI、jump_phase 一维相位。参考时钟 `clock.JumpReferenceClock` 与 rough 共用。J1–J10 的对照入口与 J5/J6 的 `jump_flag/` 任务已于 2026-10-02 删除，J10 配置成为默认；复现用对应 commit（J7 09493b2、J9 4c7ce37、J10 e3c3a0a），结论见 `docs/plan/j7_*` 至 `j10_*`。参考由 `uv run se3-jump-to` 生成（默认即训练用的四条）。 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `crawl/` | `SE3-WheelLegged-Crawl-MLP` / `SE3-WheelLegged-Crawl-Slope-MLP` | 趴地移动（2026-10-17）：机身压在底盘导轮上、主轮在后方推动的平地 vx 跟踪（不转向）。Flat-MLP 薄覆盖：带导轮变体 MJCF `serialleg_closed_chain_v3_guide_wheels.xml`、高度指令固定 0.1359 m、出生即趴姿、删 `stand_still`、课程终值 vx 1.5、不给转向指令（yaw 恒 0）、导轮承重罚 −5 与左右主轮 Δx²+Δz² 对称罚 −50、速度课程在导轮承重达标后才推进、动作零点（实体默认姿态）为趴姿并加趴姿姿态罚 −1、actor 用 Rough 的小网络 128/64/32（STM32 片内部署）。斜坡版同一 MDP，地形为自建「平地-上坡-平台」直线坡（0–15°，2026-10-18 起替换 mjlab 倒金字塔 0–0.15），出生朝 +x、按前进距离升降级，姿态项改为相对局部坡面（3×3 射线法线）。详见 `docs/plan/crawl_guide_wheels_20261017.md`。 |
-| `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含 EFGCL 辅助和参考轨迹约束 |
+| `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含参考轨迹约束 |
 | `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
 **Flat 基线已于 2026-09-06 冻结**，取 D11 的配置（W&B `mher9vfk`，commit `236666c`）：不带任何命令行覆盖直接跑
@@ -67,7 +67,7 @@ tasks/<task_name>/
 └── events.py         # 本任务 reset / startup 事件
 ```
 
-`env_cfg.py` 可以复用更基础任务的配置，再覆盖当前任务的差异。例如 `jump_finetune` 基于 `jump_pretrain`，移除 EFGCL 辅助并调整 FineTune 阶段的奖励和课程。
+`env_cfg.py` 可以复用更基础任务的配置，再覆盖当前任务的差异。例如 `jump_finetune` 基于 `jump_pretrain`，调整 FineTune 阶段的奖励和课程。
 
 `observations.py`、`rewards.py`、`commands.py`、`curriculums.py`、`terminations.py` 和 `events.py` 可以转发共享实现，也可以放本任务独有实现。原则是从 task 目录能看出该任务实际依赖了哪些 MDP 代码。
 

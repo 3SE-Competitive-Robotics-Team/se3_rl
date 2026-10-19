@@ -118,13 +118,11 @@ rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
 - [文档索引](docs/README.md)
 - [新手入门](docs/how_to_start.md)
 - [训练指南](docs/train.md)
-- [训练性能记录](docs/perf.md)
 - [训练任务架构](docs/task_architecture.md)
 - [ONNX metadata runtime](docs/onnx_runtime.md)
 - 远程机器运维：先读 [remote-dev-se3 公用流程](.agents/skills/remote-dev-se3/SKILL.md)，再选择对应 machine profile
-- [MoE 多速度域方案](docs/plan/moe_multi_speed.md)
-- [膝关节弹簧建模方案](docs/plan/knee_spring_modeling.md)
-- [碰撞模型优化记录](docs/todo/collision_model_optimization.md)
+- [趴地移动任务方案](docs/plan/crawl_guide_wheels_20261017.md)
+- [RMUC 2027 场地场景](docs/rmuc2027_field.md)
 
 ## 注意事项
 

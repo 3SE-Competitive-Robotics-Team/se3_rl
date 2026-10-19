@@ -117,6 +117,33 @@ def _connect_force_norms(
     return out
 
 
+def _unloaded_connect_force_norms(
+    model: mujoco.MjModel, data: mujoco.MjData
+) -> list[tuple[str, float, list[float]]]:
+    """关重力与气弹簧后同一姿态的 connect 约束力：只反映装配预应力（闭链两端对不上被拉合）。
+
+    带载的约束力是连杆传递重力与弹簧的真实内力，约束越硬越接近真值（2026-10-17 solimp 加硬后约 117 N），
+    不能拿来判断装配是否一致；装配一致时不带载的力应接近 0，与约束软硬无关。
+    """
+    gravity = model.opt.gravity.copy()
+    spring_ids = [
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+        for name in ("l_knee_gas_spring", "r_knee_gas_spring")
+    ]
+    spring_ids = [aid for aid in spring_ids if aid >= 0]
+    bias = model.actuator_biasprm[spring_ids, 0].copy()
+    unloaded = mujoco.MjData(model)
+    unloaded.qpos[:] = data.qpos
+    try:
+        model.opt.gravity[:] = 0.0
+        model.actuator_biasprm[spring_ids, 0] = 0.0
+        mujoco.mj_forward(model, unloaded)
+        return _connect_force_norms(model, unloaded)
+    finally:
+        model.opt.gravity[:] = gravity
+        model.actuator_biasprm[spring_ids, 0] = bias
+
+
 def _print_model_summary(model: mujoco.MjModel) -> None:
     print(
         "model:",
@@ -308,12 +335,14 @@ def main() -> None:
             residuals.extend(float(abs(v)) for v in delta)
             print(f"{a}_to_{b}_delta:", delta.tolist())
 
-    force_norms = _connect_force_norms(model, data)
+    for name, norm, force in _connect_force_norms(model, data):
+        print(f"{name}_loaded_force:", force, f"norm={norm:.3f} N（带重力与气弹簧，仅供参考）")
+    force_norms = _unloaded_connect_force_norms(model, data)
     for name, norm, force in force_norms:
-        print(f"{name}_force:", force, f"norm={norm:.3f} N")
+        print(f"{name}_unloaded_force:", force, f"norm={norm:.3f} N")
     max_force = max((norm for _, norm, _ in force_norms), default=0.0)
     if max_force > float(args.max_default_connect_force):
-        raise SystemExit(f"默认站姿 connect 约束力过大: {max_force:.3f} N")
+        raise SystemExit(f"默认站姿 connect 装配预应力过大: {max_force:.3f} N")
 
     for joint_name in ("lf1_Joint", "l_coupler_Joint", "rf1_Joint", "r_coupler_Joint"):
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)

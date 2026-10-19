@@ -136,7 +136,7 @@ nulltask1 经 38443 不受影响，本 Pod 走 38443 被拦截。网关任务退
 
 | 标签 | 任务 / commit | run | PGID | state dir | 备注 |
 |---|---|---|---|---|---|
-| M37 | `SE3-WheelLegged-Rough-Exp-HeightWindowDz5Prune5` / `448c7e4` | `2026-09-27_14-18-53_rough-M37-dz5-prune5-seed42-7x8192-5k` | 1810096 | `/workspace/.se3-training-state/whtws/20260927T141846Z` | 2026-09-27 22:18 启动，七卡 × 8192、5000 轮、`WANDB_MODE=disabled`（无在线 W&B，看 TensorBoard）；2026-09-27 按用户指令在 2058 轮 SIGINT 停止（最后 checkpoint `model_2000`），结论见 docs/plan/m37_reward_prune_20260927.md。启动方式：stdin 脚本 `setsid nohup uv run --no-sync se3-train ...`，无 nulltask1 那套启动器 |
+| M37 | `SE3-WheelLegged-Rough-Exp-HeightWindowDz5Prune5` / `448c7e4` | `2026-09-27_14-18-53_rough-M37-dz5-prune5-seed42-7x8192-5k` | 1810096 | `/workspace/.se3-training-state/whtws/20260927T141846Z` | 2026-09-27 22:18 启动，七卡 × 8192、5000 轮、`WANDB_MODE=disabled`（无在线 W&B，看 TensorBoard）；2026-09-27 按用户指令在 2058 轮 SIGINT 停止（最后 checkpoint `model_2000`），结论见 m37_reward_prune_20260927。启动方式：stdin 脚本 `setsid nohup uv run --no-sync se3-train ...`，无 nulltask1 那套启动器 |
 
 | M38 | `SE3-WheelLegged-Rough-Exp-HeightWindowDz5Prune5Upward1` / `25ca875` | `2026-09-27_16-45-53_rough-M38-dz5-prune5-upward1-seed42-7x8192-5k` | 1860054 | `/workspace/.se3-training-state/whtws/20260927T164546Z` | 2026-09-28 00:45 启动，七卡 × 8192、5000 轮，在线 W&B `bfla7ogz`，用 `start-whtws-training.sh` 启动 |
 

@@ -10,7 +10,7 @@
 
 训练地形五列（2026-09-15）：flat、stairs_up、stairs_down、slope_up、slope_down。
 2026-09-13 曾收到只剩 flat + stairs_up 两列，因为 A9 起那四列比例为 0 却仍各分 1 个 env、白占 160 个 geom
-（实测每轮多 0.6 s，见 docs/plan/rough_iteration_time_20260913.md）。**比例为 0 的列不要放进
+（实测每轮多 0.6 s，见 rough_iteration_time_20260913）。**比例为 0 的列不要放进
 ROUGH_TERRAIN_PROPORTIONS**——关不掉，只会白花钱；要么给正比例，要么删掉。
 
 若以后再加 hfield 地形（斜坡、随机起伏），`horizontal_scale` 取 0.2 m：MuJoCo 凸体-hfield 碰撞按 AABB
@@ -21,7 +21,7 @@ ROUGH_TERRAIN_PROPORTIONS**——关不掉，只会白花钱；要么给正比�
 （2026-09-14 用户定；M1–M3 是 1.5 m 每侧 2 级、M4 试过 0.5 m 每侧 6 级但用户判定太窄）。0.7 m 时每侧
 (9 − 1 − 2) / (2 × 0.7) 取整 4 级，一块地形最高爬 4 × 0.20 = 0.8 m；台阶高课程 0.02–0.20 m，上界是赛场
 台阶量级，下界让 row 0 近似平地，课程起点不会把策略卡死。踏面越窄每块 box 越多、迭代越慢
-（1.5 m 13 个 box、M3 1.85 s/轮；0.5 m 29 个、M4 2.20 s/轮），见 docs/plan/rough_iteration_time_20260913.md。
+（1.5 m 13 个 box、M3 1.85 s/轮；0.5 m 29 个、M4 2.20 s/轮），见 rough_iteration_time_20260913。
 """
 
 from __future__ import annotations

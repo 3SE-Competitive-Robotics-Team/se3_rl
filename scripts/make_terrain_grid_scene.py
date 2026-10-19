@@ -9,7 +9,8 @@ MJCF 的内联 `elevation` 导出（MuJoCo 3.10 支持），高度数据按 MuJo
 每块地形写一个 site：`se3_env_<index>_<column>_r<row>`，pos = 该块的出生点（`terrain_origins`，含地面 z）。
 sim2x 的 browser 看到这些 site 就按块建 env，每个 env 出生在自己那块地上；场景里还写一个
 `<numeric name="se3_drop_robot_floor">`，让 sim2x 编译时删掉机器人 MJCF 自带的 z=0 平面
-（反金字塔的坑底在 z<0，平面会把坑填平）。
+（反金字塔的坑底在 z<0，平面会把坑填平）。`--drop-knee-gas-spring` 再加一个
+`<numeric name="se3_drop_knee_gas_spring">`，让 sim2x 删掉两个膝气弹簧 actuator（回放 M52 起无弹簧训练的策略）。
 
 随机地形（random_rough / obstacles）每次构造生成器都重新随机，导出的是一次抽样；往返校验必须复用
 导出时那份编译好的参考模型。
@@ -35,6 +36,7 @@ from se3_train.tasks.rough.terrains import rough_terrains_cfg
 
 SITE_PREFIX = "se3_env_"
 DROP_FLOOR_NUMERIC = "se3_drop_robot_floor"
+DROP_KNEE_GAS_SPRING_NUMERIC = "se3_drop_knee_gas_spring"
 
 
 def _fmt(values, digits: int = 6) -> str:
@@ -47,6 +49,7 @@ def build(
     rows: tuple[int, ...] | None,
     columns: tuple[str, ...] | None,
     robot_mjcf: str,
+    drop_knee_gas_spring: bool = False,
 ) -> tuple[str, list[tuple[str, np.ndarray]], mujoco.MjModel]:
     """返回场景 XML、出生点列表 [(site 名, 世界坐标)] 与编译后的参考地形模型。"""
     from mjlab.terrains.terrain_generator import TerrainGenerator
@@ -95,8 +98,10 @@ def build(
         f'  <statistic center="0 0 0" extent="{extent:g}" />',
         "  <custom>",
         f'    <numeric name="{DROP_FLOOR_NUMERIC}" data="1" />',
-        "  </custom>",
     ]
+    if drop_knee_gas_spring:
+        lines.append(f'    <numeric name="{DROP_KNEE_GAS_SPRING_NUMERIC}" data="1" />')
+    lines.append("  </custom>")
 
     used_hfields: list[int] = []
     for gid in range(model.ngeom):
@@ -231,6 +236,11 @@ def main() -> int:
         default="serialleg_closed_chain_v3_train_obb_trim.xml",
         help="被 include 的机器人 MJCF 文件名（必须与输出同目录）",
     )
+    parser.add_argument(
+        "--drop-knee-gas-spring",
+        action="store_true",
+        help="写入 se3_drop_knee_gas_spring 标记，sim2x 删掉膝气弹簧（回放无弹簧训练的策略）",
+    )
     parser.add_argument("--no-verify", action="store_true", help="跳过往返校验")
     args = parser.parse_args()
     random_terrains = args.terrain_set == "m51"
@@ -239,6 +249,7 @@ def main() -> int:
         rows=None if args.rows is None else tuple(args.rows),
         columns=None if args.columns is None else tuple(args.columns),
         robot_mjcf=args.robot_mjcf,
+        drop_knee_gas_spring=args.drop_knee_gas_spring,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(xml, encoding="utf-8")

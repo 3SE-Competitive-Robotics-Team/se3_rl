@@ -37,7 +37,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from se3_shared import JointGroup, policy_to_closedchain_passive_pos_np  # noqa: E402
 
-# 与 docs/plan/knee_spring_modeling.md 的实测表一致的主动杆夹角扫描
+# 与已删的 knee_spring_modeling 实测表一致的主动杆夹角扫描
 _ALPHA_SWEEP = np.linspace(0.0, 1.51, 9)
 _LENGTH_ATOL_M = 1e-5
 _FORCE_ATOL_N = 1e-3
