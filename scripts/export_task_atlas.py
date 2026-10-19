@@ -276,11 +276,7 @@ def _task_metadata(task_id: str) -> dict[str, str]:
     """从稳定的任务 ID 推导网页分组与短名称。"""
 
     robot = "WheelDog" if "WheelDog" in task_id else "SerialLeg"
-    if "Jump-PreTrain" in task_id:
-        family, label = "Jump", "Jump PreTrain"
-    elif "Jump-FineTune" in task_id:
-        family, label = "Jump", "Jump FineTune"
-    elif "Recovery-Expert" in task_id:
+    if "Recovery-Expert" in task_id:
         family, label = "Recovery", "Recovery Expert"
     elif "Recovery-Loco-Grouped" in task_id:
         family, label = "Recovery", "Grouped: loco + recover"

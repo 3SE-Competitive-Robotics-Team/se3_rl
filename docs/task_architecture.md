@@ -14,8 +14,6 @@
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
 | `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `crawl/` | `SE3-WheelLegged-Crawl-MLP` / `SE3-WheelLegged-Crawl-Slope-MLP` | 趴地移动（2026-10-17）：机身压在底盘导轮上、主轮在后方推动的平地 vx 跟踪（不转向）。Flat-MLP 薄覆盖：带导轮变体 MJCF `serialleg_closed_chain_v3_guide_wheels.xml`、高度指令固定 0.1359 m、出生即趴姿、删 `stand_still`、课程终值 vx 1.5、不给转向指令（yaw 恒 0）、导轮承重罚 −5 与左右主轮 Δx²+Δz² 对称罚 −50、速度课程在导轮承重达标后才推进、动作零点（实体默认姿态）为趴姿并加趴姿姿态罚 −1、actor 用 Rough 的小网络 128/64/32（STM32 片内部署）。斜坡版同一 MDP，地形为自建「平地-上坡-平台」直线坡（0–15°，2026-10-18 起替换 mjlab 倒金字塔 0–0.15），出生朝 +x、按前进距离升降级，姿态项改为相对局部坡面（3×3 射线法线）。详见 `docs/plan/crawl_guide_wheels_20261017.md`。 |
-| `jump_pretrain/` | `SE3-WheelLegged-Jump-PreTrain-GRU` | 跳跃预训练阶段，包含参考轨迹约束 |
-| `jump_finetune/` | `SE3-WheelLegged-Jump-FineTune-GRU` | 跳跃 FineTune 阶段，从 PreTrain checkpoint 继续训练 |
 
 **Flat 基线已于 2026-09-06 冻结**，取 D11 的配置（W&B `mher9vfk`，commit `236666c`）：不带任何命令行覆盖直接跑
 `SE3-WheelLegged-Flat-MLP` 即可复现。除已合并的奖励与动作改动外，`num_steps_per_env` 由 64 改为 24（D 系列
@@ -67,7 +65,7 @@ tasks/<task_name>/
 └── events.py         # 本任务 reset / startup 事件
 ```
 
-`env_cfg.py` 可以复用更基础任务的配置，再覆盖当前任务的差异。例如 `jump_finetune` 基于 `jump_pretrain`，调整 FineTune 阶段的奖励和课程。
+`env_cfg.py` 可以复用更基础任务的配置，再覆盖当前任务的差异。例如 `crawl` 基于 `flat`，只覆盖 MJCF、默认姿态、奖励与课程的差异。
 
 `observations.py`、`rewards.py`、`commands.py`、`curriculums.py`、`terminations.py` 和 `events.py` 可以转发共享实现，也可以放本任务独有实现。原则是从 task 目录能看出该任务实际依赖了哪些 MDP 代码。
 
@@ -99,14 +97,14 @@ def register() -> None:
 1. 复制最接近的目录，例如：
 
    ```bash
-   cp -R src/se3_train/tasks/jump_finetune src/se3_train/tasks/jump_high
+   cp -R src/se3_train/tasks/crawl src/se3_train/tasks/crawl_stairs
    ```
 
-2. 修改 `jump_high/__init__.py`：
+2. 修改 `crawl_stairs/__init__.py`：
 
-   - `TASK_ID` 使用明确阶段名，例如 `SE3-WheelLegged-JumpHigh-FineTune-GRU`
+   - `TASK_ID` 使用明确名字，例如 `SE3-WheelLegged-Crawl-Stairs-MLP`
    - docstring 写清楚观测维度、训练阶段和用途
-   - runner 继续使用 `Se3WarmStartRunner`，除非新任务确实不需要 warm start 逻辑
+   - runner 沿用被复制目录的设置
 
 3. 在 `env_cfg.py` 里改任务差异：
 
@@ -141,38 +139,11 @@ uv run ruff check src/se3_train
 git diff --check
 ```
 
-然后做 task 构造 smoke：
+然后确认注册表与 CLI smoke：
 
 ```bash
-uv run python - <<'PY'
-from se3_train.tasks import (
-    flat,
-    jump_finetune,
-    jump_pretrain,
-    rough,
-    stair,
-)
-
-for module in (
-    rough,
-    flat,
-    stair,
-    jump_pretrain,
-    jump_finetune,
-):
-    cfg = module.env_cfg(play=True)
-    rl = module.rl_cfg(smoke=True)
-    print(module.TASK_ID, len(cfg.observations["actor"].terms), rl.max_iterations)
-PY
+uv run python -c "import se3_train; from mjlab.tasks.registry import list_tasks; print(sorted(t for t in list_tasks() if t.startswith('SE3')))"
+SE3_SMOKE=1 uv run se3-train <改动的 task id> --env.scene.num-envs 1 --gpu-ids None
 ```
 
-改了跳跃 task 时，再跑对应 CLI smoke：
-
-```bash
-uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU \
-  --env.scene.num-envs 1 \
-  --gpu-ids None \
-  --agent.max-iterations 1 \
-  --agent.logger tensorboard \
-  --agent.resume False
-```
+改了共享 MDP（`mdp/`、`tasks/flat/`）时，至少再跑 Flat-MLP、Rough、Jump-Mimic-MLP 与 Crawl-MLP 的 smoke。
