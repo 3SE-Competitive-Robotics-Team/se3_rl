@@ -25,8 +25,8 @@
 
 ## 两档
 
-- **quick**（训练中每 1000 轮）：A 粗网格、B、C 第 3/6/9 级、D 两档目标。约 50 条，Pod 上 1 分钟量级。
-- **full**（训练结束、手动）：A 全网格、B、C 全部 9 级 + 噪声重复、D 全部、E。约 320 条。
+- **quick**（只用于手动快速检查）：A 粗网格、B、C 第 3/6/9 级、D 两档目标。约 50 条。
+- **full**（训练中每 1000 轮、训练结束、手动）：A 全网格、B、C 全部 9 级 + 噪声重复、D 全部、E。约 320 条。
 
 实测耗时（2026-10-19，nulltask1 128 核，StairVx08 model_4999，不录像）：
 
@@ -55,10 +55,10 @@ uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
 ## 训练中自动触发
 
 `RslRlOnPolicyRunnerCfg.bench_interval`（Rough 系入口默认 1000，其余任务 0 = 关闭）。runner 每次导出 ONNX 后由
-`se3_train.bench_hook.maybe_launch_bench` 判断：迭代数是 `bench_interval` 的整数倍就跑 quick，训练结束的最后一次保存跑 full。
+`se3_train.bench_hook.maybe_launch_bench` 判断：迭代数是 `bench_interval` 的整数倍、以及训练结束的最后一次保存，都跑 full（2026-10-19 起）。
 
 - 独立进程（新 session、`nice -n 10`、单线程 BLAS），训练不等它；worker 数默认 CPU 核数的 1/4（`--agent.bench-workers` 覆盖）。
-- 互斥锁 `onnx/bench/.lock`：上一次 quick 没跑完时本次 quick 跳过，full 排队。
+- 互斥锁 `onnx/bench/.lock`：上一次评测没跑完时本次排队。
 - 结果：`onnx/bench/model_<N>_<suite>.json`、`.log`、`videos/`；logger 为 W&B 时另记到同 group 的 `<run>-bench`
   评测 run（横轴 iteration，含逐条结果表和三段录像：第 9 级台阶、跳跃、静站后起步）。渲染失败只跳过录像，
   结果里记 `video_error`。**nulltask1 / whtws 目前录不了像**：容器的 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`

@@ -1,9 +1,10 @@
 """训练中旁路触发 benchmark：runner 每次导出 ONNX 后调用 `maybe_launch_bench`。
 
-- `bench_interval`（runner 配置，0 = 关闭）：每 N 轮跑一次 quick 档；训练结束的最后一次保存跑 full 档。
+- `bench_interval`（runner 配置，0 = 关闭）：每 N 轮与训练结束的最后一次保存都跑 full 档（2026-10-19 用户定；
+  Pod 128 核 32 进程约 15 s，quick 档只留给手动快速检查）。
 - 以独立进程（新 session、降优先级、单线程 BLAS）运行 `python -m se3_tools.bench.cli run`，训练不等它；
   评测只吃 CPU，worker 数默认取 CPU 核数的 1/4（上限 16），给 Rough 训练（本身 CPU 瓶颈）留余量。
-- `--lock`：上一次 quick 还没跑完时本次 quick 直接跳过；full 排队等待。
+- `--lock`：上一次评测还没跑完时本次排队等待。
 - SE3_SMOKE=1 时默认不触发（设 SE3_BENCH_IN_SMOKE=1 可在 smoke 里验证链路）。
 """
 
@@ -39,7 +40,7 @@ def maybe_launch_bench(
         return None
     if not final and (iteration <= 0 or iteration % interval != 0):
         return None
-    suite = "full" if final else "quick"
+    suite = "full"
     run_name = Path(log_dir).name
     command = [
         sys.executable,

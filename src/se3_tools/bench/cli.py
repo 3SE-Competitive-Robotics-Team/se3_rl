@@ -5,7 +5,7 @@
 
 结果默认写到 ONNX 旁的 `bench/<model>_<suite>.json`（视频在 `bench/videos/<model>_<suite>/`）。
 给了 `--wandb-project` 就额外记到同 group 的 `<run>-bench` 评测 run（见 report.log_wandb）。
-训练中由 se3_train.bench_hook 以独立进程调用本命令（`--lock` 防止两次评测重叠）。
+训练中由 se3_train.bench_hook 以独立进程调用本命令（`--lock` 让两次评测排队，不重叠）。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def _default_workers() -> int:
 
 
 class _Lock:
-    """评测互斥：quick 遇到正在跑的评测直接跳过，full（训练结束）排队等待。"""
+    """评测互斥：已有评测在跑时排队等待（wait=False 时直接跳过）。"""
 
     def __init__(self, path: Path, *, wait: bool) -> None:
         self.path = path
@@ -82,7 +82,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     onnx = Path(args.onnx).resolve()
     out_dir = Path(args.out).resolve() if args.out else onnx.parent / "bench"
     lock_path = out_dir / ".lock"
-    lock = _Lock(lock_path, wait=args.suite == "full") if args.lock else None
+    lock = _Lock(lock_path, wait=True) if args.lock else None
     if lock is not None and not lock.__enter__():
         print(f"[se3-bench] 已有评测在跑（{lock_path}），跳过本次 {args.suite}", flush=True)
         return 0

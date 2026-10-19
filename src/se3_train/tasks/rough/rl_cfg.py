@@ -34,7 +34,7 @@ from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 
 # 地形课程要爬 10 级难度，比平地的 3500 轮长。沿用本仓库非 Flat 线的 5000 轮惯例。
 ROUGH_MAX_ITERATIONS = 5000
-# 2026-10-19 用户定：Rough 系入口训练中每 1000 轮旁路跑 quick benchmark、结束跑 full（se3_tools.bench）。
+# 2026-10-19 用户定：Rough 系入口训练中每 1000 轮与训练结束时旁路跑 full benchmark（se3_tools.bench）。
 ROUGH_BENCH_INTERVAL = 1000
 # 2026-10-04 用户定：actor 隐藏层默认 128/64/32（部署跑的是 actor），critic 沿用 Flat 的 512/256/128。
 ROUGH_ACTOR_HIDDEN_DIMS = (128, 64, 32)

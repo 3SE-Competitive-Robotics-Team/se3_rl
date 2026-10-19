@@ -59,7 +59,7 @@ uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
 # 交互式 sim2sim（纯 MuJoCo CPU + Viser）
 ./scripts/run_sim2x.sh
 
-# Rough benchmark（部署链路回放 ONNX 出指标；训练中 Rough 系每 1000 轮自动跑 quick、结束跑 full，见 docs/benchmark.md）
+# Rough benchmark（部署链路回放 ONNX 出指标；训练中 Rough 系每 1000 轮与结束时自动跑 full，见 docs/benchmark.md）
 uv run python -m se3_tools.bench.cli run --onnx <model_N.onnx> --suite full
 uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
 
