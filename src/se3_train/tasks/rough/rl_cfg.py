@@ -17,9 +17,8 @@ critic 不变。依据是 Actor128 对照（nulltask1 `4am48uzq` 五卡 × 8192�
 GRU 入口仍用 Flat 的 GRU 配置。同日删掉推理 100 Hz 对照（Exp-Dec2 / Exp-Dec2-Steps48），维持 50 Hz，
 结论见 rough_dec2_100hz_20261003。
 
-2026-10-05（用户定）：显式 vx 观测器入口 `vx_observer_rl_cfg`（见 se3_train.vx_observer）。actor 换成
-VxObserverMLPModel（policy MLP 仍为 ROUGH_ACTOR_HIDDEN_DIMS，估计器 ROUGH_VX_ESTIMATOR_HIDDEN_DIMS），估计器用独立 Adam
-（ROUGH_VX_ESTIMATOR_LEARNING_RATE）做 vx 的 MSE 回归；PPO 超参数、critic 与 `rl_cfg` 逐项相同。
+2026-10-07 起 CTS 入口 `cts_rl_cfg`（见 se3_train.cts_observer）；单独的显式 vx 观测器入口（VxObserver）2026-10-19 删除，
+复现用 846c4fcd。
 """
 
 from __future__ import annotations
@@ -37,21 +36,9 @@ from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 ROUGH_MAX_ITERATIONS = 5000
 # 2026-10-04 用户定：actor 隐藏层默认 128/64/32（部署跑的是 actor），critic 沿用 Flat 的 512/256/128。
 ROUGH_ACTOR_HIDDEN_DIMS = (128, 64, 32)
-# 显式 vx 观测器（2026-10-05 用户定）：估计器隐藏层与独立 Adam 学习率。lr 1e-3 是 HIMLoco / Ji et al. 估计器的常用值；
+# 学生编码器（沿用 estimator 名）独立 Adam 学习率。lr 1e-3 是 HIMLoco / Ji et al. 估计器的常用值；
 # 估计器是监督回归，不受 PPO 的 KL 自适应学习率约束。
-ROUGH_VX_ESTIMATOR_HIDDEN_DIMS = (128, 64)
 ROUGH_VX_ESTIMATOR_LEARNING_RATE = 1.0e-3
-
-
-@dataclass
-class VxObserverModelCfg(RslRlModelCfg):
-    """VxObserverMLPModel 的网络配置：在 RslRlModelCfg 之上加历史帧数、单帧各项宽度与估计器隐藏层。"""
-
-    history_length: int = 0
-    frame_term_dims: tuple[int, ...] = ()
-    estimator_hidden_dims: tuple[int, ...] = ROUGH_VX_ESTIMATOR_HIDDEN_DIMS
-    latent_dim: int = 0
-    class_name: str = "se3_train.vx_observer:VxObserverMLPModel"
 
 
 # CTS（2026-10-07 用户定）：隐向量维数与编码器隐藏层。教师编码器照 CTS 论文 512/256；学生编码器 256/128
@@ -99,35 +86,6 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     cfg.actor = replace(cfg.actor, hidden_dims=ROUGH_ACTOR_HIDDEN_DIMS)
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
-    return cfg
-
-
-def vx_observer_rl_cfg(
-    *,
-    history_length: int,
-    frame_term_dims: tuple[int, ...],
-    target_group: str,
-    latent_dim: int = 0,
-    smoke: bool = False,
-) -> RslRlOnPolicyRunnerCfg:
-    """生成显式 vx 观测器 PPO 配置：只换 actor 类并打开估计器监督，其余与 `rl_cfg` 逐项相同。
-
-    frame_term_dims 必须按 actor 观测组的 term 顺序给出单帧宽度（由入口从 env_cfg 推出，见 rough.__init__）。
-    latent_dim：估计器额外输出的隐向量维数（PPO 端到端训练，见 se3_train.vx_observer），0 = 只估 vx。
-    """
-    cfg = rl_cfg(smoke=smoke)
-    actor_fields = {k: v for k, v in asdict(cfg.actor).items() if k != "class_name"}
-    cfg.actor = VxObserverModelCfg(
-        **actor_fields,
-        history_length=int(history_length),
-        frame_term_dims=tuple(int(d) for d in frame_term_dims),
-        latent_dim=int(latent_dim),
-    )
-    cfg.algorithm = replace(
-        cfg.algorithm,
-        estimator_learning_rate=ROUGH_VX_ESTIMATOR_LEARNING_RATE,
-        estimator_target_group=target_group,
-    )
     return cfg
 
 
@@ -187,12 +145,9 @@ __all__ = [
     "ROUGH_CTS_STUDENT_WARMUP_ITERATIONS",
     "ROUGH_CTS_TEACHER_HIDDEN_DIMS",
     "ROUGH_MAX_ITERATIONS",
-    "ROUGH_VX_ESTIMATOR_HIDDEN_DIMS",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",
     "CTSModelCfg",
-    "VxObserverModelCfg",
     "cts_rl_cfg",
     "gru_rl_cfg",
     "rl_cfg",
-    "vx_observer_rl_cfg",
 ]

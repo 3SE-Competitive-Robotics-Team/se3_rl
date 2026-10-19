@@ -46,7 +46,7 @@ _DEFAULT_STANDING_HEIGHT = _ROBOT_DEFAULTS.default_base_height
 # v2 高度默认在 0.38 m 的整机质心残差 +5.2 mm（约 1.1°）。
 _STANDING_HEIGHT_RANGE = (0.20, 0.38)
 _FLAT_LEG_ACTION_SCALE = 0.25
-# 轮 action scale：基类默认沿用 RobotConfig 的 45（rough/stair/jump/flow_match 继承线契约不变）；
+# 轮 action scale：基类默认沿用 RobotConfig 的 45（rough/stair 继承线契约不变）；
 # Flat 任务本身（flat/__init__.py 注册）显式使用 15，与 recovery 族一致（σ-gate 诊断：scale 45 时
 # 探索噪声物理轮噪 ±σ×45 rad/s 挡死平衡校正）。改 scale 必须同步按 (scale/45)² 补偿动作空间罚项，
 # 见 env_cfg() 内 wheel_pricing；指令可行域预算是物理量，与 scale 解耦（见下）。
@@ -61,7 +61,7 @@ _FLAT_ACTION_RATE_WEIGHT = -0.48
 # 2 倍计价再乘 wheel_pricing（scale 15 → 2.0/9≈0.222）。噪声地板 6σ² 为动作单位量，σ_leg 0.3 / σ_wheel 1.0
 # 时合计约 5，远低于 cap，梯度不截断。
 # (weight, max_penalty, wheel_base)；wheel_base 再乘 wheel_pricing 得到轮分量。基类默认 LEGACY 供
-# rough/jump/flow_match 继承线保持旧契约，Flat 三个任务注册时显式传 SPRING。
+# rough/stair 继承线保持旧契约，Flat 三个任务注册时显式传 SPRING。
 FLAT_ACTION_SMOOTHNESS_LEGACY = (-0.01, 80.0, 1.0)
 FLAT_ACTION_SMOOTHNESS_SPRING = (-0.12, 320.0, 2.0)
 # History-MLP 变体的 actor 历史帧数（34 维 × 5 = 170 维展平），与 stair 的 History-MLP 一致。

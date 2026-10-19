@@ -29,8 +29,6 @@ se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
 se3-recovery-state-cache = "se3_tools.recovery_state_cache:main"
 se3-recovery-state-cache-mjlab = "se3_tools.recovery_state_cache_mjlab:main"
-se3-jump-to = "se3_jump_to.cli:main"
-se3-jump-to-replay = "se3_jump_to.replay:main"
 
 [build-system]
 requires = ["uv_build==0.11.8"]
@@ -42,7 +40,6 @@ module-name = [
     "se3_train",
     "se3_shared",
     "se3_tools",
-    "se3_flow_match",
 ]
 
 [tool.uv.sources]
@@ -102,7 +99,6 @@ known-first-party = [
     "se3_train",
     "se3_shared",
     "se3_tools",
-    "se3_flow_match",
     "se3_runtime",
     "se3_runtime_mujoco",
 ]

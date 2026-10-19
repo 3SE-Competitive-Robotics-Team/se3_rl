@@ -15,7 +15,8 @@ import torch
 
 TRAJECTORY_ROOT = Path(__file__).resolve().parents[4] / "assets" / "trajectories"
 REFERENCE_DIR = TRAJECTORY_ROOT / "jump_ref_v2_nocrouch_h022"
-"""参考目录：站姿 0.22 m、无起始停顿与下蹲，第 0 帧即恒加速度蹬地（se3-jump-to --stand-height 0.22 --no-crouch，J7 起）。"""
+"""参考目录：站姿 0.22 m、无起始停顿与下蹲，第 0 帧即恒加速度蹬地（J7 起，由 se3-jump-to --stand-height 0.22 --no-crouch 生成；
+生成器 se3_jump_to 2026-10-19 删除，重新生成时从 846c4fcd 取回）。"""
 
 
 def reference_paths(heights: tuple[float, ...], directory: Path = REFERENCE_DIR) -> tuple[str, ...]:

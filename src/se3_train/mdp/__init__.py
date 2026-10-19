@@ -10,9 +10,7 @@ from . import curriculums as curriculums
 from . import env_groups as env_groups
 from . import events as events
 from . import jump_commands as jump_commands
-from . import jump_curriculums as jump_curriculums
 from . import jump_rewards as jump_rewards
-from . import jump_terminations as jump_terminations
 from . import leg_alignment as leg_alignment
 from . import observations as observations
 from . import recovery_state as recovery_state
@@ -26,9 +24,7 @@ __all__ = [
     "env_groups",
     "events",
     "jump_commands",
-    "jump_curriculums",
     "jump_rewards",
-    "jump_terminations",
     "leg_alignment",
     "observations",
     "recovery_state",

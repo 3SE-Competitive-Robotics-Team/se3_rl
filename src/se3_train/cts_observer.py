@@ -12,7 +12,7 @@
 梯度：PPO 损失只经教师 env 的隐向量更新教师编码器，学生隐向量在 policy 前 detach；学生编码器（沿用 estimator 这个名字，
 复用 Se3PPO 的独立 Adam 与多卡梯度同步）只由重建损失训练：在学生 env 样本上回归 [sg(z_T), vx_true]。
 每个样本属于哪组由观测组 cts_role（教师 1 / 学生 0，env 固定）给出，随 rollout 存进 storage。
-部署只走学生路径：ONNX 输入仍是 480 维历史、输出动作，与 VxObserver 的 History-MLP 契约相同。
+部署只走学生路径：ONNX 输入仍是 480 维历史、输出动作，History-MLP 契约（term-major 历史）不变。
 """
 
 from __future__ import annotations
@@ -26,7 +26,16 @@ from rsl_rl.models import MLPModel
 from rsl_rl.modules import MLP, EmpiricalNormalization, HiddenState
 from tensordict import TensorDict
 
-from se3_train.vx_observer import _latest_frame_index
+
+def _latest_frame_index(frame_term_dims: tuple[int, ...], history_length: int) -> torch.Tensor:
+    """term-major 历史展平后，每个 term 最新一帧在 480 维向量中的下标（按 term 顺序拼成单帧观测）。"""
+    index: list[int] = []
+    offset = 0
+    for dim in frame_term_dims:
+        block = dim * history_length
+        index.extend(range(offset + block - dim, offset + block))
+        offset += block
+    return torch.tensor(index, dtype=torch.long)
 
 
 class CTSVxObserverModel(MLPModel):

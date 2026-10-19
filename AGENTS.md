@@ -4,7 +4,7 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 主仓库 5 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_tools`（诊断工具）、`se3_jump_to`（跳跃参考轨迹生成）、`se3_flow_match`（Flow Matching，暂不可用待迁移 34D）
+- 主仓库 3 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_tools`（诊断工具）
 - `submodules/se3-sim2x` 提供 `se3_runtime` 与 `se3_runtime_mujoco`，作为 sim2sim / sim2real 共用链路
 - 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
@@ -66,14 +66,8 @@ rm -rf logs/ replays/ MUJOCO_LOG.TXT
 跳跃任务专用命令：
 
 ```bash
-# 跳跃训练
-uv run se3-train SE3-WheelLegged-Jump-PreTrain-GRU --env.scene.num-envs 1024
-uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1024
-
-# 跳跃参考轨迹生成
-uv run se3-jump-to --height 0.4 --output assets/trajectories/jump_0.4m.npz
-uv run se3-jump-to --height 0.6 --output assets/trajectories/jump_0.6m.npz
-
+# 跳跃 mimic 训练（旧跳跃线 Jump-PreTrain / FineTune-GRU 与 se3-jump-to 已于 2026-10-19 删除）
+uv run se3-train SE3-WheelLegged-Jump-Mimic-MLP --env.scene.num-envs 1024
 ```
 
 ## 开发流程
@@ -83,7 +77,7 @@ uv run se3-jump-to --height 0.6 --output assets/trajectories/jump_0.6m.npz
 ```bash
 SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
 # 修改了跳跃相关代码时用这条：
-SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-FineTune-GRU --env.scene.num-envs 1 --gpu-ids None
+SE3_SMOKE=1 uv run se3-train SE3-WheelLegged-Jump-Mimic-MLP --env.scene.num-envs 1 --gpu-ids None
 ```
 
 Smoke 模式特点：
@@ -190,8 +184,8 @@ se3_train/
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-MLP
 │   ├── stair/       # SE3-WheelLegged-Stair-GRU（爬楼梯）
-│   ├── jump_pretrain/  # SE3-WheelLegged-Jump-PreTrain-GRU
-│   ├── jump_finetune/  # SE3-WheelLegged-Jump-FineTune-GRU
+│   ├── jump_mimic/  # SE3-WheelLegged-Jump-Mimic-MLP（跳跃参考模仿）
+│   ├── crawl/       # SE3-WheelLegged-Crawl-MLP / -Crawl-Slope-MLP（底盘导轮趴地移动）
 │   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项
@@ -201,8 +195,6 @@ se3_train/
     ├── commands.py         # 速度+高度指令生成器
     ├── jump_commands.py    # 跳跃指令 + 状态机（JumpCommandTerm，8 维）
     ├── curriculums.py      # 行走课程
-    ├── jump_curriculums.py # 跳跃课程（jump_prob 动态调度）
-    ├── jump_traj_tracking.py  # 参考轨迹跟踪奖励
     ├── events.py           # 域随机化事件 + RSI 轨迹注入
     └── terminations.py     # 超时终止 + 腿部接触终止
 ```
@@ -211,15 +203,11 @@ se3_train/
 复制最接近的 task 目录，在 `tasks/__init__.py` 注册即可；不要恢复旧的 `se3_train/env_cfg.py`
 或 `se3_train/rl_cfg.py` 汇总入口。详细约定见 `docs/task_architecture.md`。
 
-### 跳跃轨迹优化结构
-```
-se3_jump_to/
-├── cli.py      # se3-jump-to 命令行入口，生成 assets/trajectories/*.npz
-├── kinematics.py  # SerialLeg FK/IK
-└── replay.py   # se3-jump-to-replay 回放入口
-```
+### 跳跃参考轨迹
 
-轨迹文件字段：`base_pos`、`base_vel`、`q_ref`、`q_vel`（关节角速度，用于 RSI）、`t_stance`、`dt` 等。
+`assets/trajectories/*.npz` 是旧跳跃线留下的参考轨迹（字段 `base_pos`、`base_vel`、`q_ref`、`q_vel`、`t_stance`、`dt` 等），
+`JumpCommandTerm` 构造时仍会加载它们，暂保留；生成器 `se3_jump_to` 已删除，需要时从 846c4fcd 取回。
+Jump-Mimic 的参考在 `assets/trajectories/jump_ref_v2_nocrouch_h022/`（由 `tasks/jump_mimic/reference.py` 加载），同样由已删的生成器产出。
 
 ### 观测空间（actor）
 
@@ -236,7 +224,7 @@ Rough（含 GRU / StairEval）与 Jump-Mimic（2026-10-02 起）用 30 维，部
 [27:30] jump_commands  [jump_flag, jump_target_height, jump_phase]
 ```
 
-其余任务（Flat、Stair、旧跳跃线、WheelDog）仍是 34 维、8 维指令契约：
+其余任务（Flat、Stair、Crawl、WheelDog）仍是 34 维、8 维指令契约：
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
@@ -326,7 +314,7 @@ find . -name "model_*.pt" -printf '%T@ %p\n' | sort -n | tail -1
 
 ### 观测维度不对齐
 
-Rough / Jump-Mimic 是 30 维，其余任务 34 维，两者 checkpoint 不能互相续训。旧跳跃线从行走 checkpoint fine-tune 时，需要 `strict=False` 加载，输入层随机初始化，其余权重复用。
+Rough / Jump-Mimic 是 30 维，其余任务 34 维，两者 checkpoint 不能互相续训。
 
 ## 常见错误手册
 
@@ -354,11 +342,9 @@ se3_wheel_leg/
 │   ├── base_model/         # 训练完成的基模（_gru.pt / _mlp.pt）
 │   └── trajectories/       # 跳跃参考轨迹（jump_0.4m.npz 等）
 ├── src/
-│   ├── se3_flow_match/    # Flow Matching（暂不可用，待迁移 34D）
 │   ├── se3_shared/         # 共享机器人、观测和动作延迟配置
 │   ├── se3_train/          # MJLab 训练环境
-│   ├── se3_tools/          # 关节诊断和模型查看工具
-│   └── se3_jump_to/        # 跳跃参考轨迹生成
+│   └── se3_tools/          # 关节诊断和模型查看工具
 └── submodules/
     └── se3-sim2x/          # 共用 ONNX runtime 与 MuJoCo/Viser adapter
 ```

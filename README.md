@@ -17,9 +17,7 @@ SerialLeg 轮腿机器人（6 DOF）的强化学习训练与 sim2sim 验证框�
 src/
 ├── se3_shared/     # 训练和 sim2sim 共享配置，包含关节语义、PD 增益、动作缩放、延迟参数
 ├── se3_train/      # MJLab 训练环境，含 MDP（奖励、观测、事件）和 PPO 配置
-├── se3_tools/      # 关节方向和默认姿态诊断工具
-├── se3_jump_to/    # 跳跃参考轨迹生成与回放
-└── se3_flow_match/ # Flow Matching 蒸馏（暂不可用，待迁移 34D 观测）
+└── se3_tools/      # 关节方向和默认姿态诊断工具
 
 submodules/
 └── se3-sim2x/      # 共用 ONNX runtime 与 MuJoCo/Viser adapter
