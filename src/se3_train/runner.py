@@ -16,6 +16,7 @@ from se3_train.async_logging import (
     async_host_logger_enabled,
     expand_episode_log_buffers,
 )
+from se3_train.bench_hook import maybe_launch_bench
 from se3_train.onnx_metadata import (
     build_deployment_onnx_metadata,
     embed_onnx_metadata,
@@ -135,6 +136,13 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
             )
             return
         print(f"[SE3 ONNX] exported: {export_dir / filename}", flush=True)
+        maybe_launch_bench(
+            onnx_path=export_dir / filename,
+            iteration=int(self.current_learning_iteration),
+            final=bool(getattr(self, "_se3_final_save", False)),
+            cfg=self.cfg,
+            log_dir=checkpoint_path.parent,
+        )
 
     def export_policy_to_onnx(
         self,
@@ -271,6 +279,7 @@ class Se3ProfiledOnPolicyRunner(MjlabOnPolicyRunner):
                 self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))  # type: ignore[arg-type]
 
         if self.logger.writer is not None:
+            self._se3_final_save = True
             self.save(
                 os.path.join(
                     self.logger.log_dir,  # type: ignore[arg-type]

@@ -30,6 +30,10 @@ class RslRlOnPolicyRunnerCfg(MjlabRslRlOnPolicyRunnerCfg):
         default_factory=lambda: os.environ.get("WANDB_PROJECT", "se3-wheel-leg")
     )
     upload_model: bool = True
+    bench_interval: int = 0
+    """每 N 轮在保存后旁路跑一次 quick benchmark、训练结束跑 full（见 se3_train.bench_hook）；0 = 关闭。"""
+    bench_workers: int = 0
+    """benchmark 进程数；0 = CPU 核数的 1/4（上限 16）。"""
 
 
 def bind_task_name(

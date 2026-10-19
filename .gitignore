@@ -65,3 +65,6 @@ assets/robots/serialleg/meshes/rmuc2027/
 # 复旦 AMP / CTBC 数据（视频、pkl，几十 MB；main 已无 AMP 代码，只留本机）
 assets/amp/
 assets/ctbc_profiles/fudan_step20_20260907/
+
+# se3-bench 按当前 Rough 地形现生成的评测场景（scenes.build_stair_grid，按内容哈希复用）
+assets/robots/serialleg/mjcf/_se3_bench_*.xml

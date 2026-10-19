@@ -4,7 +4,7 @@
 
 轮腿机器人（SerialLeg）强化学习训练框架。基于 MJLab（MuJoCo-Warp GPU 加速）训练，sim2sim 验证。
 
-- 主仓库 3 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_tools`（诊断工具）
+- 主仓库 3 个 Python 包：`se3_shared`（训练配置）、`se3_train`（MJLab 训练）、`se3_tools`（诊断工具与 Rough benchmark `se3_tools.bench`）
 - `submodules/se3-sim2x` 提供 `se3_runtime` 与 `se3_runtime_mujoco`，作为 sim2sim / sim2real 共用链路
 - 机器人：6 DOF policy-order（LF0/LB/RF0/RB/L_WHEEL/R_WHEEL）
 - 控制方式：腿部关节位置目标 + 轮子速度目标，支持训练端和 sim2sim 共享动作延迟配置
@@ -58,6 +58,10 @@ uv run se3-train SE3-WheelLegged-Flat-MLP --env.scene.num-envs 1 --gpu-ids None
 
 # 交互式 sim2sim（纯 MuJoCo CPU + Viser）
 ./scripts/run_sim2x.sh
+
+# Rough benchmark（部署链路回放 ONNX 出指标；训练中 Rough 系每 1000 轮自动跑 quick、结束跑 full，见 docs/benchmark.md）
+uv run python -m se3_tools.bench.cli run --onnx <model_N.onnx> --suite full
+uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
 
 # 清理
 rm -rf logs/ replays/ MUJOCO_LOG.TXT
@@ -223,7 +227,7 @@ Rough（含 GRU / StairEval）与 Jump-Mimic（2026-10-02 起）用 30 维，部
 [27:30] jump_commands  [jump_flag, jump_target_height, jump_phase]
 ```
 
-其余任务（Flat、Stair、Crawl、WheelDog）仍是 34 维、8 维指令契约：
+其余任务（Flat、Crawl、WheelDog）仍是 34 维、8 维指令契约：
 ```
 [0:3]   base_ang_vel × 0.25
 [3:6]   projected_gravity
