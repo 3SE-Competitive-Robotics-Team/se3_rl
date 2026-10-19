@@ -137,7 +137,7 @@ W_spring = F × ΔL（F = 300 N 恒定，ΔL 为 tendon 长度变化）
 实测 tendon 长度在主动杆夹角全行程内从 0.2273 m 变到 0.1435 m（ΔL = 0.0838 m），
 单腿全行程做功 25.2 J、双腿 50.3 J，与 0.8 m 跳跃所需的约 99 J 同量级。
 **弹簧在能量预算里不可忽略**，等效关节力矩 `|τ_α|` 为 10.3–18.6 N·m，对 DM8009P 额定
-20 N·m 是量级相当的一项。详见 [`plan/knee_spring_modeling.md`](plan/knee_spring_modeling.md)。
+20 N·m 是量级相当的一项。
 
 跳跃能量主要来源是腿部关节做功（DM8009P stall_torque=40 N·m，全行程可用功约 104 J）。
 

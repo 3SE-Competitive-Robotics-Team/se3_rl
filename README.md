@@ -121,7 +121,6 @@ rm -rf logs/ wandb/ replays/ MUJOCO_LOG.TXT
 - [训练任务架构](docs/task_architecture.md)
 - [ONNX metadata runtime](docs/onnx_runtime.md)
 - 远程机器运维：先读 [remote-dev-se3 公用流程](.agents/skills/remote-dev-se3/SKILL.md)，再选择对应 machine profile
-- [膝关节弹簧建模方案](docs/plan/knee_spring_modeling.md)
 - [趴地移动任务方案](docs/plan/crawl_guide_wheels_20261017.md)
 - [RMUC 2027 场地场景](docs/rmuc2027_field.md)
 
