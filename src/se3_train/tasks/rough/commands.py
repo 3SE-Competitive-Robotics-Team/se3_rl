@@ -81,6 +81,11 @@ ROUGH_TERRAIN_ANG_VEL_YAW_RANGE = (-0.2, 0.2)
 # "高站姿 + 够不着的高速指令"开局而训出静止策略，矮站姿开局必须保留；第 9 行由地形感知下限自动收窄到 0.34–0.38。
 ROUGH_STAIR_COMMAND_TERRAIN_NAMES = ROUGH_STAIR_LIKE_COLUMNS
 ROUGH_STAIR_LIN_VEL_X_RANGE = (0.4, 2.4)
+# 原地顶端转向样本（2026-10-19 用户定：实车需要原地 12 rad/s 量级的快速转向）。均匀采 vx 再按差速预算采 yaw 时，
+# yaw 只有在 vx≈0 才可能采到课程上限 12，概率几乎为零，benchmark 实测原地 ±12 只转到 0–0.6 倍。
+# 平地列每次重采样以此概率改成 vx=0、yaw=±(比例区间)×当前 yaw 上限（再受原地差速预算约束）。
+ROUGH_SPIN_TOP_PROB = 0.05
+ROUGH_SPIN_TOP_YAW_FRACTION_RANGE = (0.85, 1.0)
 ROUGH_STAIR_ANG_VEL_YAW_RANGE = (0.0, 0.0)
 ROUGH_STAIR_HEIGHT_RANGE = (0.20, 0.38)
 
@@ -148,6 +153,10 @@ class RoughCommandCfg(JumpCommandCfg):
     加入这个转移后 A21 model_999 跑到 0.80/1.55/2.14 m/s；代价是训练内 catastrophic 终止
     从 0.03–0.08/轮升到 0.12–0.15/轮。默认关，按验收表决定是否打开。
     """
+
+    spin_top_prob: float = ROUGH_SPIN_TOP_PROB
+    """平地列每次重采样改成"原地顶端转向"（vx=0、yaw 接近上限）的概率；0 关闭。见 ROUGH_SPIN_TOP_PROB。"""
+    spin_top_yaw_fraction_range: tuple[float, float] = ROUGH_SPIN_TOP_YAW_FRACTION_RANGE
 
     high_stand_height_range: tuple[float, float] = (0.36, 0.38)
     high_stand_duration_range_s: tuple[float, float] = (1.5, 2.5)
@@ -332,6 +341,7 @@ class RoughCommandTerm(JumpCommandTerm):
         if self._terrain_override_mask is None:
             super()._resample_command(env_ids)
             self._sample_high_stand_transition(env_ids)
+            self._sample_spin_top(env_ids)
             return
         # 非平地列不抽静站样本：vx 下界为正的约束对静站（vx=0）没有意义。
         overridden = self._terrain_override_mask[env_ids]
@@ -340,6 +350,7 @@ class RoughCommandTerm(JumpCommandTerm):
         if flat_ids.numel() > 0:
             super()._resample_command(flat_ids)
             self._sample_high_stand_transition(flat_ids)
+            self._sample_spin_top(flat_ids)
         if terrain_ids.numel() > 0:
             if self.cfg.terrain_lin_vel_x_follow_curriculum:
                 lo, hi = (float(v) for v in self.cfg.terrain_lin_vel_x_range)
@@ -389,6 +400,43 @@ class RoughCommandTerm(JumpCommandTerm):
             env_ids=ids,
             command=self._command,
         )
+
+    def _sample_spin_top(self, flat_ids: torch.Tensor) -> None:
+        """平地样本里按 spin_top_prob 注入原地顶端转向指令；高姿态起步序列与跳跃样本不改。
+
+        yaw 幅值 = 比例 × min(该 env 当前 yaw 上限, 原地差速预算 r·ω_max·fraction / 半轮距)，符号随机。
+        高度指令保持本次重采样的结果，不动默认姿态缓存。
+        """
+        probability = min(max(float(self.cfg.spin_top_prob), 0.0), 1.0)
+        if probability <= 0.0 or flat_ids.numel() == 0:
+            return
+        selected = torch.rand(len(flat_ids), device=self.device) < probability
+        selected &= ~self._high_stand_selected[flat_ids]
+        jump_env = getattr(self, "jump_env", None)
+        if jump_env is not None:
+            selected &= ~jump_env[flat_ids]
+        ids = flat_ids[selected]
+        if ids.numel() == 0:
+            return
+        _, _, yaw_low, yaw_high = self._velocity_ranges(ids)
+        yaw_cap = torch.minimum(yaw_high.abs(), yaw_low.abs())
+        if self.cfg.constrain_diff_drive_commands:
+            budget = (
+                float(self.cfg.diff_drive_wheel_radius)
+                * float(self.cfg.diff_drive_max_wheel_speed)
+                * float(self.cfg.diff_drive_wheel_speed_fraction)
+            )
+            yaw_cap = torch.clamp(
+                yaw_cap, max=budget / max(float(self.cfg.diff_drive_half_track), 1e-6)
+            )
+        lo, hi = (float(v) for v in self.cfg.spin_top_yaw_fraction_range)
+        fraction = torch.rand(len(ids), device=self.device) * (hi - lo) + lo
+        sign = torch.where(torch.rand(len(ids), device=self.device) < 0.5, -1.0, 1.0)
+        self._command[ids, 0] = 0.0
+        self._command[ids, 1] = sign * fraction * yaw_cap
+        self._command[ids, 2] = 0.0
+        self._command[ids, 3] = 0.0
+        self._standing_mask.index_fill_(0, ids, False)
 
     def _apply_stair_height(self, env_ids: torch.Tensor) -> None:
         """把台阶列 env 的高度指令改到 `stair_height_range` 内重新采样。
@@ -595,6 +643,8 @@ __all__ = [
     "ROUGH_JUMP_ENV_FRACTION",
     "ROUGH_JUMP_MAX_LIN_VEL_X",
     "ROUGH_JUMP_TRIGGER_RATE_HZ",
+    "ROUGH_SPIN_TOP_PROB",
+    "ROUGH_SPIN_TOP_YAW_FRACTION_RANGE",
     "ROUGH_STAIR_ANG_VEL_YAW_RANGE",
     "ROUGH_STAIR_COMMAND_TERRAIN_NAMES",
     "ROUGH_STAIR_HEIGHT_RANGE",
