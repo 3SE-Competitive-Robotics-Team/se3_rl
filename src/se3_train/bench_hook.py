@@ -70,8 +70,6 @@ def maybe_launch_bench(
         command = ["nice", "-n", "10", *command]
     env = dict(os.environ)
     env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
-    if os.name == "posix":
-        env.setdefault("MUJOCO_GL", "egl")
     log_path = onnx_path.parent / "bench" / f"{onnx_path.stem}_{suite}.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)

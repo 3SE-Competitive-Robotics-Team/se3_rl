@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import numpy as np
 
@@ -15,7 +14,6 @@ from se3_tools.bench.sim import (
     WHEEL_RADIUS_M,
     Episode,
     EpisodeConfig,
-    VideoRecorder,
     find_risers,
     terrain_profile,
 )
@@ -48,7 +46,7 @@ def _settle(ep: Episode, seconds: float, *, height: float) -> bool:
     return False
 
 
-def run_flat(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
+def run_flat(ep: Episode, p: dict) -> dict:
     """平地阶跃到 (vx, yaw, height)，取最后 5 s 的稳态。"""
     if _settle(ep, 2.0, height=p["height"]):
         return {"fell": True}
@@ -56,8 +54,6 @@ def run_flat(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     rows = []
     for _ in range(round(10.0 / ep.policy_dt)):
         ep.step()
-        if video:
-            video.capture()
         lin, ang = ep.body_velocity()
         rows.append((lin[0], ang[2], ep.measured_height(), ang[1], ep.pitch_deg()))
         if ep.fell():
@@ -81,17 +77,15 @@ def run_flat(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     return out
 
 
-def run_standing(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
+def run_standing(ep: Episode, p: dict) -> dict:
     """静站 stand_s 秒测漂移，再阶跃到 vx，测跟到 90% 指令所需时间（5 s 内没到记 inf）。"""
     ep.set_command(vx=0.0, yaw=0.0, height=p["height"])
     start = ep.base_position()[:2]
     yaw0 = math.atan2(ep.rotation()[1, 0], ep.rotation()[0, 0])
     vxs = []
     stand_steps = round(p["stand_s"] / ep.policy_dt)
-    for k in range(stand_steps):
+    for _ in range(stand_steps):
         ep.step()
-        if video and k >= stand_steps - round(2.0 / ep.policy_dt):
-            video.capture()
         vxs.append(ep.body_velocity()[0][0])
         if ep.fell():
             return {"fell": True}
@@ -112,8 +106,6 @@ def run_standing(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     alpha = ep.policy_dt / 0.1
     for k in range(round(5.0 / ep.policy_dt)):
         ep.step()
-        if video:
-            video.capture()
         filtered += alpha * (ep.body_velocity()[0][0] - filtered)
         if ep.fell():
             out["fell"] = True
@@ -125,15 +117,15 @@ def run_standing(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     return out
 
 
-def run_standing_drift(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
+def run_standing_drift(ep: Episode, p: dict) -> dict:
     return {
         k: v
-        for k, v in run_standing(ep, dict(p, stand_s=p["seconds"], vx=0.0), video).items()
+        for k, v in run_standing(ep, dict(p, stand_s=p["seconds"], vx=0.0)).items()
         if k != "t90_s"
     }
 
 
-def run_push(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
+def run_push(ep: Episode, p: dict) -> dict:
     """静站 3 s 后给机身前向速度冲量 dv，测最大倾角与是否摔倒。"""
     if _settle(ep, 3.0, height=p["height"]):
         return {"fell": True}
@@ -190,7 +182,7 @@ def _riser_events(trace: np.ndarray, risers: list[tuple[float, float]], dt: floa
     return events
 
 
-def run_stairs(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
+def run_stairs(ep: Episode, p: dict) -> dict:
     """出生在该块出生点、朝 +x 开 20 s；L∞ ≥ 4 m 算走出。上行列另记立面事件。"""
     origin = ep.base_position()[:2]
     heading = ep.heading_xy()
@@ -208,8 +200,6 @@ def run_stairs(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
         if k == switch:
             ep.set_command(height=p["height"])
         ep.step()
-        if video:
-            video.capture()
         pos = ep.base_position()
         offset = np.abs(pos[:2] - origin)
         best = max(best, float(offset.max()))
@@ -246,7 +236,7 @@ def run_stairs(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     return out
 
 
-def run_jump(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
+def run_jump(ep: Episode, p: dict) -> dict:
     """站 2 s（跳跃站高）后可选前进，再请求一次跳跃；测轮底最大离地间隙与落地恢复。"""
     if not ep.runtime.supports_jump:
         return {"skipped": "策略不支持跳跃"}
@@ -262,8 +252,6 @@ def run_jump(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     peak = 0.0
     for _ in range(round(1.5 / ep.policy_dt)):
         ep.step()
-        if video:
-            video.capture()
         cl = ep.wheel_clearances()
         if np.isfinite(cl).all():
             peak = max(peak, float(min(cl)))
@@ -272,8 +260,6 @@ def run_jump(ep: Episode, p: dict, video: VideoRecorder | None) -> dict:
     ep.set_command(vx=0.0)
     for _ in range(round(2.0 / ep.policy_dt)):
         ep.step()
-        if video:
-            video.capture()
         if ep.fell():
             return {"fell": True, "clearance_peak_m": peak}
     recovered = abs(ep.measured_height() - h0) <= 0.03
@@ -298,7 +284,7 @@ RUNNERS = {
 
 
 def run_case(job: dict) -> dict:
-    """worker 入口：job = {case, onnx, scene_path, spawns, solver_hz, video_dir}。"""
+    """worker 入口：job = {case, onnx, scene_path, spawns, solver_hz}。"""
     case = job["case"]
     spawn = None
     if case["scene"] == "stairs":
@@ -323,17 +309,7 @@ def run_case(job: dict) -> dict:
     try:
         ep = Episode(cfg)
         ep.reset()
-        video = None
-        if case["video"] and job.get("video_dir"):
-            safe = case["name"].replace("/", "_")
-            video = VideoRecorder(ep, Path(job["video_dir"]) / f"{safe}.mp4")
-        result.update(RUNNERS[case["kind"]](ep, case["params"], video))
-        if video is not None:
-            saved = video.save()
-            if saved:
-                result["video"] = saved
-            elif video.error:
-                result["video_error"] = video.error
+        result.update(RUNNERS[case["kind"]](ep, case["params"]))
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
     return result

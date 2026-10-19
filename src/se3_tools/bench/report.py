@@ -53,7 +53,7 @@ def log_wandb(
     group: str,
     id_file: Path,
 ) -> str | None:
-    """记到 `<run_name>-bench`（同 group）：以 iteration 为横轴，头条指标按 A–E 分组成面板，另贴诊断图、逐条结果表与视频。"""
+    """记到 `<run_name>-bench`（同 group）：以 iteration 为横轴，头条指标按 A–E 分组成面板，另贴诊断图与逐条结果表。"""
     if os.environ.get("WANDB_MODE", "").lower() == "disabled":
         return None
     import wandb
@@ -77,7 +77,7 @@ def log_wandb(
     )
     try:
         wandb.define_metric("iteration")
-        for section in (*SECTIONS.values(), "figures", "cases", "videos"):
+        for section in (*SECTIONS.values(), "figures", "cases"):
             wandb.define_metric(f"{section}/*", step_metric="iteration")
         record: dict = {"iteration": payload["iteration"]}
         for key, value in payload["headline"].items():
@@ -97,9 +97,6 @@ def log_wandb(
                 r["suite"], r["name"], r["plant"], r.get("fell"), json.dumps(summary, default=float)
             )
         record["cases/all"] = table
-        for r in payload["results"]:
-            if r.get("video"):
-                record[f"videos/{r['name']}"] = wandb.Video(r["video"], format="mp4")
         wandb.log(record)
         return run.url
     finally:

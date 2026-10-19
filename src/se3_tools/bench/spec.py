@@ -100,7 +100,6 @@ class Case:
     spawn: tuple[float, float, float] | None = None
     noise_std: float = 0.0
     seed: int = 0
-    video: bool = False
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -150,7 +149,6 @@ def _standing_cases(full: bool) -> list[Case]:
                         f"{tag}_h{h:.2f}_vx{v:.1f}",
                         "standing",
                         dict(height=h, vx=v, stand_s=stand_s),
-                        video=tag == "stand30" and h == 0.38 and v == 1.0,
                     )
                 )
     return cases
@@ -177,11 +175,6 @@ def _stair_cases(full: bool, rules: StairRules) -> list[Case]:
                                 "stairs",
                                 dict(column=column, row=r, vx=v, height=h, mode=mode),
                                 scene="stairs",
-                                video=column == "stairs_up"
-                                and r == 9
-                                and mode == "running"
-                                and h == floor
-                                and v == up_speeds[-1],
                             )
                         )
         if full and column == "stairs_up":
@@ -224,7 +217,6 @@ def _jump_cases(full: bool) -> list[Case]:
             f"jump_t{t:.1f}_vx{v:.1f}",
             "jump",
             dict(target=t, vx=v),
-            video=t == 0.3 and v == 0.0,
         )
         for t in targets
         for v in speeds

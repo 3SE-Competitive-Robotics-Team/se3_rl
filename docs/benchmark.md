@@ -28,7 +28,7 @@
 - **quick**（只用于手动快速检查）：A 粗网格、B、C 第 3/6/9 级、D 两档目标。约 50 条。
 - **full**（训练中每 1000 轮、训练结束、手动）：A 全网格、B、C 全部 9 级 + 噪声重复、D 全部、E。约 320 条。
 
-实测耗时（2026-10-19，nulltask1 128 核，StairVx08 model_4999，不录像）：
+实测耗时（2026-10-19，nulltask1 128 核，StairVx08 model_4999）：
 
 | 进程数 | quick（52 条） | full（324 条） |
 |---|---|---|
@@ -54,14 +54,14 @@ W&B 上每个训练 run 对应一个同 group 的 `<run>-bench` 评测 run，横
     上行列最右一栏是带噪声回放的通过率），以及上行台阶每级的立面姿态占比（目标姿态 / 跳上去 / 其他）；
   - `D_jump`：各目标高度实际达到的离地间隙；
   - `E_robust`：扰动 plant × 测试矩阵（平地 vx 误差、静站漂移、侧推最大倾角、第 6 级台阶距离）。
-- **逐条结果表** `cases/all`，**录像** `videos/`（Pod 目前录不了，见下）。
+- **逐条结果表** `cases/all`。不录像（2026-10-19 用户定）。
 
 本地同样的图在 ONNX 旁的 `bench/figures/<model>_<suite>/` 下。
 
 ## 用法
 
 ```bash
-# 手动评测一个 ONNX（结果写到 ONNX 旁的 bench/，含 JSON 与录像）
+# 手动评测一个 ONNX（结果写到 ONNX 旁的 bench/，含 JSON 与诊断图）
 uv run python -m se3_tools.bench.cli run --onnx logs/rsl_rl/<exp>/<run>/onnx/model_3000.onnx --suite full
 # 对比两份结果的头条指标
 uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
@@ -76,11 +76,8 @@ uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
 
 - 独立进程（新 session、`nice -n 10`、单线程 BLAS），训练不等它；worker 数默认 CPU 核数的 1/4（`--agent.bench-workers` 覆盖）。
 - 互斥锁 `onnx/bench/.lock`：上一次评测没跑完时本次排队。
-- 结果：`onnx/bench/model_<N>_<suite>.json`、`.log`、`videos/`；logger 为 W&B 时另记到同 group 的 `<run>-bench`
-  评测 run（横轴 iteration，含逐条结果表和三段录像：第 9 级台阶、跳跃、静站后起步）。渲染失败只跳过录像，
-  结果里记 `video_error`。**nulltask1 / whtws 目前录不了像**：容器的 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`
-  不含 `graphics`，NVIDIA OpenGL 库没挂进容器，EGL 起不来（补 glvnd 厂商配置也不行）；要录像得让 Pod 规格加上
-  `graphics` 能力，或在容器里装 OSMesa 走软件渲染。
+- 结果：`onnx/bench/model_<N>_<suite>.json`、`.log`、`figures/`；logger 为 W&B 时另记到同 group 的 `<run>-bench`
+  评测 run（见上文「结果怎么看」）。
 - 关闭：`--agent.bench-interval 0`；smoke（`SE3_SMOKE=1`）默认不触发，`SE3_BENCH_IN_SMOKE=1` 可打开验证链路。
 
 ## 改场景

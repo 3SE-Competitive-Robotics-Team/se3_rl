@@ -1,4 +1,4 @@
-"""单个评测 episode：按 ONNX 契约建 runtime + MuJoCo adapter，注入扰动 plant / 动作噪声，提供测量量与录像。
+"""单个评测 episode：按 ONNX 契约建 runtime + MuJoCo adapter，注入扰动 plant / 动作噪声，提供测量量。
 
 全部走 se3_runtime 的 `PolicyRuntime` / `PolicyControlLoop`，与 sim2x、真机共用观测与动作数学；
 本模块只做评测侧的 adapter 包装，不改 runtime core。
@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -282,58 +281,12 @@ def find_risers(
     return risers
 
 
-class VideoRecorder:
-    """离屏渲染（Pod 上需 MUJOCO_GL=egl）；渲染失败时静默关闭，评测照常。"""
-
-    def __init__(self, episode: Episode, path: Path, *, fps: int = 25, size=(360, 640)) -> None:
-        self.path = Path(path)
-        self.episode = episode
-        self.every = max(1, round(1.0 / (fps * episode.policy_dt)))
-        self.fps = fps
-        self.frames: list[np.ndarray] = []
-        self.error: str | None = None
-        try:
-            # 只调渲染用的头灯（不影响物理），默认场景偏暗。
-            episode.model.vis.headlight.ambient[:] = (0.45, 0.45, 0.45)
-            episode.model.vis.headlight.diffuse[:] = (0.6, 0.6, 0.6)
-            self.renderer = mujoco.Renderer(episode.model, height=size[0], width=size[1])
-            self.camera = mujoco.MjvCamera()
-            self.camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-            self.camera.distance = 2.2
-            self.camera.elevation = -18.0
-            self.camera.azimuth = 120.0
-        except Exception as error:
-            self.renderer = None
-            self.error = str(error)
-
-    def capture(self) -> None:
-        if self.renderer is None or self.episode.step_count % self.every:
-            return
-        self.camera.lookat[:] = self.episode.base_position()
-        try:
-            self.renderer.update_scene(self.episode.data, camera=self.camera)
-            self.frames.append(self.renderer.render().copy())
-        except Exception as error:
-            self.error = str(error)
-            self.renderer = None
-
-    def save(self) -> str | None:
-        if not self.frames:
-            return None
-        import imageio.v2 as imageio
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        imageio.mimsave(self.path, self.frames, fps=self.fps, macro_block_size=8)
-        return str(self.path)
-
-
 __all__ = [
     "FALL_UP_COS",
     "NOMINAL_PLANT",
     "Episode",
     "EpisodeConfig",
     "Plant",
-    "VideoRecorder",
     "find_risers",
     "terrain_profile",
 ]

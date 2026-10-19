@@ -3,7 +3,7 @@
     se3-bench run --onnx <model_N.onnx> [--suite quick|full] [--workers N]
     se3-bench compare <a.json> <b.json>
 
-结果默认写到 ONNX 旁的 `bench/<model>_<suite>.json`（诊断图在 `bench/figures/<model>_<suite>/`，视频在 `bench/videos/<model>_<suite>/`）。
+结果默认写到 ONNX 旁的 `bench/<model>_<suite>.json`（诊断图在 `bench/figures/<model>_<suite>/`）。
 给了 `--wandb-project` 就额外记到同 group 的 `<run>-bench` 评测 run（见 report.log_wandb）。
 训练中由 se3_train.bench_hook 以独立进程调用本命令（`--lock` 让两次评测排队，不重叠）。
 """
@@ -109,7 +109,6 @@ def _run(args: argparse.Namespace, onnx: Path, out_dir: Path) -> int:
         scene_path = grid.path
         spawns = {f"{c}:{r}": list(p) for (c, r), p in grid.spawns.items()}
     tag = f"{onnx.stem}_{args.suite}"
-    video_dir = None if args.no_video else str(out_dir / "videos" / tag)
     jobs = [
         dict(
             case=c.as_dict(),
@@ -117,7 +116,6 @@ def _run(args: argparse.Namespace, onnx: Path, out_dir: Path) -> int:
             scene_path=scene_path,
             spawns=spawns,
             solver_hz=args.solver_hz,
-            video_dir=video_dir,
         )
         for c in cases
     ]
@@ -205,7 +203,6 @@ def main(argv: list[str] | None = None) -> int:
         "--solver-hz", type=float, default=None, help="物理求解频率；默认与契约 physics_dt 一致"
     )
     run.add_argument("--iteration", type=int, default=None)
-    run.add_argument("--no-video", action="store_true")
     run.add_argument("--no-figures", action="store_true", help="不出诊断图")
     run.add_argument("--lock", action="store_true", help="训练旁路调用时加锁，避免两次评测重叠")
     run.add_argument("--wandb-project", default=None)
