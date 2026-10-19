@@ -12,7 +12,6 @@
 | `rough/`（临时，已清空） | 无 | M25–M38 的对照入口于 2026-09-28 删除、M38 成为默认（复现：M34 1a10b73、M35 5af0d00、M37 9e07b44、M38 25ca875）；M39–M54 与 RJ1 的对照入口（`...-Exp-ActionRate010*`、`-Exp-Fudan*`、`-Exp-M50`–`-Exp-M54`、`-Exp-RJ1`）于 2026-10-02 删除、RJ1 成为默认。采用的改动复现用对应 commit：M39 a724b49、M47 4398698、M49 d5db384、M50 be3498f、M51 db1805a、M53 fd4fd76、M54 01e87e2、RJ1 e3b58ab；未采用的 M40–M46、M48、M52 见 `docs/plan/m40_*` 至 `m52_*`。 |
 | `jump_mimic/` | `SE3-WheelLegged-Jump-Mimic-MLP` | 单独的跳跃 mimic 策略（MLP、34 维观测、从头训、平地前进跳）：无下蹲参考 0.20–0.50 m、四项模仿奖励（腿长 / 机身高度 / 竖直速度 / 接触）、偏离参考 0.12 m 提前终止、无 RSI、jump_phase 一维相位。参考时钟 `clock.JumpReferenceClock` 与 rough 共用。J1–J10 的对照入口与 J5/J6 的 `jump_flag/` 任务已于 2026-10-02 删除，J10 配置成为默认；复现用对应 commit（J7 09493b2、J9 4c7ce37、J10 e3c3a0a），结论见 `docs/plan/j7_*` 至 `j10_*`。参考由 `uv run se3-jump-to` 生成（默认即训练用的四条）。 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
-| `stair/` | `SE3-WheelLegged-Stair-GRU` | CTBC 倒金字塔台阶任务，从 stair checkpoint warm start |
 | `crawl/` | `SE3-WheelLegged-Crawl-MLP` / `SE3-WheelLegged-Crawl-Slope-MLP` | 趴地移动（2026-10-17）：机身压在底盘导轮上、主轮在后方推动的平地 vx 跟踪（不转向）。Flat-MLP 薄覆盖：带导轮变体 MJCF `serialleg_closed_chain_v3_guide_wheels.xml`、高度指令固定 0.1359 m、出生即趴姿、删 `stand_still`、课程终值 vx 1.5、不给转向指令（yaw 恒 0）、导轮承重罚 −5 与左右主轮 Δx²+Δz² 对称罚 −50、速度课程在导轮承重达标后才推进、动作零点（实体默认姿态）为趴姿并加趴姿姿态罚 −1、actor 用 Rough 的小网络 128/64/32（STM32 片内部署）。斜坡版同一 MDP，地形为自建「平地-上坡-平台」直线坡（0–15°，2026-10-18 起替换 mjlab 倒金字塔 0–0.15），出生朝 +x、按前进距离升降级，姿态项改为相对局部坡面（3×3 射线法线）。详见 `docs/plan/crawl_guide_wheels_20261017.md`。 |
 
 **Flat 基线已于 2026-09-06 冻结**，取 D11 的配置（W&B `mher9vfk`，commit `236666c`）：不带任何命令行覆盖直接跑
@@ -34,21 +33,6 @@ Flat 基线已合并 D2–D8 的已验证改动。2026-09-13 清理后，GRU、H
 倒地自启的 Recovery-Discovery 任务族（含 `tasks/recovery/` 共享实现）已于 2026-09-25 删除；
 复现历史实验请使用对应 Git commit。stair 的 recovery rehearsal 仍复用 `mdp/` 下的 recovery
 复位、奖励与状态掩码。
-
-## 台阶任务
-
-`stair/` 是当前台阶训练入口，注册 `SE3-WheelLegged-Stair-GRU`，并保留 `SE3-WheelLegged-Stair-GRU-TrainView` 作为历史 watch/play 别名。正式远程训练和本地值守脚本默认使用原始 task id；只有需要兼容旧 watch 流程时才显式使用 `*-TrainView`。
-
-台阶任务的核心差异集中在 `src/se3_train/tasks/stair/`：
-
-- `env_cfg.py` 使用沿世界系 +x 上升的直线台阶地形 `BoxForwardStairsTerrainCfg`，当前训练 MJCF 为真实闭链 `serialleg_closed_chain_v3_train_obb_trim.xml`。
-- `state.py`、`events.py` 和 `observations.py` 管理 CTBC 前馈状态机；actor 仍为 34 维观测，最后 3 维扩展槽在台阶任务中输出 CTBC 左右摆动相位和触发位。
-- `rewards.py`、`curriculums.py` 提供台阶爬升奖励、地形等级课程和诊断项。
-- `env_cfg.py` 同时接入 recovery replay 状态缓存，用于提升台阶训练中跌倒后的恢复覆盖率。
-
-台阶任务的远程值守使用 `./scripts/run_sim2x.sh` 启动 native MuJoCo/Viser，并在
-`Models` 页签选择对应 experiment、run id 和 ONNX。checkpoint 来源、远程连接和本地缓存
-目录由当前 machine profile 决定，不属于任务架构契约。
 
 ## 单个 task 的目录结构
 

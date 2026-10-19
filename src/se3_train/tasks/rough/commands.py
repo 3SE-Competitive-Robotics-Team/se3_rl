@@ -39,7 +39,7 @@ from .terrains import (
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
 
-# 地形感知高度下限的标定，沿用 stair 线（tasks/stair/env_cfg.py）：机体碰撞网格底面在 base_link 下方
+# 地形感知高度下限的标定，沿用已删的 stair 线（tasks/stair/env_cfg.py，4c470d59 可查）：机体碰撞网格底面在 base_link 下方
 # 0.12 m（COACD 网格 z 范围 [-0.1376, 0.1118]，取平底面而非最低角点），再留 0.02 m 余量。
 # 台阶 0.02→0.20 m 对应的下限是 0.20（行 0-1 不生效）→0.34 m，始终在 height_range 上界 0.38 之内。
 ROUGH_TERRAIN_HEIGHT_CLEARANCE = 0.02

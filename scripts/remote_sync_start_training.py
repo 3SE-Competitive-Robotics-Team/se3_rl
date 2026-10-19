@@ -309,7 +309,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--task",
-        default="SE3-WheelLegged-Stair-GRU",
+        required=True,
+        help="要启动的 task id（台阶任务 2026-10-19 删除后不再提供默认值）。",
     )
     parser.add_argument(
         "--load-run",
@@ -356,18 +357,12 @@ def parse_args() -> argparse.Namespace:
         help="指定 --cuda-visible-devices 时, 选定 GPU 显存超过该值则拒绝启动.",
     )
     parser.add_argument(
-        "--stair-local-iter-offset",
-        type=int,
-        default=None,
-        help="CTBC 台阶阶段 local iter 偏移; 从中途 checkpoint 续训时用于避免重新打开 CTBC.",
-    )
-    parser.add_argument(
         "--run-name",
-        default="stair_gru",
+        required=True,
     )
     parser.add_argument(
         "--job-name",
-        default="stair_gru",
+        required=True,
     )
     parser.add_argument("--watch-terrain-level", type=int, choices=range(10), default=6)
     parser.add_argument(
@@ -591,11 +586,6 @@ compile_targets=(src scripts)
         if cuda_visible_devices
         else "unset CUDA_VISIBLE_DEVICES"
     )
-    stair_offset_line = (
-        f"export SE3_STAIR_LOCAL_ITER_OFFSET={args.stair_local_iter_offset}"
-        if args.stair_local_iter_offset is not None
-        else "unset SE3_STAIR_LOCAL_ITER_OFFSET"
-    )
     full_resume_value = "1" if args.full_resume else "0"
     launch_script = f"""
 set -euo pipefail
@@ -609,7 +599,6 @@ export WANDB_MODE=online
 export WANDB_USERNAME=luzhongjin365-se3
 export SE3_LOGGER=wandb
 export SE3_FULL_RESUME={full_resume_value}
-{stair_offset_line}
 {extra_env_exports}
 export PYTHONUNBUFFERED=1
 {cuda_visible_line}

@@ -183,7 +183,6 @@ se3_train/
 ├── tasks/           # 每个训练任务的最小独立单元
 │   ├── rough/       # SE3-WheelLegged-Rough
 │   ├── flat/        # SE3-WheelLegged-Flat-MLP
-│   ├── stair/       # SE3-WheelLegged-Stair-GRU（爬楼梯）
 │   ├── jump_mimic/  # SE3-WheelLegged-Jump-Mimic-MLP（跳跃参考模仿）
 │   ├── crawl/       # SE3-WheelLegged-Crawl-MLP / -Crawl-Slope-MLP（底盘导轮趴地移动）
 │   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）

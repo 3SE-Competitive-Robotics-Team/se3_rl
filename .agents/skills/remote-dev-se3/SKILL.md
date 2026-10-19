@@ -68,6 +68,8 @@ uv run python scripts/remote_sync_start_training.py \
   --cuda-compat-dir <cuda-compat-dir> \
   --cuda-toolkit-lib-dir <cuda-toolkit-lib-dir> \
   --task <task> \
+  --run-name <run-name> \
+  --job-name <job-name> \
   --iterations <iterations>
 ```
 
