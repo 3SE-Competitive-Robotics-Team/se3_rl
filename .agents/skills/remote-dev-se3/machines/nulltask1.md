@@ -603,7 +603,7 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 
 ## 2026-10-19 Rough benchmark 计时（se3-bench）
 
-- 代码 `cbeb599`（分支 `xyh/rough-bench`，未合 main），bundle `8f25b91f..xyh/rough-bench` → `refs/heads/exp/rough-bench-cbeb599`；工作副本 `/workspace/se3-worktrees/rough-bench-cbeb599`（`.venv` 软链主 checkout）。主 checkout 的 se3-sim2x 是旧版 `5386e43`（无 `spawn_position`），所以 worktree 里另放 `_sim2x/`（`7c3a759`），运行时 `PYTHONPATH=$W/src:$W/_sim2x/src`。fetch bundle 要加 `--no-recurse-submodules`。
+- 代码 `cbeb599`（分支 `xyh/rough-bench`，未合 main），bundle `8f25b91f..xyh/rough-bench` → `refs/heads/exp/rough-bench-cbeb599`；工作副本 `/workspace/se3-worktrees/rough-bench-cbeb599`（`.venv` 软链主 checkout）。主 checkout 的 se3-sim2x 是旧版 `5386e43`（无 `spawn_position`），所以 worktree 里另放 `_sim2x/`（`7c3a759` 的本地克隆）。08ffe01 起 se3-bench 优先导入仓库自己的子模块，改为把 worktree 的 `submodules/se3-sim2x` 从 `_sim2x/` 检出（url 指向它 + `protocol.file.allow=always`），运行时只需 `PYTHONPATH=$W/src`；实测 full 32 进程 15.0 s、0 错误、5 张图。fetch bundle 要加 `--no-recurse-submodules`。
 - StairVx08 model_4999、不录像：quick 52 条 8/16/32/64/96 进程 = 10.8/9.0/9.0/10.1/10.0 s；full 324 条 16/32/64/96 进程 = 20.2/14.9/17.4/21.3 s。结果在 `/workspace/bench_timing/`。
 - （benchmark 已于 2026-10-19 去掉录像，以下仅作 Pod 渲染能力记录）录不了像：`NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`（无 graphics），EGL 初始化失败；`/workspace/.se3-egl/10_nvidia.json` 是试过无效的 glvnd 配置，可删。
 

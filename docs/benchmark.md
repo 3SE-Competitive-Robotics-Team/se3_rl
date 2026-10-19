@@ -80,6 +80,22 @@ uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
   评测 run（见上文「结果怎么看」）。
 - 关闭：`--agent.bench-interval 0`；smoke（`SE3_SMOKE=1`）默认不触发，`SE3_BENCH_IN_SMOKE=1` 可打开验证链路。
 
+## Pod 上的准备
+
+benchmark 导入时优先用本仓库自己检出的 `submodules/se3-sim2x/src`（见 `se3_tools/bench/__init__.py`），
+所以训练 worktree 里**要把子模块检出到配套版本**，否则会退回软链 `.venv` 指向的主 checkout 那份 runtime
+（nulltask1 主 checkout 是别的分支，sim2x 停在旧版 5386e43，缺 `spawn_position`，台阶评测会全部报错）。
+Pod 上访问 GitHub 不稳，子模块从本地已有的 sim2x 仓库取：
+
+```bash
+W=/workspace/se3-worktrees/<worktree>
+git -C $W submodule init submodules/se3-sim2x
+git -C $W config submodule.submodules/se3-sim2x.url <含所需提交的本地 sim2x 仓库路径>
+git -C $W -c protocol.file.allow=always submodule update submodules/se3-sim2x
+```
+
+所需提交不在 Pod 上时，先把 sim2x 的 bundle 传进那个本地仓库再检出（做法同主仓库 bundle 同步）。
+
 ## 改场景
 
 改任何网格、时长、判据或 plant 都要升 `BENCH_VERSION`；不同版本的数字不直接比较（compare 会警告）。
