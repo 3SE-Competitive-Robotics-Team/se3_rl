@@ -607,3 +607,8 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 - StairVx08 model_4999、不录像：quick 52 条 8/16/32/64/96 进程 = 10.8/9.0/9.0/10.1/10.0 s；full 324 条 16/32/64/96 进程 = 20.2/14.9/17.4/21.3 s。结果在 `/workspace/bench_timing/`。
 - （benchmark 已于 2026-10-19 去掉录像，以下仅作 Pod 渲染能力记录）录不了像：`NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`（无 graphics），EGL 初始化失败；`/workspace/.se3-egl/10_nvidia.json` 是试过无效的 glvnd 配置，可删。
 
+## 2026-10-19 Student128-LowGains 从零训练（带 benchmark）
+
+- 用户定：LowGains 与 Student128 两台 Pod 同时从零训，各六卡 × 8192。代码 `098b39f`（本机分支 `xyh/rough-bench`，未合 main：benchmark + Student128 删 200 轮学生预热），bundle `8f25b91f..xyh/rough-bench` → `refs/heads/exp/rough-bench-098b39f`；工作副本 `/workspace/se3-worktrees/rough-bench-098b39f`（`.venv` 软链主 checkout，uv.lock 相同）。子模块 `submodules/se3-sim2x` 已检出 `7c3a759`（url 指向 `/workspace/se3-worktrees/.se3-sim2x-mirror`，副本不能放在 worktree 里，否则启动器判工作区不干净）。Pod 六卡 × 8192 smoke 5 轮通过（约 4.0 s/轮）。每 1000 轮与结束自动跑 full benchmark（结果在 run 目录 `onnx/bench/`，W&B `<run>-bench`）。
+- 11:32 UTC 启动：任务 `SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-LowGains`，GPU 0–5 × 8192、seed 42、5000 轮、save 100。W&B [z1jpa3gw](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/z1jpa3gw)。PID `1631793`；state `/workspace/.se3-training-state/nulltask1/20261019T113202Z-10167`；run `/workspace/se3-worktrees/rough-bench-098b39f/logs/rsl_rl/SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-LowGains/2026-10-19_19-32-10_rough-cts-student128-lowgains-scratch-bench-seed42-6x8192-5k`。首轮：第 20 轮无 Traceback、3.14 s/轮，六卡 13.6 GB / 84–91%。启动包装 `.scratch/rough_bench_train_20261019/launch_n1_lowgains.ps1`。对照 whtws 的 Student128（cek08f79）。
+
