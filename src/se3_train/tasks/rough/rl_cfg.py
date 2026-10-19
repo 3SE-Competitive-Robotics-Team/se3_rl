@@ -10,12 +10,12 @@ MLP 512/256/128，actor/critic 同构，见 flat.rl_cfg._model_cfg），PPO 超�
 MLP 入口逐项相同。rollout 特意**不用** Flat GRU 的 64 步而保持 24 步：64 步会同时改每轮采样量
 （2.7 倍）、按轮计数的平地热身/ramp（env_cfg.ROUGH_STEPS_PER_POLICY_ITER=24）和推力课程的时间轴，
 就不再是单变量对照；rsl_rl 采集期 hidden state 跨 rollout 持续、只在 done 时清零，24 步只截断
-BPTT 梯度、不截断推理时的记忆长度。假设与验收见 docs/plan/m16_gru24_20260920.md。
+BPTT 梯度、不截断推理时的记忆长度。假设与验收见 m16_gru24_20260920。
 
 2026-10-04（用户定）：MLP 入口 actor 隐藏层默认 512/256/128 → 128/64/32（ROUGH_ACTOR_HIDDEN_DIMS），
 critic 不变。依据是 Actor128 对照（nulltask1 `4am48uzq` 五卡 × 8192、`qtpyzxtf` 六卡 × 1365）。
 GRU 入口仍用 Flat 的 GRU 配置。同日删掉推理 100 Hz 对照（Exp-Dec2 / Exp-Dec2-Steps48），维持 50 Hz，
-结论见 docs/plan/rough_dec2_100hz_20261003.md。
+结论见 rough_dec2_100hz_20261003。
 
 2026-10-05（用户定）：显式 vx 观测器入口 `vx_observer_rl_cfg`（见 se3_train.vx_observer）。actor 换成
 VxObserverMLPModel（policy MLP 仍为 ROUGH_ACTOR_HIDDEN_DIMS，估计器 ROUGH_VX_ESTIMATOR_HIDDEN_DIMS），估计器用独立 Adam

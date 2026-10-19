@@ -111,7 +111,7 @@ _WRAPPED = (
     "stand_still",  # RJ1：跳跃期间置零（jump_mimic.mdp.not_jumping）
     "contact_forces",
 )
-# tracking_orientation_l2：2026-10-04 起 −12 → −24（Orient24 对照，docs/plan/rough_orient24_20261004.md）。
+# tracking_orientation_l2：2026-10-04 起 −12 → −24（Orient24 对照，rough_orient24_20261004）。
 _REWEIGHTED = ("tracking_lin_vel", "action_rate", "tracking_orientation_l2")
 _ROUGH_ONLY = (
     "stair_climb_progress",
@@ -336,7 +336,7 @@ class RoughInheritsFlatBaselineTests(unittest.TestCase):
 
         track = self.cfg.rewards["tracking_lin_vel"]
         self.assertIs(track.func, rough_rewards.tracking_lin_vel_terrain_vz)
-        # M7：跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（m6_ledger_full_20260914.md）。
+        # M7：跟踪权重 4 → 6，把运动从每秒亏 15 翻成赚（m6_ledger_full_20260914）。
         self.assertAlmostEqual(float(track.weight), ROUGH_TRACKING_LIN_VEL_WEIGHT)
         self.assertGreater(float(track.weight), float(self.flat.rewards["tracking_lin_vel"].weight))
         self.assertAlmostEqual(track.params["sigma_move"], ROUGH_OFF_STAIR_TRACKING_SIGMA_MOVE)
