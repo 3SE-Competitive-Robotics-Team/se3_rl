@@ -28,6 +28,19 @@
 - **quick**（训练中每 1000 轮）：A 粗网格、B、C 第 3/6/9 级、D 两档目标。约 50 条，Pod 上 1 分钟量级。
 - **full**（训练结束、手动）：A 全网格、B、C 全部 9 级 + 噪声重复、D 全部、E。约 320 条。
 
+实测耗时（2026-10-19，nulltask1 128 核，StairVx08 model_4999，不录像）：
+
+| 进程数 | quick（52 条） | full（324 条） |
+|---|---|---|
+| 8 | 10.8 s | — |
+| 16 | 9.0 s | 20.2 s |
+| 32 | 9.0 s | 14.9 s |
+| 64 | 10.1 s | 17.4 s |
+| 96 | 10.0 s | 21.3 s |
+
+quick 16 进程以上就卡在最长一条（30 s 静站 + 起步）上；full 32 进程最快，再多反而被进程启动开销拖慢。
+训练钩子默认 worker 数 = CPU 核数的 1/4，128 核 Pod 上正好是 32。
+
 ## 用法
 
 ```bash
@@ -47,8 +60,10 @@ uv run python -m se3_tools.bench.cli compare <a.json> <b.json>
 - 独立进程（新 session、`nice -n 10`、单线程 BLAS），训练不等它；worker 数默认 CPU 核数的 1/4（`--agent.bench-workers` 覆盖）。
 - 互斥锁 `onnx/bench/.lock`：上一次 quick 没跑完时本次 quick 跳过，full 排队。
 - 结果：`onnx/bench/model_<N>_<suite>.json`、`.log`、`videos/`；logger 为 W&B 时另记到同 group 的 `<run>-bench`
-  评测 run（横轴 iteration，含逐条结果表和三段录像：第 9 级台阶、跳跃、静站后起步）。Pod 上录像需要 `MUJOCO_GL=egl`，
-  渲染失败只跳过录像。
+  评测 run（横轴 iteration，含逐条结果表和三段录像：第 9 级台阶、跳跃、静站后起步）。渲染失败只跳过录像，
+  结果里记 `video_error`。**nulltask1 / whtws 目前录不了像**：容器的 `NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`
+  不含 `graphics`，NVIDIA OpenGL 库没挂进容器，EGL 起不来（补 glvnd 厂商配置也不行）；要录像得让 Pod 规格加上
+  `graphics` 能力，或在容器里装 OSMesa 走软件渲染。
 - 关闭：`--agent.bench-interval 0`；smoke（`SE3_SMOKE=1`）默认不触发，`SE3_BENCH_IN_SMOKE=1` 可打开验证链路。
 
 ## 改场景

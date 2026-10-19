@@ -600,3 +600,10 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 
 - 用户定：训练不用 mjlab 自带地形，改自建「平地接斜坡接平地」，坡度最陡 15°（见 `docs/plan/crawl_guide_wheels_20261017.md`）。代码 `e3ea324a2d4b`（本机分支 `xyh/1005`），bundle `10c78283..e3ea324a`（101 KB）→ `refs/heads/exp/crawlramp-e3ea324`；工作副本 `/workspace/se3-worktrees/crawlramp-e3ea324`（detached，`.venv` 软链主 checkout，uv.lock 相同）。Pod 六卡 × 1024 smoke 5 轮通过（`smoke-crawlramp-e3ea324`）。whtws 同时在跑斜坡 v2（o5lggo94）。
 - 12:51 UTC 启动：GPU 0–5 × 1024、seed 42、从零 3500 轮、save 100。启动器回连时 SSH 被重置报 exit 255，但训练已起来（未重复启动）。W&B [z9pfqm0h](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Crawl/runs/z9pfqm0h)。PID/PGID `1447801`；state `/workspace/.se3-training-state/nulltask1/20261018T125159Z-32634`；run `/workspace/se3-worktrees/crawlramp-e3ea324/logs/rsl_rl/SE3-WheelLegged-Crawl-Slope-MLP/2026-10-18_20-52-06_crawlslope-mlp-v3-ramp15-seed42-6x1024-3500`。首轮：第 20 轮无 Traceback、0.82 s/轮，六卡 6.2 GB / 70%。启动包装 `.scratch/crawl_train_20261017/launch_n1_ramp.ps1`。
+
+## 2026-10-19 Rough benchmark 计时（se3-bench）
+
+- 代码 `cbeb599`（分支 `xyh/rough-bench`，未合 main），bundle `8f25b91f..xyh/rough-bench` → `refs/heads/exp/rough-bench-cbeb599`；工作副本 `/workspace/se3-worktrees/rough-bench-cbeb599`（`.venv` 软链主 checkout）。主 checkout 的 se3-sim2x 是旧版 `5386e43`（无 `spawn_position`），所以 worktree 里另放 `_sim2x/`（`7c3a759`），运行时 `PYTHONPATH=$W/src:$W/_sim2x/src`。fetch bundle 要加 `--no-recurse-submodules`。
+- StairVx08 model_4999、不录像：quick 52 条 8/16/32/64/96 进程 = 10.8/9.0/9.0/10.1/10.0 s；full 324 条 16/32/64/96 进程 = 20.2/14.9/17.4/21.3 s。结果在 `/workspace/bench_timing/`。
+- 录不了像：`NVIDIA_DRIVER_CAPABILITIES=compute,utility,video`（无 graphics），EGL 初始化失败；`/workspace/.se3-egl/10_nvidia.json` 是试过无效的 glvnd 配置，可删。
+
