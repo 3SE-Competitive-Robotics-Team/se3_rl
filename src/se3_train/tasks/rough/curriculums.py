@@ -201,4 +201,68 @@ def stair_speed_cap(
     return term.update_stair_speed_caps(env_ids)
 
 
-__all__ = ["flat_warmup", "stair_speed_cap", "two_step_gate"]
+_FALL_CONSTRAINT_EMA_ATTR = "_se3_fall_constraint_ema"
+_FALL_CONSTRAINT_LAST_ITER_ATTR = "_se3_fall_constraint_last_iter"
+
+
+def fall_constraint_tightening(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    steps_per_policy_iter: int,
+    gate_class_names: tuple[str, ...] = ("side", "inverted"),
+    horizon_s: float = 3.0,
+    update_interval_iters: int = 50,
+    step: float = 0.05,
+    up_threshold: float = 0.90,
+    down_threshold: float = 0.75,
+    max_recover_time_s: float = 2.5,
+    ema_alpha: float = 0.01,
+) -> dict[str, torch.Tensor]:
+    """倒地平顺性约束的收紧课程（2026-10-20 用户定）：先放开让翻身被发现，再按起身效果逐步收紧。
+
+    从吸引域看：倒置时有"躺着"与"翻起来"两个吸引子，翻身的吸引域起初极小，只有满力矩猛甩才进得去；
+    一开始就罚猛烈动作会把它罚没。所以收紧程度 s 从 0 起步，只在 `gate_class_names` 里最差一类的
+    `horizon_s` 内起身率（EMA）≥ up_threshold 且平均起身用时 ≤ max_recover_time_s 时 +step，
+    ≤ down_threshold 时 −step，中间不动（滞回）；每 update_interval_iters 轮判断一次。
+    收不动时 s 会停在附近来回，那就是当前机器人起身所需的最低猛烈度。s 写在 env 上，
+    由 rewards.fall_* / leg_joint_overspeed 读取并插值各自死区。checkpoint 不保存 s，续训从 0 开始。
+    """
+    del env_ids
+    from .events import fall_recovery_within
+    from .rewards import FALL_CONSTRAINT_S_ATTR
+
+    s = float(getattr(env, FALL_CONSTRAINT_S_ATTR, 0.0))
+    ema = getattr(env, _FALL_CONSTRAINT_EMA_ATTR, None)
+    within = fall_recovery_within(env, horizon_s)
+    if within is not None:
+        rate, count, mean_time = within
+        cache = env._se3_fall_state_cache
+        ids = [cache.class_names.index(name) for name in gate_class_names]
+        signal = torch.stack((rate[ids].min(), mean_time))
+        valid = (count[ids] > 0).all()
+        if ema is None:
+            ema = torch.stack(
+                (torch.zeros((), device=env.device), torch.full((), 99.0, device=env.device))
+            )
+            setattr(env, _FALL_CONSTRAINT_EMA_ATTR, ema)
+        ema.copy_(torch.where(valid, ema + float(ema_alpha) * (signal - ema), ema))
+
+    iteration = int(env.common_step_counter) // max(1, int(steps_per_policy_iter))
+    last = int(getattr(env, _FALL_CONSTRAINT_LAST_ITER_ATTR, 0))
+    if ema is not None and iteration - last >= int(update_interval_iters):
+        setattr(env, _FALL_CONSTRAINT_LAST_ITER_ATTR, iteration)
+        rate_ema, time_ema = (float(v) for v in ema.tolist())
+        if rate_ema >= float(up_threshold) and time_ema <= float(max_recover_time_s):
+            s = min(1.0, s + float(step))
+        elif rate_ema <= float(down_threshold):
+            s = max(0.0, s - float(step))
+        setattr(env, FALL_CONSTRAINT_S_ATTR, s)
+
+    out = {"s": torch.tensor(s, device=env.device)}
+    if ema is not None:
+        out["recovered_within_ema"] = ema[0]
+        out["recover_time_ema_s"] = ema[1]
+    return out
+
+
+__all__ = ["fall_constraint_tightening", "flat_warmup", "stair_speed_cap", "two_step_gate"]

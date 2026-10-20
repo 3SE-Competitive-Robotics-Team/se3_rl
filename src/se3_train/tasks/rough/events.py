@@ -22,6 +22,7 @@ import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_from_angle_axis, quat_mul
 
+from se3_shared import JointGroup
 from se3_train.robot_cfg import _MJCF_PATH
 
 from .columns import column_mask
@@ -349,6 +350,50 @@ def reset_from_fall_states(
     getattr(env, _FALL_GROUND_Z_ATTR)[sel] = ground
 
 
+def fall_recovery_within(
+    env: ManagerBasedRlEnv, horizon_s: float
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    """倒地出生已满 horizon_s 的 env 里，horizon_s 内起身的比例（按倾角类别），以及各类有效样本数、平均起身用时。
+
+    只看出生已满 horizon_s 的 env，刚出生还没来得及起身的不会把比例拉低；课程门控与日志共用。
+    返回 (rate[类别], count[类别], mean_time)；还没有倒地出生时返回 None。
+    """
+    fall_mask = getattr(env, FALL_SPAWN_MASK_ATTR, None)
+    cache: _FallStateCache | None = getattr(env, _FALL_CACHE_ATTR, None)
+    if fall_mask is None or cache is None:
+        return None
+    age = env.episode_length_buf.float() * env.step_dt
+    old = fall_mask & (age >= float(horizon_s))
+    recovered: torch.Tensor = getattr(env, _FALL_RECOVERED_ATTR)
+    recover_time: torch.Tensor = getattr(env, _FALL_RECOVER_TIME_ATTR)
+    ok = old & recovered & (recover_time <= float(horizon_s))
+    classes: torch.Tensor = getattr(env, _FALL_CLASS_ATTR)
+    n_class = len(cache.class_names)
+    index = torch.where(old, classes, torch.full_like(classes, n_class))
+    count = torch.bincount(index, minlength=n_class + 1)[:n_class].float()
+    hits = torch.bincount(
+        torch.where(ok, classes, torch.full_like(classes, n_class)), minlength=n_class + 1
+    )
+    rate = hits[:n_class].float() / count.clamp(min=1.0)
+    mean_time = (recover_time * ok.float()).sum() / ok.float().sum().clamp(min=1.0)
+    return rate, count, mean_time
+
+
+def _effort_joint_ids(env: ManagerBasedRlEnv) -> tuple[torch.Tensor, torch.Tensor]:
+    """腿电机与轮关节在实体里的索引（缓存）。"""
+    cached = getattr(env, "_se3_fall_effort_joint_ids", None)
+    if cached is None:
+        robot = env.scene["robot"]
+        legs, _ = robot.find_joints(JointGroup.POLICY_LEG_NAMES, preserve_order=True)
+        wheels, _ = robot.find_joints(JointGroup.WHEEL_NAMES, preserve_order=True)
+        cached = (
+            torch.tensor(legs, device=env.device, dtype=torch.long),
+            torch.tensor(wheels, device=env.device, dtype=torch.long),
+        )
+        env._se3_fall_effort_joint_ids = cached
+    return cached
+
+
 def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
     """interval 事件：记倒地出生 env 的起身情况（`Recovery/*`），不改任何状态以外的东西。
 
@@ -385,6 +430,24 @@ def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> N
         log[f"Recovery/recovered_rate_{name}"] = (done * in_class).sum() / in_class.sum().clamp(
             min=1.0
         )
+    within = fall_recovery_within(env, 3.0)
+    if within is not None:
+        for index, name in enumerate(cache.class_names):
+            log[f"Recovery/recovered_within_3s_{name}"] = within[0][index]
+    # 还在起身的倒地 env 上的力度（当前步，均值与最大值）：对应倒地平顺性约束的三项。
+    recovering = (fall_mask & ~recovered).float()
+    n_rec = recovering.sum().clamp(min=1.0)
+    omega = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)
+    leg_ids, wheel_ids = _effort_joint_ids(env)
+    leg = robot.data.joint_vel[:, leg_ids]
+    wheel = robot.data.joint_vel[:, wheel_ids]
+    for key, value in (
+        ("body_ang_vel", omega),
+        ("leg_speed", leg.abs().amax(dim=1)),
+        ("wheel_speed", wheel.abs().amax(dim=1)),
+    ):
+        log[f"Recovery/{key}_mean_recovering"] = (value * recovering).sum() / n_rec
+        log[f"Recovery/{key}_max_recovering"] = (value * recovering).amax()
 
 
 __all__ = [
@@ -392,6 +455,7 @@ __all__ = [
     "CURRICULUM_EXCLUDE_MASK_ATTR",
     "FALL_SPAWN_MASK_ATTR",
     "REWARD_SPLIT_LOG_PREFIX",
+    "fall_recovery_within",
     "log_fall_recovery",
     "log_reward_split_by_column",
     "reset_from_fall_states",

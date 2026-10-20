@@ -192,6 +192,28 @@ ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%，× ROUGH_FALL_SPAWN_PROB ≈ 8% 的 env 倒地出生。
 # 不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
 ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat", "obstacles", "wave")
+# 倒地平顺性约束 + 收紧课程（2026-10-20 用户定，见 curriculums.fall_constraint_tightening）。1a42x8jj model_2400 实测起身
+# 腿力矩打满 32 N·m、腿速 20 rad/s（超空载 16.8）、机身角速度 12.5 rad/s、轮速 50–68 rad/s，倒地时这些量没有任何计价。
+# 死区在 (s=0 放开, s=1 目标) 间插值；权重按账本反推：倒置每秒比站着少约 128 分，s=1 时一次猛甩翻身约罚 150
+# （角速度 45 + 腿超速 36 + 轮超速 45 + 平滑 20），柔和起身才划算；s=0 时几乎不罚，不挡翻身的发现。
+ROUGH_FALL_ANG_VEL_DEAD_ZONE = (15.0, 6.0)
+ROUGH_FALL_ANG_VEL_WEIGHT = -10.0
+ROUGH_LEG_OVERSPEED_DEAD_ZONE = (20.0, 13.4)
+ROUGH_LEG_OVERSPEED_WEIGHT = -10.0
+ROUGH_FALL_WHEEL_SPEED_DEAD_ZONE = (70.0, 30.0)
+ROUGH_FALL_WHEEL_SPEED_WEIGHT = -0.05
+ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
+# 课程门控：侧躺与倒置里较差一类的 3 s 内起身率（EMA）≥0.90 且平均用时 ≤2.5 s 时每 50 轮 s += 0.05，≤0.75 时 −0.05。
+ROUGH_FALL_CONSTRAINT_CURRICULUM = {
+    "gate_class_names": ("side", "inverted"),
+    "horizon_s": 3.0,
+    "update_interval_iters": 50,
+    "step": 0.05,
+    "up_threshold": 0.90,
+    "down_threshold": 0.75,
+    "max_recover_time_s": 2.5,
+    "ema_alpha": 0.01,
+}
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -617,6 +639,32 @@ def env_cfg(
         stair_height_dead_zone_m=stair_height_dead_zone_m,
         base_height_sigma=base_height_sigma,
     )
+    # 倒地平顺性约束（见 ROUGH_FALL_* 常量与 curriculums.fall_constraint_tightening）。
+    cfg.rewards["fall_body_ang_vel"] = RewardTermCfg(
+        func=rewards.fall_body_ang_vel_excess,
+        weight=ROUGH_FALL_ANG_VEL_WEIGHT,
+        params={"dead_zone_range": ROUGH_FALL_ANG_VEL_DEAD_ZONE},
+    )
+    cfg.rewards["leg_joint_overspeed"] = RewardTermCfg(
+        func=rewards.leg_joint_overspeed,
+        weight=ROUGH_LEG_OVERSPEED_WEIGHT,
+        params={"dead_zone_range": ROUGH_LEG_OVERSPEED_DEAD_ZONE},
+    )
+    cfg.rewards["fall_wheel_overspeed"] = RewardTermCfg(
+        func=rewards.fall_wheel_overspeed,
+        weight=ROUGH_FALL_WHEEL_SPEED_WEIGHT,
+        params={"dead_zone_range": ROUGH_FALL_WHEEL_SPEED_DEAD_ZONE},
+    )
+    smooth = cfg.rewards["action_smoothness"].params
+    cfg.rewards["fall_action_smoothness"] = RewardTermCfg(
+        func=rewards.fall_action_smoothness,
+        weight=ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT,
+        params={
+            key: smooth[key]
+            for key in ("command_name", "max_penalty", "leg_scale", "wheel_scale")
+            if key in smooth
+        },
+    )
     # M49 / M54：左右轮心前后错位罚，台阶列 ×0.25（见 ROUGH_WHEEL_FORE_AFT_WEIGHT、ROUGH_STAIR_WHEEL_FORE_AFT_SCALE）。
     cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
         func=rewards.column_scaled,
@@ -754,6 +802,13 @@ def env_cfg(
                 func=curriculums.stair_speed_cap,
                 params={"command_name": "velocity_height"},
             )
+        cfg.curriculum["fall_constraint"] = CurriculumTermCfg(
+            func=curriculums.fall_constraint_tightening,
+            params={
+                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+                **ROUGH_FALL_CONSTRAINT_CURRICULUM,
+            },
+        )
 
     return cfg
 
@@ -1004,17 +1059,25 @@ __all__ = [
     "ROUGH_DR_KD_RANGE",
     "ROUGH_DR_KNEE_SPRING_SCALE_RANGE",
     "ROUGH_DR_KP_RANGE",
+    "ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT",
+    "ROUGH_FALL_ANG_VEL_DEAD_ZONE",
+    "ROUGH_FALL_ANG_VEL_WEIGHT",
+    "ROUGH_FALL_CONSTRAINT_CURRICULUM",
     "ROUGH_FALL_PENALTY",
     "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
     "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
     "ROUGH_FALL_STATE_CACHE",
+    "ROUGH_FALL_WHEEL_SPEED_DEAD_ZONE",
+    "ROUGH_FALL_WHEEL_SPEED_WEIGHT",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
     "ROUGH_HIGH_STAND_TRANSITION_PROB",
     "ROUGH_JUMP_MAX_HEIGHT_ERROR",
     "ROUGH_JUMP_PHASE_TIME_SCALE_S",
+    "ROUGH_LEG_OVERSPEED_DEAD_ZONE",
+    "ROUGH_LEG_OVERSPEED_WEIGHT",
     "ROUGH_LEG_TORQUE_ENVELOPE_SCALE",
     "ROUGH_MAX_INIT_TERRAIN_LEVEL",
     "ROUGH_NCONMAX",
