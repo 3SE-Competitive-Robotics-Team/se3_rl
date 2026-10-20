@@ -601,6 +601,28 @@ def tracking_orientation_l2(
     return penalty
 
 
+def tracking_orientation_gravity(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """姿态罚的全角度版：机身系重力投影与目标重力方向的平方距离 ‖g_b − g*‖² = 2(1 − cos θ)。
+
+    tracking_orientation_l2 用 asin(g_x)、asin(g_y) 取 pitch/roll，完全倒置时两者都是 0、罚为 0，倒置附近
+    还是往回拉的局部最优（罚 ≈ 24θ²，upward 只给 θ⁴/4），策略会学成四脚朝天躺着。本项随倾角单调：直立 0、
+    侧躺 2、倒置 4；直立附近 ≈ pitch² + roll²，与 L2 版曲率相同。目标方向按 pitch/roll 指令旋转
+    （rough 的 pitch/roll 指令恒 0，即 g* = (0, 0, −1)）。
+    """
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pitch, roll = cmd[:, 2], cmd[:, 3]
+    target = torch.stack(
+        (
+            torch.sin(pitch),
+            -torch.sin(roll) * torch.cos(pitch),
+            -torch.cos(roll) * torch.cos(pitch),
+        ),
+        dim=1,
+    )
+    return torch.sum(torch.square(robot.data.projected_gravity_b - target), dim=1)
+
+
 def tracking_height(
     env: ManagerBasedRlEnv,
     command_name: str,

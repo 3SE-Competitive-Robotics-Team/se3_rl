@@ -444,7 +444,7 @@ def env_cfg(
     terrain_generator：None 时用 `rough_terrains_cfg()`；定向评测传 `stair_only_terrains_cfg()`。
     stair_speed_cap / stair_height_reference / stair_height_dead_zone_m / upward_weight：对照实验开关，
     默认取模块常量（window 口径 + 5 cm 死区 + upward 1.0，见各常量注释）。其余定价与执行链固定为 RJ1（见模块 docstring）。
-    orientation_weight：tracking_orientation_l2（pitch/roll L2）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
+    orientation_weight：姿态罚 tracking_orientation_l2（2026-10-20 起为全角度重力口径）权重，默认 ROUGH_ORIENTATION_WEIGHT（−24），
     None 沿用 Flat 的 −12。
     high_stand_transition_prob：平地列"高姿态静站 → 前进"序列的生成概率，默认 ROUGH_HIGH_STAND_TRANSITION_PROB；对照实验开关。
     base_height_sigma：机身高度罚 flat_base_height 的 σ（全列共用，上台阶列的窗口口径同样用它），默认 ROUGH_BASE_HEIGHT_SIGMA；对照实验开关。
@@ -638,10 +638,14 @@ def env_cfg(
     # M38：全局向上奖励。
     if upward_weight is not None:
         cfg.rewards["upward"] = RewardTermCfg(func=mdp_rewards.upward, weight=float(upward_weight))
-    if orientation_weight is not None:
-        cfg.rewards["tracking_orientation_l2"] = replace(
-            cfg.rewards["tracking_orientation_l2"], weight=float(orientation_weight)
-        )
+    # 2026-10-20 起姿态罚换成全角度口径（mdp.rewards.tracking_orientation_gravity）：asin 版在完全倒置时罚为 0，
+    # 倒地出生后会学成躺着不动。键名保留 tracking_orientation_l2，W&B 曲线连续；直立附近数值与旧版同曲率。
+    orientation = cfg.rewards["tracking_orientation_l2"]
+    cfg.rewards["tracking_orientation_l2"] = replace(
+        orientation,
+        func=mdp_rewards.tracking_orientation_gravity,
+        weight=orientation.weight if orientation_weight is None else float(orientation_weight),
+    )
     # M39：action_rate 权重（只改权重，函数与参数不动）。
     cfg.rewards["action_rate"] = replace(
         cfg.rewards["action_rate"], weight=ROUGH_ACTION_RATE_WEIGHT
