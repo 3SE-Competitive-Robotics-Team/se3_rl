@@ -177,6 +177,11 @@ ROUGH_VX_OBSERVER_TARGET_GROUP = "estimator_target"
 # 依据 WheelTN（xdk0dnoa，七卡 × 1500，4832d15）对 VxObserver（agqj496q）：后期 yaw 误差 2.0 → 1.6、vx 误差 0.55 → 0.52、台阶航向 9.3° → 8.9°，
 # catastrophic 0.03 → 0.06（规模不同，混有规模变量）；诊断见 rough_yaw_envelope_20261006。复现旧口径用 4832d15。
 ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
+# 轮力矩环内一阶滞后 DR（se3_train.actuators.LaggedDcMotorActuator，τ 每 env 在 reset 时均匀采样，play 取中点）。
+# 2026-10-20 起默认开启（用户定）：实车只加 5–15 ms 轮滞后训练的 0bo7adcx 不再出现 8 Hz 静站极限环，
+# 3–10 ms 的 ds1z5s9z 与不带滞后的 60/3/0.2 版（jzzbtqjz）上车都振。已知副作用：滞后版实车静站前后游荡 0.2–0.4 m/s。
+# 以往验证都在 30/2/0.1 训练增益下；60/3/0.2 + 滞后首次上车要专门看振荡。None 关闭（复现 10-20 前默认）。
+ROUGH_WHEEL_TORQUE_LAG_RANGE_S: tuple[float, float] | None = (0.005, 0.015)
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -420,6 +425,7 @@ def env_cfg(
     leg_kd: float | None = None,
     wheel_kd: float | None = None,
     wheel_torque_envelope: str = ROUGH_WHEEL_TORQUE_ENVELOPE,
+    wheel_torque_lag_range_s: tuple[float, float] | None = ROUGH_WHEEL_TORQUE_LAG_RANGE_S,
     cts: bool = False,
     cts_teacher_height_scan: bool = True,
     stair_lin_vel_x_min: float | None = None,
@@ -437,6 +443,8 @@ def env_cfg(
     ROUGH_VX_OBSERVER_TARGET_GROUP（真实 vx，不进 actor / critic）；CTS 链（cts=True）的前提。
     leg_kp / leg_kd / wheel_kd：任务级名义增益；None 沿用共享配置，动作缩放保持不变。
     wheel_torque_envelope：轮子 T-N 包络，"linear_peak" | "rated_point"（见 ROUGH_WHEEL_TORQUE_ENVELOPE）。
+    wheel_torque_lag_range_s：轮执行器输出一阶滞后时间常数范围（s），默认 ROUGH_WHEEL_TORQUE_LAG_RANGE_S；play 固定取中点，
+        None 不加。观测、动作与部署契约不变。
     cts：在 vx_observer 之上加 CTS 分组标记观测组 ROUGH_CTS_ROLE_GROUP；须配 rl_cfg.cts_rl_cfg。
     cts_teacher_height_scan：False 时另建教师编码器观测组 ROUGH_CTS_TEACHER_GROUP（critic 去掉 height_scan），
         critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
@@ -462,6 +470,15 @@ def env_cfg(
             collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
             leg_torque_envelope_scale=ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
             wheel_torque_envelope=wheel_torque_envelope,
+            wheel_torque_lag_tau_range_s=(
+                None
+                if wheel_torque_lag_range_s is None
+                else (
+                    (0.5 * sum(wheel_torque_lag_range_s),) * 2
+                    if play
+                    else tuple(wheel_torque_lag_range_s)
+                )
+            ),
         )
     }
     cfg.scene.terrain = TerrainEntityCfg(
@@ -1004,5 +1021,6 @@ __all__ = [
     "ROUGH_VZ_FLAT_TERRAIN_TYPE_NAMES",
     "ROUGH_WHEEL_FORE_AFT_WEIGHT",
     "ROUGH_WHEEL_TORQUE_ENVELOPE",
+    "ROUGH_WHEEL_TORQUE_LAG_RANGE_S",
     "env_cfg",
 ]

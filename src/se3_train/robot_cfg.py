@@ -9,6 +9,7 @@ from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from se3_shared import DM8009P, M3508_C620_14, JointGroup
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_train.actuators import LaggedDcMotorActuatorCfg
 
 _RESOURCES = Path(__file__).resolve().parents[2] / "assets"
 _MJCF_DIR = _RESOURCES / "robots" / "serialleg" / "mjcf"
@@ -71,6 +72,7 @@ def get_serialleg_closedchain_cfg(
     leg_torque_envelope_scale: float | None = None,
     wheel_torque_envelope: Literal["linear_peak", "rated_point"] = "linear_peak",
     guide_wheels: bool = False,
+    wheel_torque_lag_tau_range_s: tuple[float, float] | None = None,
 ) -> EntityCfg:
     """构造固定使用正式 OBB 闭链 MJCF 的 SerialLeg 训练实体。
 
@@ -90,6 +92,10 @@ def get_serialleg_closedchain_cfg(
 
     guide_wheels：True 时用带 6 个被动底盘导轮的变体 MJCF。导轮关节不在任何 actuator 正则里，
     init_state 的关节角按 mjlab 规则对未匹配关节取 0。
+
+    wheel_torque_lag_tau_range_s（2026-10-15 引入，10-20 起 Rough 默认）：给 (下限, 上限) 秒时轮执行器换成
+    LaggedDcMotorActuatorCfg，速度环与 T-N 包络不变，输出再过一阶滞后（τ 每 env 在 reset 时均匀采样）；
+    None = 原 DcMotorActuatorCfg。
     """
     if leg_torque_envelope_scale is None:
         leg_saturation_effort = DM8009P.stall_torque
@@ -115,20 +121,24 @@ def get_serialleg_closedchain_cfg(
         wheel_saturation_effort = M3508_C620_14.rated_point_stall_torque
     else:
         raise ValueError(f"未知的 wheel_torque_envelope {wheel_torque_envelope!r}")
+    wheel_kwargs = dict(
+        target_names_expr=_WHEEL_JOINT_NAMES,
+        stiffness=0.0,
+        damping=wheel_kd,
+        saturation_effort=wheel_saturation_effort,
+        velocity_limit=M3508_C620_14.no_load_speed,
+        effort_limit=M3508_C620_14.rated_torque,
+    )
+    if wheel_torque_lag_tau_range_s is None:
+        wheel_actuator_cfg = DcMotorActuatorCfg(**wheel_kwargs)
+    else:
+        wheel_actuator_cfg = LaggedDcMotorActuatorCfg(
+            **wheel_kwargs, lag_tau_range_s=tuple(float(v) for v in wheel_torque_lag_tau_range_s)
+        )
     return EntityCfg(
         spec_fn=functools.partial(_serialleg_spec_for_training, collision_geom_group, guide_wheels),
         articulation=EntityArticulationInfoCfg(
-            actuators=(
-                leg_actuator_cfg,
-                DcMotorActuatorCfg(
-                    target_names_expr=_WHEEL_JOINT_NAMES,
-                    stiffness=0.0,
-                    damping=wheel_kd,
-                    saturation_effort=wheel_saturation_effort,
-                    velocity_limit=M3508_C620_14.no_load_speed,
-                    effort_limit=M3508_C620_14.rated_torque,
-                ),
-            ),
+            actuators=(leg_actuator_cfg, wheel_actuator_cfg),
         ),
         init_state=EntityCfg.InitialStateCfg(
             pos=(0.0, 0.0, _ROBOT_CFG.default_base_height),
