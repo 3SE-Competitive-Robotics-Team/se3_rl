@@ -16,6 +16,7 @@ import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import mujoco
 import numpy as np
 import torch
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -36,6 +37,8 @@ _FALL_CACHE_ATTR = "_se3_fall_state_cache"
 _FALL_CLASS_ATTR = "_se3_fall_spawn_class"
 _FALL_RECOVERED_ATTR = "_se3_fall_recovered"
 _FALL_RECOVER_TIME_ATTR = "_se3_fall_recover_time_s"
+_FALL_GROUND_Z_ATTR = "_se3_fall_ground_z"
+_FALL_HEIGHT_MAP_ATTR = "_se3_fall_spawn_height_map"
 # 起身判据：机身倾角 < 15° 且机身离出生地面 ≥ 0.17 m（蹲坐构型是 0.14 m、倾角 2°，不能算起来了）。
 FALL_RECOVERED_TILT_DEG = 15.0
 FALL_RECOVERED_MIN_HEIGHT_M = 0.17
@@ -160,6 +163,84 @@ class _FallStateCache:
         return per_class[self.tilt_class]
 
 
+class _SpawnHeightMap:
+    """可出生地块中心附近的地面高度图：启动时对每块地块中心 ±half_extent 的网格竖直打射线（只打地形 geom 组）。
+
+    出生高度要以机器人脚下实际地面为准：状态库在平面上落定，波浪地形出生点处的地面与地块原点高度最多差 ±幅值，
+    再叠上坡度，直接叠原点高度会穿进地里（实测难度 6–9 最深 23 cm、机身被弹到 4.5 m/s）。取出生点周围
+    `footprint_radius_m` 圆内的最高地面作基准，平地与障碍平台上与原点高度相同，起伏地形上只会落下几厘米。
+    """
+
+    def __init__(
+        self,
+        env: ManagerBasedRlEnv,
+        column_names: tuple[str, ...],
+        half_extent_m: float,
+        resolution_m: float = 0.05,
+        terrain_geom_group: int = 0,
+    ):
+        terrain = env.scene.terrain
+        names = list(terrain.cfg.terrain_generator.sub_terrains.keys())
+        origins = terrain.terrain_origins.detach().cpu().numpy()
+        model = env.sim.mj_model
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        group = np.zeros(6, dtype=np.uint8)
+        group[terrain_geom_group] = 1
+        geom_id = np.zeros(1, dtype=np.int32)
+        down = np.array([0.0, 0.0, -1.0])
+        grid = np.arange(-half_extent_m, half_extent_m + 1e-9, resolution_m)
+        heights = np.full((origins.shape[0], origins.shape[1], grid.size, grid.size), np.nan)
+        for col in (names.index(name) for name in column_names if name in names):
+            for row in range(origins.shape[0]):
+                ox, oy, oz = origins[row, col]
+                top = oz + 3.0
+                for i, dx in enumerate(grid):
+                    for j, dy in enumerate(grid):
+                        dist = mujoco.mj_ray(
+                            model,
+                            data,
+                            np.array([ox + dx, oy + dy, top]),
+                            down,
+                            group,
+                            1,
+                            -1,
+                            geom_id,
+                        )
+                        if dist >= 0.0:
+                            heights[row, col, i, j] = top - dist
+        self.heights = torch.as_tensor(heights, dtype=torch.float32, device=env.device)
+        self.grid0 = float(grid[0])
+        self.resolution = float(resolution_m)
+        self.size = int(grid.size)
+
+    def max_ground_z(
+        self, rows: torch.Tensor, cols: torch.Tensor, offset_xy: torch.Tensor, radius_m: float
+    ) -> torch.Tensor:
+        """地块 (row, col) 中心偏 offset_xy 处、半径 radius_m 圆内的最高地面 z；越出高度图或没打中地形时为 NaN。"""
+        r = math.ceil(radius_m / self.resolution)
+        steps = torch.arange(-r, r + 1, device=offset_xy.device)
+        di, dj = torch.meshgrid(steps, steps, indexing="ij")
+        inside = (di.square() + dj.square()) * self.resolution**2 <= radius_m**2
+        di, dj = di[inside], dj[inside]
+        ci = torch.round((offset_xy[:, 0] - self.grid0) / self.resolution).long()
+        cj = torch.round((offset_xy[:, 1] - self.grid0) / self.resolution).long()
+        ii = ci.unsqueeze(1) + di
+        jj = cj.unsqueeze(1) + dj
+        valid = (ii >= 0) & (ii < self.size) & (jj >= 0) & (jj < self.size)
+        h = self.heights[
+            rows.unsqueeze(1),
+            cols.unsqueeze(1),
+            ii.clamp(0, self.size - 1),
+            jj.clamp(0, self.size - 1),
+        ]
+        h = torch.where(valid, h, torch.full_like(h, float("nan")))
+        # 任何一个采样点无效都返回 NaN，由调用方退回原点高度（宁可不修正也不用半张图的最大值）。
+        return torch.where(
+            torch.isnan(h).any(dim=1), torch.full_like(h[:, 0], float("nan")), h.amax(dim=1)
+        )
+
+
 def _original_column_mask(env: ManagerBasedRlEnv, names: tuple[str, ...]) -> torch.Tensor | None:
     """按原始列归属取掩码：平地热身期全体 env 被挪到平地列，二级台阶门控前也会换列。"""
     # curriculums 反过来从本模块导入 set_curriculum_env_mask，这里延迟导入避免循环。
@@ -185,14 +266,16 @@ def reset_from_fall_states(
     terrain_type_names: tuple[str, ...] = ("flat",),
     command_name: str = "velocity_height",
     xy_offset_m: float = 0.1,
+    footprint_radius_m: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
-    """reset 事件：平地列一部分 env 改从倒地状态库出生（排在 reset_root_state / reset_joints 之后，只覆盖选中的 env）。
+    """reset 事件：指定列一部分 env 改从倒地状态库出生（排在 reset_root_state / reset_joints 之后，只覆盖选中的 env）。
 
-    选中条件：原始列与当前列都是 `terrain_type_names`（状态库在平面上落定）、不是跳跃 env、不在高姿态起步序列里，
-    再按 `prob` 抽取。状态按倾角类别加权抽样（见 `_FallStateCache.sample_weights`），绕世界 z 随机转一个 yaw、
-    xy 加 ±`xy_offset_m` 偏移，z 叠加地形原点高度；速度随同一 yaw 旋转。选中的 env 记入
-    FALL_SPAWN_MASK_ATTR（本 episode 不计入速度课程信号），并记下所抽样本的倾角类别供日志用。
+    选中条件：原始列与当前列都在 `terrain_type_names`、不是跳跃 env、不在高姿态起步序列里，再按 `prob` 抽取。
+    状态按倾角类别加权抽样（见 `_FallStateCache.sample_weights`），绕世界 z 随机转一个 yaw；水平位置取地块中心
+    ±`xy_offset_m`（状态库里落定时滑出去的 xy 丢掉，p95 有 0.5 m，会出生到障碍平台边上）；高度 = 状态库机身离地高度 +
+    出生点 `footprint_radius_m` 圆内最高地面（见 `_SpawnHeightMap`）；速度随同一 yaw 旋转。选中的 env 记入
+    FALL_SPAWN_MASK_ATTR（本 episode 不计入速度课程信号），并记下倾角类别与出生地面高度供日志用。
     """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
@@ -206,6 +289,7 @@ def reset_from_fall_states(
         setattr(env, _FALL_CLASS_ATTR, torch.full_like(fall_mask, -1, dtype=torch.long))
         setattr(env, _FALL_RECOVERED_ATTR, torch.zeros_like(fall_mask))
         setattr(env, _FALL_RECOVER_TIME_ATTR, torch.zeros(env.num_envs, device=env.device))
+        setattr(env, _FALL_GROUND_Z_ATTR, torch.zeros(env.num_envs, device=env.device))
     fall_mask.index_fill_(0, ids, False)
     getattr(env, _FALL_RECOVERED_ATTR).index_fill_(0, ids, False)
     if float(prob) <= 0.0:
@@ -216,6 +300,9 @@ def reset_from_fall_states(
         cache = _FallStateCache(Path(cache_path), tuple(asset.joint_names), env.device)
         setattr(env, _FALL_CACHE_ATTR, cache)
         cache.weights = cache.sample_weights(tuple(class_weights))
+        half_extent = float(xy_offset_m) + float(footprint_radius_m) + 0.1
+        setattr(env, _FALL_HEIGHT_MAP_ATTR, _SpawnHeightMap(env, terrain_type_names, half_extent))
+    height_map: _SpawnHeightMap = getattr(env, _FALL_HEIGHT_MAP_ATTR)
 
     current = column_mask(env, terrain_type_names)
     original = _original_column_mask(env, terrain_type_names)
@@ -239,9 +326,17 @@ def reset_from_fall_states(
     yaw = (torch.rand(n, device=env.device) * 2.0 - 1.0) * math.pi
     z_axis = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand(n, 3)
     q_yaw = quat_from_angle_axis(yaw, z_axis)
-    pos = quat_apply(q_yaw, cache.root_pos[k])
-    pos[:, :2] += (torch.rand(n, 2, device=env.device) * 2.0 - 1.0) * float(xy_offset_m)
-    pos += env.scene.env_origins[sel]
+    offset = (torch.rand(n, 2, device=env.device) * 2.0 - 1.0) * float(xy_offset_m)
+    origin = env.scene.env_origins[sel]
+    terrain = env.scene.terrain
+    ground = height_map.max_ground_z(
+        terrain.terrain_levels[sel].long(),
+        terrain.terrain_types[sel].long(),
+        offset,
+        footprint_radius_m,
+    )
+    ground = torch.where(torch.isnan(ground), origin[:, 2], ground)
+    pos = torch.cat((origin[:, :2] + offset, (ground + cache.root_pos[k, 2]).unsqueeze(1)), dim=1)
     quat = quat_mul(q_yaw, cache.root_quat[k])
     vel = cache.root_vel[k]
     vel = torch.cat((quat_apply(q_yaw, vel[:, :3]), quat_apply(q_yaw, vel[:, 3:])), dim=1)
@@ -251,6 +346,7 @@ def reset_from_fall_states(
     asset.write_joint_state_to_sim(cache.joint_pos[k], cache.joint_vel[k], env_ids=sel)
     fall_mask[sel] = True
     getattr(env, _FALL_CLASS_ATTR)[sel] = cache.tilt_class[k]
+    getattr(env, _FALL_GROUND_Z_ATTR)[sel] = ground
 
 
 def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
@@ -266,7 +362,8 @@ def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> N
     robot = env.scene["robot"]
     pg_z = robot.data.projected_gravity_b[:, 2]
     tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
-    height = robot.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    # 相对出生点地面（波浪地形上地块原点与局部地面最多差 ±幅值）；起身判据只在出生附近用得上。
+    height = robot.data.root_link_pos_w[:, 2] - getattr(env, _FALL_GROUND_Z_ATTR)
     up = (tilt < FALL_RECOVERED_TILT_DEG) & (height >= FALL_RECOVERED_MIN_HEIGHT_M)
     recovered: torch.Tensor = getattr(env, _FALL_RECOVERED_ATTR)
     recover_time: torch.Tensor = getattr(env, _FALL_RECOVER_TIME_ATTR)

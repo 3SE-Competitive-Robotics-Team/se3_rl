@@ -182,14 +182,16 @@ ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
 # 3–10 ms 的 ds1z5s9z 与不带滞后的 60/3/0.2 版（jzzbtqjz）上车都振。已知副作用：滞后版实车静站前后游荡 0.2–0.4 m/s。
 # 以往验证都在 30/2/0.1 训练增益下；60/3/0.2 + 滞后首次上车要专门看振荡。None 关闭（复现 10-20 前默认）。
 ROUGH_WHEEL_TORQUE_LAG_RANGE_S: tuple[float, float] | None = (0.005, 0.015)
-# 倒地出生（2026-10-20 用户定，见 tasks/rough/events.reset_from_fall_states）：平地列（占全体约 6%）每次 reset 以此概率
-# 改从倒地状态库出生，整体约 3% 的 env；状态库由 se3_tools.fall_state_cache 生成（4 万条，通电 75% / 断电 25%），
+# 倒地出生（2026-10-20 用户定，见 tasks/rough/events.reset_from_fall_states）：出生列（ROUGH_FALL_SPAWN_TERRAIN_NAMES）每次 reset
+# 以此概率改从倒地状态库出生；状态库由 se3_tools.fall_state_cache 生成（4 万条，通电 75% / 断电 25%），
 # MJCF 改动后哈希校验会报错，需重新生成。类别权重对应 upright/tilted/side/inverted，默认等权（库里侧躺只占 1 成）。
 ROUGH_FALL_STATE_CACHE = _RESOURCES / "recovery_states" / "fall_states_d1ed876b_40k.npz"
 ROUGH_FALL_SPAWN_PROB = 0.5
 ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
-# 状态库在平面上落定，只能放在真正平整的列；不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
-ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat",)
+# 出生列（2026-10-20 用户定）：平地、障碍（出生点在中心 2 m 空平台上，实测穿透 ≤0.2 cm）、波浪（出生高度按出生点
+# 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%，× ROUGH_FALL_SPAWN_PROB ≈ 8% 的 env 倒地出生。
+# 不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
+ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat", "obstacles", "wave")
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
