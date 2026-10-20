@@ -7,6 +7,7 @@
   actuator，与 ctrl 无关）。弹簧会把腿推到机构端点，所有样本的腿都停在同一处——对应比赛断电后复活起身，
   但单靠它多样性会塌（实测 4 万条只剩几十种构型，人形没有弹簧所以论文不受影响）。
 - 通电（主体）：腿由训练同款执行器（Rough 默认增益、T-N 包络、轮滞后）保持松手时的姿态，轮速目标 0，
+  Rough 动作项打开了气弹簧前馈补偿时同样叠加（名义弹簧力，与 SerialLegDelayedAction 一致）；
   对应策略在控制中摔倒，腿停在各种姿态。
 
 两类起始状态各占一部分：
@@ -43,6 +44,7 @@ from se3_shared import RobotConfig as SharedRobotConfig
 from se3_shared.fourbar import (
     _ACTIVE_LOWER,
     _ACTIVE_UPPER,
+    knee_gas_spring_compensation_torque_torch,
     policy_to_closedchain_passive_pos_torch,
 )
 from se3_train.mdp.events import randomize_friction, randomize_knee_spring_force
@@ -135,6 +137,11 @@ def _build(num_envs: int, device: str) -> tuple[Scene, Simulation, SimpleNamespa
         "spring_scale_range": tuple(cfg.events["knee_spring_force"].params["force_scale_range"]),
     }
     shim.dr = dr
+    # 动作项里的气弹簧前馈（M53）不在执行器里，通电落定要照抄：开关与名义弹簧力取 Rough 动作配置。
+    action = cfg.actions["delayed_action"]
+    shim.spring_ff_force = (
+        float(action.knee_gas_spring_force) if action.knee_gas_spring_compensation_enabled else None
+    )
     return scene, sim, shim
 
 
@@ -235,8 +242,9 @@ def _settle(
     leg_ids: torch.Tensor,
     wheel_ids: torch.Tensor,
     leg_target: torch.Tensor,
+    spring_ff_force: float | None,
 ) -> None:
-    """落定：通电 env 走训练同款执行器保持腿姿、轮速目标 0；断电 env 每步把电机 ctrl 与外力清零。"""
+    """落定：通电 env 走训练同款执行器保持腿姿、轮速目标 0（含气弹簧前馈）；断电 env 每步把电机 ctrl 与外力清零。"""
     robot = scene["robot"]
     unpowered = ~powered
     wheel_target = torch.zeros(leg_target.shape[0], len(wheel_ids), device=leg_target.device)
@@ -244,6 +252,13 @@ def _settle(
     for _ in range(int(steps)):
         robot.set_joint_position_target(leg_target, joint_ids=leg_ids)
         robot.set_joint_velocity_target(wheel_target, joint_ids=wheel_ids)
+        if spring_ff_force is not None:
+            robot.set_joint_effort_target(
+                knee_gas_spring_compensation_torque_torch(
+                    robot.data.joint_pos[:, leg_ids], spring_ff_force
+                ),
+                joint_ids=leg_ids,
+            )
         scene.write_data_to_sim()
         sim.data.ctrl[unpowered] = 0.0
         sim.data.qfrc_applied[unpowered] = 0.0
@@ -309,6 +324,7 @@ def generate(args: argparse.Namespace) -> Path:
             leg_ids_t,
             wheel_ids_t,
             jpos[:, leg_ids_t].clone(),
+            shim.spring_ff_force,
         )
 
         root_pose = robot.data.root_link_pose_w
@@ -392,6 +408,7 @@ def generate(args: argparse.Namespace) -> Path:
         "attempted": int(attempted),
         "settled": int(settled),
         "dr": {key: list(value) for key, value in shim.dr.items()},
+        "powered_spring_ff_force": shim.spring_ff_force,
         "dr_params_columns": ["friction", "spring_force_left", "spring_force_right"],
         "family_names": list(FAMILY_NAMES),
         "tilt_class_names": list(TILT_CLASS_NAMES),
