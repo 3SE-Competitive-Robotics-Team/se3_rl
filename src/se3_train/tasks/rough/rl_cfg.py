@@ -34,6 +34,8 @@ from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 
 # 地形课程要爬 10 级难度，比平地的 3500 轮长。沿用本仓库非 Flat 线的 5000 轮惯例。
 ROUGH_MAX_ITERATIONS = 5000
+# 2026-10-19 用户定：Rough 系入口训练中每 1000 轮与训练结束时旁路跑 full benchmark（se3_tools.bench）。
+ROUGH_BENCH_INTERVAL = 1000
 # 2026-10-04 用户定：actor 隐藏层默认 128/64/32（部署跑的是 actor），critic 沿用 Flat 的 512/256/128。
 ROUGH_ACTOR_HIDDEN_DIMS = (128, 64, 32)
 # 学生编码器（沿用 estimator 名）独立 Adam 学习率。lr 1e-3 是 HIMLoco / Ji et al. 估计器的常用值；
@@ -49,9 +51,8 @@ ROUGH_CTS_STUDENT_HIDDEN_DIMS = (256, 128)
 # 单片机部署版学生编码器（2026-10-09 用户定）：256/128 的部署网络约 18 万参数、FP32 约 720 KB，
 # 加固件代码约 146 KB 超出 STM32H723 片内 768 KiB 权重区；128/128 降到约 10.2 万参数、约 408 KB，片内放得下。
 ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU = (128, 128)
-# 换小学生编码器续训时的预热轮数：新编码器随机初始化，前若干轮只训练学生编码器、不做 PPO 更新，
-# 免得 25% 学生 env 的垃圾隐向量把共享 policy 带偏（见 se3_train.ppo）。
-ROUGH_CTS_STUDENT_WARMUP_ITERATIONS = 200
+# 2026-10-19 用户定：Student128 入口删掉「换编码器续训」用的 200 轮学生预热默认值，改为与 LowGains 一样从零训；
+# 预热机制本身仍在 cts_rl_cfg(estimator_warmup_iterations=...) / se3_train.ppo，续训时按需显式传。
 
 
 @dataclass
@@ -84,6 +85,7 @@ def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成 MLP PPO 训练配置：PPO 超参数与 Flat 基线逐项相同，actor 隐藏层为 ROUGH_ACTOR_HIDDEN_DIMS。"""
     cfg = _use_se3_ppo(mlp_rl_cfg(smoke=smoke))
     cfg.actor = replace(cfg.actor, hidden_dims=ROUGH_ACTOR_HIDDEN_DIMS)
+    cfg.bench_interval = ROUGH_BENCH_INTERVAL
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
     return cfg
@@ -132,6 +134,7 @@ def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
     """生成 GRU PPO 训练配置：只换网络，rollout 仍 24 步，其余与 `rl_cfg` 逐项相同（M16）。"""
     cfg = _use_se3_ppo(flat_gru_rl_cfg(smoke=smoke))
     cfg.num_steps_per_env = FLAT_NUM_STEPS_PER_ENV
+    cfg.bench_interval = ROUGH_BENCH_INTERVAL
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
     return cfg
@@ -139,10 +142,10 @@ def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
 
 __all__ = [
     "ROUGH_ACTOR_HIDDEN_DIMS",
+    "ROUGH_BENCH_INTERVAL",
     "ROUGH_CTS_LATENT_DIM",
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS",
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU",
-    "ROUGH_CTS_STUDENT_WARMUP_ITERATIONS",
     "ROUGH_CTS_TEACHER_HIDDEN_DIMS",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",

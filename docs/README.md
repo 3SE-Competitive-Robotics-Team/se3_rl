@@ -11,6 +11,7 @@
 - [ONNX metadata 与 sim2x](onnx_runtime.md)：producer、artifact、runtime 和浏览器入口。
 - [控制频率](control_frequency.md)：200 Hz physics / 50 Hz policy 的唯一来源和校验路径。
 - [常见错误](common_mistakes.md)：已经确认且容易复发的实现错误。
+- [Rough benchmark](benchmark.md)：训练中自动跑的部署链路评测（A–E 五项）与手动用法。
 
 ## 背景与专题
 

@@ -15,7 +15,6 @@ from .env_cfg import (
 )
 from .rl_cfg import (
     ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
-    ROUGH_CTS_STUDENT_WARMUP_ITERATIONS,
     cts_rl_cfg,
     gru_rl_cfg,
     rl_cfg,
@@ -51,7 +50,8 @@ EXP_CTS_NOSCAN_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan"
 # NoScan-4999 平地 0.4–1.0 超速是台阶列低指令冲速泄漏（见 env_cfg 常量注释）。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08"
 # 2026-10-09（用户定）：单片机部署版——StairVx08 的学生编码器 480→256→128→33 换成 480→128→128→33
-# （ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU），从 StairVx08 model_4999 续训；前 ROUGH_CTS_STUDENT_WARMUP_ITERATIONS 轮只训练学生编码器。
+# （ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU），当时从 StairVx08 model_4999 续训、前 200 轮只训学生编码器；
+# 2026-10-19 用户定删掉预热默认值，入口按从零训练配置。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128"
 )
@@ -170,7 +170,6 @@ def register() -> None:
                 role_group=ROUGH_CTS_ROLE_GROUP,
                 teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
                 student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
-                estimator_warmup_iterations=ROUGH_CTS_STUDENT_WARMUP_ITERATIONS,
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID,
         ),
@@ -193,7 +192,6 @@ def register() -> None:
                 role_group=ROUGH_CTS_ROLE_GROUP,
                 teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
                 student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
-                estimator_warmup_iterations=0,
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID,
         ),
