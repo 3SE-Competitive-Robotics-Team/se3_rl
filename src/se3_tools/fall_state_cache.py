@@ -1,7 +1,14 @@
-"""倒地状态库生成器：零力矩重力落定，供 Rough 自起训练的倒地出生使用（2026-10-20）。
+"""倒地状态库生成器：重力落定，供 Rough 自起训练的倒地出生使用（2026-10-20）。
 
-做法同 KungfuAthleteBot（arXiv 2610.03388）的 GRSI 与本仓库 S1 时期的 recovery cache（c448de4e^）：
-电机零力矩、膝气弹簧照常（MJCF 里是常量 bias 的 tendon actuator，与 ctrl 无关），让物理决定最终倒地构型。
+思路同 KungfuAthleteBot（arXiv 2610.03388）的 GRSI 与本仓库 S1 时期的 recovery cache（c448de4e^）：
+从随机状态松手，让物理决定最终倒地构型。落定期间电机分两种情况（`powered`）：
+
+- 断电（零力矩，占 `zero_torque_fraction`）：电机 ctrl 清零，膝气弹簧照常（MJCF 里是常量 bias 的 tendon
+  actuator，与 ctrl 无关）。弹簧会把腿推到机构端点，所有样本的腿都停在同一处——对应比赛断电后复活起身，
+  但单靠它多样性会塌（实测 4 万条只剩几十种构型，人形没有弹簧所以论文不受影响）。
+- 通电（主体）：腿由训练同款执行器（Rough 默认增益、T-N 包络、轮滞后）保持松手时的姿态，轮速目标 0，
+  对应策略在控制中摔倒，腿停在各种姿态。
+
 两类起始状态各占一部分：
 
 - drop：机身朝向在 SO(3) 上均匀随机，离地 `drop_height_range` 松手；主动杆夹角在机构可行域内均匀、
@@ -220,12 +227,28 @@ def _sample_states(
     return family, torch.cat((pos, quat), 1), root_vel, joint_pos, joint_vel
 
 
-def _settle(sim: Simulation, steps: int) -> None:
-    """零力矩落定：电机 ctrl 与外力每步清零；气弹簧是常量 bias，不受影响。"""
+def _settle(
+    scene: Scene,
+    sim: Simulation,
+    steps: int,
+    powered: torch.Tensor,
+    leg_ids: torch.Tensor,
+    wheel_ids: torch.Tensor,
+    leg_target: torch.Tensor,
+) -> None:
+    """落定：通电 env 走训练同款执行器保持腿姿、轮速目标 0；断电 env 每步把电机 ctrl 与外力清零。"""
+    robot = scene["robot"]
+    unpowered = ~powered
+    wheel_target = torch.zeros(leg_target.shape[0], len(wheel_ids), device=leg_target.device)
+    dt = float(sim.mj_model.opt.timestep)
     for _ in range(int(steps)):
-        sim.data.ctrl[:] = 0.0
-        sim.data.qfrc_applied[:] = 0.0
+        robot.set_joint_position_target(leg_target, joint_ids=leg_ids)
+        robot.set_joint_velocity_target(wheel_target, joint_ids=wheel_ids)
+        scene.write_data_to_sim()
+        sim.data.ctrl[unpowered] = 0.0
+        sim.data.qfrc_applied[unpowered] = 0.0
         sim.step()
+        scene.update(dt)
     sim.forward()
 
 
@@ -243,11 +266,16 @@ def generate(args: argparse.Namespace) -> Path:
     robot = scene["robot"]
     names = tuple(str(name) for name in robot.joint_names)
     leg_ids = [names.index(name) for name in JointGroup.POLICY_LEG_NAMES]
+    leg_ids_t = torch.tensor(leg_ids, device=device)
+    wheel_ids_t = torch.tensor(
+        [names.index(name) for name in JointGroup.WHEEL_NAMES], device=device
+    )
     dt = float(sim.mj_model.opt.timestep)
     env_ids = torch.arange(scene.num_envs, device=device)
 
     keys = (
         "family",
+        "powered",
         "root_pos",
         "root_quat",
         "root_lin_vel",
@@ -271,8 +299,17 @@ def generate(args: argparse.Namespace) -> Path:
         robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
         robot.write_root_link_velocity_to_sim(vel, env_ids=env_ids)
         robot.write_joint_state_to_sim(jpos, jvel, env_ids=env_ids)
+        powered = _uniform(0.0, 1.0, (scene.num_envs,), gen, device) >= args.zero_torque_fraction
         settle_s = float(_uniform(*args.settle_seconds_range, (1,), gen, device).item())
-        _settle(sim, max(1, round(settle_s / dt)))
+        _settle(
+            scene,
+            sim,
+            max(1, round(settle_s / dt)),
+            powered,
+            leg_ids_t,
+            wheel_ids_t,
+            jpos[:, leg_ids_t].clone(),
+        )
 
         root_pose = robot.data.root_link_pose_w
         root_vel = robot.data.root_link_vel_w
@@ -304,6 +341,7 @@ def generate(args: argparse.Namespace) -> Path:
         if keep.numel():
             values = {
                 "family": family,
+                "powered": powered.long(),
                 "root_pos": rel,
                 "root_quat": root_pose[:, 3:7],
                 "root_lin_vel": root_vel[:, :3],
@@ -335,6 +373,10 @@ def generate(args: argparse.Namespace) -> Path:
     arrays = {key: np.concatenate(values, axis=0) for key, values in store.items()}
     counts = {
         "family": {name: int((arrays["family"] == i).sum()) for i, name in enumerate(FAMILY_NAMES)},
+        "powered": {
+            "zero_torque": int((arrays["powered"] == 0).sum()),
+            "powered": int(arrays["powered"].sum()),
+        },
         "tilt_class": {
             name: int((arrays["tilt_class"] == i).sum()) for i, name in enumerate(TILT_CLASS_NAMES)
         },
@@ -387,6 +429,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--collapse-fraction", type=float, default=0.3)
+    parser.add_argument("--zero-torque-fraction", type=float, default=0.25)
     parser.add_argument("--drop-height-range", type=_range, default=(0.45, 0.60))
     parser.add_argument("--thigh-range-rad", type=float, default=1.0)
     parser.add_argument("--drop-lin-vel", type=float, default=0.3)
