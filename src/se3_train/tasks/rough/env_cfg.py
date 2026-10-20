@@ -203,16 +203,20 @@ ROUGH_LEG_OVERSPEED_WEIGHT = -10.0
 ROUGH_FALL_WHEEL_SPEED_DEAD_ZONE = (70.0, 30.0)
 ROUGH_FALL_WHEEL_SPEED_WEIGHT = -0.05
 ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
-# 课程门控：侧躺与倒置里较差一类的 3 s 内起身率（EMA）≥0.90 且平均用时 ≤2.5 s 时每 50 轮 s += 0.05，≤0.75 时 −0.05。
+# 课程门控（2026-10-20 第二版，用户定：让策略适应、不滞回）：侧躺与倒置里较差一类的 3 s 内起身率按轮求均值进 100 轮窗口，
+# 窗口均值 ≥0.85、平均用时 ≤2.5 s、距上次收紧 ≥200 轮时 s += 0.1，s 只升不降；窗口均值连续 300 轮 <0.4 时暂停收紧并报警。
+# 门槛 0.85：1a42x8jj 侧躺起身率稳定期只在 0.89–0.94，b3odjuk6 1200 轮 3 s 内起身率 0.84–0.87，0.90 太贴上限。
+# 步长 0.1：每档间隔 ≥200 轮，0→1 最少 2000 轮，5000 轮训练里收得满；每档角速度死区只缩 0.9 rad/s。
 ROUGH_FALL_CONSTRAINT_CURRICULUM = {
     "gate_class_names": ("side", "inverted"),
     "horizon_s": 3.0,
-    "update_interval_iters": 50,
-    "step": 0.05,
-    "up_threshold": 0.90,
-    "down_threshold": 0.75,
+    "window_iters": 100,
+    "min_interval_iters": 200,
+    "step": 0.1,
+    "up_threshold": 0.85,
     "max_recover_time_s": 2.5,
-    "ema_alpha": 0.01,
+    "collapse_threshold": 0.4,
+    "collapse_iters": 300,
 }
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
