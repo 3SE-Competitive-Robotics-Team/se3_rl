@@ -83,7 +83,7 @@ from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 from se3_train.mdp import events as mdp_events
 from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
-from se3_train.robot_cfg import get_serialleg_closedchain_cfg
+from se3_train.robot_cfg import _RESOURCES, get_serialleg_closedchain_cfg
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -182,6 +182,14 @@ ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
 # 3–10 ms 的 ds1z5s9z 与不带滞后的 60/3/0.2 版（jzzbtqjz）上车都振。已知副作用：滞后版实车静站前后游荡 0.2–0.4 m/s。
 # 以往验证都在 30/2/0.1 训练增益下；60/3/0.2 + 滞后首次上车要专门看振荡。None 关闭（复现 10-20 前默认）。
 ROUGH_WHEEL_TORQUE_LAG_RANGE_S: tuple[float, float] | None = (0.005, 0.015)
+# 倒地出生（2026-10-20 用户定，见 tasks/rough/events.reset_from_fall_states）：平地列（占全体约 6%）每次 reset 以此概率
+# 改从倒地状态库出生，整体约 3% 的 env；状态库由 se3_tools.fall_state_cache 生成（4 万条，通电 75% / 断电 25%），
+# MJCF 改动后哈希校验会报错，需重新生成。类别权重对应 upright/tilted/side/inverted，默认等权（库里侧躺只占 1 成）。
+ROUGH_FALL_STATE_CACHE = _RESOURCES / "recovery_states" / "fall_states_d1ed876b_40k.npz"
+ROUGH_FALL_SPAWN_PROB = 0.5
+ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
+# 状态库在平面上落定，只能放在真正平整的列；不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
+ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat",)
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -429,6 +437,7 @@ def env_cfg(
     cts: bool = False,
     cts_teacher_height_scan: bool = True,
     stair_lin_vel_x_min: float | None = None,
+    fall_spawn_prob: float = ROUGH_FALL_SPAWN_PROB,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -450,6 +459,7 @@ def env_cfg(
         critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
     stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
         ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
+    fall_spawn_prob：平地列 reset 时改从倒地状态库出生的概率，默认 ROUGH_FALL_SPAWN_PROB；play 固定为 0，0 关闭。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -564,6 +574,20 @@ def env_cfg(
         mode="interval",
         interval_range_s=(0.0, 0.0),
         params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
+    )
+    # 倒地出生排在 reset_root_state / reset_joints 之后（字典序即执行序），只覆盖选中的 env。
+    cfg.events["reset_from_fall_states"] = EventTermCfg(
+        func=events.reset_from_fall_states,
+        mode="reset",
+        params={
+            "cache_path": str(ROUGH_FALL_STATE_CACHE),
+            "prob": 0.0 if play else float(fall_spawn_prob),
+            "class_weights": ROUGH_FALL_SPAWN_CLASS_WEIGHTS,
+            "terrain_type_names": ROUGH_FALL_SPAWN_TERRAIN_NAMES,
+        },
+    )
+    cfg.events["log_fall_recovery"] = EventTermCfg(
+        func=events.log_fall_recovery, mode="interval", interval_range_s=(0.0, 0.0)
     )
 
     # M53：电机侧气弹簧前馈补偿（见 ROUGH_LEG_TORQUE_ENVELOPE_SCALE 上方注释）。
@@ -975,6 +999,10 @@ __all__ = [
     "ROUGH_DR_KNEE_SPRING_SCALE_RANGE",
     "ROUGH_DR_KP_RANGE",
     "ROUGH_FALL_PENALTY",
+    "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
+    "ROUGH_FALL_SPAWN_PROB",
+    "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
+    "ROUGH_FALL_STATE_CACHE",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",

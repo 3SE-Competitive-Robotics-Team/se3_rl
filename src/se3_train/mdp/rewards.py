@@ -355,6 +355,17 @@ def upward(env: ManagerBasedRlEnv) -> torch.Tensor:
     return reward
 
 
+def _curriculum_signal(env: ManagerBasedRlEnv, mask: torch.Tensor) -> torch.Tensor:
+    """速度课程信号掩码再去掉本 episode 不计入课程的 env（rough 倒地出生，见 tasks/rough/events）。
+
+    倒地出生的 env 前几秒在起身、跟踪分天然偏低，混进来会拖慢平地速度课程；没挂排除掩码的任务原样返回。
+    """
+    exclude = getattr(env, "_se3_curriculum_exclude_mask", None)
+    if isinstance(exclude, torch.Tensor) and exclude.shape[0] == env.num_envs:
+        return mask & ~exclude
+    return mask
+
+
 def tracking_lin_vel(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -399,7 +410,9 @@ def tracking_lin_vel(
                 "Locomotion/tracking_lin_vel_reward": _masked_mean(reward, moving),
                 # 课程判据专用：不按 moving 过滤,cmd=0 时用 sigma_stand 打分,
                 # 避免速度范围初始为 (0,0) 时 moving mask 恒为空导致课程死锁。
-                "Locomotion/tracking_lin_vel_reward_all": _masked_mean(reward, locomotion),
+                "Locomotion/tracking_lin_vel_reward_all": _masked_mean(
+                    reward, _curriculum_signal(env, locomotion)
+                ),
                 "Locomotion/tracking_upright_gate": _masked_mean(gate, locomotion),
             }
         )
@@ -410,7 +423,10 @@ def tracking_lin_vel(
         curriculum_mask = getattr(env, "_se3_curriculum_env_mask", None)
         if isinstance(curriculum_mask, torch.Tensor) and curriculum_mask.shape[0] == env.num_envs:
             env.extras["log"]["Locomotion/tracking_lin_vel_reward_curriculum"] = _masked_mean(
-                reward, locomotion & curriculum_mask.to(device=reward.device, dtype=torch.bool)
+                reward,
+                _curriculum_signal(
+                    env, locomotion & curriculum_mask.to(device=reward.device, dtype=torch.bool)
+                ),
             )
 
     return reward
@@ -459,7 +475,9 @@ def tracking_ang_vel(
                 "Locomotion/tracking_ang_vel_reward": _masked_mean(reward, moving),
                 # 不按 moving 过滤的版本，供 commands_vel_adaptive 的 yaw 独立门控读取；
                 # 与 tracking_lin_vel_reward_all 同语义（cmd=0 阶段也给出连续非零信号）。
-                "Locomotion/tracking_ang_vel_reward_all": _masked_mean(reward, ~jump_flag),
+                "Locomotion/tracking_ang_vel_reward_all": _masked_mean(
+                    reward, _curriculum_signal(env, ~jump_flag)
+                ),
                 "Locomotion/tracking_ang_vel_exp_reward": _masked_mean(exp_reward, moving),
                 "Locomotion/tracking_ang_vel_sigma": _masked_mean(effective_sigma, moving),
                 "Locomotion/tracking_upright_gate": _masked_mean(gate, ~jump_flag),
