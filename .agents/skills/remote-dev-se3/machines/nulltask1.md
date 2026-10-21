@@ -630,3 +630,10 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 - 用户定：在空 Pod 上直接开新训练（课程终点不改）。代码 `9a33227f`（本机分支 `xyh/1020`，未推送）相对 whtws 的 b3odjuk6（4e74e45）只差课程规则：只紧不松、100 轮窗口均值 ≥0.85 且距上次收紧 ≥200 轮才 s += 0.1、窗口均值连续 300 轮 <0.4 暂停报警。单变量对照。b3odjuk6 在旧滞回规则 s=0.45 时倒置 3 s 内起身率 0.94→0.52 崩塌。
 - 开训前实时查：六卡 2 MiB / 0%。bundle `e5b388e1..xyh/1020` → `refs/heads/exp/rough-fallcon-9a33227`；工作副本 `/workspace/se3-worktrees/rough-fallcon-9a33227`（子模块 7c3a759 从 `.se3-sim2x-mirror`）。六卡 × 8192 smoke 5 轮通过（3.15 s/轮，倒地出生 7.7%，Curriculum/fall_constraint/* 新日志在）。
 - 15:10 UTC 启动：GPU 0–5 × 8192、seed 42、5000 轮、save 100，每 1000 轮 full benchmark。W&B [tgds7ff7](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/tgds7ff7)。PID/PGID `1927748`；state `/workspace/.se3-training-state/nulltask1/20261020T151032Z-18042`。首轮：第 3 轮无 Traceback、3.2 s/轮，六卡 13.6 GB / 88–92%。启动包装 `.scratch/rough_fall_train_20261020/launch_n1_ratchet.ps1`（pwsh 7）。判据：s 收到哪里、收紧后起身率能否在 200 轮内回到 0.85 以上、collapse_paused 是否触发；力度用 eval_recovery_effort.py 对比 b3odjuk6 同 s。
+
+## 2026-10-21 起身 mimic 教师 R1 从零训练
+
+- 用户定：nulltask1 开训，每卡 1024。任务 `SE3-WheelLegged-Recovery-Mimic-MLP`，代码 `f889a410`（本机分支 `xyh/1020`，未推送）：跟踪开环 R1 参考（倒置·腿折叠，97e6028a），之后在 Rough 倒地时蒸馏给主策略。actor 观测含 9 维参考特权信息，训练期 ONNX 导出按预期失败（runner 捕获，checkpoint 照存）。
+- 开训前实时查：六卡 2 MiB / 0%、无 se3-train。bundle `9a33227f..xyh/1020` → `refs/heads/exp/recovery-mimic-f889a41`；工作副本 `/workspace/se3-worktrees/recovery-mimic-f889a41`（子模块 7c3a759 从 `.se3-sim2x-mirror`）。CPU smoke 与六卡 × 1024 smoke 5 轮通过（0.63 s/轮）。
+- 首次 `-Launch` 预检报 W&B URLError exit 37（未起进程）；Pod 内探测 405 / 1.7–5.4 s，网关 probe=400、隧道 5 h，判为瞬时，重试即过。
+- 12:39 UTC+8 启动：GPU 0–5 × 1024、seed 42、3500 轮、save 100。W&B [kirud7sl](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Recovery-Mimic/runs/kirud7sl)。PID/PGID `2074907`；state `/workspace/.se3-training-state/nulltask1/20261021T043947Z-18333`。首轮：第 57 轮无 Traceback、0.60 s/轮，六卡 3.2–3.6 GB / 66–74%。启动包装 `.scratch/recovery_mimic_train_20261021/launch_n1_recmimic.ps1`（pwsh 7）。判据：`RecoveryMimic/upright_rate_late` 上升、`orientation_err_deg` 与 `leg_err_rad` 下降；之后实测起身力矩 / 腿速 / 功率是否贴近参考（25 N·m、4.4 rad/s、233 W）。
