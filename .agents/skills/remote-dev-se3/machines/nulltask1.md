@@ -637,3 +637,9 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 - 开训前实时查：六卡 2 MiB / 0%、无 se3-train。bundle `9a33227f..xyh/1020` → `refs/heads/exp/recovery-mimic-f889a41`；工作副本 `/workspace/se3-worktrees/recovery-mimic-f889a41`（子模块 7c3a759 从 `.se3-sim2x-mirror`）。CPU smoke 与六卡 × 1024 smoke 5 轮通过（0.63 s/轮）。
 - 首次 `-Launch` 预检报 W&B URLError exit 37（未起进程）；Pod 内探测 405 / 1.7–5.4 s，网关 probe=400、隧道 5 h，判为瞬时，重试即过。
 - 12:39 UTC+8 启动：GPU 0–5 × 1024、seed 42、3500 轮、save 100。W&B [kirud7sl](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Recovery-Mimic/runs/kirud7sl)。PID/PGID `2074907`；state `/workspace/.se3-training-state/nulltask1/20261021T043947Z-18333`。首轮：第 57 轮无 Traceback、0.60 s/轮，六卡 3.2–3.6 GB / 66–74%。启动包装 `.scratch/recovery_mimic_train_20261021/launch_n1_recmimic.ps1`（pwsh 7）。判据：`RecoveryMimic/upright_rate_late` 上升、`orientation_err_deg` 与 `leg_err_rad` 下降；之后实测起身力矩 / 腿速 / 功率是否贴近参考（25 N·m、4.4 rad/s、233 W）。
+- 2026-10-21 用户看后停在约 1500 轮（SIGTERM 进程组 20 s 未退，改 KILL；GPU 已释放）。病因：沿用 Flat 的 `catastrophic_state` 有"腿角偏离默认 >3 rad 判发散"，R1 参考最远约 5 rad，正确跟踪会在 0.95 s 被杀；策略学成倒着不动、1.3 s 被姿态偏离终止（episode 恒 65 步、upright_rate_late 恒 0）。Pod 上 20 个周级 `[se3-train] <defunct>` 僵尸进程是旧遗留，不占 GPU。
+
+## 2026-10-21 起身 mimic 教师 R1 去掉腿角发散终止 重训
+
+- 代码 `d9d11b91`（xyh/1020，未推送）= f889a410 + `max_leg_pos_error=None`；本机开环跟参考腿角 32/32 跟完全程（最大 |动作| 21）。bundle `f889a410..xyh/1020` → `refs/heads/exp/recovery-mimic-d9d11b9`；工作副本 `/workspace/se3-worktrees/recovery-mimic-d9d11b9`。CPU 与六卡 × 1024 smoke 通过（0.64 s/轮）。
+- 13:07 UTC+8 启动：配置同 kirud7sl（六卡 × 1024、3500 轮、seed 42、save 100）。W&B [kxjmgnlt](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Recovery-Mimic/runs/kxjmgnlt)。PID/PGID `2097949`；state `/workspace/.se3-training-state/nulltask1/20261021T050652Z-09292`。第 211 轮无 Traceback、0.61 s/轮，六卡 3.2–3.6 GB / 62–75%。启动包装 `.scratch/recovery_mimic_train_20261021/launch_n1_recmimic2.ps1`。判据同上，另看 `Train/mean_episode_length` 是否突破 65 步。
