@@ -11,7 +11,8 @@ R1（倒置·腿折叠）峰值腿速 4.4 rad/s、功率 233 W。
   后者是教师特权观测，蒸馏时在训练端算。指令恒为零速、高度 0.22（参考不看指令）。
 - 奖励：以跟踪参考为主（姿态、腿角、机身高度、腿速、机身角速度），保留 Flat 的动作平滑与力矩 / 功率正则；
   去掉速度 / 姿态 / 高度 / 接触等与参考冲突的项。
-- 终止：超时（参考时长 + 0.5 s）、数值爆炸、姿态偏离参考 > 60°（出生 0.3 s 后）；去掉 Flat 的姿态过差与腿着地终止。
+- 终止：超时（参考时长 + 0.5 s）、数值爆炸（不查腿角偏离默认）、姿态偏离参考 > 60°（出生 0.3 s 后）；
+  去掉 Flat 的姿态过差与腿着地终止。
 - reset：从倒地状态库同家族状态出生（随机 yaw），参考时钟从 0 开始；去掉推扰与速度课程，保留 DR。
 """
 
@@ -131,6 +132,9 @@ def env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         for name, term in cfg.terminations.items()
         if name in ("time_out", "catastrophic_state")
     }
+    # 参考里大腿转约 200°、腿角离默认站姿最远约 5 rad，Flat 的"腿角偏离默认 >3 rad 判发散"会在参考 0.95 s 处
+    # 把正确跟踪的 env 杀掉（kirud7sl 因此学成倒着不动等姿态终止），这里只保留数值发散类检查。
+    cfg.terminations["catastrophic_state"].params["max_leg_pos_error"] = None
     cfg.terminations["orientation_deviation"] = TerminationTermCfg(
         func=mdp.orientation_deviation,
         time_out=False,
