@@ -429,6 +429,24 @@ def total_reward_floor(
     return torch.clamp(float(floor) - manager._reward_buf / scale, min=0.0)
 
 
+def fall_upright_progress(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """倒地出生 episode 的起身进度奖励（(1 − g_z)² / 4：倒置 0、侧躺 0.25、直立 1），排在 total_reward_floor 之后、不参与垫底。
+
+    2026-10-21 用户定：ff0nkdzb 垫底后所有倒地状态的奖励都是 0，"翻起来一点"不再变好，信号从稠密变稀疏，
+    倒置 3 s 内起身率 1000 轮只有 0.03（b3odjuk6 0.65）。本项非负，加在垫底之后不破坏 CaT 前提，补回方向信号。
+    只在倒地出生的 episode 生效（events.FALL_SPAWN_MASK_ATTR，reset 时定、策略选不了），且站起来之后照发：
+    - 不按"当前是否倒地"门控：站起来奖励就消失，等于奖励赖在 45° 附近；
+    - 不按"本 episode 倒过"锁存：策略能故意摔一次换整段奖励。
+    """
+    from .events import FALL_SPAWN_MASK_ATTR
+
+    mask = getattr(env, FALL_SPAWN_MASK_ATTR, None)
+    if mask is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    pg_z = env.scene["robot"].data.projected_gravity_b[:, 2]
+    return mask.float() * torch.square(1.0 - pg_z) * 0.25
+
+
 __all__ = [
     "FALL_CONSTRAINT_S_ATTR",
     "base_height_penalty_off_terrain",
@@ -436,6 +454,7 @@ __all__ = [
     "base_height_penalty_window_on_terrain",
     "column_scaled",
     "fall_constraint_level",
+    "fall_upright_progress",
     "fall_weight",
     "is_terminated_except",
     "jump_env_only",

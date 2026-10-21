@@ -211,9 +211,15 @@ ROUGH_FALL_CAT_LIMITS = {
 }
 # p_max 随收紧程度 s 从 0 线性升到 0.25（CaT 论文的上限）：s=0 不终止，不挡翻身的发现。
 ROUGH_FALL_CAT_P_MAX_RANGE = (0.0, 0.25)
+# 起身进度奖励（2026-10-21 用户定，见 rewards.fall_upright_progress）：ff0nkdzb 只垫底时倒地状态奖励全是 0、信号变稀疏，
+# 倒置 3 s 内起身率 1000 轮 0.03（b3odjuk6 0.65）、5000 轮也只到 0.68，s 一直没离开 0。只发给倒地出生的 episode，
+# 倒置 0 → 侧躺 ×0.25 → 直立 ×1。权重 20/s：直立比倒置多 20/s，加上站立期 +14/s，倒地时间压力约 34/s（只垫底时约 14，
+# 罚分版约 124），翻身仍是最好的出路，但不再值得为省时间付力度。
+ROUGH_FALL_UPRIGHT_PROGRESS_WEIGHT = 20.0
 # 课程门控（2026-10-20 第二版，用户定：让策略适应、不滞回）：侧躺与倒置里较差一类的 3 s 内起身率按轮求均值进 100 轮窗口，
 # 窗口均值 ≥0.85、平均用时 ≤2.5 s、距上次收紧 ≥200 轮时 s += 0.1，s 只升不降；窗口均值连续 300 轮 <0.4 时暂停收紧并报警。
-# 门槛 0.85：1a42x8jj 侧躺起身率稳定期只在 0.89–0.94，b3odjuk6 1200 轮 3 s 内起身率 0.84–0.87，0.90 太贴上限。
+# 门槛 0.6（2026-10-21 用户定，原 0.85）：ff0nkdzb 倒置 3 s 内起身率 5000 轮只到 0.68，0.85 下 s 全程为 0、CaT 从未生效。
+# 原 0.85 的依据：1a42x8jj 侧躺起身率稳定期只在 0.89–0.94，b3odjuk6 1200 轮 3 s 内起身率 0.84–0.87。
 # 步长 0.1：每档间隔 ≥200 轮，0→1 最少 2000 轮，5000 轮训练里收得满；每档 p_max 只加 0.025。
 # 崩塌保护只在第一次收紧之后生效（tgds7ff7 在翻身被发现前起身率本来就是 0，保护提前触发把 s 锁死在 0）。
 ROUGH_FALL_CONSTRAINT_CURRICULUM = {
@@ -222,7 +228,7 @@ ROUGH_FALL_CONSTRAINT_CURRICULUM = {
     "window_iters": 100,
     "min_interval_iters": 200,
     "step": 0.1,
-    "up_threshold": 0.85,
+    "up_threshold": 0.6,
     "max_recover_time_s": 2.5,
     "collapse_threshold": 0.4,
     "collapse_iters": 300,
@@ -804,7 +810,8 @@ def env_cfg(
 def _apply_fall_constraint_cat(cfg: ManagerBasedRlEnvCfg) -> None:
     """倒地约束 CaT（见 ROUGH_FALL_CAT_* 常量）：挂概率终止项、把它从 fall_penalty 里排除、总奖励逐步垫到 ≥ 0。
 
-    放在配置最后：total_reward_floor 读的是排在它之前的奖励累加值，必须是倒数第二项，fall_penalty 最后。
+    放在配置最后：total_reward_floor 读的是排在它之前的奖励累加值，之后只能是 fall_upright_progress
+    （非负，补回垫底抹掉的起身方向信号）与 fall_penalty。
     """
     cfg.terminations = dict(cfg.terminations)
     cfg.terminations["fall_constraint"] = TerminationTermCfg(
@@ -821,7 +828,10 @@ def _apply_fall_constraint_cat(cfg: ManagerBasedRlEnvCfg) -> None:
     rewards_cfg["total_reward_floor"] = RewardTermCfg(
         func=rewards.total_reward_floor,
         weight=1.0,
-        params={"floor": 0.0, "after_terms": ("fall_penalty",)},
+        params={"floor": 0.0, "after_terms": ("fall_upright_progress", "fall_penalty")},
+    )
+    rewards_cfg["fall_upright_progress"] = RewardTermCfg(
+        func=rewards.fall_upright_progress, weight=ROUGH_FALL_UPRIGHT_PROGRESS_WEIGHT
     )
     rewards_cfg["fall_penalty"] = RewardTermCfg(
         func=rewards.is_terminated_except,
@@ -1085,6 +1095,7 @@ __all__ = [
     "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
     "ROUGH_FALL_STATE_CACHE",
+    "ROUGH_FALL_UPRIGHT_PROGRESS_WEIGHT",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
