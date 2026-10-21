@@ -643,3 +643,10 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 
 - 代码 `d9d11b91`（xyh/1020，未推送）= f889a410 + `max_leg_pos_error=None`；本机开环跟参考腿角 32/32 跟完全程（最大 |动作| 21）。bundle `f889a410..xyh/1020` → `refs/heads/exp/recovery-mimic-d9d11b9`；工作副本 `/workspace/se3-worktrees/recovery-mimic-d9d11b9`。CPU 与六卡 × 1024 smoke 通过（0.64 s/轮）。
 - 13:07 UTC+8 启动：配置同 kirud7sl（六卡 × 1024、3500 轮、seed 42、save 100）。W&B [kxjmgnlt](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Recovery-Mimic/runs/kxjmgnlt)。PID/PGID `2097949`；state `/workspace/.se3-training-state/nulltask1/20261021T050652Z-09292`。第 211 轮无 Traceback、0.61 s/轮，六卡 3.2–3.6 GB / 62–75%。启动包装 `.scratch/recovery_mimic_train_20261021/launch_n1_recmimic2.ps1`。判据同上，另看 `Train/mean_episode_length` 是否突破 65 步。
+- kxjmgnlt 2026-10-21 按用户指令停止（mimic 路线放弃）。
+
+## 2026-10-22 CaT + 垫底 + 线性起身进度奖励 + 门槛 0.6 从零训练
+
+- 用户定：whtws 的 1nvtka54（e06a29f2，平方进度奖励）继续跑，线性版放 nulltask1 对照。代码 `f4f102ea`（xyh/1020，未推送）相对 e06a29f2 只把 `fall_upright_progress` 从 (1 − g_z)²/4 改成 (1 − g_z)/2（平方形状在倒置处导数为 0），单变量对照 1nvtka54。
+- 开训前实时查：六卡 2 MiB / 0%、无 se3-train。Pod 上最新只有 d9d11b91，bundle `d9d11b91..xyh/1020` → `refs/heads/exp/rough-catlin-f4f102e`；工作副本 `/workspace/se3-worktrees/rough-catlin-f4f102e`（子模块 7c3a759 从 `.se3-sim2x-mirror`）。六卡 × 8192 smoke 5 轮通过（3.15 s/轮）。
+- 00:01 UTC+8 启动：GPU 0–5 × 8192、seed 42、5000 轮、save 100，每 1000 轮 full benchmark。W&B [2w33l0iq](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/2w33l0iq)。PID/PGID `2107264`；state `/workspace/.se3-training-state/nulltask1/20261021T160125Z-05697`。首轮：第 13 轮无 Traceback、3.20 s/轮，六卡 13.6–14.0 GB / 89–92%。启动包装 `.scratch/fall_cat_20261021/launch_n1_catlin.ps1`（pwsh 7）。判据：同轮次 `Recovery/recovered_within_3s_{side,inverted}` 高于 1nvtka54、接近 b3odjuk6（861 轮侧躺 0.63，1000 轮倒置 0.65）；s 能否离开 0。
