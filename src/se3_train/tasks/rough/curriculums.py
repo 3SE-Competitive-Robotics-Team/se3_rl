@@ -232,7 +232,7 @@ def fall_constraint_tightening(
     collapse_threshold: float = 0.4,
     collapse_iters: int = 300,
 ) -> dict[str, torch.Tensor]:
-    """倒地平顺性约束的收紧课程（2026-10-20 用户定）：先放开让翻身被发现，再只紧不松、给策略留适应时间。
+    """倒地约束的收紧课程（2026-10-20 用户定；2026-10-21 起收紧对象是 CaT 的 p_max）：先放开让翻身被发现，再只紧不松、给策略留适应时间。
 
     从吸引域看：倒置时有"躺着"与"翻起来"两个吸引子，翻身的吸引域起初极小，只有满力矩猛甩才进得去；
     一开始就罚猛烈动作会把它罚没，所以收紧程度 s 从 0 起步。翻身被发现后，每收紧一小档，"翻起来"仍在，
@@ -243,7 +243,9 @@ def fall_constraint_tightening(
     窗口满、窗口均值 ≥ up_threshold、平均起身用时 ≤ max_recover_time_s、且距上次收紧 ≥ min_interval_iters 轮
     时 s += step，并清空窗口（下一次只用新 s 下的数据判断）。s 只升不降。窗口均值连续 collapse_iters 轮
     < collapse_threshold 视为"翻起来"的吸引子没了，暂停收紧并在日志里报警（`collapse_paused`=1），
-    是否退回由人决定。s 写在 env 上，由 rewards.fall_* / leg_joint_overspeed 读取并插值各自死区。
+    是否退回由人决定；崩塌计数只在第一次收紧（s > 0）之后才累计——翻身被发现之前起身率本来就低，
+    tgds7ff7 因此在发现前就触发保护、s 锁死在 0。s 写在 env 上，由 terminations.fall_constraint_violation
+    读取并插值 CaT 的最大终止概率 p_max。
     checkpoint 不保存 s，续训从 0 开始。
     """
     del env_ids
@@ -276,7 +278,9 @@ def fall_constraint_tightening(
         if full:
             rate_mean = sum(state.rates) / len(state.rates)
             time_mean = sum(state.times) / len(state.times)
-            state.low_iters = state.low_iters + 1 if rate_mean < float(collapse_threshold) else 0
+            armed = s > 0.0
+            low = armed and rate_mean < float(collapse_threshold)
+            state.low_iters = state.low_iters + 1 if low else 0
             if state.low_iters >= int(collapse_iters):
                 state.paused = True
             if (

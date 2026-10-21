@@ -30,14 +30,9 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from se3_shared import JointGroup
-from se3_shared.action_history import periodic_policy_action_second_difference_torch
 from se3_shared.torch_constants import device_constant
-from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.rewards import (
     _DEFAULT_ASSET_CFG,
-    _near_upright_gate,
-    _policy_leg_torque_and_vel,
     _recovery_reset_mask,
     _tracking_upright_gate,
     _upright_factor,
@@ -394,11 +389,10 @@ def jump_env_only(
     return inner(env, **params) * env.command_manager.get_term(command_name).jump_env.float()
 
 
-# ---- 倒地平顺性约束（2026-10-20，见 curriculums.fall_constraint_tightening）----
-# 收紧程度 s ∈ [0, 1] 挂在 env 上，由课程项按起身率更新；各项的死区在 (s=0, s=1) 两端之间线性插值。
+# ---- 倒地约束（2026-10-21 起 CaT 版，见 terminations.fall_constraint_violation 与 curriculums.fall_constraint_tightening）----
+# 收紧程度 s ∈ [0, 1] 挂在 env 上，由课程项按起身率更新；CaT 的最大终止概率 p_max 在 (s=0, s=1) 两端之间线性插值。
 FALL_CONSTRAINT_S_ATTR = "_se3_fall_constraint_s"
-_FALL_SMOOTH_PREV_ATTR = "_se3_fall_smooth_prev_action"
-_FALL_SMOOTH_PREV_PREV_ATTR = "_se3_fall_smooth_prev_prev_action"
+_REWARD_FLOOR_CHECKED_ATTR = "_se3_reward_floor_order_checked"
 
 
 def fall_constraint_level(env: ManagerBasedRlEnv) -> float:
@@ -406,97 +400,33 @@ def fall_constraint_level(env: ManagerBasedRlEnv) -> float:
     return float(getattr(env, FALL_CONSTRAINT_S_ATTR, 0.0))
 
 
-def _dead_zone(env: ManagerBasedRlEnv, dead_zone_range: tuple[float, float]) -> float:
-    loose, tight = (float(v) for v in dead_zone_range)
-    return loose + (tight - loose) * fall_constraint_level(env)
-
-
 def fall_weight(env: ManagerBasedRlEnv) -> torch.Tensor:
     """倒地程度 = 1 − 直立因子：倾角 ≲ 45° 为 0、躺平与倒置为 1，与现有直立门控项互补。"""
     return 1.0 - _upright_factor(env.scene["robot"].data.projected_gravity_b[:, 2])
 
 
-def _wheel_joint_ids(env: ManagerBasedRlEnv) -> torch.Tensor:
-    cached = getattr(env, "_se3_wheel_joint_ids", None)
-    if cached is None:
-        ids, _ = env.scene["robot"].find_joints(JointGroup.WHEEL_NAMES, preserve_order=True)
-        cached = torch.tensor(ids, device=env.device, dtype=torch.long)
-        env._se3_wheel_joint_ids = cached
-    return cached
-
-
-def fall_body_ang_vel_excess(
-    env: ManagerBasedRlEnv, dead_zone_range: tuple[float, float] = (15.0, 6.0)
+def total_reward_floor(
+    env: ManagerBasedRlEnv, floor: float = 0.0, after_terms: tuple[str, ...] = ("fall_penalty",)
 ) -> torch.Tensor:
-    """倒地时机身角速度超出死区部分的平方（rad²/s²）；猛甩翻身靠它，实测峰值 12.5 rad/s。"""
-    omega = torch.linalg.norm(env.scene["robot"].data.root_link_ang_vel_b, dim=1)
-    excess = torch.clamp(omega - _dead_zone(env, dead_zone_range), min=0.0)
-    return fall_weight(env) * excess.square()
+    """把排在本项之前的所有奖励之和逐步垫到 ≥ floor（CaT 的前提：每步奖励非负，被终止才一定是亏的）。
 
-
-def leg_joint_overspeed(
-    env: ManagerBasedRlEnv, dead_zone_range: tuple[float, float] = (20.0, 13.4)
-) -> torch.Tensor:
-    """腿电机转速超出死区部分的平方和，全程生效（不分倒地）。
-
-    s=1 的 13.4 rad/s 是 DM8009P 空载转速 16.8 的 0.8 倍；起身实测峰值 20 rad/s 超过空载，实车会反拖；
-    正常行走最多 3.7 rad/s，不受影响。
+    返回补差的奖励率 max(0, floor − 前面各项之和)，权重须为 1。RewardManager 按字典序逐项累加，本项读
+    累加到自己之前的 `_reward_buf`，所以本项之后只能剩 `after_terms`（终止罚，不参与垫底：
+    倒地状态出于约束以外的原因被终止时仍要多付这一笔）。首次调用时核对顺序，不对就报错。
+    2026-10-21 b3odjuk6 实测：倒地期每秒奖励 −110、倒置出生折扣回报 −89，不垫底时 CaT 终止反而是逃生通道。
     """
-    _, vel = _policy_leg_torque_and_vel(env, env.scene["robot"])
-    excess = torch.clamp(vel.abs() - _dead_zone(env, dead_zone_range), min=0.0)
-    return excess.square().sum(dim=1)
-
-
-def fall_wheel_overspeed(
-    env: ManagerBasedRlEnv, dead_zone_range: tuple[float, float] = (70.0, 30.0)
-) -> torch.Tensor:
-    """倒地时轮速超出死区部分的平方和；轮子悬空空转到 50–68 rad/s 当反作用轮用，实车上没有意义。"""
-    vel = env.scene["robot"].data.joint_vel[:, _wheel_joint_ids(env)]
-    excess = torch.clamp(vel.abs() - _dead_zone(env, dead_zone_range), min=0.0)
-    return fall_weight(env) * excess.square().sum(dim=1)
-
-
-def fall_action_smoothness(
-    env: ManagerBasedRlEnv,
-    command_name: str | None = None,
-    gate_start_deg: float = 60.0,
-    gate_full_deg: float = 30.0,
-    max_penalty: float = 320.0,
-    leg_scale: float = 1.0,
-    wheel_scale: float = 2.0,
-) -> torch.Tensor:
-    """倒地时的动作二阶差分罚：算式同 mdp.rewards.action_smoothness，门控取它的补集，再乘收紧程度 s。
-
-    用自己的上一步 / 上上步动作缓存——与 action_smoothness 共用缓存会被同一步两次调用互相覆盖。
-    """
-    action = env.action_manager.action
-    prev = getattr(env, _FALL_SMOOTH_PREV_ATTR, None)
-    prev_prev = getattr(env, _FALL_SMOOTH_PREV_PREV_ATTR, None)
-    if not isinstance(prev, torch.Tensor) or not isinstance(prev_prev, torch.Tensor):
-        setattr(env, _FALL_SMOOTH_PREV_ATTR, action.detach().clone())
-        setattr(env, _FALL_SMOOTH_PREV_PREV_ATTR, action.detach().clone())
-        return torch.zeros(env.num_envs, device=env.device)
-    action_acc = periodic_policy_action_second_difference_torch(
-        action, prev, prev_prev, front_action_period=front_action_periods_from_env(env)
-    )
-    prev_prev.copy_(prev)
-    prev.copy_(action.detach())
-    penalty = float(leg_scale) * action_acc[:, :4].square().sum(dim=1) + float(
-        wheel_scale
-    ) * action_acc[:, 4:6].square().sum(dim=1)
-    penalty = torch.clamp(penalty, max=float(max_penalty))
-    upright = _near_upright_gate(
-        env.scene["robot"].data.projected_gravity_b[:, 2],
-        gate_start_deg=float(gate_start_deg),
-        gate_full_deg=float(gate_full_deg),
-    )
-    gate = (1.0 - upright) * fall_constraint_level(env)
-    if command_name is not None:
-        cmd = env.command_manager.get_command(command_name)
-        if cmd.shape[1] > 5:
-            gate = gate * (cmd[:, 5] <= 0.5).float()
-    startup = env.episode_length_buf < 3
-    return torch.where(startup, torch.zeros_like(penalty), penalty * gate)
+    manager = env.reward_manager
+    if not getattr(env, _REWARD_FLOOR_CHECKED_ATTR, False):
+        names = list(manager.active_terms)
+        me = names.index("total_reward_floor")
+        if tuple(names[me + 1 :]) != tuple(after_terms):
+            raise ValueError(
+                f"total_reward_floor 之后只能是 {after_terms}，实际为 {names[me + 1 :]}；"
+                "新增奖励项须排在它之前"
+            )
+        setattr(env, _REWARD_FLOOR_CHECKED_ATTR, True)
+    scale = float(env.step_dt) if manager._scale_by_dt else 1.0
+    return torch.clamp(float(floor) - manager._reward_buf / scale, min=0.0)
 
 
 __all__ = [
@@ -505,16 +435,13 @@ __all__ = [
     "base_height_penalty_support_on_terrain",
     "base_height_penalty_window_on_terrain",
     "column_scaled",
-    "fall_action_smoothness",
-    "fall_body_ang_vel_excess",
     "fall_constraint_level",
     "fall_weight",
-    "fall_wheel_overspeed",
     "is_terminated_except",
     "jump_env_only",
-    "leg_joint_overspeed",
     "off_column",
     "stair_heading_hold",
+    "total_reward_floor",
     "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
     "wheel_fore_aft_offset",
