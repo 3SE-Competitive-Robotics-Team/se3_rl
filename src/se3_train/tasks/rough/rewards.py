@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from typing import TYPE_CHECKING
 
@@ -411,9 +412,12 @@ class _FallLagrangeState:
         self.lambdas = [0.0] * n
         self.lambda_t = torch.zeros(n, device=env.device)
         self.cost = torch.zeros(env.num_envs, n, device=env.device)
+        self.finite = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
         self.window_cost = torch.zeros_like(self.cost)
+        self.window_valid = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
         self.acc_cost = torch.zeros(n, device=env.device)
         self.acc_windows = torch.zeros(1, device=env.device)
+        self.acc_nonfinite = torch.zeros(1, device=env.device)  # 本轮代价非有限的 env·步数
         n_cls = len(params["window_class_names"])
         self.acc_arm = torch.zeros(2 * n_cls, device=env.device)  # [命中, 样本] × 类别
         self.cost_window: deque[tuple[list[float], float]] = deque(
@@ -457,7 +461,12 @@ class _FallLagrangeState:
             ),
             dim=1,
         )
-        self.cost = cost * gate.unsqueeze(1)
+        cost = cost * gate.unsqueeze(1)
+        # 物理偶发发散时（catastrophic_state 会终止该 env）代价是 nan / inf：置 0，窗口累计里作废该 env 当前窗口。
+        # p0cdt5d9 第 537 轮起 J 全是 nan：单个 env 发散，"乘 0/1 掩码"的 nan × 0 = nan 把整轮求和带坏，50 轮窗口里一直是 nan。
+        self.finite = torch.isfinite(cost).all(dim=1)
+        self.cost = torch.where(self.finite.unsqueeze(1), cost, torch.zeros_like(cost))
+        self.acc_nonfinite += (~self.finite).sum()
 
     def _accumulate(self, env: ManagerBasedRlEnv) -> None:
         """侧躺 / 倒置出生 env 出生后 horizon_s 内的代价积分（J 的样本），以及武装信号（horizon_s 内起身率）。"""
@@ -482,11 +491,19 @@ class _FallLagrangeState:
         window_steps = round(horizon / dt)
         steps = env.episode_length_buf
         tracked = fall_mask & torch.isin(getattr(env, _FALL_CLASS_ATTR), self.class_ids)
-        self.window_cost[steps == 1] = 0.0
-        in_window = (tracked & (steps <= window_steps)).float()
-        self.window_cost += self.cost * (in_window * dt).unsqueeze(1)
-        done = (tracked & (steps == window_steps)).float()
-        self.acc_cost += (self.window_cost * done.unsqueeze(1)).sum(dim=0)
+        new_episode = steps == 1
+        self.window_cost[new_episode] = 0.0
+        self.window_valid[new_episode] = True
+        self.window_valid &= self.finite
+        # 掩码一律用 torch.where 选择，不用乘 0/1（nan × 0 仍是 nan）。
+        in_window = (tracked & (steps <= window_steps)).unsqueeze(1)
+        self.window_cost = torch.where(
+            in_window, self.window_cost + self.cost * dt, self.window_cost
+        )
+        done = tracked & (steps == window_steps) & self.window_valid
+        self.acc_cost += torch.where(
+            done.unsqueeze(1), self.window_cost, torch.zeros_like(self.window_cost)
+        ).sum(dim=0)
         self.acc_windows += done.sum()
 
         within = fall_recovery_within(env, horizon)
@@ -501,7 +518,7 @@ class _FallLagrangeState:
         由奖励项在 env.step 里触发：每张卡每步都算奖励，轮末这一步在所有卡上是同一个 common_step_counter，
         集合通信的调用次数一致。课程项只在有 env reset 时才被调用，某张卡某步没有 reset 就会错位死锁，不能放那里。
         """
-        packed = torch.cat((self.acc_cost, self.acc_windows, self.acc_arm))
+        packed = torch.cat((self.acc_cost, self.acc_windows, self.acc_nonfinite, self.acc_arm))
         if (
             torch.distributed.is_available()
             and torch.distributed.is_initialized()
@@ -511,9 +528,10 @@ class _FallLagrangeState:
         values = packed.tolist()
         self.acc_cost.zero_()
         self.acc_windows.zero_()
+        self.acc_nonfinite.zero_()
         self.acc_arm.zero_()
         n = len(FALL_LAGRANGE_CONSTRAINTS)
-        cost_sums, windows, arm = values[:n], values[n], values[n + 1 :]
+        cost_sums, windows, nonfinite, arm = values[:n], values[n], values[n + 1], values[n + 2 :]
         self.cost_window.append((cost_sums, windows))
         n_cls = len(arm) // 2
         rates = [arm[2 * i] / arm[2 * i + 1] for i in range(n_cls) if arm[2 * i + 1] > 0]
@@ -534,7 +552,8 @@ class _FallLagrangeState:
             err_lo, err_hi = (float(v) for v in self.params["error_clip"])
             for i, name in enumerate(FALL_LAGRANGE_CONSTRAINTS):
                 j = sum(sums[i] for sums, _ in self.cost_window) / total_windows
-                if self.armed:
+                # 兜底：非有限代价已在累计时排除；万一 J 仍非有限就跳过本轮更新（Python 的 min/max 会把 nan 传进 λ）。
+                if self.armed and math.isfinite(j):
                     error = min(max((j - target) / target, err_lo), err_hi)
                     self.lambdas[i] = min(
                         max(self.lambdas[i] + float(self.params["lambda_lr"]) * error, 0.0),
@@ -547,6 +566,7 @@ class _FallLagrangeState:
         log["FallLagrange/armed"] = torch.tensor(float(self.armed), device=env.device)
         log["FallLagrange/arm_signal"] = torch.tensor(arm_signal, device=env.device)
         log["FallLagrange/windows_per_iter"] = torch.tensor(windows, device=env.device)
+        log["FallLagrange/nonfinite_envs"] = torch.tensor(nonfinite, device=env.device)
 
 
 def _fall_lagrange_state(env: ManagerBasedRlEnv, params: dict) -> _FallLagrangeState:
@@ -588,7 +608,9 @@ def fall_lagrange_penalty(
     武装：λ 起初恒 0；`window_class_names` 里较差一类的 horizon_s 内起身率按轮进 arm_window_iters 轮窗口，窗口满且
     均值 ≥ arm_threshold 后开始更新，此后不再关闭（翻身被发现之前就涨 λ，只会把翻身压没）。
     不设崩塌保护：策略不起身时没有越界、J < d，λ 自己往下走，由约束是否满足驱动。checkpoint 不保存 λ，续训从 0 重新武装。
-    日志：`FallLagrange/lambda_*`、`FallLagrange/J_*_s`、`armed`、`arm_signal`、`windows_per_iter`。
+    物理偶发发散的 env（代价 nan / inf）当步代价与罚分置 0、当前窗口作废不计入 J；J 万一非有限则跳过更新。
+    日志：`FallLagrange/lambda_*`、`FallLagrange/J_*_s`、`armed`、`arm_signal`、`windows_per_iter`、
+    `nonfinite_envs`（本轮代价非有限的 env·步数，多卡合计）。
     """
     params = {
         "steps_per_policy_iter": steps_per_policy_iter,
