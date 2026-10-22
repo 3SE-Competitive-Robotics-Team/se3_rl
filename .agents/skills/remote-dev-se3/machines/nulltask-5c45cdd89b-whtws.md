@@ -303,3 +303,8 @@ bash C:/Users/13567/.local/bin/start-whtws-training.sh \
 - 22:54 UTC+8 启动：GPU 0–5 × 8192、seed 42、5000 轮、save 100，每 1000 轮 full benchmark。W&B [1nvtka54](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/1nvtka54)。PID/PGID `996029`；state `/workspace/.se3-training-state/whtws/20261021T145414Z`；run `logs/rsl_rl/SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128/2026-10-21_22-54-21_rough-cts-student128-fall3col-cat-rewfloor-progress-gate06-scratch-bench-seed42-6x8192-5k`。首轮：第 21 轮无 Traceback、3.23 s/轮，六卡 13.3–13.8 GB / 89–91%。参数 `.scratch/fall_cat_20261021/whtws_catprog_args.txt`。判据：1000 轮倒置 3 s 起身率接近 b3odjuk6（0.65）；s 能否离开 0 并收上去；收紧后 `FallConstraint/*` 越界率下降、`Recovery/*_max_recovering` 降到腿速 ≤13.4、角速度 ≤10；benchmark 不退化。
 - 2026-10-22 按用户指令停止 1nvtka54（SIGTERM 进程组即退），停在 2818 轮，最后 model_2800。结论：进度奖励（平方形状）没帮上忙，倒置 3 s 起身率 2537 轮仍只有 0.03；用户决定倒地约束改走拉格朗日乘子。
 - 2026-10-22 标定探针（`/workspace/se3-probe-20261022/`，脚本 `.scratch/fall_lagrange_20261022/`）：b3odjuk6 model_4999 的约束量分布（probe_b3od.json）与腿速按地形列拆分（legprobe_b3od.json）。
+
+## 2026-10-22 Student128-StudentPPO smoke（未开训）
+
+- 用户定的单变量对照：学生隐向量 z_S 不 detach、由 PPO 端到端训练（去掉隐向量 MSE，v̂x 仍由 vx MSE 监督），其余与 Student128 逐项相同；MSE 臂即 nulltask1 正在跑的 p0cdt5d9（dfde5296）。代码 `c8968b6d`（xyh/1020，未推送），相对 dfde5296 的 src 只多这一个提交；MSE 模式 CPU smoke 5 轮 553 个数值与改动前逐位相同。
+- 开训前实时查七卡空闲。bundle `e06a29f2..xyh/1020` → `refs/heads/exp/rough-studentppo-c8968b6`；工作副本 `/workspace/se3-worktrees/rough-studentppo-c8968b6`（子模块 7c3a759 从 `.se3-sim2x-mirror`）。任务 `SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-StudentPPO` 六卡 × 8192 smoke 5 轮通过（无 Traceback、无 nefc 溢出、3.24–3.33 s/轮，多卡梯度平均不卡），日志 `/workspace/.se3-training-state/whtws/smoke-studentppo-c8968b6/`。用户要求先不开训；开训时启动器 `-c c8968b6`（7 位短哈希）、`-R` 指这个 worktree。
