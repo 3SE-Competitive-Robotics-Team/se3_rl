@@ -27,7 +27,10 @@ detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更�
 另记 Loss/estimator_latent_std（隐向量各维 batch 标准差均值，看是否塌缩）。
 actor 自带 estimator_loss(observations) 时（CTS，见 se3_train.cts_observer）改用它给出的损失（学生编码器的隐向量重建），
 并按 cts_role 分别记教师 / 学生 env 的平均单步奖励（Loss/cts_reward_teacher、Loss/cts_reward_student）：
-训练端其余指标被占多数的教师 env 主导，学生 env 才代表部署路径。
+训练端其余指标被占多数的教师 env 主导，学生 env 才代表部署路径。actor 带 latent_std(observations) 时另记
+Loss/estimator_latent_std（学生隐向量是否塌缩）。CTS 的 student_latent_grad="ppo"（2026-10-22）时学生隐向量不 detach，
+PPO 梯度经它进入学生编码器、由 PPO optimizer 更新（与上面带隐向量的估计器同理），重建损失只剩 vx MSE；
+此时 PPO 优化器里有学生编码器的状态，下面"换学生编码器续训"的形状切换不适用。
 
 换学生编码器续训（2026-10-09，单片机部署版 128/128）：`load` 发现 checkpoint 的 estimator 形状与当前不一致时，
 只丢弃 `estimator.*` 参数与估计器独立优化器状态，其余（教师编码器、policy、critic、PPO 优化器）照常加载。
@@ -207,7 +210,7 @@ class Se3PPO(PPO):
             rewards = self.storage.rewards
             log["cts_reward_teacher"] = float(rewards[teacher].mean())
             log["cts_reward_student"] = float(rewards[~teacher].mean())
-        if getattr(actor, "latent_dim", 0) > 0:
+        if hasattr(actor, "latent_std"):
             log["estimator_latent_std"] = actor.latent_std(batch.observations)
         return log
 

@@ -67,6 +67,7 @@ class CTSModelCfg(RslRlModelCfg):
     teacher_obs_group: str = "critic"
     vx_target_group: str = "estimator_target"
     role_group: str = "cts_role"
+    student_latent_grad: str = "mse"
     class_name: str = "se3_train.cts_observer:CTSVxObserverModel"
 
 
@@ -100,11 +101,13 @@ def cts_rl_cfg(
     teacher_obs_group: str = "critic",
     student_hidden_dims: tuple[int, ...] = ROUGH_CTS_STUDENT_HIDDEN_DIMS,
     estimator_warmup_iterations: int = 0,
+    student_latent_grad: str = "mse",
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
     """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。
 
-    student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）。
+    student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）；
+    student_latent_grad：学生隐向量的训练信号，"mse" 回归教师隐向量（默认）、"ppo" 由 PPO 端到端训练（见 se3_train.cts_observer）。
     """
     cfg = rl_cfg(smoke=smoke)
     actor_fields = {
@@ -120,6 +123,7 @@ def cts_rl_cfg(
         role_group=role_group,
         teacher_obs_group=teacher_obs_group,
         estimator_hidden_dims=tuple(int(d) for d in student_hidden_dims),
+        student_latent_grad=str(student_latent_grad),
     )
     cfg.algorithm = replace(
         cfg.algorithm,

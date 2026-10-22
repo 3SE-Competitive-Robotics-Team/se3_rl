@@ -60,6 +60,12 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-LowGains"
 )
+# 2026-10-22 用户定：Student128 单变量对照——学生隐向量 z_S 不 detach、由 PPO 端到端训练（去掉隐向量 MSE），
+# v̂x 仍 detach 并由 vx MSE 监督；其余与 Student128 逐项相同（见 se3_train.cts_observer 的 student_latent_grad）。
+# 以前没有干净对照：Z3（PPO 端到端 3 维隐向量）与 CTS-NoScan（教师 MSE）混了规模、隐向量维数与教师 env 占比。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-StudentPPO"
+)
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
@@ -175,6 +181,28 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    student_ppo_env_cfg = env_cfg(**stair_vx08_kwargs)
+    student_ppo_actor = student_ppo_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID,
+        env_cfg=student_ppo_env_cfg,
+        play_env_cfg=env_cfg(play=True, **stair_vx08_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(student_ppo_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in student_ppo_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                student_latent_grad="ppo",
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     low_gains_kwargs = dict(stair_vx08_kwargs, leg_kp=30.0, leg_kd=2.0, wheel_kd=0.1)
     low_gains_env_cfg = env_cfg(**low_gains_kwargs)
     low_gains_actor = low_gains_env_cfg.observations["actor"]
@@ -201,6 +229,7 @@ def register() -> None:
 
 __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",
     "EXP_CTS_NOSCAN_TASK_ID",
