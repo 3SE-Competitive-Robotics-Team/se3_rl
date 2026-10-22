@@ -652,3 +652,8 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 - 00:01 UTC+8 启动：GPU 0–5 × 8192、seed 42、5000 轮、save 100，每 1000 轮 full benchmark。W&B [2w33l0iq](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/2w33l0iq)。PID/PGID `2107264`；state `/workspace/.se3-training-state/nulltask1/20261021T160125Z-05697`。首轮：第 13 轮无 Traceback、3.20 s/轮，六卡 13.6–14.0 GB / 89–92%。启动包装 `.scratch/fall_cat_20261021/launch_n1_catlin.ps1`（pwsh 7）。判据：同轮次 `Recovery/recovered_within_3s_{side,inverted}` 高于 1nvtka54、接近 b3odjuk6（861 轮侧躺 0.63，1000 轮倒置 0.65）；s 能否离开 0。
 - 2026-10-22 按用户指令停止 2w33l0iq（SIGTERM 进程组即退），停在 1795 轮，最后 model_1700。1514 轮倒置 3 s 起身率 0.008、侧躺 0.29，线性进度奖励也没走出来；用户决定倒地约束改走拉格朗日乘子。
 - 2026-10-22 标定探针：tgds7ff7 model_1600 / model_4999 的约束量分布（`/workspace/se3-probe-20261022/probe_tgds.json`）。
+
+## 2026-10-22 倒地约束拉格朗日版 smoke（未开训）
+
+- 代码 `dfde5296`（xyh/1020，未推送）：奖励回到 b3odjuk6，倒地四项约束（腿速 / 机身角速度 / 轮速 / 腿功率）用拉格朗日乘子，λ 轮末在奖励项里多卡 all_reduce。bundle `f4f102ea..xyh/1020` → `refs/heads/exp/rough-lagrange-dfde529`；工作副本 `/workspace/se3-worktrees/rough-lagrange-dfde529`（子模块 7c3a759 从 `.se3-sim2x-mirror`）。
+- 开训前实时查六卡空闲；六卡 × 8192 smoke 5 轮通过（无 Traceback、无 nefc 溢出、all_reduce 不卡；`FallLagrange/windows_per_iter` 六卡合计 33–54），日志 `/workspace/.se3-training-state/nulltask1/smoke-lagrange-dfde529/`。用户要求先不开训。
