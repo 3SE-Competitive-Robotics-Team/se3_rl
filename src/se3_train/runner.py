@@ -50,14 +50,14 @@ def _env_int(name: str, default: int) -> int:
 
 
 def validate_iteration_schedules(env_cfg: object, num_steps_per_env: int) -> None:
-    """按 PPO 轮次推进的课程/事件必须用 runner 实际的 rollout 长度换算轮次。
+    """按 PPO 轮次推进的课程/事件/奖励项必须用 runner 实际的 rollout 长度换算轮次。
 
     这类项把 `common_step_counter // steps_per_policy_iter` 当作轮次，参数与 `num_steps_per_env`
     不一致时课程时钟会被悄悄拉伸或压缩：推力课程曾漏传该参数、落到默认 64，而 Flat/Rough 的
     rollout 是 24，首档推力推迟到 2.67 倍轮次才出现。命令行覆盖 rollout 长度时同样会错位，所以启动时直接报错。
     """
     mismatches: list[str] = []
-    for group in ("curriculum", "events"):
+    for group in ("curriculum", "events", "rewards"):
         for name, term in (getattr(env_cfg, group, None) or {}).items():
             func = getattr(term, "func", None)
             if not callable(func) or inspect.isclass(func):
@@ -77,7 +77,7 @@ def validate_iteration_schedules(env_cfg: object, num_steps_per_env: int) -> Non
                 mismatches.append(f"{group}.{name}: steps_per_policy_iter={steps}")
     if mismatches:
         raise ValueError(
-            f"按轮次推进的课程/事件与 runner num_steps_per_env={num_steps_per_env} 不一致："
+            f"按轮次推进的课程/事件/奖励项与 runner num_steps_per_env={num_steps_per_env} 不一致："
             + "；".join(mismatches)
         )
 

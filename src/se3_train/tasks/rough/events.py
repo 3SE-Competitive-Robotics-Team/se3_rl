@@ -23,6 +23,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.utils.lab_api.math import quat_apply, quat_from_angle_axis, quat_mul
 
 from se3_shared import JointGroup
+from se3_train.mdp.rewards import _policy_leg_torque_and_vel
 from se3_train.robot_cfg import _MJCF_PATH
 
 from .columns import column_mask
@@ -434,17 +435,19 @@ def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> N
     if within is not None:
         for index, name in enumerate(cache.class_names):
             log[f"Recovery/recovered_within_3s_{name}"] = within[0][index]
-    # 还在起身的倒地 env 上的力度（当前步，均值与最大值）：对应倒地平顺性约束的三项。
+    # 还在起身的倒地 env 上的力度（当前步，均值与最大值）：对应倒地约束的四项（rewards.fall_lagrange_penalty）。
     recovering = (fall_mask & ~recovered).float()
     n_rec = recovering.sum().clamp(min=1.0)
     omega = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)
     leg_ids, wheel_ids = _effort_joint_ids(env)
     leg = robot.data.joint_vel[:, leg_ids]
     wheel = robot.data.joint_vel[:, wheel_ids]
+    torque, policy_leg_vel = _policy_leg_torque_and_vel(env, robot)
     for key, value in (
         ("body_ang_vel", omega),
         ("leg_speed", leg.abs().amax(dim=1)),
         ("wheel_speed", wheel.abs().amax(dim=1)),
+        ("leg_power", (torque * policy_leg_vel).abs().sum(dim=1)),
     ):
         log[f"Recovery/{key}_mean_recovering"] = (value * recovering).sum() / n_rec
         log[f"Recovery/{key}_max_recovering"] = (value * recovering).amax()

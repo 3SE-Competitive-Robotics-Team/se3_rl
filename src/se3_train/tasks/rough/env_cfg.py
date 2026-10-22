@@ -92,7 +92,6 @@ from se3_train.tasks.flat.env_cfg import (
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import curriculums, events, rewards, stair_rewards
-from . import terminations as rough_terminations
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
@@ -193,46 +192,41 @@ ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%，× ROUGH_FALL_SPAWN_PROB ≈ 8% 的 env 倒地出生。
 # 不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
 ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat", "obstacles", "wave")
-# 倒地约束（2026-10-21 用户定，CaT 版，见 terminations.fall_constraint_violation）：罚分版（4e74e45 / b3odjuk6，死区随 s
-# 收紧的四项罚：机身角速度、腿超速、轮超速、倒地动作平滑）收到 s=1 后起身仍是腿速 20 rad/s、机身角速度 10.4 rad/s、
-# 功率 1.3 kW——倒地每秒比站着少约 124 分，猛甩省时间够付罚款。改成按越界程度概率终止，并把每步总奖励垫到 ≥ 0
-# （rewards.total_reward_floor；不垫时倒置出生折扣回报 −89，终止反成逃生），CaT 终止不扣 fall_penalty。
-# 限值 (limit, margin) 按开环 R1 参考标定（峰值腿速 4.4 rad/s、被动倒下的机身角速度 8.2 rad/s、腿功率 233 W），
-# 保证温和起身一定做得到；越界 margin 时终止概率到 p_max。腿速全程生效（行走最多约 3.7），其余三项乘倒地程度。
-# - 腿速 13.4 = DM8009P 空载 16.8 × 0.8，margin 3 → 16.4 到满概率（≈空载）；
-# - 机身角速度 10（参考被动倒下 8.2 留余量），margin 4；
-# - 腿机械功率 Σ|τ·q̇| 400 W（参考 233 × ~1.7），margin 400；
-# - 轮速 30 rad/s（沿用罚分版 s=1 目标），margin 20。
-ROUGH_FALL_CAT_LIMITS = {
-    "leg_speed": (13.4, 3.0),
-    "body_ang_vel": (10.0, 4.0),
-    "leg_power": (400.0, 400.0),
-    "wheel_speed": (30.0, 20.0),
+# 倒地约束（2026-10-22 用户定，拉格朗日乘子版，见 rewards.fall_lagrange_penalty）。奖励回到 b3odjuk6（4e74e45），
+# 只把其中三项死区随 s 收紧的倒地罚（机身角速度、腿超速、轮超速）换成 λ 自适应的线性罚，并新增腿功率约束：
+# b3odjuk6 收到 s=1 后实测起身仍是腿速 20 rad/s、机身角速度 10.4 rad/s、功率 1.3 kW——罚分单价固定，倒地每秒比站着
+# 少约 124 分，猛甩省的时间够付罚款（"罚分总会被付掉"）。λ 按约束是否满足自动涨落，涨到越界不再划算为止。
+# 之前的 CaT 版（0c644416 / ff0nkdzb，e06a29f2 / 1nvtka54，f4f102ea / 2w33l0iq）因每步总奖励要垫到 ≥0 抹平了
+# 倒地期的稠密信号，三条都没学出翻身，已删。
+# 限值按 R1 开环参考（峰值腿速 4.4 rad/s、被动倒下的机身角速度 8.2 rad/s、腿功率 233 W）留余量，保证温和起身做得到：
+# - 腿速 13.4 = DM8009P 空载 16.8 × 0.8；机身角速度 10；轮速 30（悬空空转当反作用轮用，实车没有意义）；
+# - 腿机械功率 Σ|τ·q̇| 400 W：腿速压到 13.4 以内、力矩打满 32 N·m 时仍能到约 1.7 kW，只靠腿速压不住功率。
+# 2026-10-22 标定（b3odjuk6 model_4999 / tgds7ff7 model_1600，倒置出生 3 s 窗口 ∫c dt）：腿速 0.06 / 0.19 s、
+# 角速度 0.002 / 0.02、轮速 0.12 / 1.0、功率 0.44 / 0.74，目标 d=0.005 s（约"一次起身里超限 10% 持续 2–3 个控制步"），
+# 要降 10–200 倍。λ=1000 时单个电机超限 10% 每秒罚 100 分，与倒地时间价格同量级；预计压住要 3000–4000，上限 10000 只作保险。
+# 只在倒地时计（倾角 30°→45° 线性门控）：同一次实测里上台阶列 30% 的 env、跳跃列 41% 的 env 腿速超 13.4。
+# 武装门控沿用 2026-10-21 用户定的 0.6：侧躺与倒置里较差一类的 3 s 内起身率 100 轮窗口均值 ≥0.6 才开始更新 λ。
+ROUGH_FALL_LAGRANGE_LIMITS = {
+    "leg_speed": 13.4,
+    "body_ang_vel": 10.0,
+    "wheel_speed": 30.0,
+    "leg_power": 400.0,
 }
-# p_max 随收紧程度 s 从 0 线性升到 0.25（CaT 论文的上限）：s=0 不终止，不挡翻身的发现。
-ROUGH_FALL_CAT_P_MAX_RANGE = (0.0, 0.25)
-# 起身进度奖励（2026-10-21 用户定，见 rewards.fall_upright_progress）：ff0nkdzb 只垫底时倒地状态奖励全是 0、信号变稀疏，
-# 倒置 3 s 内起身率 1000 轮 0.03（b3odjuk6 0.65）、5000 轮也只到 0.68，s 一直没离开 0。只发给倒地出生的 episode，
-# 线性形状：倒置 0 → 侧躺 ×0.5 → 直立 ×1（平方形状在倒置处没有梯度，见函数 docstring）。权重 20/s：直立比倒置多 20/s，加上站立期 +14/s，倒地时间压力约 34/s（只垫底时约 14，
-# 罚分版约 124），翻身仍是最好的出路，但不再值得为省时间付力度。
-ROUGH_FALL_UPRIGHT_PROGRESS_WEIGHT = 20.0
-# 课程门控（2026-10-20 第二版，用户定：让策略适应、不滞回）：侧躺与倒置里较差一类的 3 s 内起身率按轮求均值进 100 轮窗口，
-# 窗口均值 ≥0.85、平均用时 ≤2.5 s、距上次收紧 ≥200 轮时 s += 0.1，s 只升不降；窗口均值连续 300 轮 <0.4 时暂停收紧并报警。
-# 门槛 0.6（2026-10-21 用户定，原 0.85）：ff0nkdzb 倒置 3 s 内起身率 5000 轮只到 0.68，0.85 下 s 全程为 0、CaT 从未生效。
-# 原 0.85 的依据：1a42x8jj 侧躺起身率稳定期只在 0.89–0.94，b3odjuk6 1200 轮 3 s 内起身率 0.84–0.87。
-# 步长 0.1：每档间隔 ≥200 轮，0→1 最少 2000 轮，5000 轮训练里收得满；每档 p_max 只加 0.025。
-# 崩塌保护只在第一次收紧之后生效（tgds7ff7 在翻身被发现前起身率本来就是 0，保护提前触发把 s 锁死在 0）。
-ROUGH_FALL_CONSTRAINT_CURRICULUM = {
-    "gate_class_names": ("side", "inverted"),
+ROUGH_FALL_LAGRANGE = {
+    "limits": ROUGH_FALL_LAGRANGE_LIMITS,
+    "tilt_gate_deg": (30.0, 45.0),
+    "window_class_names": ("side", "inverted"),
     "horizon_s": 3.0,
-    "window_iters": 100,
-    "min_interval_iters": 200,
-    "step": 0.1,
-    "up_threshold": 0.6,
-    "max_recover_time_s": 2.5,
-    "collapse_threshold": 0.4,
-    "collapse_iters": 300,
+    "target_cost_s": 0.005,
+    "lambda_lr": 1.0,
+    "error_clip": (-1.0, 10.0),
+    "lambda_max": 10000.0,
+    "cost_window_iters": 50,
+    "arm_window_iters": 100,
+    "arm_threshold": 0.6,
 }
+# 倒地动作平滑罚：没有物理限值，不进拉格朗日；沿用 b3odjuk6 收到 s=1 时的权重，武装后才计（rewards.fall_action_smoothness）。
+ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -658,6 +652,27 @@ def env_cfg(
         stair_height_dead_zone_m=stair_height_dead_zone_m,
         base_height_sigma=base_height_sigma,
     )
+    # 倒地约束（见 ROUGH_FALL_LAGRANGE 注释）：四项拉格朗日罚 + 倒地动作平滑罚。
+    for name in rewards.FALL_LAGRANGE_CONSTRAINTS:
+        cfg.rewards[f"fall_lagrange_{name}"] = RewardTermCfg(
+            func=rewards.fall_lagrange_penalty,
+            weight=-1.0,
+            params={
+                "constraint": name,
+                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+                **ROUGH_FALL_LAGRANGE,
+            },
+        )
+    smooth = cfg.rewards["action_smoothness"].params
+    cfg.rewards["fall_action_smoothness"] = RewardTermCfg(
+        func=rewards.fall_action_smoothness,
+        weight=ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT,
+        params={
+            key: smooth[key]
+            for key in ("command_name", "max_penalty", "leg_scale", "wheel_scale")
+            if key in smooth
+        },
+    )
     # M49 / M54：左右轮心前后错位罚，台阶列 ×0.25（见 ROUGH_WHEEL_FORE_AFT_WEIGHT、ROUGH_STAIR_WHEEL_FORE_AFT_SCALE）。
     cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
         func=rewards.column_scaled,
@@ -795,50 +810,8 @@ def env_cfg(
                 func=curriculums.stair_speed_cap,
                 params={"command_name": "velocity_height"},
             )
-        cfg.curriculum["fall_constraint"] = CurriculumTermCfg(
-            func=curriculums.fall_constraint_tightening,
-            params={
-                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
-                **ROUGH_FALL_CONSTRAINT_CURRICULUM,
-            },
-        )
 
-    _apply_fall_constraint_cat(cfg)
     return cfg
-
-
-def _apply_fall_constraint_cat(cfg: ManagerBasedRlEnvCfg) -> None:
-    """倒地约束 CaT（见 ROUGH_FALL_CAT_* 常量）：挂概率终止项、把它从 fall_penalty 里排除、总奖励逐步垫到 ≥ 0。
-
-    放在配置最后：total_reward_floor 读的是排在它之前的奖励累加值，之后只能是 fall_upright_progress
-    （非负，补回垫底抹掉的起身方向信号）与 fall_penalty。
-    """
-    cfg.terminations = dict(cfg.terminations)
-    cfg.terminations["fall_constraint"] = TerminationTermCfg(
-        func=rough_terminations.fall_constraint_violation,
-        time_out=False,
-        params={
-            "limits": dict(ROUGH_FALL_CAT_LIMITS),
-            "p_max_range": ROUGH_FALL_CAT_P_MAX_RANGE,
-        },
-    )
-    fall = cfg.rewards.pop("fall_penalty")
-    exclude = tuple((fall.params or {}).get("exclude_terms", ()))
-    rewards_cfg = {name: term for name, term in cfg.rewards.items() if name != "total_reward_floor"}
-    rewards_cfg["total_reward_floor"] = RewardTermCfg(
-        func=rewards.total_reward_floor,
-        weight=1.0,
-        params={"floor": 0.0, "after_terms": ("fall_upright_progress", "fall_penalty")},
-    )
-    rewards_cfg["fall_upright_progress"] = RewardTermCfg(
-        func=rewards.fall_upright_progress, weight=ROUGH_FALL_UPRIGHT_PROGRESS_WEIGHT
-    )
-    rewards_cfg["fall_penalty"] = RewardTermCfg(
-        func=rewards.is_terminated_except,
-        weight=float(fall.weight),
-        params={"exclude_terms": (*exclude, "fall_constraint")},
-    )
-    cfg.rewards = rewards_cfg
 
 
 ROUGH_JUMP_MAX_HEIGHT_ERROR = 0.12
@@ -1087,15 +1060,14 @@ __all__ = [
     "ROUGH_DR_KD_RANGE",
     "ROUGH_DR_KNEE_SPRING_SCALE_RANGE",
     "ROUGH_DR_KP_RANGE",
-    "ROUGH_FALL_CAT_LIMITS",
-    "ROUGH_FALL_CAT_P_MAX_RANGE",
-    "ROUGH_FALL_CONSTRAINT_CURRICULUM",
+    "ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT",
+    "ROUGH_FALL_LAGRANGE",
+    "ROUGH_FALL_LAGRANGE_LIMITS",
     "ROUGH_FALL_PENALTY",
     "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
     "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
     "ROUGH_FALL_STATE_CACHE",
-    "ROUGH_FALL_UPRIGHT_PROGRESS_WEIGHT",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",
