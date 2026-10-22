@@ -448,6 +448,7 @@ def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> N
         ("leg_speed", leg.abs().amax(dim=1)),
         ("wheel_speed", wheel.abs().amax(dim=1)),
         ("leg_power", (torque * policy_leg_vel).abs().sum(dim=1)),
+        ("leg_power_pos", torch.clamp(torque * policy_leg_vel, min=0.0).sum(dim=1)),
     ):
         log[f"Recovery/{key}_mean_recovering"] = (value * recovering).sum() / n_rec
         log[f"Recovery/{key}_max_recovering"] = (value * recovering).amax()

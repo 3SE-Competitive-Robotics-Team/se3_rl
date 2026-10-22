@@ -39,7 +39,6 @@ from se3_shared.torch_constants import device_constant
 from se3_train.mdp.action_period import front_action_periods_from_env
 from se3_train.mdp.rewards import (
     _DEFAULT_ASSET_CFG,
-    _near_upright_gate,
     _policy_leg_torque_and_vel,
     _recovery_reset_mask,
     _tracking_upright_gate,
@@ -398,8 +397,22 @@ def jump_env_only(
 
 # ---- 倒地约束：拉格朗日乘子（2026-10-22 用户定，见 env_cfg.ROUGH_FALL_LAGRANGE）----
 # 罚分单价 λ 不再人定：按倒地起身时的约束代价是否达标逐轮调整，涨到"越界省下的时间不再划算"为止。
+# v2（同日）：只在"倒地出生、尚未起身"的 env（M）里计罚与统计 J，M 内奖励按 1/(1+Σλ) 归一化，功率只计正功。
 FALL_LAGRANGE_CONSTRAINTS = ("leg_speed", "body_ang_vel", "wheel_speed", "leg_power")
 _FALL_LAGRANGE_STATE_ATTR = "_se3_fall_lagrange_state"
+_FALL_NORMALIZE_CHECKED_ATTR = "_se3_fall_lagrange_normalize_checked"
+
+
+def fall_constraint_active(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """M：倒地出生、尚未起身的 env（起身判据见 events.FALL_RECOVERED_TILT_DEG / FALL_RECOVERED_MIN_HEIGHT_M，
+    第一次满足后本 episode 不再算 M）。没有倒地出生时全 False。"""
+    from .events import _FALL_RECOVERED_ATTR, FALL_SPAWN_MASK_ATTR
+
+    fall = getattr(env, FALL_SPAWN_MASK_ATTR, None)
+    recovered = getattr(env, _FALL_RECOVERED_ATTR, None)
+    if fall is None or recovered is None:
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    return fall & ~recovered
 
 
 class _FallLagrangeState:
@@ -411,6 +424,9 @@ class _FallLagrangeState:
         n = len(FALL_LAGRANGE_CONSTRAINTS)
         self.lambdas = [0.0] * n
         self.lambda_t = torch.zeros(n, device=env.device)
+        self.scale = 1.0  # M 内奖励缩放 1/(1+Σλ)
+        self.active = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.acc_active = torch.zeros(2, device=env.device)  # [M 内 env·步数, 全部 env·步数]
         self.cost = torch.zeros(env.num_envs, n, device=env.device)
         self.finite = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
         self.window_cost = torch.zeros_like(self.cost)
@@ -436,22 +452,23 @@ class _FallLagrangeState:
         if step == self.last_step:
             return
         self.last_step = step
+        self.active = fall_constraint_active(env)
+        self.acc_active[0] += self.active.sum()
+        self.acc_active[1] += float(env.num_envs)
         self._compute_cost(env)
         self._accumulate(env)
         if step % int(self.params["steps_per_policy_iter"]) == 0:
             self._end_iteration(env)
 
     def _compute_cost(self, env: ManagerBasedRlEnv) -> None:
+        """本步代价，只在 M 内非零（M 外的倒地 / 走路 / 跳跃一概不计）。"""
         robot = env.scene["robot"]
         torque, leg_vel = _policy_leg_torque_and_vel(env, robot)
-        pg_z = robot.data.projected_gravity_b[:, 2]
-        tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
-        lo, hi = (float(v) for v in self.params["tilt_gate_deg"])
-        gate = torch.clamp((tilt - lo) / (hi - lo), 0.0, 1.0)
         leg_lim, ang_lim, wheel_lim, power_lim = self.limits
         wheel = robot.data.joint_vel[:, self.wheel_ids]
         omega = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)
-        power = (torque * leg_vel).abs().sum(dim=1)
+        # 只计正功（电机输出的机械功）：倒地时腿被地面反推产生的制动功率不受策略控制，R1 参考里占 |P| 的 45%。
+        power = torch.clamp(torque * leg_vel, min=0.0).sum(dim=1)
         cost = torch.stack(
             (
                 (torch.clamp(leg_vel.abs() - leg_lim, min=0.0) / leg_lim).sum(dim=1),
@@ -461,15 +478,16 @@ class _FallLagrangeState:
             ),
             dim=1,
         )
-        cost = cost * gate.unsqueeze(1)
         # 物理偶发发散时（catastrophic_state 会终止该 env）代价是 nan / inf：置 0，窗口累计里作废该 env 当前窗口。
         # p0cdt5d9 第 537 轮起 J 全是 nan：单个 env 发散，"乘 0/1 掩码"的 nan × 0 = nan 把整轮求和带坏，50 轮窗口里一直是 nan。
         self.finite = torch.isfinite(cost).all(dim=1)
-        self.cost = torch.where(self.finite.unsqueeze(1), cost, torch.zeros_like(cost))
+        keep = (self.finite & self.active).unsqueeze(1)
+        self.cost = torch.where(keep, cost, torch.zeros_like(cost))
         self.acc_nonfinite += (~self.finite).sum()
 
     def _accumulate(self, env: ManagerBasedRlEnv) -> None:
-        """侧躺 / 倒置出生 env 出生后 horizon_s 内的代价积分（J 的样本），以及武装信号（horizon_s 内起身率）。"""
+        """侧躺 / 倒置出生 env 出生后 horizon_s 内、起身之前的代价积分（J 的样本；代价在 M 外为 0，
+        积分区间即 [出生, min(起身, horizon_s)]），以及武装信号（horizon_s 内起身率）。"""
         from .events import (
             _FALL_CACHE_ATTR,
             _FALL_CLASS_ATTR,
@@ -518,7 +536,9 @@ class _FallLagrangeState:
         由奖励项在 env.step 里触发：每张卡每步都算奖励，轮末这一步在所有卡上是同一个 common_step_counter，
         集合通信的调用次数一致。课程项只在有 env reset 时才被调用，某张卡某步没有 reset 就会错位死锁，不能放那里。
         """
-        packed = torch.cat((self.acc_cost, self.acc_windows, self.acc_nonfinite, self.acc_arm))
+        packed = torch.cat(
+            (self.acc_cost, self.acc_windows, self.acc_nonfinite, self.acc_active, self.acc_arm)
+        )
         if (
             torch.distributed.is_available()
             and torch.distributed.is_initialized()
@@ -529,9 +549,11 @@ class _FallLagrangeState:
         self.acc_cost.zero_()
         self.acc_windows.zero_()
         self.acc_nonfinite.zero_()
+        self.acc_active.zero_()
         self.acc_arm.zero_()
         n = len(FALL_LAGRANGE_CONSTRAINTS)
-        cost_sums, windows, nonfinite, arm = values[:n], values[n], values[n + 1], values[n + 2 :]
+        cost_sums, windows, nonfinite = values[:n], values[n], values[n + 1]
+        active_steps, env_steps, arm = values[n + 2], values[n + 3], values[n + 4 :]
         self.cost_window.append((cost_sums, windows))
         n_cls = len(arm) // 2
         rates = [arm[2 * i] / arm[2 * i + 1] for i in range(n_cls) if arm[2 * i + 1] > 0]
@@ -561,12 +583,17 @@ class _FallLagrangeState:
                     )
                 log[f"FallLagrange/J_{name}_s"] = torch.tensor(j, device=env.device)
             self.lambda_t = torch.tensor(self.lambdas, device=env.device)
+            self.scale = 1.0 / (1.0 + sum(self.lambdas))
         for i, name in enumerate(FALL_LAGRANGE_CONSTRAINTS):
             log[f"FallLagrange/lambda_{name}"] = torch.tensor(self.lambdas[i], device=env.device)
         log["FallLagrange/armed"] = torch.tensor(float(self.armed), device=env.device)
         log["FallLagrange/arm_signal"] = torch.tensor(arm_signal, device=env.device)
         log["FallLagrange/windows_per_iter"] = torch.tensor(windows, device=env.device)
         log["FallLagrange/nonfinite_envs"] = torch.tensor(nonfinite, device=env.device)
+        log["FallLagrange/scale"] = torch.tensor(self.scale, device=env.device)
+        log["FallLagrange/active_frac"] = torch.tensor(
+            active_steps / max(env_steps, 1.0), device=env.device
+        )
 
 
 def _fall_lagrange_state(env: ManagerBasedRlEnv, params: dict) -> _FallLagrangeState:
@@ -582,40 +609,44 @@ def fall_lagrange_penalty(
     constraint: str,
     steps_per_policy_iter: int,
     limits: dict[str, float],
-    tilt_gate_deg: tuple[float, float] = (30.0, 45.0),
+    price_k: float = 300.0,
     window_class_names: tuple[str, ...] = ("side", "inverted"),
     horizon_s: float = 3.0,
     target_cost_s: float = 0.005,
-    lambda_lr: float = 1.0,
-    error_clip: tuple[float, float] = (-1.0, 10.0),
-    lambda_max: float = 10000.0,
+    lambda_lr: float = 0.02,
+    error_clip: tuple[float, float] = (-1.0, 5.0),
+    lambda_max: float = 10.0,
     cost_window_iters: int = 50,
     arm_window_iters: int = 100,
     arm_threshold: float = 0.6,
 ) -> torch.Tensor:
-    """倒地约束的拉格朗日罚 λ·c（权重取 −1）；四项共用一份状态，参数须一致（env_cfg 用同一个字典展开）。
+    """倒地约束的拉格朗日罚 K·λ·c（权重取 −1）；四项共用一份状态，参数须一致（env_cfg 用同一个字典展开）。
 
-    代价 c = 倾角门控 g · 归一化超限量。用线性 hinge 而不是平方：线性是精确罚，λ 超过某个有限值后越界一点也
-    不划算；平方罚在限值附近的边际代价趋于 0，总会留一点超限（b3odjuk6 收到 s=1 仍超 50%，与此有关）。
+    只在 M（倒地出生、尚未起身的 env，见 fall_constraint_active）里计；M 内的总奖励再由最后一项
+    fall_lagrange_normalize 除以 (1 + Σλ)，即 r′ = (r − K·Σλᵢcᵢ)/(1 + Σλᵢ)，M 外 r′ = r。
+    v1（dfde5296 / 704d362a）按世界系倾角 > 30° 计罚、λ 无上限：武装后 λ 涨到几千，起跳 / 陡坡 / 上台阶也被重罚，
+    16jwmav8 与 brosdfzt 武装后 200 轮内地形等级 5.9 → 1.5 / 0.08、起身率归零。
+
+    代价 c = 归一化超限量，线性 hinge（精确罚：越界一点也不划算；平方罚在限值附近边际代价趋于 0）：
     - leg_speed：Σ_4 电机 max(0, |q̇| − 限值) / 限值；body_ang_vel：max(0, ‖ω_b‖ − 限值) / 限值；
-    - wheel_speed：Σ_2 轮 max(0, |ω| − 限值) / 限值；leg_power：max(0, Σ|τ·q̇| − 限值) / 限值。
-    g：倾角 < tilt_gate_deg[0] 为 0、> [1] 为 1，中间线性。只在倒地时计：上台阶收腿 30% 的 env、跳跃 41% 的 env
-    腿速会超 13.4 rad/s（2026-10-22 b3odjuk6 实测），全程计会误伤。
+    - wheel_speed：Σ_2 轮 max(0, |ω| − 限值) / 限值；leg_power：max(0, Σ max(0, τ·q̇) − 限值) / 限值（只计正功）。
+    K（price_k）是单位超限量的最高价格：λ 大时 M 内任务奖励（含倒地每秒约 −110 的时间代价）被缩到 0，提前起身的好处
+    只剩起身后不缩放的走路奖励（每秒约 +14），K 太小约束就压不住；K=300 时 λ ≳ 3 即可压住（见 env_cfg 注释）。
 
-    λ 的对偶更新（每轮一次，多卡 all_reduce 后所有卡同一份）：J = 侧躺 / 倒置出生 env 出生后 horizon_s 内的 ∫c dt
-    （单位 s，取最近 cost_window_iters 轮完成的窗口求均值），e = clip((J − d) / d, error_clip)，
-    λ ← clip(λ + lambda_lr · e, 0, lambda_max)；超标时每轮最多涨 10、达标后每轮最多降 1（宁紧勿松，防振荡）。
+    λ 的对偶更新（每轮一次，多卡 all_reduce 后所有卡同一份）：J = 侧躺 / 倒置出生 env 在 [出生, min(起身, horizon_s)]
+    内的 ∫c dt（单位 s，取最近 cost_window_iters 轮完成的窗口求均值），e = clip((J − d) / d, error_clip)，
+    λ ← clip(λ + lambda_lr · e, 0, lambda_max)。λ 已在归一化尺度上（λ=10 时约束权重 10/11），再大意义不大。
     武装：λ 起初恒 0；`window_class_names` 里较差一类的 horizon_s 内起身率按轮进 arm_window_iters 轮窗口，窗口满且
     均值 ≥ arm_threshold 后开始更新，此后不再关闭（翻身被发现之前就涨 λ，只会把翻身压没）。
-    不设崩塌保护：策略不起身时没有越界、J < d，λ 自己往下走，由约束是否满足驱动。checkpoint 不保存 λ，续训从 0 重新武装。
+    不设崩塌保护：策略不起身时没有越界、J < d，λ 自己往下走。checkpoint 不保存 λ，续训从 0 重新武装。
     物理偶发发散的 env（代价 nan / inf）当步代价与罚分置 0、当前窗口作废不计入 J；J 万一非有限则跳过更新。
-    日志：`FallLagrange/lambda_*`、`FallLagrange/J_*_s`、`armed`、`arm_signal`、`windows_per_iter`、
-    `nonfinite_envs`（本轮代价非有限的 env·步数，多卡合计）。
+    日志：`FallLagrange/lambda_*`、`J_*_s`、`armed`、`arm_signal`、`windows_per_iter`、`nonfinite_envs`、
+    `scale`（1/(1+Σλ)）、`active_frac`（M 内 env·步占比）。
     """
     params = {
         "steps_per_policy_iter": steps_per_policy_iter,
         "limits": limits,
-        "tilt_gate_deg": tilt_gate_deg,
+        "price_k": price_k,
         "window_class_names": window_class_names,
         "horizon_s": horizon_s,
         "target_cost_s": target_cost_s,
@@ -630,10 +661,37 @@ def fall_lagrange_penalty(
     if state.params != params:
         raise ValueError(f"倒地约束 {constraint} 的参数与其他项不一致，四项须用同一份配置")
     state.step(env)
-    return (
-        state.lambda_t[FALL_LAGRANGE_CONSTRAINTS.index(constraint)]
-        * state.cost[:, FALL_LAGRANGE_CONSTRAINTS.index(constraint)]
-    )
+    i = FALL_LAGRANGE_CONSTRAINTS.index(constraint)
+    return float(price_k) * state.lambda_t[i] * state.cost[:, i]
+
+
+def fall_lagrange_normalize(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """M 内总奖励归一化：返回补差的奖励率 (1/(1+Σλ) − 1) · 本步已累加总奖励率，权重须为 1、必须是最后一个奖励项。
+
+    RewardManager 按字典序逐项累加，本项读累加到自己之前的 `_reward_buf`（含 fall_lagrange_* 罚分与 fall_penalty），
+    加上补差后 M 内 env 的本步总奖励 = 原总奖励 / (1 + Σλ)，M 外不变。首次调用时核对本项排在最后，不对就报错。
+    只在 M 内缩放（不对全部 env 缩放）：全部缩放会把走路奖励缩小 1+Σλ 倍，在优势归一化里被约束项淹没。
+    """
+    manager = env.reward_manager
+    if not getattr(env, _FALL_NORMALIZE_CHECKED_ATTR, False):
+        names = list(manager.active_terms)
+        if names[-1] != "fall_lagrange_normalize":
+            raise ValueError(
+                f"fall_lagrange_normalize 必须是最后一个奖励项，实际排在它之后的有 "
+                f"{names[names.index('fall_lagrange_normalize') + 1 :]}"
+            )
+        setattr(env, _FALL_NORMALIZE_CHECKED_ATTR, True)
+    state = getattr(env, _FALL_LAGRANGE_STATE_ATTR, None)
+    if state is None or state.scale == 1.0:
+        return torch.zeros(env.num_envs, device=env.device)
+    rate = manager._reward_buf / (float(env.step_dt) if manager._scale_by_dt else 1.0)
+    return torch.where(state.active, rate * (state.scale - 1.0), torch.zeros_like(rate))
+
+
+def fall_lagrange_scale(env: ManagerBasedRlEnv) -> float:
+    """当前 M 内奖励缩放 1/(1+Σλ)；还没有拉格朗日状态时为 1。"""
+    state = getattr(env, _FALL_LAGRANGE_STATE_ATTR, None)
+    return 1.0 if state is None else float(state.scale)
 
 
 def fall_constraints_armed(env: ManagerBasedRlEnv) -> float:
@@ -649,13 +707,12 @@ _FALL_SMOOTH_PREV_PREV_ATTR = "_se3_fall_smooth_prev_prev_action"
 def fall_action_smoothness(
     env: ManagerBasedRlEnv,
     command_name: str | None = None,
-    gate_start_deg: float = 60.0,
-    gate_full_deg: float = 30.0,
     max_penalty: float = 320.0,
     leg_scale: float = 1.0,
     wheel_scale: float = 2.0,
 ) -> torch.Tensor:
-    """倒地时的动作二阶差分罚：算式同 mdp.rewards.action_smoothness，门控取它的补集，倒地约束武装后才计。
+    """倒地起身时的动作二阶差分罚：算式同 mdp.rewards.action_smoothness，只在 M（倒地出生、尚未起身）里、
+    倒地约束武装后才计（2026-10-22 起；之前按倾角门控，会落到起跳 / 陡坡的走路 env 上）。
 
     没有物理限值，不适合拉格朗日乘子，保留 b3odjuk6 收到 s=1 时的固定权重；武装前为 0，不挡翻身的发现。
     用自己的上一步 / 上上步动作缓存——与 action_smoothness 共用缓存会被同一步两次调用互相覆盖。
@@ -676,12 +733,7 @@ def fall_action_smoothness(
         wheel_scale
     ) * action_acc[:, 4:6].square().sum(dim=1)
     penalty = torch.clamp(penalty, max=float(max_penalty))
-    upright = _near_upright_gate(
-        env.scene["robot"].data.projected_gravity_b[:, 2],
-        gate_start_deg=float(gate_start_deg),
-        gate_full_deg=float(gate_full_deg),
-    )
-    gate = (1.0 - upright) * fall_constraints_armed(env)
+    gate = fall_constraint_active(env).float() * fall_constraints_armed(env)
     if command_name is not None:
         cmd = env.command_manager.get_command(command_name)
         if cmd.shape[1] > 5:
@@ -697,8 +749,11 @@ __all__ = [
     "base_height_penalty_window_on_terrain",
     "column_scaled",
     "fall_action_smoothness",
+    "fall_constraint_active",
     "fall_constraints_armed",
+    "fall_lagrange_normalize",
     "fall_lagrange_penalty",
+    "fall_lagrange_scale",
     "is_terminated_except",
     "jump_env_only",
     "off_column",

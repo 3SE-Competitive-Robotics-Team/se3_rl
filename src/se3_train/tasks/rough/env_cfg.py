@@ -92,6 +92,7 @@ from se3_train.tasks.flat.env_cfg import (
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
 from . import curriculums, events, rewards, stair_rewards
+from . import observations as rough_observations
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
     ROUGH_STAIR_ANG_VEL_YAW_RANGE,
@@ -193,18 +194,25 @@ ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
 ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat", "obstacles", "wave")
 # 倒地约束（2026-10-22 用户定，拉格朗日乘子版，见 rewards.fall_lagrange_penalty）。奖励回到 b3odjuk6（4e74e45），
-# 只把其中三项死区随 s 收紧的倒地罚（机身角速度、腿超速、轮超速）换成 λ 自适应的线性罚，并新增腿功率约束：
+# 把其中三项死区随 s 收紧的倒地罚（机身角速度、腿超速、轮超速）换成 λ 自适应的线性罚，并新增腿功率约束：
 # b3odjuk6 收到 s=1 后实测起身仍是腿速 20 rad/s、机身角速度 10.4 rad/s、功率 1.3 kW——罚分单价固定，倒地每秒比站着
 # 少约 124 分，猛甩省的时间够付罚款（"罚分总会被付掉"）。λ 按约束是否满足自动涨落，涨到越界不再划算为止。
 # 之前的 CaT 版（0c644416 / ff0nkdzb，e06a29f2 / 1nvtka54，f4f102ea / 2w33l0iq）因每步总奖励要垫到 ≥0 抹平了
 # 倒地期的稠密信号，三条都没学出翻身，已删。
-# 限值按 R1 开环参考（峰值腿速 4.4 rad/s、被动倒下的机身角速度 8.2 rad/s、腿功率 233 W）留余量，保证温和起身做得到：
-# - 腿速 13.4 = DM8009P 空载 16.8 × 0.8；机身角速度 10；轮速 30（悬空空转当反作用轮用，实车没有意义）；
-# - 腿机械功率 Σ|τ·q̇| 400 W：腿速压到 13.4 以内、力矩打满 32 N·m 时仍能到约 1.7 kW，只靠腿速压不住功率。
-# 2026-10-22 标定（b3odjuk6 model_4999 / tgds7ff7 model_1600，倒置出生 3 s 窗口 ∫c dt）：腿速 0.06 / 0.19 s、
-# 角速度 0.002 / 0.02、轮速 0.12 / 1.0、功率 0.44 / 0.74，目标 d=0.005 s（约"一次起身里超限 10% 持续 2–3 个控制步"），
-# 要降 10–200 倍。λ=1000 时单个电机超限 10% 每秒罚 100 分，与倒地时间价格同量级；预计压住要 3000–4000，上限 10000 只作保险。
-# 只在倒地时计（倾角 30°→45° 线性门控）：同一次实测里上台阶列 30% 的 env、跳跃列 41% 的 env 腿速超 13.4。
+# v2（同日）：v1（dfde5296 / 704d362a）按世界系倾角 > 30° 计罚、λ ∈ [0, 1e4] 不归一化，16jwmav8 / brosdfzt 武装后
+# λ 涨到几千，起跳 / 陡坡 / 上台阶也被重罚（未武装时旧口径超限量 96% 本在起身中、走路只占 2%，乘上几千照样压垮），
+# 200 轮内地形等级 5.9 → 1.5 / 0.08、起身率归零。v2 改为：
+# - 罚分、J、倒地动作平滑罚都只在 M（倒地出生、尚未起身）里计，不再用倾角门控；
+# - M 内总奖励 r′ = (r − K·Σλᵢcᵢ)/(1 + Σλᵢ)、M 外 r′ = r（rewards.fall_lagrange_normalize，必须是最后一个奖励项），
+#   K=300：λ 大时 M 内任务奖励被缩到 0、提前起身的好处只剩起身后的走路奖励（每秒约 +14），越界 ε 持续 τ≈0.3 s 换翻身
+#   T≈1.5 s 的同比例提速，不划算的条件 K·τ·λ/(1+λ) ≳ T·(14 + 110/(1+λ))，K=300 时 λ ≳ 3 即成立；λ ∈ [0, 10]，
+#   每轮 λ += 0.02·clip((J−d)/d, −1, 5)；
+# - critic 加 M 标记与 1/(1+Σλ) 两维（observations.py；只进 critic，不进 actor / 教师编码器）；
+# - 功率只计正功 Σ max(0, τ·q̇)（R1 参考 |P| 的 45% 是被反推的制动功率）。
+# 限值按 R1 开环参考（峰值腿速 4.4 rad/s、机身角速度 8.2 rad/s、轮速 5.1 rad/s、正功率 166 W；新口径 ∫c dt 全为 0）留余量：
+# 腿速 13.4 = DM8009P 空载 16.8 × 0.8；机身角速度 10；轮速 30；腿正功率 400 W。目标 d=0.005 s。
+# 2026-10-22 新口径探针（16jwmav8 model_2300，未武装）：侧躺 / 倒置出生的 J（s）腿速 0.031 / 0.059、角速度 0.001 / 0.006、
+# 轮速 0.99 / 1.14（起身时轮子空转当反作用轮用）、正功率 0.078 / 0.23；M 内每秒平均超限量合计约 0.71。
 # 武装门控沿用 2026-10-21 用户定的 0.6：侧躺与倒置里较差一类的 3 s 内起身率 100 轮窗口均值 ≥0.6 才开始更新 λ。
 ROUGH_FALL_LAGRANGE_LIMITS = {
     "leg_speed": 13.4,
@@ -214,18 +222,18 @@ ROUGH_FALL_LAGRANGE_LIMITS = {
 }
 ROUGH_FALL_LAGRANGE = {
     "limits": ROUGH_FALL_LAGRANGE_LIMITS,
-    "tilt_gate_deg": (30.0, 45.0),
+    "price_k": 300.0,
     "window_class_names": ("side", "inverted"),
     "horizon_s": 3.0,
     "target_cost_s": 0.005,
-    "lambda_lr": 1.0,
-    "error_clip": (-1.0, 10.0),
-    "lambda_max": 10000.0,
+    "lambda_lr": 0.02,
+    "error_clip": (-1.0, 5.0),
+    "lambda_max": 10.0,
     "cost_window_iters": 50,
     "arm_window_iters": 100,
     "arm_threshold": 0.6,
 }
-# 倒地动作平滑罚：没有物理限值，不进拉格朗日；沿用 b3odjuk6 收到 s=1 时的权重，武装后才计（rewards.fall_action_smoothness）。
+# 倒地动作平滑罚：没有物理限值，不进拉格朗日；沿用 b3odjuk6 收到 s=1 时的权重，武装后、只在 M 内计（rewards.fall_action_smoothness）。
 ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
@@ -770,6 +778,22 @@ def env_cfg(
         cfg.commands["velocity_height"] = replace(
             cfg.commands["velocity_height"], stair_lin_vel_x_range=(low, high)
         )
+    # 倒地约束的 critic 特权观测（见 observations.py）。必须在 CTS 教师观测组从 critic 派生之后加，教师编码器不能看到 M；
+    # 旧 Exp-CTS（教师直接读整个 critic 组）不加，避免泄漏到教师隐向量。
+    if not (cts and cts_teacher_height_scan):
+        critic = cfg.observations["critic"]
+        cfg.observations["critic"] = replace(
+            critic,
+            terms={
+                **critic.terms,
+                "fall_constraint_active": ObservationTermCfg(
+                    func=rough_observations.fall_constraint_active_obs
+                ),
+                "fall_lagrange_scale": ObservationTermCfg(
+                    func=rough_observations.fall_lagrange_scale_obs
+                ),
+            },
+        )
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -811,6 +835,11 @@ def env_cfg(
                 params={"command_name": "velocity_height"},
             )
 
+    # M 内奖励归一化必须是最后一个奖励项（rewards.fall_lagrange_normalize 首次调用时核对）。
+    cfg.rewards = dict(cfg.rewards)
+    cfg.rewards["fall_lagrange_normalize"] = RewardTermCfg(
+        func=rewards.fall_lagrange_normalize, weight=1.0
+    )
     return cfg
 
 
