@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import torch
 from mjlab.envs.mdp.actions import JointPositionActionCfg, JointVelocityActionCfg
@@ -35,6 +35,25 @@ _CTBC_SOURCE_OUTPUT_LEG_SCALE = 0.25
 _CTBC_SOURCE_TO_TARGET_OUTPUT_SIGN = (-1.0, -1.0, 1.0, 1.0)
 
 
+class ActionTeacher(Protocol):
+    """训练期动作教师（如 tasks.rough.fall_teacher）：改写夹紧后的策略动作，结果再进 CTBC 与延迟。
+
+    PPO 存的仍是策略自己的采样动作，教师只改执行动作；部署 / play 不配教师。
+    """
+
+    def reset(self, env_ids: torch.Tensor) -> None: ...
+
+    def transform(self, policy_actions: torch.Tensor) -> torch.Tensor: ...
+
+
+class ActionTeacherCfg(Protocol):
+    """动作教师配置：按 PPO 轮次推进的必须带 steps_per_policy_iter（runner 启动时核对 rollout 长度）。"""
+
+    steps_per_policy_iter: int
+
+    def build(self, env: Any, term: Any) -> ActionTeacher: ...
+
+
 @dataclass(kw_only=True)
 class SerialLegDelayedActionCfg(ActionTermCfg):
     """6D 策略动作项，支持训练端 action 延迟。"""
@@ -60,6 +79,8 @@ class SerialLegDelayedActionCfg(ActionTermCfg):
     active_rod_lower_target_overdrive: float = _SHARED_ROBOT.active_rod_lower_target_overdrive
     knee_gas_spring_force: float = _SHARED_ROBOT.knee_gas_spring_force
     knee_gas_spring_compensation_enabled: bool = _SHARED_ROBOT.knee_gas_spring_compensation_enabled
+    # 训练期动作教师（None = 不接）；不进 ONNX 动作元数据，play / 部署不配。
+    teacher: ActionTeacherCfg | None = None
 
     def build(self, env: ManagerBasedRlEnv) -> SerialLegDelayedAction:
         return SerialLegDelayedAction(self, env)
@@ -145,10 +166,15 @@ class SerialLegDelayedAction(ActionTerm):
             device=self.device,
         )
         self._resample_delay(self._env_indices)
+        self._teacher = None if cfg.teacher is None else cfg.teacher.build(env, self)
 
     @property
     def action_dim(self) -> int:
         return self._action_dim
+
+    @property
+    def teacher(self) -> ActionTeacher | None:
+        return self._teacher
 
     @property
     def raw_action(self) -> torch.Tensor:
@@ -225,6 +251,8 @@ class SerialLegDelayedAction(ActionTerm):
             clip = float(self.cfg.action_clip)
             self._raw_actions[:] = torch.clamp(incoming_actions, -clip, clip)
         self._policy_actions[:] = self._raw_actions
+        if self._teacher is not None:
+            self._raw_actions[:] = self._teacher.transform(self._policy_actions)
         self._ctbc_output_bias.zero_()
         self._ctbc_action_delta.zero_()
         self._ctbc_wheel_delta_xz.zero_()
@@ -581,6 +609,8 @@ class SerialLegDelayedAction(ActionTerm):
             buffer.index_fill_(0, resolved_env_ids, 0.0)
         self._action_fifo.index_fill_(1, resolved_env_ids, 0.0)
         self._resample_delay(resolved_env_ids)
+        if self._teacher is not None:
+            self._teacher.reset(resolved_env_ids)
 
     def _resolve_env_ids(self, env_ids: torch.Tensor | slice | None) -> torch.Tensor:
         if env_ids is None:
@@ -606,6 +636,8 @@ class SerialLegDelayedAction(ActionTerm):
 
 
 __all__ = [
+    "ActionTeacher",
+    "ActionTeacherCfg",
     "JointPositionActionCfg",
     "JointVelocityActionCfg",
     "SerialLegDelayedActionCfg",

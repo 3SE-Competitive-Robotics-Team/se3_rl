@@ -108,6 +108,7 @@ from .commands import (
     RoughCommandCfg,
     RoughJumpCommandCfg,
 )
+from .fall_teacher import FallTeacherCfg, fall_teacher_imitation
 from .terrains import (
     ROUGH_RANDOM_TERRAIN_PROPORTIONS,
     ROUGH_STAIR_LIKE_COLUMNS,
@@ -235,6 +236,10 @@ ROUGH_FALL_LAGRANGE = {
 }
 # 倒地动作平滑罚：没有物理限值，不进拉格朗日；沿用 b3odjuk6 收到 s=1 时的权重，武装后、只在 M 内计（rewards.fall_action_smoothness）。
 ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
+# 倒地起身脚本教师（2026-10-23 用户定，env_cfg(fall_teacher=True)，见 fall_teacher.py）：6 月 recovery_teacher 路线移植，
+# 教师动作按 α 混进执行动作 + 模仿奖励；用户定此路线不带拉格朗日约束（fall_lagrange=False）。模仿奖励沿用 6 月的权重与 σ。
+ROUGH_FALL_TEACHER_IMITATION_WEIGHT = 1.5
+ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -483,6 +488,8 @@ def env_cfg(
     cts_teacher_height_scan: bool = True,
     stair_lin_vel_x_min: float | None = None,
     fall_spawn_prob: float = ROUGH_FALL_SPAWN_PROB,
+    fall_lagrange: bool = True,
+    fall_teacher: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -505,6 +512,8 @@ def env_cfg(
     stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
         ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
     fall_spawn_prob：平地列 reset 时改从倒地状态库出生的概率，默认 ROUGH_FALL_SPAWN_PROB；play 固定为 0，0 关闭。
+    fall_lagrange：倒地拉格朗日约束（四项罚、M 内归一化、critic 两维）与倒地动作平滑罚，默认开（见 ROUGH_FALL_LAGRANGE）。
+    fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -661,26 +670,38 @@ def env_cfg(
         base_height_sigma=base_height_sigma,
     )
     # 倒地约束（见 ROUGH_FALL_LAGRANGE 注释）：四项拉格朗日罚 + 倒地动作平滑罚。
-    for name in rewards.FALL_LAGRANGE_CONSTRAINTS:
-        cfg.rewards[f"fall_lagrange_{name}"] = RewardTermCfg(
-            func=rewards.fall_lagrange_penalty,
-            weight=-1.0,
+    if fall_lagrange:
+        for name in rewards.FALL_LAGRANGE_CONSTRAINTS:
+            cfg.rewards[f"fall_lagrange_{name}"] = RewardTermCfg(
+                func=rewards.fall_lagrange_penalty,
+                weight=-1.0,
+                params={
+                    "constraint": name,
+                    "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
+                    **ROUGH_FALL_LAGRANGE,
+                },
+            )
+        smooth = cfg.rewards["action_smoothness"].params
+        cfg.rewards["fall_action_smoothness"] = RewardTermCfg(
+            func=rewards.fall_action_smoothness,
+            weight=ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT,
             params={
-                "constraint": name,
-                "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
-                **ROUGH_FALL_LAGRANGE,
+                key: smooth[key]
+                for key in ("command_name", "max_penalty", "leg_scale", "wheel_scale")
+                if key in smooth
             },
         )
-    smooth = cfg.rewards["action_smoothness"].params
-    cfg.rewards["fall_action_smoothness"] = RewardTermCfg(
-        func=rewards.fall_action_smoothness,
-        weight=ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT,
-        params={
-            key: smooth[key]
-            for key in ("command_name", "max_penalty", "leg_scale", "wheel_scale")
-            if key in smooth
-        },
-    )
+    # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
+    if fall_teacher:
+        if not play:
+            delayed_action.teacher = FallTeacherCfg(
+                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER
+            )
+        cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(
+            func=fall_teacher_imitation,
+            weight=ROUGH_FALL_TEACHER_IMITATION_WEIGHT,
+            params={"sigma": ROUGH_FALL_TEACHER_IMITATION_SIGMA},
+        )
     # M49 / M54：左右轮心前后错位罚，台阶列 ×0.25（见 ROUGH_WHEEL_FORE_AFT_WEIGHT、ROUGH_STAIR_WHEEL_FORE_AFT_SCALE）。
     cfg.rewards["wheel_fore_aft_offset"] = RewardTermCfg(
         func=rewards.column_scaled,
@@ -778,22 +799,26 @@ def env_cfg(
         cfg.commands["velocity_height"] = replace(
             cfg.commands["velocity_height"], stair_lin_vel_x_range=(low, high)
         )
-    # 倒地约束的 critic 特权观测（见 observations.py）。必须在 CTS 教师观测组从 critic 派生之后加，教师编码器不能看到 M；
-    # 旧 Exp-CTS（教师直接读整个 critic 组）不加，避免泄漏到教师隐向量。
+    # 倒地约束 / 倒地教师的 critic 特权观测（见 observations.py）。必须在 CTS 教师观测组从 critic 派生之后加，
+    # 教师编码器不能看到 M 与教师状态；旧 Exp-CTS（教师直接读整个 critic 组）不加，避免泄漏到教师隐向量。
     if not (cts and cts_teacher_height_scan):
+        fall_terms: dict[str, ObservationTermCfg] = {}
+        if fall_lagrange:
+            fall_terms["fall_constraint_active"] = ObservationTermCfg(
+                func=rough_observations.fall_constraint_active_obs
+            )
+            fall_terms["fall_lagrange_scale"] = ObservationTermCfg(
+                func=rough_observations.fall_lagrange_scale_obs
+            )
+        if fall_teacher:
+            fall_terms["fall_teacher_active"] = ObservationTermCfg(
+                func=rough_observations.fall_teacher_active_obs
+            )
+            fall_terms["fall_teacher_alpha"] = ObservationTermCfg(
+                func=rough_observations.fall_teacher_alpha_obs
+            )
         critic = cfg.observations["critic"]
-        cfg.observations["critic"] = replace(
-            critic,
-            terms={
-                **critic.terms,
-                "fall_constraint_active": ObservationTermCfg(
-                    func=rough_observations.fall_constraint_active_obs
-                ),
-                "fall_lagrange_scale": ObservationTermCfg(
-                    func=rough_observations.fall_lagrange_scale_obs
-                ),
-            },
-        )
+        cfg.observations["critic"] = replace(critic, terms={**critic.terms, **fall_terms})
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -836,10 +861,11 @@ def env_cfg(
             )
 
     # M 内奖励归一化必须是最后一个奖励项（rewards.fall_lagrange_normalize 首次调用时核对）。
-    cfg.rewards = dict(cfg.rewards)
-    cfg.rewards["fall_lagrange_normalize"] = RewardTermCfg(
-        func=rewards.fall_lagrange_normalize, weight=1.0
-    )
+    if fall_lagrange:
+        cfg.rewards = dict(cfg.rewards)
+        cfg.rewards["fall_lagrange_normalize"] = RewardTermCfg(
+            func=rewards.fall_lagrange_normalize, weight=1.0
+        )
     return cfg
 
 
@@ -1097,6 +1123,8 @@ __all__ = [
     "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
     "ROUGH_FALL_STATE_CACHE",
+    "ROUGH_FALL_TEACHER_IMITATION_SIGMA",
+    "ROUGH_FALL_TEACHER_IMITATION_WEIGHT",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",

@@ -75,6 +75,12 @@ def validate_iteration_schedules(env_cfg: object, num_steps_per_env: int) -> Non
             )
             if steps != int(num_steps_per_env):
                 mismatches.append(f"{group}.{name}: steps_per_policy_iter={steps}")
+    # 动作项上的训练期教师（如 tasks.rough.fall_teacher）同样按轮次退火。
+    for name, term in (getattr(env_cfg, "actions", None) or {}).items():
+        teacher = getattr(term, "teacher", None)
+        steps = getattr(teacher, "steps_per_policy_iter", None)
+        if steps is not None and int(steps) != int(num_steps_per_env):
+            mismatches.append(f"actions.{name}.teacher: steps_per_policy_iter={steps}")
     if mismatches:
         raise ValueError(
             f"按轮次推进的课程/事件/奖励项与 runner num_steps_per_env={num_steps_per_env} 不一致："

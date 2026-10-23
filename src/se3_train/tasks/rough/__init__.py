@@ -66,6 +66,12 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-StudentPPO"
 )
+# 2026-10-23 用户定：Student128 + 倒地起身脚本教师（6 月 recovery_teacher 路线移植，见 fall_teacher.py），
+# 倒置与侧躺都接、固定正向 2.0 rad/s、夹角限速折叠；不带拉格朗日倒地约束与倒地动作平滑罚，其余与 Student128 逐项相同。
+# 临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacher"
+)
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
@@ -203,6 +209,28 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    fall_teacher_kwargs = dict(stair_vx08_kwargs, fall_lagrange=False, fall_teacher=True)
+    fall_teacher_env_cfg = env_cfg(**fall_teacher_kwargs)
+    fall_teacher_actor = fall_teacher_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID,
+        env_cfg=fall_teacher_env_cfg,
+        play_env_cfg=env_cfg(play=True, **fall_teacher_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(fall_teacher_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in fall_teacher_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     low_gains_kwargs = dict(stair_vx08_kwargs, leg_kp=30.0, leg_kd=2.0, wheel_kd=0.1)
     low_gains_env_cfg = env_cfg(**low_gains_kwargs)
     low_gains_actor = low_gains_env_cfg.observations["actor"]
@@ -228,6 +256,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
