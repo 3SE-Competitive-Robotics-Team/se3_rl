@@ -339,3 +339,9 @@ bash C:/Users/13567/.local/bin/start-whtws-training.sh \
 
 - 代码 `b0b7c8de`（xyh/1020，未推送）：新增 `SE3-WheelLegged-Rough-Exp-StairVx08-FallTeacherBC-PowerLimit-MLP`——actor 换普通 MLP 128/64/32、单帧 30 维输入（env 去掉 vx_observer / cts），critic、奖励、终止、倒地教师与模仿损失与 PowerLimit（k4re9m75）逐项相同（配置差异核对 `.scratch/fall_teacher_probe_20261023/check_powerlimit_mlp_cfg.py`）。
 - 开跑前实时查：GPU 0–5 是 k4re9m75，GPU 6 空。bundle `051f1f49..xyh/1020` → `refs/heads/exp/rough-powerlimitmlp-b0b7c8d`；工作副本 `/workspace/se3-worktrees/rough-powerlimitmlp-b0b7c8d`。GPU 6 单卡 × 8192 smoke 5 轮通过（无 Traceback、无 nefc 溢出，3.04–3.06 s/轮，PowerLimit 同条件 3.2 s/轮；ONNX 导出正常），日志 `/workspace/.se3-training-state/whtws/smoke-powerlimitmlp-b0b7c8d/`。开训时启动器 `-c b0b7c8d`、`-R` 指这个 worktree。
+
+## 2026-10-23 PowerLimit600-MLP 开训
+
+- k4re9m75 已跑满 5000 轮（All workers completed successfully），七卡空。
+- 代码 `7d64ddd1`（xyh/1020，未推送）：env_cfg 增加 `fall_power_limit_w`，新入口 `SE3-WheelLegged-Rough-Exp-StairVx08-FallTeacherBC-PowerLimit600-MLP`（限值 600 W，其余与 PowerLimit-MLP 逐项相同，配置核对只差限值）。bundle `b0b7c8de..xyh/1020` → `refs/heads/exp/rough-powerlimit600mlp-7d64ddd`；工作副本 `/workspace/se3-worktrees/rough-powerlimit600mlp-7d64ddd`。
+- 20:57 UTC+8 按用户指令开训：GPU 0–6 × 1170（每卡 8192/7，合计 8190）、seed 42、5000 轮、save 100，`-c 7d64ddd`。W&B [cpzyma4c](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/cpzyma4c)；PID/PGID `2295857`；state `/workspace/.se3-training-state/whtws/20261023T125750Z`；run `logs/rsl_rl/SE3-WheelLegged-Rough-Exp-StairVx08-FallTeacherBC-PowerLimit600-MLP/2026-10-23_20-57-57_rough-mlp-fallteacherbc-powerlimit600w3-fall3col-nolagrange-scratch-bench-seed42-7x1170-5k`。第 29 轮无 Traceback、无 nefc 溢出。对照 nulltask1 的 d37wocyd（400 W，6×1365）。
