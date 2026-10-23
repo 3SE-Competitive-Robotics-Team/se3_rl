@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, fields, replace
 
 from mjlab.rl import RslRlModelCfg
 
-from se3_train.rl_cfg import RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
+from se3_train.rl_cfg import ImitationLossCfg, RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
 from se3_train.tasks.flat.rl_cfg import FLAT_NUM_STEPS_PER_ENV, mlp_rl_cfg
 from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 
@@ -53,6 +53,11 @@ ROUGH_CTS_STUDENT_HIDDEN_DIMS = (256, 128)
 ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU = (128, 128)
 # 2026-10-19 用户定：Student128 入口删掉「换编码器续训」用的 200 轮学生预热默认值，改为与 LowGains 一样从零训；
 # 预热机制本身仍在 cts_rl_cfg(estimator_warmup_iterations=...) / se3_train.ppo，续训时按需显式传。
+# 倒地教师的 PPO 模仿损失（2026-10-23 用户定，见 se3_train.ppo）：系数沿用 6 月教师-学生实验的 teacher_coef 0.2，
+# 有效权重再乘 α（随教师一起退火到 0）；损失用 Huber（δ = 1 个动作单位）而不是 6 月的 MSE——kf3o74t7 前 200 轮
+# 策略与教师平均差约 5 个动作单位，MSE 会让模仿项压过 PPO 损失。
+ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF = 0.2
+ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA = 1.0
 
 
 @dataclass
@@ -102,12 +107,14 @@ def cts_rl_cfg(
     student_hidden_dims: tuple[int, ...] = ROUGH_CTS_STUDENT_HIDDEN_DIMS,
     estimator_warmup_iterations: int = 0,
     student_latent_grad: str = "mse",
+    imitation_loss: ImitationLossCfg | None = None,
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
     """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。
 
     student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）；
-    student_latent_grad：学生隐向量的训练信号，"mse" 回归教师隐向量（默认）、"ppo" 由 PPO 端到端训练（见 se3_train.cts_observer）。
+    student_latent_grad：学生隐向量的训练信号，"mse" 回归教师隐向量（默认）、"ppo" 由 PPO 端到端训练（见 se3_train.cts_observer）；
+    imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加。
     """
     cfg = rl_cfg(smoke=smoke)
     actor_fields = {
@@ -130,6 +137,7 @@ def cts_rl_cfg(
         estimator_learning_rate=ROUGH_VX_ESTIMATOR_LEARNING_RATE,
         estimator_target_group=target_group,
         estimator_warmup_iterations=int(estimator_warmup_iterations),
+        imitation_loss=imitation_loss,
     )
     return cfg
 
@@ -151,6 +159,8 @@ __all__ = [
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS",
     "ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU",
     "ROUGH_CTS_TEACHER_HIDDEN_DIMS",
+    "ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF",
+    "ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",
     "CTSModelCfg",

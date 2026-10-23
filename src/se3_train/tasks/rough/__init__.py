@@ -1,20 +1,25 @@
 """崎岖地形行走任务（MLP / GRU）、台阶定向评测入口，以及 CTS → Student128 部署链入口。"""
 
+import math
+
 from mjlab.tasks.registry import register_mjlab_task
 
 from se3_train.onnx_metadata import observation_term_width
-from se3_train.rl_cfg import bind_task_name
+from se3_train.rl_cfg import ImitationLossCfg, bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import (
     ROUGH_CTS_ROLE_GROUP,
     ROUGH_CTS_TEACHER_GROUP,
+    ROUGH_FALL_TEACHER_TARGET_GROUP,
     ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
     ROUGH_VX_OBSERVER_TARGET_GROUP,
     env_cfg,
 )
 from .rl_cfg import (
     ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+    ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF,
+    ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA,
     cts_rl_cfg,
     gru_rl_cfg,
     rl_cfg,
@@ -72,12 +77,33 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacher"
 )
+# 2026-10-23 用户定：FallTeacher + PPO 总损失里直接加模仿项（se3_train.ppo 的 imitation_loss，系数 0.2·α、Huber），
+# 其余与 FallTeacher 逐项相同。FallTeacher（kf3o74t7）只有模仿奖励，前 200 轮策略与教师的动作差不降。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC"
+)
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
 # 入口删除；复现旧包络用 4832d15。
 # 2026-10-19：诊断对照入口 DR1-Oracle / -OracleVel、Vel、Vx、VxObserver（及 -H5 / -Z3 / -YawRB05 / -WheelTN-Budget）、
 # CTS-NoScan-StairVx08-JumpExitPen 已有结论，入口与专用开关删除；复现用 846c4fcd。
+
+
+def _fall_teacher_imitation_loss(cfg) -> ImitationLossCfg:
+    """倒地教师模仿损失：整圈周期按本入口动作项的腿部缩放算（2π / scale），joint 语义下后杆同步平移。"""
+    action = cfg.actions["delayed_action"]
+    scales = tuple(float(s) for s in action.leg_scales)
+    if scales[0] != scales[2] or scales[1] != scales[3]:
+        raise ValueError(f"模仿损失按左右同周期对齐，腿部缩放须左右相同，实际 {scales}")
+    return ImitationLossCfg(
+        group=ROUGH_FALL_TEACHER_TARGET_GROUP,
+        coef=ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF,
+        huber_delta=ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA,
+        front_period=2.0 * math.pi / scales[0],
+        back_period=2.0 * math.pi / scales[1],
+        shift_back=action.leg_action_semantics == "joint",
+    )
 
 
 def register() -> None:
@@ -231,6 +257,28 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    fall_teacher_bc_env_cfg = env_cfg(**fall_teacher_kwargs)
+    fall_teacher_bc_actor = fall_teacher_bc_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID,
+        env_cfg=fall_teacher_bc_env_cfg,
+        play_env_cfg=env_cfg(play=True, **fall_teacher_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(fall_teacher_bc_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in fall_teacher_bc_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(fall_teacher_bc_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     low_gains_kwargs = dict(stair_vx08_kwargs, leg_kp=30.0, leg_kd=2.0, wheel_kd=0.1)
     low_gains_env_cfg = env_cfg(**low_gains_kwargs)
     low_gains_actor = low_gains_env_cfg.observations["actor"]
@@ -256,6 +304,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID",

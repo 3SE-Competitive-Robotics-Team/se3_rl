@@ -30,18 +30,34 @@ def fall_lagrange_scale_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def fall_teacher_active_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """[N, 1]：本步倒地教师是否接管本 env；没有教师时为 0。"""
+    """[N, 1]：下一步倒地教师是否接管本 env（观测时刻已准备好）；没有教师时为 0。"""
     teacher = fall_teacher_of(env)
     if teacher is None:
         return torch.zeros(env.num_envs, 1, device=env.device)
+    teacher.prepare()
     return teacher.active.float().unsqueeze(1)
 
 
 def fall_teacher_alpha_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """[N, 1]：当前教师混合系数 α（所有 env 同值）；没有教师时为 0。"""
     teacher = fall_teacher_of(env)
+    if teacher is not None:
+        teacher.prepare()
     alpha = 0.0 if teacher is None else float(teacher.alpha_value)
     return torch.full((env.num_envs, 1), alpha, device=env.device)
+
+
+def fall_teacher_target_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """[N, 8]：PPO 模仿损失的监督目标 [接管标记, α, 教师动作 6 维（未按策略对齐的原始表示）]，与本步观测同一时刻。
+
+    只进单独的观测组（env_cfg.ROUGH_FALL_TEACHER_TARGET_GROUP），不进 actor / critic / CTS 教师编码器；没有教师时全 0。
+    """
+    teacher = fall_teacher_of(env)
+    if teacher is None:
+        return torch.zeros(env.num_envs, 8, device=env.device)
+    teacher.prepare()
+    alpha = torch.full((env.num_envs, 1), float(teacher.alpha_value), device=env.device)
+    return torch.cat((teacher.active.float().unsqueeze(1), alpha, teacher.teacher_raw), dim=1)
 
 
 __all__ = [
@@ -49,4 +65,5 @@ __all__ = [
     "fall_lagrange_scale_obs",
     "fall_teacher_active_obs",
     "fall_teacher_alpha_obs",
+    "fall_teacher_target_obs",
 ]

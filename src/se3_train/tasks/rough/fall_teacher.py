@@ -16,7 +16,9 @@
 混合在动作项里做（mdp.actions.SerialLegDelayedAction，夹紧之后、CTBC 与延迟之前）：执行动作 = π + α·active·(T − π)，
 T 先按前杆周期整圈平移到与 π 同一圈的表示（joint 语义下同侧后杆一起平移，夹角不变），否则插值会插到半圈外。
 PPO 存的仍是策略自己的采样动作，教师算环境的一部分；α 按 PPO 轮次 0.85 保持到 hold_iters、线性降到 mid_iter 的 alpha_mid、
-再线性降到 end_iter 的 0（6 月实际训练用的调度）。配套 rewards.fall_teacher_imitation；critic 另有教师接管标记与 α 两维。
+再线性降到 end_iter 的 0（6 月实际训练用的调度）。配套 fall_teacher_imitation 模仿奖励；critic 另有教师接管标记与 α 两维。
+状态机在观测时刻推进（prepare），观测组 fall_teacher_target 存下本步的接管标记、α 与教师动作，供 PPO 总损失里的模仿项
+（se3_train.ppo 的 imitation_loss，2026-10-23 用户定）直接监督策略均值。
 
 参数由开环探针定（.scratch/fall_teacher_probe_20261023/teacher_probe.py，α=1、10 s）：固定正向 2.0 rad/s、夹角 3 rad/s 限速折叠，
 倒置 0.73 / 侧躺 0.75 翻正，四项峰值（腿速、机身角速度、轮速、腿正功率）都在旧拉格朗日限值内；夹角一步折叠腿速 p90 19–20 rad/s，
@@ -155,31 +157,52 @@ class FallTeacher:
         self.tuck_target = torch.zeros(n, 2, device=device)
         self.used = torch.zeros(n, dtype=torch.bool, device=device)
         self.active = torch.zeros(n, dtype=torch.bool, device=device)
+        self.teacher_raw = torch.zeros(n, term.action_dim, device=device)
         self.teacher_action = torch.zeros(n, term.action_dim, device=device)
         self.alpha_value = 0.0
+        self._fresh = False
 
     def current_iteration(self) -> int:
         if self.cfg.fixed_iteration is not None:
             return max(0, int(self.cfg.fixed_iteration))
-        return int(self._env.common_step_counter) // int(self.cfg.steps_per_policy_iter)
+        step = int(getattr(self._env, "common_step_counter", 0))
+        return step // int(self.cfg.steps_per_policy_iter)
 
     def reset(self, env_ids: torch.Tensor) -> None:
-        """episode reset：清段落与锁存（index_fill_ 不从主机拷标量，避免 GPU 同步）。"""
+        """episode reset：清段落与锁存（index_fill_ 不从主机拷标量，避免 GPU 同步），下次观测重新准备。"""
         for buffer in (self.seg, self.seg_t, self.active_t, self.sweep):
             buffer.index_fill_(0, env_ids, 0)
         for buffer in (self.used, self.active):
             buffer.index_fill_(0, env_ids, False)
+        self.teacher_raw.index_fill_(0, env_ids, 0.0)
         self.teacher_action.index_fill_(0, env_ids, 0.0)
+        self._fresh = False
+
+    def prepare(self) -> None:
+        """在观测时刻（上一步物理与 reset 之后、策略出动作之前）推进状态机并算出下一步的教师动作；每步只做一次。
+
+        放在观测时刻而不是动作项里，是为了让存进 rollout 的模仿目标（observations.fall_teacher_target_obs）与
+        策略这一步看到的观测严格同一时刻；两处读到的机器人状态相同，状态机轨迹与在动作项里推进一致。
+        """
+        if self._fresh:
+            return
+        self.alpha_value = fall_teacher_alpha(self.current_iteration(), self.cfg)
+        if self.alpha_value <= 0.0:
+            self.active.fill_(False)
+            self.teacher_raw.zero_()
+        else:
+            self._step_state()
+            self.teacher_raw.copy_(self._teacher_action())
+        self._fresh = True
 
     def transform(self, policy_actions: torch.Tensor) -> torch.Tensor:
         """返回执行动作 π + α·active·(T − π)；α = 0 后直接返回策略动作、不再推进状态机。"""
-        alpha = fall_teacher_alpha(self.current_iteration(), self.cfg)
-        self.alpha_value = alpha
+        self.prepare()
+        self._fresh = False
+        alpha = self.alpha_value
         if alpha <= 0.0:
-            self.active.fill_(False)
             return policy_actions
-        self._step_state()
-        teacher = self._align(self._teacher_action(), policy_actions)
+        teacher = self._align(self.teacher_raw, policy_actions)
         self.teacher_action.copy_(teacher)
         weight = (self.active.float() * alpha).unsqueeze(1)
         executed = policy_actions + weight * (teacher - policy_actions)

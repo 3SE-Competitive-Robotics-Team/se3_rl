@@ -240,6 +240,9 @@ ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
 # 教师动作按 α 混进执行动作 + 模仿奖励；用户定此路线不带拉格朗日约束（fall_lagrange=False）。模仿奖励沿用 6 月的权重与 σ。
 ROUGH_FALL_TEACHER_IMITATION_WEIGHT = 1.5
 ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
+# PPO 模仿损失的监督目标观测组（observations.fall_teacher_target_obs，[接管, α, 教师动作 6 维]），只给算法读，
+# 不进 actor / critic / CTS 教师编码器；fall_teacher=True 时 train / play 都建（play 全 0），见 rl_cfg 的模仿损失。
+ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -819,6 +822,12 @@ def env_cfg(
             )
         critic = cfg.observations["critic"]
         cfg.observations["critic"] = replace(critic, terms={**critic.terms, **fall_terms})
+    if fall_teacher:
+        cfg.observations[ROUGH_FALL_TEACHER_TARGET_GROUP] = ObservationGroupCfg(
+            terms={"target": ObservationTermCfg(func=rough_observations.fall_teacher_target_obs)},
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
 
     if not play:
         cfg.curriculum = dict(cfg.curriculum)
@@ -1125,6 +1134,7 @@ __all__ = [
     "ROUGH_FALL_STATE_CACHE",
     "ROUGH_FALL_TEACHER_IMITATION_SIGMA",
     "ROUGH_FALL_TEACHER_IMITATION_WEIGHT",
+    "ROUGH_FALL_TEACHER_TARGET_GROUP",
     "ROUGH_FLAT_VZ_WEIGHT",
     "ROUGH_FLAT_WARMUP_ITERATIONS",
     "ROUGH_FLAT_WARMUP_RAMP_ITERATIONS",

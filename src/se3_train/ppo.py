@@ -37,6 +37,13 @@ PPO 梯度经它进入学生编码器、由 PPO optimizer 更新（与上面带�
 PPO 优化器能原样加载：估计器参数虽在 actor 里，但从未收到 PPO 梯度，Adam 里没有它们的状态，参数个数也不变。
 `estimator_warmup_iterations` > 0 时本进程前若干轮跳过 PPO 更新、只训练估计器（日志 Loss/estimator_warmup = 1），
 避免随机初始化的学生编码器给 25% 学生 env 的垃圾隐向量把共享 policy 带偏。
+
+模仿损失（2026-10-23 用户定，倒地脚本教师 tasks.rough.fall_teacher 配套）：`imitation_loss` 非 None 时 PPO 总损失加
+coef·mean_接管样本(α·Huber(μ − T))，μ 是本 mini-batch 重算的策略均值，T 与 α、接管标记取自观测组 `group`（与该样本观测同一时刻）。
+只靠模仿奖励时（kf3o74t7）前 200 轮策略与教师的动作差不降反升：exp(−mse/σ) 在差距大时几乎为 0，没有梯度。
+T 先按前杆整圈平移到 μ 那一圈（前杆 PD 走最短角，差整圈的动作物理上相同），joint 语义下同侧后杆同步平移。
+rsl_rl 5.4 的 PPO.update 只在 symmetry 钩子处允许往总损失里加项（与 PPO 损失同一次反传，走同样的多卡梯度平均与梯度裁剪），
+这里借这个钩子挂模仿项、不做对称增广；同时配真正的 symmetry_cfg 会报错。日志 Loss/imitation（原 symmetry 键改名）。
 """
 
 from __future__ import annotations
@@ -76,8 +83,62 @@ class ActorCriticAdam(torch.optim.Adam):
         return super().step(closure)
 
 
+class _ImitationLoss:
+    """挂在 rsl_rl PPO 的 symmetry 钩子上的模仿项（见模块 docstring）；augment_batch 不做任何增广。"""
+
+    use_mirror_loss = True
+    mirror_loss_coeff = 1.0
+
+    def __init__(
+        self,
+        *,
+        group: str,
+        coef: float,
+        huber_delta: float,
+        front_period: float,
+        back_period: float,
+        shift_back: bool,
+    ) -> None:
+        if coef < 0.0 or huber_delta <= 0.0 or front_period <= 0.0:
+            raise ValueError(
+                f"模仿损失参数非法：coef={coef}, huber_delta={huber_delta}, front_period={front_period}"
+            )
+        if shift_back and back_period <= 0.0:
+            raise ValueError(f"shift_back=True 需要正的 back_period，实际 {back_period}")
+        self.group = group
+        self.coef = float(coef)
+        self.huber_delta = float(huber_delta)
+        self.front_period = float(front_period)
+        self.back_period = float(back_period)
+        self.shift_back = bool(shift_back)
+
+    def augment_batch(self, batch: Any, original_batch_size: int) -> None:
+        del batch, original_batch_size
+
+    def align(self, target: torch.Tensor, mean: torch.Tensor) -> torch.Tensor:
+        """把教师动作按前杆整圈平移到策略均值那一圈（turns 不回传梯度）。"""
+        turns = torch.round((target[:, [0, 2]] - mean.detach()[:, [0, 2]]) / self.front_period)
+        aligned = target.clone()
+        aligned[:, [0, 2]] = target[:, [0, 2]] - turns * self.front_period
+        if self.shift_back:
+            aligned[:, [1, 3]] = target[:, [1, 3]] - turns * self.back_period
+        return aligned
+
+    def compute_loss(self, actor: Any, batch: Any, original_batch_size: int) -> torch.Tensor:
+        mean = actor.output_mean[:original_batch_size]
+        target = batch.observations[self.group][:original_batch_size]
+        active = (target[:, 0] > 0.5).float()
+        alpha = target[:, 1]
+        teacher = self.align(target[:, 2:], mean)
+        per_sample = torch.nn.functional.huber_loss(
+            mean, teacher, reduction="none", delta=self.huber_delta
+        ).mean(dim=1)
+        weighted = (per_sample * alpha * active).sum() / active.sum().clamp(min=1.0)
+        return self.coef * weighted
+
+
 class Se3PPO(PPO):
-    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、可选的显式 vx 估计器监督。"""
+    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、显式 vx 估计器监督与模仿损失。"""
 
     def __init__(
         self,
@@ -86,9 +147,14 @@ class Se3PPO(PPO):
         estimator_learning_rate: float | None = None,
         estimator_target_group: str | None = None,
         estimator_warmup_iterations: int = 0,
+        imitation_loss: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if imitation_loss is not None:
+            if self.symmetry is not None:
+                raise ValueError("模仿损失借用 symmetry 钩子，不能与 symmetry_cfg 同时使用")
+            self.symmetry = _ImitationLoss(**imitation_loss)
         self.estimator_warmup_remaining = int(estimator_warmup_iterations)
         self._noise_sq_small: list[float] = []
         self._noise_sq_big: list[float] = []
@@ -149,6 +215,8 @@ class Se3PPO(PPO):
         self._noise_sq_small.clear()
         self._noise_sq_big.clear()
         loss_dict = super().update()
+        if isinstance(self.symmetry, _ImitationLoss) and "symmetry" in loss_dict:
+            loss_dict["imitation"] = loss_dict.pop("symmetry")
         if self.is_multi_gpu and self._noise_sq_small:
             b_big = b_small * self.gpu_world_size
             sq_small = sum(self._noise_sq_small) / len(self._noise_sq_small)
