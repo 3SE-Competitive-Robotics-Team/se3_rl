@@ -510,6 +510,7 @@ def env_cfg(
     fall_teacher: bool = False,
     fall_power_limit: bool = False,
     fall_power_limit_w: float = ROUGH_FALL_POWER_LIMIT_W,
+    fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -537,6 +538,8 @@ def env_cfg(
     fall_power_limit：倒地功率终止（M 内腿正功率连续 3 步超过 400 W 即终止，单独罚 300，见 ROUGH_FALL_POWER_LIMIT_PENALTY），
         默认关；play 没有倒地出生，接了也不会触发。
     fall_power_limit_w：倒地功率终止的腿正功率限值（W），默认 ROUGH_FALL_POWER_LIMIT_W；对照实验开关。
+    fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
+        (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -717,9 +720,21 @@ def env_cfg(
     # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
     if fall_teacher:
         if not play:
-            delayed_action.teacher = FallTeacherCfg(
-                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER
+            schedule = (
+                {}
+                if fall_teacher_alpha_iters is None
+                else dict(
+                    zip(
+                        ("hold_iters", "mid_iter", "end_iter"),
+                        (int(i) for i in fall_teacher_alpha_iters),
+                        strict=True,
+                    )
+                )
             )
+            delayed_action.teacher = FallTeacherCfg(
+                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
+            )
+            delayed_action.teacher.validate()
         cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(
             func=fall_teacher_imitation,
             weight=ROUGH_FALL_TEACHER_IMITATION_WEIGHT,

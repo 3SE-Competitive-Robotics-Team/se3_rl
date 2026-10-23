@@ -94,6 +94,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-PowerLimit600"
 )
+# 2026-10-23 用户定：PowerLimit600 单变量对照——倒地教师 α 退火提前、缩短：600–1300–1900 轮 → 400–600–800 轮
+# （α 值 0.85 / 0.45 / 0 不变），其余与 PowerLimit600 逐项相同。看教师更早退场时策略能否学会起身。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-PowerLimit600-Alpha800"
+)
 # 2026-10-23 用户定：PowerLimit 去掉 CTS 编码器，换普通 MLP actor（单帧 30 维输入、128/64/32，rl_cfg），
 # env 去掉 vx_observer / cts 开关（actor 不再开 16 帧历史，也没有 vx 监督目标与 CTS 分组观测组），
 # critic、奖励、终止、倒地教师与模仿损失与 PowerLimit（k4re9m75）逐项相同。CTS 每轮更慢，先用纯 actor 验证起身路线。
@@ -349,6 +354,29 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    alpha800_kwargs = dict(power_limit600_kwargs, fall_teacher_alpha_iters=(400, 600, 800))
+    alpha800_env_cfg = env_cfg(**alpha800_kwargs)
+    alpha800_actor = alpha800_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID,
+        env_cfg=alpha800_env_cfg,
+        play_env_cfg=env_cfg(play=True, **alpha800_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(alpha800_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in alpha800_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(alpha800_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     power_limit_mlp_kwargs = dict(
         stair_lin_vel_x_min=ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
         fall_lagrange=False,
@@ -403,6 +431,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID",
