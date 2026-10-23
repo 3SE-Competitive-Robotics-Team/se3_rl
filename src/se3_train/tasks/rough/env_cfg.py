@@ -509,6 +509,7 @@ def env_cfg(
     fall_lagrange: bool = True,
     fall_teacher: bool = False,
     fall_power_limit: bool = False,
+    fall_power_limit_w: float = ROUGH_FALL_POWER_LIMIT_W,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -535,6 +536,7 @@ def env_cfg(
     fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
     fall_power_limit：倒地功率终止（M 内腿正功率连续 3 步超过 400 W 即终止，单独罚 300，见 ROUGH_FALL_POWER_LIMIT_PENALTY），
         默认关；play 没有倒地出生，接了也不会触发。
+    fall_power_limit_w：倒地功率终止的腿正功率限值（W），默认 ROUGH_FALL_POWER_LIMIT_W；对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -787,7 +789,7 @@ def env_cfg(
     _apply_jump_mimic(cfg)
     # 倒地功率终止要在 RJ1 把 fall_penalty 换成 is_terminated_except 之后接（见 _apply_fall_power_limit）。
     if fall_power_limit:
-        _apply_fall_power_limit(cfg)
+        _apply_fall_power_limit(cfg, limit_w=fall_power_limit_w)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
     if not cts_teacher_height_scan and not cts:
@@ -973,8 +975,10 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_fall_power_limit(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_fall_power_limit(cfg: ManagerBasedRlEnvCfg, *, limit_w: float) -> None:
     """倒地功率终止（见 ROUGH_FALL_POWER_LIMIT_PENALTY 注释）：终止项 + 单独的一次性罚分，并从 fall_penalty 里排除。"""
+    if limit_w <= 0.0:
+        raise ValueError(f"倒地功率限值必须为正数，实际为 {limit_w}")
     fall = cfg.rewards["fall_penalty"]
     if fall.func is not rewards.is_terminated_except:
         raise ValueError(
@@ -984,7 +988,7 @@ def _apply_fall_power_limit(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.terminations["fall_power_limit"] = TerminationTermCfg(
         func=terminations.fall_power_limit,
         time_out=False,
-        params={"limit_w": ROUGH_FALL_POWER_LIMIT_W, "steps": ROUGH_FALL_POWER_LIMIT_STEPS},
+        params={"limit_w": float(limit_w), "steps": ROUGH_FALL_POWER_LIMIT_STEPS},
     )
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.rewards = dict(cfg.rewards)

@@ -95,6 +95,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT_TASK_ID = (
 EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT_MLP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-StairVx08-FallTeacherBC-PowerLimit-MLP"
 )
+# 2026-10-23 用户定：PowerLimit-MLP 单变量对照——倒地功率终止限值 400 → 600 W，其余逐项相同。
+# k4re9m75（400 W）约 3200 轮起倒置起身率掉到 ≈0，疑似 400 W 内找不到翻身动作而躺平。临时入口，结论后删除。
+EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT600_MLP_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-StairVx08-FallTeacherBC-PowerLimit600-MLP"
+)
 # 2026-10-06：Exp-VxObserver-SpringFF（估计器输出左右弹簧力并替代固定 300 N 做前馈，pcz5opfg）用户判断没用，入口与代码删除；
 # 静站时左右反对称方向估计器只照抄上一拍、会漂（.scratch/yaw_diag/spring_probe.py）。复现用 6c4bd2a。
 # 2026-10-07：Exp-VxObserver-WheelTN（轮子 T-N 包络换手册额定点口径，xdk0dnoa）并入默认（env_cfg.ROUGH_WHEEL_TORQUE_ENVELOPE），
@@ -332,6 +337,18 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    power_limit600_mlp_kwargs = dict(power_limit_mlp_kwargs, fall_power_limit_w=600.0)
+    power_limit600_mlp_env_cfg = env_cfg(**power_limit600_mlp_kwargs)
+    register_mjlab_task(
+        task_id=EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT600_MLP_TASK_ID,
+        env_cfg=power_limit600_mlp_env_cfg,
+        play_env_cfg=env_cfg(play=True, **power_limit600_mlp_kwargs),
+        rl_cfg=bind_task_name(
+            rl_cfg(imitation_loss=_fall_teacher_imitation_loss(power_limit600_mlp_env_cfg)),
+            EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT600_MLP_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     low_gains_kwargs = dict(stair_vx08_kwargs, leg_kp=30.0, leg_kd=2.0, wheel_kd=0.1)
     low_gains_env_cfg = env_cfg(**low_gains_kwargs)
     low_gains_actor = low_gains_env_cfg.observations["actor"]
@@ -366,6 +383,7 @@ __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",
     "EXP_CTS_NOSCAN_TASK_ID",
     "EXP_CTS_TASK_ID",
+    "EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT600_MLP_TASK_ID",
     "EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT_MLP_TASK_ID",
     "GRU_TASK_ID",
     "STAIR_EVAL_TASK_ID",
