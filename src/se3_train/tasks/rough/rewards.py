@@ -388,6 +388,11 @@ def is_terminated_except(env: ManagerBasedRlEnv, exclude_terms: tuple[str, ...])
     return done.float()
 
 
+def termination_term(env: ManagerBasedRlEnv, term_name: str) -> torch.Tensor:
+    """单个终止项本步是否触发（0 / 1）；权重取 −罚分 / step_dt 即每次触发恰好扣一次罚分（同 fall_penalty 按事件计）。"""
+    return env.termination_manager.get_term(term_name).float()
+
+
 def jump_env_only(
     env: ManagerBasedRlEnv, inner, params: dict, command_name: str = "velocity_height"
 ) -> torch.Tensor:
@@ -758,6 +763,7 @@ __all__ = [
     "jump_env_only",
     "off_column",
     "stair_heading_hold",
+    "termination_term",
     "tracking_lin_vel_narrow",
     "tracking_lin_vel_terrain_vz",
     "wheel_fore_aft_offset",

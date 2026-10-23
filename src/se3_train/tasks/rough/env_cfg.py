@@ -91,7 +91,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, rewards, stair_rewards
+from . import curriculums, events, rewards, stair_rewards, terminations
 from . import observations as rough_observations
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
@@ -243,6 +243,21 @@ ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
 # PPO 模仿损失的监督目标观测组（observations.fall_teacher_target_obs，[接管, α, 教师动作 6 维]），只给算法读，
 # 不进 actor / critic / CTS 教师编码器；fall_teacher=True 时 train / play 都建（play 全 0），见 rl_cfg 的模仿损失。
 ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
+# 倒地功率终止（2026-10-23 用户定，env_cfg(fall_power_limit=True)，见 terminations.fall_power_limit）：M（倒地出生、
+# 尚未起身）内腿正功率 Σ₄ max(0, τ·q̇) 连续 ROUGH_FALL_POWER_LIMIT_STEPS 步超过 ROUGH_FALL_POWER_LIMIT_W 即终止，
+# 单独一次性罚 ROUGH_FALL_POWER_LIMIT_PENALTY、不吃 fall_penalty。用途是倒地教师退场后挡住"越快越好"的猛甩：
+# kf3o74t7（FallTeacher）model_1200 不接教师时起身正功率峰值中位 0.9–1.2 kW，随 α 下降逐档变猛；拉格朗日 v2 三项 λ 同时顶满时
+# 每项单价被分母 1+Σλ 稀释到 ≤ K/3，两臂跑满 5000 轮超限仍是目标的 4–12 倍。
+# - 罚分必须远大于倒地状态的价值，否则终止是免费退出：fall_penalty 的 10 是按走路每秒最多 −0.5 定的，倒地期每秒约
+#   −110，躺满一局的折扣回报约 −220（γ=0.99），kf3o74t7 critic 对倒地出生估值中位 −60 ~ −190；只扣 10 会重演
+#   A10 的自杀策略与倒地 env 借腿角灾难终止退出（见 ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR）。取 300，使
+#   "温和起身 > 躺着 > 越界被杀"。
+# - 只在 M 内判：跳跃、上台阶本来就要大功率（拉格朗日 v1 按倾角全程计罚把走路压垮）。
+# - 限值沿用拉格朗日 leg_power 的 400 W（R1 开环参考峰值 166 W；倒地教师开环正功率 p90 约 150 W、峰值在 400 W 内），
+#   连续 3 步（60 ms）才判：滤掉单步尖峰，不把教师示范也杀掉。
+ROUGH_FALL_POWER_LIMIT_W = 400.0
+ROUGH_FALL_POWER_LIMIT_STEPS = 3
+ROUGH_FALL_POWER_LIMIT_PENALTY = 300.0
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -493,6 +508,7 @@ def env_cfg(
     fall_spawn_prob: float = ROUGH_FALL_SPAWN_PROB,
     fall_lagrange: bool = True,
     fall_teacher: bool = False,
+    fall_power_limit: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -517,6 +533,8 @@ def env_cfg(
     fall_spawn_prob：平地列 reset 时改从倒地状态库出生的概率，默认 ROUGH_FALL_SPAWN_PROB；play 固定为 0，0 关闭。
     fall_lagrange：倒地拉格朗日约束（四项罚、M 内归一化、critic 两维）与倒地动作平滑罚，默认开（见 ROUGH_FALL_LAGRANGE）。
     fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
+    fall_power_limit：倒地功率终止（M 内腿正功率连续 3 步超过 400 W 即终止，单独罚 300，见 ROUGH_FALL_POWER_LIMIT_PENALTY），
+        默认关；play 没有倒地出生，接了也不会触发。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -767,6 +785,9 @@ def env_cfg(
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
+    # 倒地功率终止要在 RJ1 把 fall_penalty 换成 is_terminated_except 之后接（见 _apply_fall_power_limit）。
+    if fall_power_limit:
+        _apply_fall_power_limit(cfg)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
     if not cts_teacher_height_scan and not cts:
@@ -952,6 +973,35 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
+def _apply_fall_power_limit(cfg: ManagerBasedRlEnvCfg) -> None:
+    """倒地功率终止（见 ROUGH_FALL_POWER_LIMIT_PENALTY 注释）：终止项 + 单独的一次性罚分，并从 fall_penalty 里排除。"""
+    fall = cfg.rewards["fall_penalty"]
+    if fall.func is not rewards.is_terminated_except:
+        raise ValueError(
+            "倒地功率终止要从 fall_penalty 里排除，fall_penalty 须是 rewards.is_terminated_except"
+        )
+    cfg.terminations = dict(cfg.terminations)
+    cfg.terminations["fall_power_limit"] = TerminationTermCfg(
+        func=terminations.fall_power_limit,
+        time_out=False,
+        params={"limit_w": ROUGH_FALL_POWER_LIMIT_W, "steps": ROUGH_FALL_POWER_LIMIT_STEPS},
+    )
+    step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
+    cfg.rewards = dict(cfg.rewards)
+    cfg.rewards["fall_power_limit_penalty"] = RewardTermCfg(
+        func=rewards.termination_term,
+        weight=-ROUGH_FALL_POWER_LIMIT_PENALTY / step_dt,
+        params={"term_name": "fall_power_limit"},
+    )
+    cfg.rewards["fall_penalty"] = replace(
+        fall,
+        params={
+            **fall.params,
+            "exclude_terms": (*fall.params["exclude_terms"], "fall_power_limit"),
+        },
+    )
+
+
 def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
     """DR1（见 ROUGH_DR_* 注释）：改 Flat 继承的 startup 事件参数，Kp/Kd 换成 torch 侧实现，放宽动作延迟。
 
@@ -1128,6 +1178,9 @@ __all__ = [
     "ROUGH_FALL_LAGRANGE",
     "ROUGH_FALL_LAGRANGE_LIMITS",
     "ROUGH_FALL_PENALTY",
+    "ROUGH_FALL_POWER_LIMIT_PENALTY",
+    "ROUGH_FALL_POWER_LIMIT_STEPS",
+    "ROUGH_FALL_POWER_LIMIT_W",
     "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
     "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
