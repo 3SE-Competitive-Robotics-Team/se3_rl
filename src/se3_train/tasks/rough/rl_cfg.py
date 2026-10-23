@@ -87,10 +87,16 @@ def _use_se3_ppo(cfg: RslRlOnPolicyRunnerCfg) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
-def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
-    """生成 MLP PPO 训练配置：PPO 超参数与 Flat 基线逐项相同，actor 隐藏层为 ROUGH_ACTOR_HIDDEN_DIMS。"""
+def rl_cfg(
+    smoke: bool = False, *, imitation_loss: ImitationLossCfg | None = None
+) -> RslRlOnPolicyRunnerCfg:
+    """生成 MLP PPO 训练配置：PPO 超参数与 Flat 基线逐项相同，actor 隐藏层为 ROUGH_ACTOR_HIDDEN_DIMS。
+
+    imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加。
+    """
     cfg = _use_se3_ppo(mlp_rl_cfg(smoke=smoke))
     cfg.actor = replace(cfg.actor, hidden_dims=ROUGH_ACTOR_HIDDEN_DIMS)
+    cfg.algorithm = replace(cfg.algorithm, imitation_loss=imitation_loss)
     cfg.bench_interval = ROUGH_BENCH_INTERVAL
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
