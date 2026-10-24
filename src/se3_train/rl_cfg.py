@@ -24,6 +24,8 @@ class ImitationLossCfg:
     front_period: float = 0.0
     back_period: float = 0.0
     shift_back: bool = True
+    # False 时不乘 α：教师退场（α = 0）后只要还在出目标，模仿项就一直以 coef 生效（2026-10-24 用户定，PersistBC）。
+    alpha_weighted: bool = True
 
 
 @dataclass

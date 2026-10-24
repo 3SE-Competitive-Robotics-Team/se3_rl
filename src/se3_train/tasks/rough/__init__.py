@@ -99,6 +99,10 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-PowerLimit600-Alpha800"
 )
+# 2026-10-24 用户定：PowerLimit600-Alpha800 + 教师退场后模仿损失一直保留（PersistBC）——模仿损失不乘 α（固定 0.2），
+# α = 0 后教师状态机继续推进出目标但不执行，教师目标改限幅开环（实测 ±0.3 rad），其余逐项相同。dqkkieq0 教师退场后
+# 动作模式完全变了（模仿项随 α 归零）。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_PERSIST_BC_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-PowerLimit600-Alpha800-PersistBC"
 # 2026-10-23 用户定：PowerLimit 去掉 CTS 编码器，换普通 MLP actor（单帧 30 维输入、128/64/32，rl_cfg），
 # env 去掉 vx_observer / cts 开关（actor 不再开 16 帧历史，也没有 vx 监督目标与 CTS 分组观测组），
 # critic、奖励、终止、倒地教师与模仿损失与 PowerLimit（k4re9m75）逐项相同。CTS 每轮更慢，先用纯 actor 验证起身路线。
@@ -119,7 +123,7 @@ EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT600_MLP_TASK_ID = (
 # CTS-NoScan-StairVx08-JumpExitPen 已有结论，入口与专用开关删除；复现用 846c4fcd。
 
 
-def _fall_teacher_imitation_loss(cfg) -> ImitationLossCfg:
+def _fall_teacher_imitation_loss(cfg, *, alpha_weighted: bool = True) -> ImitationLossCfg:
     """倒地教师模仿损失：整圈周期按本入口动作项的腿部缩放算（2π / scale），joint 语义下后杆同步平移。"""
     action = cfg.actions["delayed_action"]
     scales = tuple(float(s) for s in action.leg_scales)
@@ -132,6 +136,7 @@ def _fall_teacher_imitation_loss(cfg) -> ImitationLossCfg:
         front_period=2.0 * math.pi / scales[0],
         back_period=2.0 * math.pi / scales[1],
         shift_back=action.leg_action_semantics == "joint",
+        alpha_weighted=alpha_weighted,
     )
 
 
@@ -377,6 +382,35 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    persist_bc_kwargs = dict(
+        alpha800_kwargs,
+        fall_teacher_supervise_after_handoff=True,
+        fall_teacher_target_leash_rad=0.3,
+    )
+    persist_bc_env_cfg = env_cfg(**persist_bc_kwargs)
+    persist_bc_actor = persist_bc_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_PERSIST_BC_TASK_ID,
+        env_cfg=persist_bc_env_cfg,
+        play_env_cfg=env_cfg(play=True, **persist_bc_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(persist_bc_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in persist_bc_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(
+                    persist_bc_env_cfg, alpha_weighted=False
+                ),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_PERSIST_BC_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     power_limit_mlp_kwargs = dict(
         stair_lin_vel_x_min=ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
         fall_lagrange=False,
@@ -431,6 +465,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_PERSIST_BC_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT_TASK_ID",

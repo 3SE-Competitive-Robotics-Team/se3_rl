@@ -98,6 +98,7 @@ class _ImitationLoss:
         front_period: float,
         back_period: float,
         shift_back: bool,
+        alpha_weighted: bool = True,
     ) -> None:
         if coef < 0.0 or huber_delta <= 0.0 or front_period <= 0.0:
             raise ValueError(
@@ -111,6 +112,7 @@ class _ImitationLoss:
         self.front_period = float(front_period)
         self.back_period = float(back_period)
         self.shift_back = bool(shift_back)
+        self.alpha_weighted = bool(alpha_weighted)
 
     def augment_batch(self, batch: Any, original_batch_size: int) -> None:
         del batch, original_batch_size
@@ -128,7 +130,7 @@ class _ImitationLoss:
         mean = actor.output_mean[:original_batch_size]
         target = batch.observations[self.group][:original_batch_size]
         active = (target[:, 0] > 0.5).float()
-        alpha = target[:, 1]
+        alpha = target[:, 1] if self.alpha_weighted else torch.ones_like(target[:, 1])
         teacher = self.align(target[:, 2:], mean)
         per_sample = torch.nn.functional.huber_loss(
             mean, teacher, reduction="none", delta=self.huber_delta

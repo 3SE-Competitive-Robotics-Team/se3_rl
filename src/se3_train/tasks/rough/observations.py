@@ -30,12 +30,17 @@ def fall_lagrange_scale_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def fall_teacher_active_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """[N, 1]：下一步倒地教师是否接管本 env（观测时刻已准备好）；没有教师时为 0。"""
+    """[N, 1]：下一步倒地教师是否接管执行本 env（观测时刻已准备好）；没有教师或 α = 0 时为 0。
+
+    α = 0 后 supervise_after_handoff 的教师仍会接管出模仿目标但不参与执行，这一维按"真的在执行"记，不让 critic 把
+    只监督的段当成环境变化；α > 0 时与旧口径相同。
+    """
     teacher = fall_teacher_of(env)
     if teacher is None:
         return torch.zeros(env.num_envs, 1, device=env.device)
     teacher.prepare()
-    return teacher.active.float().unsqueeze(1)
+    executing = teacher.active & (float(teacher.alpha_value) > 0.0)
+    return executing.float().unsqueeze(1)
 
 
 def fall_teacher_alpha_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
