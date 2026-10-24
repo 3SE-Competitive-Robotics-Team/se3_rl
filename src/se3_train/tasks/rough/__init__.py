@@ -105,6 +105,9 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TAS
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover"
 )
+# 2026-10-24 用户定：Recover 单变量对照——速度课程 yaw 上限改由转向跟踪 EMA 驱动（yaw_gate），其余逐项相同。
+# gyi9exiz 的 yaw 上限前约 500 轮就跟着直线跟踪放到 ±12 rad/s，原地转向跟踪到 2500 轮后才上 0.3。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_YAW_GATE_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-YawGate"
 # 2026-10-24 用户定：PowerLimit600-Alpha800 + 教师退场后模仿损失一直保留（PersistBC）——模仿损失不乘 α（固定 0.2），
 # α = 0 后教师状态机继续推进出目标但不执行，教师目标改限幅开环（实测 ±0.3 rad），其余逐项相同。dqkkieq0 教师退场后
 # 动作模式完全变了（模仿项随 α 归零）。临时入口，结论后删除。
@@ -411,6 +414,29 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    yaw_gate_kwargs = dict(recover_kwargs, yaw_gate=True)
+    yaw_gate_env_cfg = env_cfg(**yaw_gate_kwargs)
+    yaw_gate_actor = yaw_gate_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_YAW_GATE_TASK_ID,
+        env_cfg=yaw_gate_env_cfg,
+        play_env_cfg=env_cfg(play=True, **yaw_gate_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(yaw_gate_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in yaw_gate_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(yaw_gate_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_YAW_GATE_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     persist_bc_kwargs = dict(
         alpha800_kwargs,
         fall_teacher_supervise_after_handoff=True,
@@ -495,6 +521,7 @@ def register() -> None:
 
 __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_YAW_GATE_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_PERSIST_BC_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_ALPHA800_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_POWER_LIMIT600_TASK_ID",

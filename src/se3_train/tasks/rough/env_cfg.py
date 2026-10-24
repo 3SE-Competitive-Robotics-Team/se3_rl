@@ -539,6 +539,7 @@ def env_cfg(
     fall_teacher_supervise_after_handoff: bool = False,
     fall_teacher_target_leash_rad: float | None = None,
     recover_group: bool = False,
+    yaw_gate: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -572,6 +573,9 @@ def env_cfg(
         限幅在实测 ±L 内（见 FallTeacherCfg 同名字段），默认关 / None。对照实验开关。
     recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认关；play 不分组、不倒地出生，奖励 / 终止 /
         critic 维数与训练相同（组掩码全 False）。
+    yaw_gate：速度课程的 yaw 上限改由转向跟踪（Locomotion/tracking_ang_vel_reward_all）的独立 EMA 驱动
+        （mdp.curriculums.commands_vel_adaptive 的 yaw_gate_enabled），默认关——此时 yaw 上限跟着直线跟踪放开，
+        前约 500 轮就到 ±12 rad/s，与转向能力无关。对照实验开关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -907,6 +911,8 @@ def env_cfg(
         if "command_vel" in cfg.curriculum:
             params = dict(cfg.curriculum["command_vel"].params or {})
             params["tracking_log_key"] = ROUGH_CURRICULUM_TRACKING_LOG_KEY
+            if yaw_gate:
+                params["yaw_gate_enabled"] = True
             cfg.curriculum["command_vel"] = replace(cfg.curriculum["command_vel"], params=params)
         # 顺序有意义：先结算升降级，再由热身换列（见 curriculums.flat_warmup）。
         cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
