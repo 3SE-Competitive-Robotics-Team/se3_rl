@@ -29,6 +29,24 @@ class ImitationLossCfg:
 
 
 @dataclass
+class PolicyDistillCfg:
+    """网络老师在线蒸馏（见 se3_train.ppo 的 policy_distill）：coef·Huber(μ − μ_老师)，只在 mask_group 样本上求均值。
+
+    teacher_checkpoint：与本 actor 同结构的 checkpoint（只取 actor_state_dict）；role_group：老师按部署路径前向时置 0 的
+    CTS 角色组（None 表示不是 CTS）；front_period / back_period / shift_back 同 ImitationLossCfg。
+    """
+
+    teacher_checkpoint: str = ""
+    mask_group: str = "amp_mask"
+    role_group: str | None = "cts_role"
+    coef: float = 0.2
+    huber_delta: float = 1.0
+    front_period: float = 0.0
+    back_period: float = 0.0
+    shift_back: bool = True
+
+
+@dataclass
 class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     """PPO 算法配置：可选固定 critic 学习率、可选显式 vx 估计器监督、可选模仿损失、可选 AMP（见 se3_train.ppo）。"""
 
@@ -37,6 +55,7 @@ class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     estimator_target_group: str | None = None
     estimator_warmup_iterations: int = 0
     imitation_loss: ImitationLossCfg | None = None
+    policy_distill: PolicyDistillCfg | None = None
     amp_cfg: dict | None = None
     """AMP 配置（se3_train.amp.AMP 的 cfg 键，dict 形式）；None 关闭。"""
     class_name: str = "se3_train.ppo:Se3PPO"

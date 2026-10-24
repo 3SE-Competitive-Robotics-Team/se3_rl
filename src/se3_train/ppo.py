@@ -45,6 +45,12 @@ T 先按前杆整圈平移到 μ 那一圈（前杆 PD 走最短角，差整圈�
 rsl_rl 5.4 的 PPO.update 只在 symmetry 钩子处允许往总损失里加项（与 PPO 损失同一次反传，走同样的多卡梯度平均与梯度裁剪），
 这里借这个钩子挂模仿项、不做对称增广；同时配真正的 symmetry_cfg 会报错。日志 Loss/imitation（原 symmetry 键改名）。
 
+网络老师在线蒸馏（2026-10-25 用户定，recover 组起身用）：`policy_distill` 非 None 时，从 checkpoint 载入一份与本 actor 同结构的
+冻结老师（actor_state_dict，eval、不进优化器、不进存档），PPO 总损失加 coef·mean_掩码样本 Huber(μ − μ_老师)：μ_老师 由老师在同一批
+观测上按部署路径（CTS 角色组置 0 → 学生编码器）前向得到，掩码取观测组 `mask_group`（recover 组）。状态来自学生自己的 rollout、
+标签来自老师（DAgger 式），老师与学生观测布局必须相同。同样挂在 symmetry 钩子上（与 imitation_loss 互斥），前杆整圈对齐同上，
+日志 Loss/imitation。
+
 AMP 风格奖励（2026-10-24 从 867c7299 之前恢复，recover 组起身风格用，见 se3_train.amp）：`amp_cfg` 非 None 时，
 process_env_step 在写 storage 之前把风格奖励加进 transition.rewards（在 time-out bootstrap 之前，与 fork 的钩子位置一致）；
 update 在 PPO 更新之前用本轮 rollout 更新判别器（PPO.update 末尾会清空 storage）。actor / critic 网络与观测组不变，
@@ -53,6 +59,7 @@ update 在 PPO 更新之前用本轮 rollout 更新判别器（PPO.update 末尾
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import torch
@@ -146,8 +153,54 @@ class _ImitationLoss:
         return self.coef * weighted
 
 
+class _PolicyDistillLoss(_ImitationLoss):
+    """网络老师在线蒸馏（见模块 docstring）：目标动作由冻结老师在同一批观测上前向给出，只在掩码组样本上求均值。"""
+
+    def __init__(
+        self,
+        *,
+        teacher: torch.nn.Module,
+        mask_group: str,
+        role_group: str | None,
+        coef: float,
+        huber_delta: float,
+        front_period: float,
+        back_period: float,
+        shift_back: bool,
+    ) -> None:
+        super().__init__(
+            group=mask_group,
+            coef=coef,
+            huber_delta=huber_delta,
+            front_period=front_period,
+            back_period=back_period,
+            shift_back=shift_back,
+        )
+        self.teacher = teacher
+        self.role_group = role_group
+
+    @torch.no_grad()
+    def teacher_mean(self, observations: Any) -> torch.Tensor:
+        """老师按部署路径的确定性动作（CTS 角色组置 0 走学生编码器）。"""
+        obs = observations
+        if self.role_group is not None and self.role_group in observations.keys():  # noqa: SIM118
+            obs = observations.clone(recurse=False)
+            obs[self.role_group] = torch.zeros_like(observations[self.role_group])
+        return self.teacher(obs)
+
+    def compute_loss(self, actor: Any, batch: Any, original_batch_size: int) -> torch.Tensor:
+        mean = actor.output_mean[:original_batch_size]
+        observations = batch.observations[:original_batch_size]
+        mask = (observations[self.group].reshape(-1) > 0.5).float()
+        teacher = self.align(self.teacher_mean(observations), mean)
+        per_sample = torch.nn.functional.huber_loss(
+            mean, teacher, reduction="none", delta=self.huber_delta
+        ).mean(dim=1)
+        return self.coef * (per_sample * mask).sum() / mask.sum().clamp(min=1.0)
+
+
 class Se3PPO(PPO):
-    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、显式 vx 估计器监督、模仿损失与 AMP 风格奖励。"""
+    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、显式 vx 估计器监督、模仿损失 / 网络老师蒸馏与 AMP 风格奖励。"""
 
     def __init__(
         self,
@@ -157,10 +210,17 @@ class Se3PPO(PPO):
         estimator_target_group: str | None = None,
         estimator_warmup_iterations: int = 0,
         imitation_loss: dict[str, Any] | None = None,
+        policy_distill: dict[str, Any] | None = None,
         amp_cfg: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if policy_distill is not None:
+            if imitation_loss is not None or self.symmetry is not None:
+                raise ValueError(
+                    "网络老师蒸馏借用 symmetry 钩子，不能与 imitation_loss / symmetry_cfg 同时使用"
+                )
+            self.symmetry = self._build_policy_distill(dict(policy_distill))
         self.amp: AMP | None = None
         if amp_cfg:
             amp_cfg = dict(amp_cfg)
@@ -213,6 +273,18 @@ class Se3PPO(PPO):
             lr=self.learning_rate,
             critic_lr=self.critic_learning_rate,
         )
+
+    def _build_policy_distill(self, cfg: dict[str, Any]) -> _PolicyDistillLoss:
+        """复制一份本 actor 当老师骨架，载入 checkpoint 的 actor_state_dict（形状必须逐项一致），冻结。"""
+        path = str(cfg.pop("teacher_checkpoint"))
+        teacher = copy.deepcopy(self._raw_actor)
+        state = torch.load(path, map_location=self.device, weights_only=False)["actor_state_dict"]
+        teacher.load_state_dict(state, strict=True)
+        teacher.eval()
+        for param in teacher.parameters():
+            param.requires_grad_(False)
+        print(f"[Se3PPO] 网络老师蒸馏：老师 {path}，掩码组 {cfg['mask_group']}，系数 {cfg['coef']}")
+        return _PolicyDistillLoss(teacher=teacher, **cfg)
 
     def _actor_grad_sq(self) -> torch.Tensor:
         grads = [p.grad.reshape(-1) for p in self.actor.parameters() if p.grad is not None]

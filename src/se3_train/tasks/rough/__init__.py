@@ -5,7 +5,7 @@ import math
 from mjlab.tasks.registry import register_mjlab_task
 
 from se3_train.onnx_metadata import observation_term_width
-from se3_train.rl_cfg import ImitationLossCfg, bind_task_name
+from se3_train.rl_cfg import ImitationLossCfg, PolicyDistillCfg, bind_task_name
 from se3_train.tasks.common import Se3ProfiledOnPolicyRunner
 
 from .env_cfg import (
@@ -22,6 +22,7 @@ from .rl_cfg import (
     ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
     ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF,
     ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA,
+    ROUGH_RECOVER_DISTILL_TEACHER_CKPT,
     cts_rl_cfg,
     gru_rl_cfg,
     recover_amp_cfg,
@@ -117,6 +118,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_YAW_GATE_T
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
 )
+# 2026-10-25 用户定：Recover-AMP + recover 组网络老师在线蒸馏（老师 gyi9exiz model_2200，全程保持，见 rl_cfg.ROUGH_RECOVER_DISTILL_*）；
+# 从 6iwgpa2m（Recover-AMP）续训。6iwgpa2m 走路全面领先 gyi9exiz，但 1100 轮倒置起身仍为 0、侧躺停在 0.53。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_DISTILL_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP-Distill"
+)
 # 2026-10-24 用户定：PowerLimit600-Alpha800 + 教师退场后模仿损失一直保留（PersistBC）——模仿损失不乘 α（固定 0.2），
 # α = 0 后教师状态机继续推进出目标但不执行，教师目标改限幅开环（实测 ±0.3 rad），其余逐项相同。dqkkieq0 教师退场后
 # 动作模式完全变了（模仿项随 α 归零）。临时入口，结论后删除。
@@ -139,6 +145,21 @@ EXP_STAIR_VX08_FALL_TEACHER_BC_POWER_LIMIT600_MLP_TASK_ID = (
 # 入口删除；复现旧包络用 4832d15。
 # 2026-10-19：诊断对照入口 DR1-Oracle / -OracleVel、Vel、Vx、VxObserver（及 -H5 / -Z3 / -YawRB05 / -WheelTN-Budget）、
 # CTS-NoScan-StairVx08-JumpExitPen 已有结论，入口与专用开关删除；复现用 846c4fcd。
+
+
+def _recover_policy_distill(cfg) -> PolicyDistillCfg:
+    """recover 组网络老师蒸馏：整圈周期按本入口动作项的腿部缩放算（与倒地教师模仿损失同一套对齐）。"""
+    imitation = _fall_teacher_imitation_loss(cfg)
+    return PolicyDistillCfg(
+        teacher_checkpoint=str(ROUGH_RECOVER_DISTILL_TEACHER_CKPT),
+        mask_group=ROUGH_RECOVER_AMP_MASK_GROUP,
+        role_group=ROUGH_CTS_ROLE_GROUP,
+        coef=imitation.coef,
+        huber_delta=imitation.huber_delta,
+        front_period=imitation.front_period,
+        back_period=imitation.back_period,
+        shift_back=imitation.shift_back,
+    )
 
 
 def _fall_teacher_imitation_loss(cfg, *, alpha_weighted: bool = True) -> ImitationLossCfg:
@@ -473,6 +494,29 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_DISTILL_TASK_ID,
+        env_cfg=env_cfg(**recover_amp_kwargs),
+        play_env_cfg=env_cfg(play=True, **recover_amp_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(recover_amp_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in recover_amp_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                policy_distill=_recover_policy_distill(recover_amp_env_cfg),
+                amp_cfg=recover_amp_cfg(
+                    obs_group=ROUGH_RECOVER_AMP_GROUP, mask_obs_group=ROUGH_RECOVER_AMP_MASK_GROUP
+                ),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_DISTILL_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     persist_bc_kwargs = dict(
         alpha800_kwargs,
         fall_teacher_supervise_after_handoff=True,
@@ -565,6 +609,7 @@ __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_DISTILL_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",

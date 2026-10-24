@@ -29,7 +29,12 @@ from pathlib import Path
 
 from mjlab.rl import RslRlModelCfg
 
-from se3_train.rl_cfg import ImitationLossCfg, RslRlOnPolicyRunnerCfg, Se3PpoAlgorithmCfg
+from se3_train.rl_cfg import (
+    ImitationLossCfg,
+    PolicyDistillCfg,
+    RslRlOnPolicyRunnerCfg,
+    Se3PpoAlgorithmCfg,
+)
 from se3_train.tasks.flat.rl_cfg import FLAT_NUM_STEPS_PER_ENV, mlp_rl_cfg
 from se3_train.tasks.flat.rl_cfg import rl_cfg as flat_gru_rl_cfg
 
@@ -72,6 +77,10 @@ ROUGH_RECOVER_AMP_DATASET_ROOT = (
 ROUGH_RECOVER_AMP_REWARD_WEIGHT = 4.0
 ROUGH_RECOVER_AMP_TRANSITION_FRAMES = 2
 ROUGH_RECOVER_AMP_DISCRIMINATOR_BATCH = 4096
+# recover 组网络老师在线蒸馏（2026-10-25 用户定，见 se3_train.ppo 的 policy_distill）：老师 = gyi9exiz model_2200（与 Recover-AMP
+# 同结构同观测，部署路径前向），只在 recover 组样本上算，系数沿用倒地教师模仿损失的 0.2 / Huber δ 1，全程不退火。
+# 老师权重与 AMP 数据集放在一起（assets/amp/ 不进 git，换机器要拷）。
+ROUGH_RECOVER_DISTILL_TEACHER_CKPT = ROUGH_RECOVER_AMP_DATASET_ROOT / "gyi9exiz_model_2200.pt"
 
 
 @dataclass
@@ -128,6 +137,7 @@ def cts_rl_cfg(
     estimator_warmup_iterations: int = 0,
     student_latent_grad: str = "mse",
     imitation_loss: ImitationLossCfg | None = None,
+    policy_distill: PolicyDistillCfg | None = None,
     amp_cfg: dict | None = None,
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
@@ -136,6 +146,7 @@ def cts_rl_cfg(
     student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）；
     student_latent_grad：学生隐向量的训练信号，"mse" 回归教师隐向量（默认）、"ppo" 由 PPO 端到端训练（见 se3_train.cts_observer）；
     imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加；
+    policy_distill：网络老师在线蒸馏（recover 组起身用，见 se3_train.ppo），None 不加，与 imitation_loss 互斥；
     amp_cfg：AMP 风格奖励配置（recover 组起身风格用，见 se3_train.amp），None 不加。
     """
     cfg = rl_cfg(smoke=smoke)
@@ -160,6 +171,7 @@ def cts_rl_cfg(
         estimator_target_group=target_group,
         estimator_warmup_iterations=int(estimator_warmup_iterations),
         imitation_loss=imitation_loss,
+        policy_distill=policy_distill,
         amp_cfg=None if amp_cfg is None else dict(amp_cfg),
     )
     return cfg
@@ -206,6 +218,7 @@ __all__ = [
     "ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA",
     "ROUGH_MAX_ITERATIONS",
     "ROUGH_RECOVER_AMP_DATASET_ROOT",
+    "ROUGH_RECOVER_DISTILL_TEACHER_CKPT",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",
     "CTSModelCfg",
     "cts_rl_cfg",
