@@ -380,3 +380,4 @@ bash C:/Users/13567/.local/bin/start-whtws-training.sh \
 - 续训源：6iwgpa2m model_1100 已拷到 `logs/rsl_rl/<Distill 任务>/6iwgpa2m-model1100-src/`（开训时用启动器 `-L 6iwgpa2m-model1100-src -K model_1100.pt`；换更新的 checkpoint 要另拷）。
 - GPU 6 逻辑核对（`.scratch/amp_recover_20261024/check_distill.py`）全过：老师与 model_2200 actor 逐位一致、冻结且不在优化器、部署路径动作与 gyi9exiz 推理策略差 0、掩码全 0 时蒸馏项 0、老师无梯度、续训恢复判别器（更新计数 1101）、update 后 Loss/imitation 0.109 且老师不变。
 - GPU 6 单卡 × 8192 续训 smoke 通过（1100→1105 轮，3.6 s/轮，无 Traceback / nefc，imitation 0.079 → 0.039），日志 `/workspace/.se3-training-state/whtws/recover-ampdistill-69c9e0f/smoke.log`。GPU 0–5 当时在跑 6iwgpa2m，未做六卡 smoke（蒸馏项不引入额外跨卡通信，梯度走 PPO 原有平均）。
+- 2026-10-25 按用户指令停 6iwgpa2m（Recover-AMP，停在约 1967 轮，最后存档 model_1900.pt；SIGINT 后进程全退、七卡 2 MiB）。结论：纯 AMP 走路全面领先 gyi9exiz，但倒置起身到 1900 轮仍约 0、侧躺 0.65；改走 nulltask1 的在线蒸馏 mb6sjulr。
