@@ -91,7 +91,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, rewards, stair_rewards, terminations
+from . import curriculums, events, recover, rewards, stair_rewards, terminations
 from . import observations as rough_observations
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
@@ -255,6 +255,31 @@ ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
 # - 只在 M 内判：跳跃、上台阶本来就要大功率（拉格朗日 v1 按倾角全程计罚把走路压垮）。
 # - 限值沿用拉格朗日 leg_power 的 400 W（R1 开环参考峰值 166 W；倒地教师开环正功率 p90 约 150 W、峰值在 400 W 内），
 #   连续 3 步（60 ms）才判：滤掉单步尖峰，不把教师示范也杀掉。
+# recover 组（2026-10-24 用户定，env_cfg(recover_group=True)，见 recover.py）：倒地出生那几列里固定抽 ROUGH_RECOVER_GROUP_FRACTION
+# 的 env（约占全体 10%）每局倒地出生、只练起身，其余 env 只练走路、不再倒地出生。共用一套奖励时，倒地期每秒约 −110、站起后
+# 每秒约 +14，晚起身 1 s 差约 124 分，任何约束都在和这个"速度溢价"对抗（dqkkieq0 / tf2qsg6r 教师退场后都滑回暴起）。
+# recover 组一局 10 s、8 s 截止，两种结束都是真终止不自举，回报只含本局：站稳前 0、站稳后 +1/s、站稳一次性 +20、
+# 失败一次性 −20，加四项超限线性罚。权重由离线账本定（.scratch/fall_teacher_probe_20261023/recover_reward_ledger.py，
+# whtws recover-ledger-20261024）：侧躺 / 倒置成功段超限积分 暴力 dqkkieq0-4999 vs 温和 2tnlfwoi-3000 约为
+# 正功率 71–90 vs 2 J、机身角速度 0.4–0.6 vs 0.04、腿速 2.2–3.0 vs 0.02、轮速（阈值 10）35–41 vs 7；按下列权重暴力起身
+# 约扣 10–11 分，温和起身约 1 分，"8 s 内温和站稳"严格优于"1 s 猛甩站稳"。轮速阈值取 20：站立平衡时轮速也会超 10。
+# 截止从方案的 6 s 放宽到 8 s：按教师节奏的温和起身站稳中位约 5 s，6 s + 站稳 1 s 来不及。
+ROUGH_RECOVER_GROUP_FRACTION = 0.6
+ROUGH_RECOVER_EPISODE_S = 10.0
+ROUGH_RECOVER_DEADLINE_S = 8.0
+ROUGH_RECOVER_STABLE_HOLD_S = 1.0
+ROUGH_RECOVER_REFALL_TILT_DEG = 60.0
+ROUGH_RECOVER_STAND_WEIGHT = 1.0
+ROUGH_RECOVER_SUCCESS_BONUS = 20.0
+ROUGH_RECOVER_FAIL_PENALTY = 20.0
+ROUGH_RECOVER_POWER_THRESHOLD_W = 300.0
+ROUGH_RECOVER_POWER_WEIGHT = -0.05
+ROUGH_RECOVER_ANG_VEL_THRESHOLD = 6.0
+ROUGH_RECOVER_ANG_VEL_WEIGHT = -5.0
+ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
+ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
+ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
+ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
 ROUGH_FALL_POWER_LIMIT_W = 400.0
 ROUGH_FALL_POWER_LIMIT_STEPS = 3
 ROUGH_FALL_POWER_LIMIT_PENALTY = 300.0
@@ -513,6 +538,7 @@ def env_cfg(
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
     fall_teacher_supervise_after_handoff: bool = False,
     fall_teacher_target_leash_rad: float | None = None,
+    recover_group: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -544,6 +570,8 @@ def env_cfg(
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。对照实验开关。
     fall_teacher_supervise_after_handoff / fall_teacher_target_leash_rad：倒地教师 α = 0 后继续出模仿目标、前杆与夹角目标
         限幅在实测 ±L 内（见 FallTeacherCfg 同名字段），默认关 / None。对照实验开关。
+    recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认关；play 不分组、不倒地出生，奖励 / 终止 /
+        critic 维数与训练相同（组掩码全 False）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -914,6 +942,10 @@ def env_cfg(
                 params={"command_name": "velocity_height"},
             )
 
+    if recover_group:
+        if fall_lagrange or fall_power_limit:
+            raise ValueError("recover 组自带奖励与终止，不和倒地拉格朗日 / 功率终止同用")
+        _apply_recover_group(cfg, play=play)
     # M 内奖励归一化必须是最后一个奖励项（rewards.fall_lagrange_normalize 首次调用时核对）。
     if fall_lagrange:
         cfg.rewards = dict(cfg.rewards)
@@ -994,6 +1026,121 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
         func=jump_mdp.mimic_deviation,
         time_out=False,
         params={"max_height_error": ROUGH_JUMP_MAX_HEIGHT_ERROR},
+    )
+
+
+def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。"""
+    step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
+    cfg.events = dict(cfg.events)
+    if not play:
+        cfg.events["assign_recover_group"] = EventTermCfg(
+            func=recover.assign_recover_group,
+            mode="startup",
+            params={
+                "terrain_type_names": ROUGH_FALL_SPAWN_TERRAIN_NAMES,
+                "fraction": ROUGH_RECOVER_GROUP_FRACTION,
+            },
+        )
+        spawn = cfg.events["reset_from_fall_states"]
+        cfg.events["reset_from_fall_states"] = replace(
+            spawn, params={**spawn.params, "group_mask_attr": recover.RECOVER_GROUP_ATTR}
+        )
+    cfg.events["force_recover_commands"] = EventTermCfg(
+        func=recover.force_recover_commands,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        params={"command_name": "velocity_height"},
+    )
+
+    cfg.terminations = dict(cfg.terminations)
+    cfg.terminations["recover_failed"] = TerminationTermCfg(
+        func=recover.recover_failed,
+        time_out=False,
+        params={
+            "deadline_s": ROUGH_RECOVER_DEADLINE_S,
+            "episode_s": ROUGH_RECOVER_EPISODE_S,
+            "stable_hold_s": ROUGH_RECOVER_STABLE_HOLD_S,
+            "stable_tilt_deg": events.FALL_RECOVERED_TILT_DEG,
+            "stable_height_m": events.FALL_RECOVERED_MIN_HEIGHT_M,
+            "refall_tilt_deg": ROUGH_RECOVER_REFALL_TILT_DEG,
+        },
+    )
+    cfg.terminations["recover_finished"] = TerminationTermCfg(
+        func=recover.recover_finished, time_out=False
+    )
+
+    walking = dict(cfg.rewards)
+    imitation = walking.pop("fall_teacher_imitation", None)
+    fall = walking["fall_penalty"]
+    if fall.func is not rewards.is_terminated_except:
+        raise ValueError(
+            "recover 组要从 fall_penalty 里排除自己的终止，fall_penalty 须是 is_terminated_except"
+        )
+    walking["fall_penalty"] = replace(
+        fall,
+        params={
+            **fall.params,
+            "exclude_terms": (*fall.params["exclude_terms"], "recover_failed", "recover_finished"),
+        },
+    )
+    action_rate = walking["action_rate"]
+    recover_terms = {
+        "recover_mask_walking_rewards": RewardTermCfg(
+            func=recover.recover_mask_walking_rewards, weight=1.0
+        ),
+        "recover_stand": RewardTermCfg(
+            func=recover.recover_stand, weight=ROUGH_RECOVER_STAND_WEIGHT
+        ),
+        "recover_success": RewardTermCfg(
+            func=recover.recover_success, weight=ROUGH_RECOVER_SUCCESS_BONUS / step_dt
+        ),
+        "recover_fail": RewardTermCfg(
+            func=rewards.termination_term,
+            weight=-ROUGH_RECOVER_FAIL_PENALTY / step_dt,
+            params={"term_name": "recover_failed"},
+        ),
+        "recover_power_excess": RewardTermCfg(
+            func=recover.recover_power_excess,
+            weight=ROUGH_RECOVER_POWER_WEIGHT,
+            params={"threshold_w": ROUGH_RECOVER_POWER_THRESHOLD_W},
+        ),
+        "recover_ang_vel_excess": RewardTermCfg(
+            func=recover.recover_ang_vel_excess,
+            weight=ROUGH_RECOVER_ANG_VEL_WEIGHT,
+            params={"threshold": ROUGH_RECOVER_ANG_VEL_THRESHOLD},
+        ),
+        "recover_leg_speed_excess": RewardTermCfg(
+            func=recover.recover_leg_speed_excess,
+            weight=ROUGH_RECOVER_LEG_SPEED_WEIGHT,
+            params={"threshold": ROUGH_RECOVER_LEG_SPEED_THRESHOLD},
+        ),
+        "recover_wheel_speed_excess": RewardTermCfg(
+            func=recover.recover_wheel_speed_excess,
+            weight=ROUGH_RECOVER_WHEEL_SPEED_WEIGHT,
+            params={"threshold": ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD},
+        ),
+        "recover_action_rate": RewardTermCfg(
+            func=recover.recover_only,
+            weight=float(action_rate.weight),
+            params={"inner": action_rate.func, "params": dict(action_rate.params or {})},
+        ),
+    }
+    if imitation is not None:
+        recover_terms["fall_teacher_imitation"] = imitation
+    cfg.rewards = {**walking, **recover_terms}
+
+    critic = cfg.observations["critic"]
+    cfg.observations["critic"] = replace(
+        critic,
+        terms={
+            **critic.terms,
+            "recover_group": ObservationTermCfg(func=recover.recover_group_obs),
+            "recover_time": ObservationTermCfg(
+                func=recover.recover_time_obs, params={"episode_s": ROUGH_RECOVER_EPISODE_S}
+            ),
+            "recover_stable": ObservationTermCfg(func=recover.recover_stable_obs),
+        },
     )
 
 

@@ -270,6 +270,7 @@ def reset_from_fall_states(
     xy_offset_m: float = 0.1,
     footprint_radius_m: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    group_mask_attr: str | None = None,
 ) -> None:
     """reset 事件：指定列一部分 env 改从倒地状态库出生（排在 reset_root_state / reset_joints 之后，只覆盖选中的 env）。
 
@@ -278,6 +279,8 @@ def reset_from_fall_states(
     ±`xy_offset_m`（状态库里落定时滑出去的 xy 丢掉，p95 有 0.5 m，会出生到障碍平台边上）；高度 = 状态库机身离地高度 +
     出生点 `footprint_radius_m` 圆内最高地面（见 `_SpawnHeightMap`）；速度随同一 yaw 旋转。选中的 env 记入
     FALL_SPAWN_MASK_ATTR（本 episode 不计入速度课程信号），并记下倾角类别与出生地面高度供日志用。
+    group_mask_attr：给定时改为"该掩码里的 env 每局都倒地出生、其余 env 一律不倒地出生"（recover 组，见 recover.py），
+    忽略 prob 与跳跃 / 高姿态起步的排除（这些 env 本来就只在倒地出生的列里抽）。
     """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
@@ -294,7 +297,12 @@ def reset_from_fall_states(
         setattr(env, _FALL_GROUND_Z_ATTR, torch.zeros(env.num_envs, device=env.device))
     fall_mask.index_fill_(0, ids, False)
     getattr(env, _FALL_RECOVERED_ATTR).index_fill_(0, ids, False)
-    if float(prob) <= 0.0:
+    group = None if group_mask_attr is None else getattr(env, group_mask_attr, None)
+    if group_mask_attr is not None and group is None:
+        raise RuntimeError(
+            f"倒地出生按组进行，但 env 上没有 {group_mask_attr}（分组 startup 事件没跑？）"
+        )
+    if group is None and float(prob) <= 0.0:
         return
 
     cache: _FallStateCache | None = getattr(env, _FALL_CACHE_ATTR, None)
@@ -306,19 +314,22 @@ def reset_from_fall_states(
         setattr(env, _FALL_HEIGHT_MAP_ATTR, _SpawnHeightMap(env, terrain_type_names, half_extent))
     height_map: _SpawnHeightMap = getattr(env, _FALL_HEIGHT_MAP_ATTR)
 
-    current = column_mask(env, terrain_type_names)
-    original = _original_column_mask(env, terrain_type_names)
-    if current is None or original is None:
-        return
-    eligible = current[ids] & original[ids]
-    term = env.command_manager.get_term(command_name)
-    jump_env = getattr(term, "jump_env", None)
-    if jump_env is not None:
-        eligible &= ~jump_env[ids]
-    high_stand = getattr(term, "_high_stand_selected", None)
-    if high_stand is not None:
-        eligible &= ~high_stand[ids]
-    eligible &= torch.rand(ids.numel(), device=env.device) < float(prob)
+    if group is not None:
+        eligible = group[ids].clone()
+    else:
+        current = column_mask(env, terrain_type_names)
+        original = _original_column_mask(env, terrain_type_names)
+        if current is None or original is None:
+            return
+        eligible = current[ids] & original[ids]
+        term = env.command_manager.get_term(command_name)
+        jump_env = getattr(term, "jump_env", None)
+        if jump_env is not None:
+            eligible &= ~jump_env[ids]
+        high_stand = getattr(term, "_high_stand_selected", None)
+        if high_stand is not None:
+            eligible &= ~high_stand[ids]
+        eligible &= torch.rand(ids.numel(), device=env.device) < float(prob)
     sel = ids[eligible]
     n = sel.numel()
     if n == 0:
