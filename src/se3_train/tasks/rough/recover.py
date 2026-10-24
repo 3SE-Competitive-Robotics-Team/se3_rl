@@ -74,7 +74,12 @@ class _RecoverState:
     def __init__(self, env: ManagerBasedRlEnv, params: dict) -> None:
         self.params = params
         n, device = env.num_envs, env.device
-        self.up_t = torch.zeros(n, device=device)
+        # 时长一律按步数比较（float 累加 dt 在 1.0 s 这种边界上会差一步）
+        dt = float(env.step_dt)
+        self.hold_steps = round(float(params["stable_hold_s"]) / dt)
+        self.deadline_steps = round(float(params["deadline_s"]) / dt)
+        self.episode_steps = round(float(params["episode_s"]) / dt)
+        self.up_n = torch.zeros(n, dtype=torch.long, device=device)
         self.stable = torch.zeros(n, dtype=torch.bool, device=device)
         self.just_stable = torch.zeros(n, dtype=torch.bool, device=device)
         self.stable_t = torch.zeros(n, device=device)
@@ -94,26 +99,28 @@ class _RecoverState:
         p = self.params
         dt = float(env.step_dt)
         group = recover_group_mask(env)
-        new_episode = env.episode_length_buf == 1
-        for buf in (self.up_t, self.stable_t):
-            buf.masked_fill_(new_episode, 0.0)
+        steps = env.episode_length_buf
+        new_episode = steps == 1
+        self.up_n.masked_fill_(new_episode, 0)
+        self.stable_t.masked_fill_(new_episode, 0.0)
         self.stable.masked_fill_(new_episode, False)
         robot = env.scene["robot"]
         pg_z = robot.data.projected_gravity_b[:, 2]
         tilt = torch.rad2deg(torch.acos(torch.clamp(-pg_z, -1.0, 1.0)))
         ground = getattr(env, events._FALL_GROUND_Z_ATTR, None)
         height = robot.data.root_link_pos_w[:, 2] - (ground if ground is not None else 0.0)
-        age = env.episode_length_buf.float() * dt
         up = (tilt < float(p["stable_tilt_deg"])) & (height >= float(p["stable_height_m"]))
-        self.up_t = torch.where(group & up & ~self.stable, self.up_t + dt, self.up_t)
-        self.up_t = torch.where(group & ~up & ~self.stable, torch.zeros_like(self.up_t), self.up_t)
-        self.just_stable = group & ~self.stable & (self.up_t >= float(p["stable_hold_s"]))
-        self.stable_t = torch.where(self.just_stable, age, self.stable_t)
+        counting = group & ~self.stable
+        self.up_n = torch.where(
+            counting, torch.where(up, self.up_n + 1, torch.zeros_like(self.up_n)), self.up_n
+        )
+        self.just_stable = counting & (self.up_n >= self.hold_steps)
+        self.stable_t = torch.where(self.just_stable, steps.float() * dt, self.stable_t)
         self.stable |= self.just_stable
-        self.timeout = group & ~self.stable & (age >= float(p["deadline_s"]))
+        self.timeout = group & ~self.stable & (steps >= self.deadline_steps)
         self.refall = group & self.stable & ~self.just_stable & (tilt > float(p["refall_tilt_deg"]))
         self.failed = self.timeout | self.refall
-        self.finished = group & ~self.failed & (age >= float(p["episode_s"]))
+        self.finished = group & ~self.failed & (steps >= self.episode_steps)
         self._log(env)
 
     def _log(self, env: ManagerBasedRlEnv) -> None:
