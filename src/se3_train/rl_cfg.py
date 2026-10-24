@@ -30,13 +30,15 @@ class ImitationLossCfg:
 
 @dataclass
 class Se3PpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
-    """PPO 算法配置：可选固定 critic 学习率、可选显式 vx 估计器监督、可选模仿损失（见 se3_train.ppo）。"""
+    """PPO 算法配置：可选固定 critic 学习率、可选显式 vx 估计器监督、可选模仿损失、可选 AMP（见 se3_train.ppo）。"""
 
     critic_learning_rate: float | None = None
     estimator_learning_rate: float | None = None
     estimator_target_group: str | None = None
     estimator_warmup_iterations: int = 0
     imitation_loss: ImitationLossCfg | None = None
+    amp_cfg: dict | None = None
+    """AMP 配置（se3_train.amp.AMP 的 cfg 键，dict 形式）；None 关闭。"""
     class_name: str = "se3_train.ppo:Se3PPO"
 
 

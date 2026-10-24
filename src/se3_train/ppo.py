@@ -44,6 +44,11 @@ coef·mean_接管样本(α·Huber(μ − T))，μ 是本 mini-batch 重算的策
 T 先按前杆整圈平移到 μ 那一圈（前杆 PD 走最短角，差整圈的动作物理上相同），joint 语义下同侧后杆同步平移。
 rsl_rl 5.4 的 PPO.update 只在 symmetry 钩子处允许往总损失里加项（与 PPO 损失同一次反传，走同样的多卡梯度平均与梯度裁剪），
 这里借这个钩子挂模仿项、不做对称增广；同时配真正的 symmetry_cfg 会报错。日志 Loss/imitation（原 symmetry 键改名）。
+
+AMP 风格奖励（2026-10-24 从 867c7299 之前恢复，recover 组起身风格用，见 se3_train.amp）：`amp_cfg` 非 None 时，
+process_env_step 在写 storage 之前把风格奖励加进 transition.rewards（在 time-out bootstrap 之前，与 fork 的钩子位置一致）；
+update 在 PPO 更新之前用本轮 rollout 更新判别器（PPO.update 末尾会清空 storage）。actor / critic 网络与观测组不变，
+导出的 ONNX 不受影响。日志 Loss/amp/*。
 """
 
 from __future__ import annotations
@@ -53,6 +58,8 @@ from typing import Any
 import torch
 import torch.distributed
 from rsl_rl.algorithms import PPO
+
+from se3_train.amp import AMP
 
 
 class ActorCriticAdam(torch.optim.Adam):
@@ -140,7 +147,7 @@ class _ImitationLoss:
 
 
 class Se3PPO(PPO):
-    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、显式 vx 估计器监督与模仿损失。"""
+    """rsl_rl.PPO 的透明扩展：可选的固定 critic 学习率、显式 vx 估计器监督、模仿损失与 AMP 风格奖励。"""
 
     def __init__(
         self,
@@ -150,9 +157,26 @@ class Se3PPO(PPO):
         estimator_target_group: str | None = None,
         estimator_warmup_iterations: int = 0,
         imitation_loss: dict[str, Any] | None = None,
+        amp_cfg: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self.amp: AMP | None = None
+        if amp_cfg:
+            amp_cfg = dict(amp_cfg)
+            step_dt = amp_cfg.pop("step_dt", None)
+            if step_dt is None:
+                raise ValueError(
+                    "amp_cfg 缺少 step_dt；应由 Se3PPO.construct_algorithm 从 env 填入"
+                )
+            self.amp = AMP(
+                num_envs=int(self.storage.observations.shape[1]),
+                step_dt=float(step_dt),
+                obs=self.storage.observations[0],
+                cfg=amp_cfg,
+                device=str(self.device),
+                multi_gpu=self.is_multi_gpu,
+            )
         if imitation_loss is not None:
             if self.symmetry is not None:
                 raise ValueError("模仿损失借用 symmetry 钩子，不能与 symmetry_cfg 同时使用")
@@ -203,12 +227,61 @@ class Se3PPO(PPO):
         self._noise_sq_small.append(float(sq_small))
         self._noise_sq_big.append(float(self._actor_grad_sq()))
 
+    # ---- AMP 钩子 ----
+    @staticmethod
+    def construct_algorithm(obs: Any, env: Any, cfg: dict, device: str) -> PPO:
+        """在 PPO.construct_algorithm 之前把 env 的控制周期填进 amp_cfg。"""
+        amp = cfg.get("algorithm", {}).get("amp_cfg")
+        if amp:
+            unwrapped = getattr(env, "unwrapped", env)
+            amp.setdefault("step_dt", float(unwrapped.step_dt))
+        return PPO.construct_algorithm(obs, env, cfg, device)
+
+    def process_env_step(
+        self, obs: Any, rewards: torch.Tensor, dones: torch.Tensor, extras: dict
+    ) -> None:
+        if self.amp is None:
+            super().process_env_step(obs, rewards, dones, extras)
+            return
+        # 照抄 rsl_rl 5.4.0 PPO.process_env_step，在 bootstrap 之前插入 AMP 钩子（与 fork 一致）。
+        self.actor.update_normalization(obs)
+        self.critic.update_normalization(obs)
+        if self.rnd:
+            self.rnd.update_normalization(obs)
+        self.transition.rewards = rewards.clone()
+        self.transition.dones = dones
+        if self.rnd:
+            self.intrinsic_rewards = self.rnd.get_intrinsic_reward(obs)
+            self.transition.rewards += self.intrinsic_rewards
+        self.amp.process_env_step(obs, self.transition, extras)
+        if "time_outs" in extras:
+            self.transition.rewards += self.gamma * torch.squeeze(
+                self.transition.values * extras["time_outs"].unsqueeze(1).to(self.device),  # type: ignore
+                1,
+            )
+        self.storage.add_transition(self.transition)
+        self.transition.clear()
+        self.actor.reset(dones)
+        self.critic.reset(dones)
+
+    def train_mode(self) -> None:
+        super().train_mode()
+        if self.amp is not None:
+            self.amp.train()
+
+    def eval_mode(self) -> None:
+        super().eval_mode()
+        if self.amp is not None:
+            self.amp.eval()
+
     def update(self) -> dict[str, float]:
-        """原版 update；多卡时附带本轮 actor 梯度噪声尺度。预热期只训练估计器。"""
+        """原版 update；多卡时附带本轮 actor 梯度噪声尺度。预热期只训练估计器。判别器在 PPO 之前更新。"""
+        amp_metrics = self.amp.individual_update(self.storage) if self.amp is not None else {}
         if self.estimator_warmup_remaining > 0:
             self.estimator_warmup_remaining -= 1
             loss_dict = self._update_estimator()
             loss_dict["estimator_warmup"] = 1.0
+            loss_dict.update(amp_metrics)
             self.storage.clear()
             return loss_dict
         b_small = (
@@ -230,6 +303,7 @@ class Se3PPO(PPO):
             loss_dict["grad_noise_scale_actor"] = trace / grad_sq if grad_sq > 0.0 else float("nan")
         if self.estimator_optimizer is not None:
             loss_dict.update(self._update_estimator())
+        loss_dict.update(amp_metrics)
         return loss_dict
 
     def _update_estimator(self) -> dict[str, float]:
@@ -288,6 +362,8 @@ class Se3PPO(PPO):
         saved_dict = super().save()
         if self.estimator_optimizer is not None:
             saved_dict["estimator_optimizer_state_dict"] = self.estimator_optimizer.state_dict()
+        if self.amp is not None:
+            saved_dict["ext_state_dict"] = {"amp": self.amp.save()}
         return saved_dict
 
     def _estimator_shape_changed(self, actor_state: dict) -> bool:
@@ -337,6 +413,10 @@ class Se3PPO(PPO):
             and "estimator_optimizer_state_dict" in loaded_dict
         ):
             self.estimator_optimizer.load_state_dict(loaded_dict["estimator_optimizer_state_dict"])
+        if self.amp is not None and load_cfg.get("ext", True):
+            state = loaded_dict.get("ext_state_dict", {}).get("amp")
+            if state is not None:
+                self.amp.load(state, strict=strict)
         return load_iteration
 
 

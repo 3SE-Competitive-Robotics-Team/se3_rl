@@ -80,9 +80,11 @@ from mjlab.tasks.velocity.mdp.terminations import out_of_terrain_bounds, terrain
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 
+from se3_shared.amp import AMP_FEATURE_NAMES
 from se3_train.mdp import events as mdp_events
 from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
+from se3_train.mdp.amp_observations import build_amp_obs_terms
 from se3_train.robot_cfg import _RESOURCES, get_serialleg_closedchain_cfg
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
@@ -280,6 +282,11 @@ ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
 ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
 ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
 ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
+# recover 组 AMP（2026-10-24 用户定，env_cfg(recover_amp=True)，见 se3_train.amp）：判别器看 19 维运动帧（se3_shared.amp 契约），
+# 参考是用户认可的 gyi9exiz model_2200 在 recover 组条件下的起身片段（scripts/record_recover_amp_dataset.py）；
+# 风格奖励与判别器的策略样本都只取 recover 组（掩码组），走路组不受影响。两组观测都不进 actor / critic / CTS 教师组。
+ROUGH_RECOVER_AMP_GROUP = "amp"
+ROUGH_RECOVER_AMP_MASK_GROUP = "amp_mask"
 ROUGH_FALL_POWER_LIMIT_W = 400.0
 ROUGH_FALL_POWER_LIMIT_STEPS = 3
 ROUGH_FALL_POWER_LIMIT_PENALTY = 300.0
@@ -540,6 +547,7 @@ def env_cfg(
     fall_teacher_target_leash_rad: float | None = None,
     recover_group: bool = False,
     yaw_gate: bool = False,
+    recover_amp: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -576,6 +584,8 @@ def env_cfg(
     yaw_gate：速度课程的 yaw 上限改由转向跟踪（Locomotion/tracking_ang_vel_reward_all）的独立 EMA 驱动
         （mdp.curriculums.commands_vel_adaptive 的 yaw_gate_enabled），默认关——此时 yaw 上限跟着直线跟踪放开，
         前约 500 轮就到 ±12 rad/s，与转向能力无关。对照实验开关。
+    recover_amp：recover 组 AMP 的两个观测组（运动帧 + recover 组掩码，见 ROUGH_RECOVER_AMP_* 注释），须同时开 recover_group；
+        train / play 都建（play 掩码全 0），rl_cfg 的 amp_cfg 按组名取。默认关。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -952,6 +962,19 @@ def env_cfg(
         if fall_lagrange or fall_power_limit:
             raise ValueError("recover 组自带奖励与终止，不和倒地拉格朗日 / 功率终止同用")
         _apply_recover_group(cfg, play=play)
+    if recover_amp:
+        if not recover_group:
+            raise ValueError("recover_amp 的风格奖励只作用在 recover 组，须同时开 recover_group")
+        cfg.observations[ROUGH_RECOVER_AMP_GROUP] = ObservationGroupCfg(
+            terms=build_amp_obs_terms(AMP_FEATURE_NAMES),
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
+        cfg.observations[ROUGH_RECOVER_AMP_MASK_GROUP] = ObservationGroupCfg(
+            terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
     # M 内奖励归一化必须是最后一个奖励项（rewards.fall_lagrange_normalize 首次调用时核对）。
     if fall_lagrange:
         cfg.rewards = dict(cfg.rewards)

@@ -12,6 +12,8 @@ from .env_cfg import (
     ROUGH_CTS_ROLE_GROUP,
     ROUGH_CTS_TEACHER_GROUP,
     ROUGH_FALL_TEACHER_TARGET_GROUP,
+    ROUGH_RECOVER_AMP_GROUP,
+    ROUGH_RECOVER_AMP_MASK_GROUP,
     ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
     ROUGH_VX_OBSERVER_TARGET_GROUP,
     env_cfg,
@@ -22,6 +24,7 @@ from .rl_cfg import (
     ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA,
     cts_rl_cfg,
     gru_rl_cfg,
+    recover_amp_cfg,
     rl_cfg,
 )
 from .terrains import stair_only_terrains_cfg
@@ -108,6 +111,12 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID = 
 # 2026-10-24 用户定：Recover 单变量对照——速度课程 yaw 上限改由转向跟踪 EMA 驱动（yaw_gate），其余逐项相同。
 # gyi9exiz 的 yaw 上限前约 500 轮就跟着直线跟踪放到 ±12 rad/s，原地转向跟踪到 2500 轮后才上 0.3。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_YAW_GATE_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-YawGate"
+# 2026-10-24 用户定：Recover 去掉倒地教师与模仿损失，改用 AMP 学起身风格——参考是用户认可的 gyi9exiz model_2200 在 recover 组
+# 条件下的起身片段，判别器与风格奖励只作用在 recover 组（见 env_cfg.ROUGH_RECOVER_AMP_*、rl_cfg.recover_amp_cfg）；其余与 Recover
+# （gyi9exiz）逐项相同（不开 yaw_gate）。q59ces4z 教师退场后倒置起身丢了、稀疏奖励找不回来，风格奖励每步都有梯度。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
+)
 # 2026-10-24 用户定：PowerLimit600-Alpha800 + 教师退场后模仿损失一直保留（PersistBC）——模仿损失不乘 α（固定 0.2），
 # α = 0 后教师状态机继续推进出目标但不执行，教师目标改限幅开环（实测 ±0.3 rad），其余逐项相同。dqkkieq0 教师退场后
 # 动作模式完全变了（模仿项随 α 归零）。临时入口，结论后删除。
@@ -437,6 +446,33 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    recover_amp_kwargs = dict(
+        stair_vx08_kwargs, fall_lagrange=False, recover_group=True, recover_amp=True
+    )
+    recover_amp_env_cfg = env_cfg(**recover_amp_kwargs)
+    recover_amp_actor = recover_amp_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID,
+        env_cfg=recover_amp_env_cfg,
+        play_env_cfg=env_cfg(play=True, **recover_amp_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(recover_amp_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in recover_amp_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                amp_cfg=recover_amp_cfg(
+                    obs_group=ROUGH_RECOVER_AMP_GROUP, mask_obs_group=ROUGH_RECOVER_AMP_MASK_GROUP
+                ),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     persist_bc_kwargs = dict(
         alpha800_kwargs,
         fall_teacher_supervise_after_handoff=True,
@@ -529,6 +565,7 @@ __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_LOW_GAINS_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_STUDENT_PPO_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",

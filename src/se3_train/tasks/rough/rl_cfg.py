@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass, fields, replace
+from pathlib import Path
 
 from mjlab.rl import RslRlModelCfg
 
@@ -58,6 +59,19 @@ ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU = (128, 128)
 # 策略与教师平均差约 5 个动作单位，MSE 会让模仿项压过 PPO 损失。
 ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF = 0.2
 ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA = 1.0
+# recover 组 AMP（2026-10-24 用户定，见 env_cfg.ROUGH_RECOVER_AMP_* 与 se3_train.amp）。参考数据 = gyi9exiz model_2200 在 recover 组
+# 条件下的成功起身片段（出生 → 站稳满 1 s，scripts/record_recover_amp_dataset.py），判别器看全部 19 维（轮自转也算：参考来自同一仿真，
+# 读数可靠，正好约束起身时乱甩轮子）、相邻 2 帧，左右镜像增广。
+# 风格权重按 recover 组账本定：r ∈ [0, 1] 每秒最多 w 分；起身约 1–1.5 s + 站稳 1 s，满分风格约 2.5w = 10；成功 +20、失败 −20、
+# 暴起 vs 温和的超限罚差约 10 分。w = 4 时风格与超限罚同量级、远小于成败差 40 分：8 s 躺着即便风格 0.3 分也只有约 10 分，
+# 抵不过失败 −20，"摆烂"不会被风格奖励收买。
+# 判别器每卡每轮 4 步、batch 4096（recover 组每卡约 1.4k env × 24 步 ≈ 3.4 万个窗口），学习率 / 梯度惩罚 / 热身沿用 fork 默认。
+ROUGH_RECOVER_AMP_DATASET_ROOT = (
+    Path(__file__).resolve().parents[4] / "assets" / "amp" / "recover_gyi9exiz_model2200"
+)
+ROUGH_RECOVER_AMP_REWARD_WEIGHT = 4.0
+ROUGH_RECOVER_AMP_TRANSITION_FRAMES = 2
+ROUGH_RECOVER_AMP_DISCRIMINATOR_BATCH = 4096
 
 
 @dataclass
@@ -114,13 +128,15 @@ def cts_rl_cfg(
     estimator_warmup_iterations: int = 0,
     student_latent_grad: str = "mse",
     imitation_loss: ImitationLossCfg | None = None,
+    amp_cfg: dict | None = None,
     smoke: bool = False,
 ) -> RslRlOnPolicyRunnerCfg:
     """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。
 
     student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）；
     student_latent_grad：学生隐向量的训练信号，"mse" 回归教师隐向量（默认）、"ppo" 由 PPO 端到端训练（见 se3_train.cts_observer）；
-    imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加。
+    imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加；
+    amp_cfg：AMP 风格奖励配置（recover 组起身风格用，见 se3_train.amp），None 不加。
     """
     cfg = rl_cfg(smoke=smoke)
     actor_fields = {
@@ -144,8 +160,29 @@ def cts_rl_cfg(
         estimator_target_group=target_group,
         estimator_warmup_iterations=int(estimator_warmup_iterations),
         imitation_loss=imitation_loss,
+        amp_cfg=None if amp_cfg is None else dict(amp_cfg),
     )
     return cfg
+
+
+def recover_amp_cfg(*, obs_group: str, mask_obs_group: str) -> dict:
+    """recover 组 AMP 的 amp_cfg（键见 se3_train.amp.AMP）。"""
+    return {
+        "obs_group": obs_group,
+        "mask_obs_group": mask_obs_group,
+        "transition_frames": ROUGH_RECOVER_AMP_TRANSITION_FRAMES,
+        "reward_weight": ROUGH_RECOVER_AMP_REWARD_WEIGHT,
+        "reward_warmup_updates": 50,
+        "discriminator_updates": 4,
+        "discriminator_batch_size": ROUGH_RECOVER_AMP_DISCRIMINATOR_BATCH,
+        "discriminator_grad_penalty_weight": 5.0,
+        "learning_rate": 5.0e-4,
+        "model_cfg": {"hidden_dims": [512, 256], "activation": "elu", "state_normalization": True},
+        "dataset_kwargs": {
+            "dataset_root": str(ROUGH_RECOVER_AMP_DATASET_ROOT),
+            "mirror_augmentation": True,
+        },
+    }
 
 
 def gru_rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
@@ -168,9 +205,11 @@ __all__ = [
     "ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF",
     "ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA",
     "ROUGH_MAX_ITERATIONS",
+    "ROUGH_RECOVER_AMP_DATASET_ROOT",
     "ROUGH_VX_ESTIMATOR_LEARNING_RATE",
     "CTSModelCfg",
     "cts_rl_cfg",
     "gru_rl_cfg",
+    "recover_amp_cfg",
     "rl_cfg",
 ]
