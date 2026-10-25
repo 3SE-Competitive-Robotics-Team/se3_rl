@@ -702,3 +702,11 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
 - 代码 `69c9e0f9`（xyh/1020，未推送）= Recover-AMP + recover 组在线蒸馏 gyi9exiz model_2200（系数 0.2，全程保持）。bundle `797fe285..xyh/1020` → `refs/heads/exp/rough-recoverampdistill-69c9e0f`；工作副本 `/workspace/se3-worktrees/rough-recoverampdistill-69c9e0f`。`assets/amp/recover_gyi9exiz_model2200/` 下的数据集 `recover.pkl` 与老师 `gyi9exiz_model_2200.pt` 经入口机从 whtws 中转拷来（sha256 三方一致；gitignore，不进 git）。
 - 续训源：whtws 6iwgpa2m model_1200，拷到 `logs/rsl_rl/<Distill 任务>/6iwgpa2m-model1200-src/`。六卡 × 8192 续训 smoke 5 轮通过（3.6–4.1 s/轮、无 Traceback / nefc、老师载入、ONNX 导出正常），日志 `/workspace/.se3-training-state/nulltask1/smoke-recoverampdistill-69c9e0f/`。
 - 02:33 UTC+8 按用户指令开训：GPU 0–5 × 8192、seed 42、续跑 5000 轮（1200 → 6200）、save 100，启动器 `-Resume -LoadRun 6iwgpa2m-model1200-src -LoadCheckpoint model_1200.pt -Repository` 这个 worktree（包装 `.scratch/amp_recover_20261024/launch_n1_recoverampdistill.ps1`，用 codex runtime 的 pwsh 7 跑）。W&B [mb6sjulr](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/mb6sjulr)；PID/PGID `2792156`；state `/workspace/.se3-training-state/nulltask1/20261024T183307Z-12130`；run `logs/rsl_rl/SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP-Distill/2026-10-25_02-33-14_rough-cts-student128-recovergroup-amp-distill-gyi2200-from6iwgpa2m1200-bench-seed42-6x8192-5k`。第 1211 轮无 Traceback / nefc，3.7 s/轮，imitation 0.059。对照 whtws 的 6iwgpa2m（同起点不蒸馏）。地形 / 速度课程续训时从初值重来。
+
+## 2026-10-25 四臂消融（nulltask1 两臂）
+
+- 代码 `fbcf241f`，bundle `69c9e0f9..xyh/1020` → `refs/heads/exp/rough-ablate-fbcf241`；工作副本 `/workspace/se3-worktrees/rough-ablate-fbcf241`（数据集与老师从 distill 工作副本拷，sha256 同 whtws）。两臂 3 卡 × 16384 smoke 通过（并行 5.4 s/轮）。开训前笔记本上 SE3-Nulltask1-WandbGateway 任务停在 Ready（入口机断线后），schtasks /Run 拉起后启动器通过。
+- 20:49 UTC+8 按用户指令开训（各从零、seed 42、5000 轮、save 100、每卡 16384）：
+  - 完整配方：`…-Student128`，GPU 0–2，W&B [ajb8j1ol](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/ajb8j1ol)，PID/PGID `2946383`，state `/workspace/.se3-training-state/nulltask1/20261025T124941Z-00655`。
+  - −蒸馏：`…-Student128-Recover-AMP`，GPU 3–5（AllowConcurrent），W&B [2j6xrn05](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/2j6xrn05)，PID/PGID `2947666`，state `/workspace/.se3-training-state/nulltask1/20261025T125006Z-02251`。
+  - 包装 `.scratch/cleanup_20261025/launch_n1_ablate_{full,nodistill}.ps1`；首轮 5.4–5.5 s/轮、六卡 95% / 23 GB。

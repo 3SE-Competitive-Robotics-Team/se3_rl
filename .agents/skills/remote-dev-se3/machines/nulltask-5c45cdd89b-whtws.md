@@ -386,3 +386,11 @@ bash C:/Users/13567/.local/bin/start-whtws-training.sh \
 
 - 代码 `b108b75f`（xyh/1020，未推送）：删拉格朗日 / 功率终止 / PersistBC / StudentPPO / yaw_gate / recovery_mimic 与 9 个实验入口，env 默认 recover 组 + AMP，Student128 即最终配方。bundle `69c9e0f9..xyh/1020` → `refs/heads/exp/rough-cleanup-b108b75`；工作副本 `/workspace/se3-worktrees/rough-cleanup-b108b75`，`assets/amp/recover_gyi9exiz_model2200/` 已拷数据集与老师（gitignore）。
 - smoke 全过（无 Traceback / nefc，ONNX 导出正常），日志 `/workspace/.se3-training-state/whtws/smoke-cleanup-b108b75/`：Student128 六卡 × 8192（3.4 s/轮，老师载入、掩码组 recover_mask，imitation ≈ 0.10，AMP 风格奖励 0.67）；Recover、Recover-AMP、基础 Rough 各单卡 × 8192（3.0–3.6 s/轮）。
+
+## 2026-10-25 四臂消融（whtws 两臂）
+
+- 代码 `fbcf241f`（xyh/1020，未推送）= b108b75f 整理 + 两个消融入口（−AMP、−recover 组；起身掩码组在没有 recover 组时改用 M）。bundle `b108b75f..xyh/1020` → `refs/heads/exp/rough-ablate-fbcf241`；工作副本 `/workspace/se3-worktrees/rough-ablate-fbcf241`（数据集与老师已拷，sha256 同前）。GPU 6 核对 `.scratch/cleanup_20261025/check_no_recover_mask.py` 全过（掩码每步与 M 逐位相等、M 外风格奖励 0、蒸馏只来自 M），两臂 3 卡 × 16384 smoke 通过（并行 5.5 s/轮）。
+- 20:43 UTC+8 按用户指令开训（各从零、seed 42、5000 轮、save 100、每卡 16384，四臂同时跑）：
+  - −AMP：`…-Student128-Ablate-NoAMP`，GPU 0–2，W&B [n36if5d6](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/n36if5d6)，PID/PGID `3582442`，state `/workspace/.se3-training-state/whtws/20261025T124321Z`。
+  - −recover 组：`…-Student128-Ablate-NoRecoverGroup`，GPU 3–5（--allow-concurrent），W&B [vsjweqne](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/vsjweqne)，PID/PGID `3584364`，state `/workspace/.se3-training-state/whtws/20261025T124456Z`。
+  - 参数 `.scratch/cleanup_20261025/whtws_{noamp,norecover}_args.txt`；对照 nulltask1 的完整 ajb8j1ol 与 −蒸馏 2j6xrn05。
