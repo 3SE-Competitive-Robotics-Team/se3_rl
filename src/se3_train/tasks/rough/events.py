@@ -446,7 +446,7 @@ def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> N
     if within is not None:
         for index, name in enumerate(cache.class_names):
             log[f"Recovery/recovered_within_3s_{name}"] = within[0][index]
-    # 还在起身的倒地 env 上的力度（当前步，均值与最大值）：对应倒地约束的四项（rewards.fall_lagrange_penalty）。
+    # 还在起身的倒地 env 上的力度（当前步，均值与最大值）：机身角速度、腿速、轮速、腿正功率。
     recovering = (fall_mask & ~recovered).float()
     n_rec = recovering.sum().clamp(min=1.0)
     omega = torch.linalg.norm(robot.data.root_link_ang_vel_b, dim=1)

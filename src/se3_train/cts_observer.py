@@ -14,11 +14,7 @@
 每个样本属于哪组由观测组 cts_role（教师 1 / 学生 0，env 固定）给出，随 rollout 存进 storage。
 部署只走学生路径：ONNX 输入仍是 480 维历史、输出动作，History-MLP 契约（term-major 历史）不变。
 
-学生隐向量的训练信号（student_latent_grad，2026-10-22 用户定的单变量对照）：
-- "mse"（默认，上面所述）：z_S 在 policy 前 detach，只由隐向量 MSE 回归 sg(z_T)；
-- "ppo"：z_S 不 detach，PPO 梯度经共用 policy 回传到学生编码器（随 actor 参数由 PPO optimizer 与 KL 自适应学习率更新），
-  去掉隐向量 MSE（仍在 no_grad 下计算、只记日志，看 z_S 会不会自发对齐 z_T）。两种模式 v̂x 都 detach、都由 vx MSE 监督，
-  所以只差隐向量的训练信号。教师编码器、3:1 分组、网络与 ONNX 契约完全相同。
+2026-10-22 的对照（student_latent_grad="ppo"：z_S 不 detach、由 PPO 端到端训练）2026-10-25 整理时删除，复现用 5343bf96。
 """
 
 from __future__ import annotations
@@ -66,13 +62,7 @@ class CTSVxObserverModel(MLPModel):
         teacher_obs_group: str = "critic",
         vx_target_group: str = "estimator_target",
         role_group: str = "cts_role",
-        student_latent_grad: str = "mse",
     ) -> None:
-        if student_latent_grad not in ("mse", "ppo"):
-            raise ValueError(
-                f"student_latent_grad 只能是 'mse' 或 'ppo'，收到 {student_latent_grad!r}"
-            )
-        self.student_latent_grad = student_latent_grad
         # 父类 __init__ 会调用 _get_latent_dim() 建 policy MLP，相关宽度须先设好（同 rsl_rl CNNModel 的写法）。
         self.history_length = int(history_length)
         self.frame_term_dims = tuple(int(d) for d in frame_term_dims)
@@ -141,18 +131,10 @@ class CTSVxObserverModel(MLPModel):
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
-        """policy 输入 [ô_t, 隐向量]：教师样本用教师隐向量（带梯度）；学生样本 "mse" 模式整条 detach，
-        "ppo" 模式只 detach v̂x、z_S 带梯度（PPO 端到端训练学生编码器）。"""
+        """policy 输入 [ô_t, 隐向量]：教师样本用教师隐向量（带梯度）；学生样本整条 detach（学生编码器只由重建损失训练）。"""
         history = self._normalized_history(obs)
         teacher = obs[self.role_group] > 0.5
-        student = self.student_latent(obs, history)
-        if self.student_latent_grad == "ppo":
-            student = torch.cat(
-                [student[:, : self.cts_latent_dim], student[:, self.cts_latent_dim :].detach()],
-                dim=-1,
-            )
-        else:
-            student = student.detach()
+        student = self.student_latent(obs, history).detach()
         latent = torch.where(teacher, self.teacher_latent(obs), student)
         return torch.cat([history.index_select(-1, self.latest_frame_index), latent], dim=-1)
 
@@ -162,8 +144,7 @@ class CTSVxObserverModel(MLPModel):
             self.teacher_obs_normalizer.update(obs[self.teacher_obs_group])  # type: ignore[operator]
 
     def estimator_loss(self, obs: TensorDict) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """重建损失：学生样本上 [z_S, v̂x] 回归 [sg(z_T), vx_true]，隐向量 MSE 与 vx MSE 等权相加；
-        "ppo" 模式只回传 vx MSE（z_S 交给 PPO），隐向量 MSE 照算只记日志。"""
+        """重建损失：学生样本上 [z_S, v̂x] 回归 [sg(z_T), vx_true]，隐向量 MSE 与 vx MSE 等权相加。"""
         student = (obs[self.role_group] <= 0.5).squeeze(-1)
         if not bool(student.any()):
             zero = self.estimator(self._normalized_history(obs)).sum() * 0.0
@@ -176,7 +157,7 @@ class CTSVxObserverModel(MLPModel):
         vx_mse = error[:, self.cts_latent_dim :].square().mean()
         # 两项各自取均值再相加：若对 33 维拼接整体取均值（官方代码写法），vx 只占 1/33 的权重，
         # 而 vx 是 VxObserver 验证过的主要收益来源，这里保持它与 VxObserver 相同的权重。
-        loss = vx_mse if self.student_latent_grad == "ppo" else latent_mse + vx_mse
+        loss = latent_mse + vx_mse
         return loss, {"cts_latent_mse": latent_mse.detach(), "estimator_vx_mse": vx_mse.detach()}
 
     @torch.no_grad()

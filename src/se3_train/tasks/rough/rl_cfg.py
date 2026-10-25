@@ -95,7 +95,6 @@ class CTSModelCfg(RslRlModelCfg):
     teacher_obs_group: str = "critic"
     vx_target_group: str = "estimator_target"
     role_group: str = "cts_role"
-    student_latent_grad: str = "mse"
     class_name: str = "se3_train.cts_observer:CTSVxObserverModel"
 
 
@@ -110,16 +109,10 @@ def _use_se3_ppo(cfg: RslRlOnPolicyRunnerCfg) -> RslRlOnPolicyRunnerCfg:
     return cfg
 
 
-def rl_cfg(
-    smoke: bool = False, *, imitation_loss: ImitationLossCfg | None = None
-) -> RslRlOnPolicyRunnerCfg:
-    """生成 MLP PPO 训练配置：PPO 超参数与 Flat 基线逐项相同，actor 隐藏层为 ROUGH_ACTOR_HIDDEN_DIMS。
-
-    imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加。
-    """
+def rl_cfg(smoke: bool = False) -> RslRlOnPolicyRunnerCfg:
+    """生成 MLP PPO 训练配置：PPO 超参数与 Flat 基线逐项相同，actor 隐藏层为 ROUGH_ACTOR_HIDDEN_DIMS。"""
     cfg = _use_se3_ppo(mlp_rl_cfg(smoke=smoke))
     cfg.actor = replace(cfg.actor, hidden_dims=ROUGH_ACTOR_HIDDEN_DIMS)
-    cfg.algorithm = replace(cfg.algorithm, imitation_loss=imitation_loss)
     cfg.bench_interval = ROUGH_BENCH_INTERVAL
     if not _is_smoke(smoke):
         cfg.max_iterations = ROUGH_MAX_ITERATIONS
@@ -135,7 +128,6 @@ def cts_rl_cfg(
     teacher_obs_group: str = "critic",
     student_hidden_dims: tuple[int, ...] = ROUGH_CTS_STUDENT_HIDDEN_DIMS,
     estimator_warmup_iterations: int = 0,
-    student_latent_grad: str = "mse",
     imitation_loss: ImitationLossCfg | None = None,
     policy_distill: PolicyDistillCfg | None = None,
     amp_cfg: dict | None = None,
@@ -144,7 +136,6 @@ def cts_rl_cfg(
     """生成 CTS PPO 配置：actor 换 CTSVxObserverModel，学生编码器用独立 Adam 做隐向量重建；PPO 超参数与 `rl_cfg` 相同。
 
     student_hidden_dims：学生编码器隐藏层；estimator_warmup_iterations：本进程前若干轮只训练学生编码器（换编码器续训用）；
-    student_latent_grad：学生隐向量的训练信号，"mse" 回归教师隐向量（默认）、"ppo" 由 PPO 端到端训练（见 se3_train.cts_observer）；
     imitation_loss：PPO 总损失里的模仿项（倒地教师用，见 se3_train.ppo），None 不加；
     policy_distill：网络老师在线蒸馏（recover 组起身用，见 se3_train.ppo），None 不加，与 imitation_loss 互斥；
     amp_cfg：AMP 风格奖励配置（recover 组起身风格用，见 se3_train.amp），None 不加。
@@ -163,7 +154,6 @@ def cts_rl_cfg(
         role_group=role_group,
         teacher_obs_group=teacher_obs_group,
         estimator_hidden_dims=tuple(int(d) for d in student_hidden_dims),
-        student_latent_grad=str(student_latent_grad),
     )
     cfg.algorithm = replace(
         cfg.algorithm,

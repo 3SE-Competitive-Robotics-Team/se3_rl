@@ -24,8 +24,6 @@ class ImitationLossCfg:
     front_period: float = 0.0
     back_period: float = 0.0
     shift_back: bool = True
-    # False 时不乘 α：教师退场（α = 0）后只要还在出目标，模仿项就一直以 coef 生效（2026-10-24 用户定，PersistBC）。
-    alpha_weighted: bool = True
 
 
 @dataclass
@@ -37,7 +35,7 @@ class PolicyDistillCfg:
     """
 
     teacher_checkpoint: str = ""
-    mask_group: str = "amp_mask"
+    mask_group: str = "recover_mask"
     role_group: str | None = "cts_role"
     coef: float = 0.2
     huber_delta: float = 1.0

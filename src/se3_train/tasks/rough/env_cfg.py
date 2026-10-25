@@ -93,7 +93,7 @@ from se3_train.tasks.flat.env_cfg import (
 )
 from se3_train.tasks.flat.env_cfg import env_cfg as flat_env_cfg
 
-from . import curriculums, events, recover, rewards, stair_rewards, terminations
+from . import curriculums, events, recover, rewards, stair_rewards
 from . import observations as rough_observations
 from .commands import (
     ROUGH_BODY_COLLISION_BOTTOM_OFFSET,
@@ -196,68 +196,16 @@ ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%，× ROUGH_FALL_SPAWN_PROB ≈ 8% 的 env 倒地出生。
 # 不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
 ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat", "obstacles", "wave")
-# 倒地约束（2026-10-22 用户定，拉格朗日乘子版，见 rewards.fall_lagrange_penalty）。奖励回到 b3odjuk6（4e74e45），
-# 把其中三项死区随 s 收紧的倒地罚（机身角速度、腿超速、轮超速）换成 λ 自适应的线性罚，并新增腿功率约束：
-# b3odjuk6 收到 s=1 后实测起身仍是腿速 20 rad/s、机身角速度 10.4 rad/s、功率 1.3 kW——罚分单价固定，倒地每秒比站着
-# 少约 124 分，猛甩省的时间够付罚款（"罚分总会被付掉"）。λ 按约束是否满足自动涨落，涨到越界不再划算为止。
-# 之前的 CaT 版（0c644416 / ff0nkdzb，e06a29f2 / 1nvtka54，f4f102ea / 2w33l0iq）因每步总奖励要垫到 ≥0 抹平了
-# 倒地期的稠密信号，三条都没学出翻身，已删。
-# v2（同日）：v1（dfde5296 / 704d362a）按世界系倾角 > 30° 计罚、λ ∈ [0, 1e4] 不归一化，16jwmav8 / brosdfzt 武装后
-# λ 涨到几千，起跳 / 陡坡 / 上台阶也被重罚（未武装时旧口径超限量 96% 本在起身中、走路只占 2%，乘上几千照样压垮），
-# 200 轮内地形等级 5.9 → 1.5 / 0.08、起身率归零。v2 改为：
-# - 罚分、J、倒地动作平滑罚都只在 M（倒地出生、尚未起身）里计，不再用倾角门控；
-# - M 内总奖励 r′ = (r − K·Σλᵢcᵢ)/(1 + Σλᵢ)、M 外 r′ = r（rewards.fall_lagrange_normalize，必须是最后一个奖励项），
-#   K=300：λ 大时 M 内任务奖励被缩到 0、提前起身的好处只剩起身后的走路奖励（每秒约 +14），越界 ε 持续 τ≈0.3 s 换翻身
-#   T≈1.5 s 的同比例提速，不划算的条件 K·τ·λ/(1+λ) ≳ T·(14 + 110/(1+λ))，K=300 时 λ ≳ 3 即成立；λ ∈ [0, 10]，
-#   每轮 λ += 0.02·clip((J−d)/d, −1, 5)；
-# - critic 加 M 标记与 1/(1+Σλ) 两维（observations.py；只进 critic，不进 actor / 教师编码器）；
-# - 功率只计正功 Σ max(0, τ·q̇)（R1 参考 |P| 的 45% 是被反推的制动功率）。
-# 限值按 R1 开环参考（峰值腿速 4.4 rad/s、机身角速度 8.2 rad/s、轮速 5.1 rad/s、正功率 166 W；新口径 ∫c dt 全为 0）留余量：
-# 腿速 13.4 = DM8009P 空载 16.8 × 0.8；机身角速度 10；轮速 30；腿正功率 400 W。目标 d=0.005 s。
-# 2026-10-22 新口径探针（16jwmav8 model_2300，未武装）：侧躺 / 倒置出生的 J（s）腿速 0.031 / 0.059、角速度 0.001 / 0.006、
-# 轮速 0.99 / 1.14（起身时轮子空转当反作用轮用）、正功率 0.078 / 0.23；M 内每秒平均超限量合计约 0.71。
-# 武装门控沿用 2026-10-21 用户定的 0.6：侧躺与倒置里较差一类的 3 s 内起身率 100 轮窗口均值 ≥0.6 才开始更新 λ。
-ROUGH_FALL_LAGRANGE_LIMITS = {
-    "leg_speed": 13.4,
-    "body_ang_vel": 10.0,
-    "wheel_speed": 30.0,
-    "leg_power": 400.0,
-}
-ROUGH_FALL_LAGRANGE = {
-    "limits": ROUGH_FALL_LAGRANGE_LIMITS,
-    "price_k": 300.0,
-    "window_class_names": ("side", "inverted"),
-    "horizon_s": 3.0,
-    "target_cost_s": 0.005,
-    "lambda_lr": 0.02,
-    "error_clip": (-1.0, 5.0),
-    "lambda_max": 10.0,
-    "cost_window_iters": 50,
-    "arm_window_iters": 100,
-    "arm_threshold": 0.6,
-}
-# 倒地动作平滑罚：没有物理限值，不进拉格朗日；沿用 b3odjuk6 收到 s=1 时的权重，武装后、只在 M 内计（rewards.fall_action_smoothness）。
-ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT = -0.12
+# 倒地约束的历史路线（死区罚 b3odjuk6、CaT 0c644416 / e06a29f2 / f4f102ea、拉格朗日乘子 dfde5296 / 704d362a / 777ebff3、
+# 倒地功率终止 051f1f49）都没能在共享奖励下挡住「越快越好」的暴起，2026-10-25 整理时删除；复现用 5343bf96。
 # 倒地起身脚本教师（2026-10-23 用户定，env_cfg(fall_teacher=True)，见 fall_teacher.py）：6 月 recovery_teacher 路线移植，
-# 教师动作按 α 混进执行动作 + 模仿奖励；用户定此路线不带拉格朗日约束（fall_lagrange=False）。模仿奖励沿用 6 月的权重与 σ。
+# 教师动作按 α 混进执行动作 + 模仿奖励，模仿奖励沿用 6 月的权重与 σ。只留给 Recover 入口（gyi9exiz，最终配方蒸馏老师的来源）。
 ROUGH_FALL_TEACHER_IMITATION_WEIGHT = 1.5
 ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
 # PPO 模仿损失的监督目标观测组（observations.fall_teacher_target_obs，[接管, α, 教师动作 6 维]），只给算法读，
 # 不进 actor / critic / CTS 教师编码器；fall_teacher=True 时 train / play 都建（play 全 0），见 rl_cfg 的模仿损失。
 ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
-# 倒地功率终止（2026-10-23 用户定，env_cfg(fall_power_limit=True)，见 terminations.fall_power_limit）：M（倒地出生、
-# 尚未起身）内腿正功率 Σ₄ max(0, τ·q̇) 连续 ROUGH_FALL_POWER_LIMIT_STEPS 步超过 ROUGH_FALL_POWER_LIMIT_W 即终止，
-# 单独一次性罚 ROUGH_FALL_POWER_LIMIT_PENALTY、不吃 fall_penalty。用途是倒地教师退场后挡住"越快越好"的猛甩：
-# kf3o74t7（FallTeacher）model_1200 不接教师时起身正功率峰值中位 0.9–1.2 kW，随 α 下降逐档变猛；拉格朗日 v2 三项 λ 同时顶满时
-# 每项单价被分母 1+Σλ 稀释到 ≤ K/3，两臂跑满 5000 轮超限仍是目标的 4–12 倍。
-# - 罚分必须远大于倒地状态的价值，否则终止是免费退出：fall_penalty 的 10 是按走路每秒最多 −0.5 定的，倒地期每秒约
-#   −110，躺满一局的折扣回报约 −220（γ=0.99），kf3o74t7 critic 对倒地出生估值中位 −60 ~ −190；只扣 10 会重演
-#   A10 的自杀策略与倒地 env 借腿角灾难终止退出（见 ROUGH_CATASTROPHIC_MAX_LEG_POS_ERROR）。取 300，使
-#   "温和起身 > 躺着 > 越界被杀"。
-# - 只在 M 内判：跳跃、上台阶本来就要大功率（拉格朗日 v1 按倾角全程计罚把走路压垮）。
-# - 限值沿用拉格朗日 leg_power 的 400 W（R1 开环参考峰值 166 W；倒地教师开环正功率 p90 约 150 W、峰值在 400 W 内），
-#   连续 3 步（60 ms）才判：滤掉单步尖峰，不把教师示范也杀掉。
-# recover 组（2026-10-24 用户定，env_cfg(recover_group=True)，见 recover.py）：倒地出生那几列里固定抽 ROUGH_RECOVER_GROUP_FRACTION
+# recover 组（2026-10-24 用户定，2026-10-25 起默认开，见 recover.py）：倒地出生那几列里固定抽 ROUGH_RECOVER_GROUP_FRACTION
 # 的 env（约占全体 10%）每局倒地出生、只练起身，其余 env 只练走路、不再倒地出生。共用一套奖励时，倒地期每秒约 −110、站起后
 # 每秒约 +14，晚起身 1 s 差约 124 分，任何约束都在和这个"速度溢价"对抗（dqkkieq0 / tf2qsg6r 教师退场后都滑回暴起）。
 # recover 组一局 10 s、8 s 截止，两种结束都是真终止不自举，回报只含本局：站稳前 0、站稳后 +1/s、站稳一次性 +20、
@@ -282,14 +230,13 @@ ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
 ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
 ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
 ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
-# recover 组 AMP（2026-10-24 用户定，env_cfg(recover_amp=True)，见 se3_train.amp）：判别器看 19 维运动帧（se3_shared.amp 契约），
+# recover 组掩码观测组（[N, 1]，是否 recover 组）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在 recover 组样本上算）读，
+# 不进 actor / critic / CTS 教师组；recover_group 开时 train / play 都建（play 全 0）。
+ROUGH_RECOVER_MASK_GROUP = "recover_mask"
+# recover 组 AMP（2026-10-24 用户定，2026-10-25 起默认开，见 se3_train.amp）：判别器看 19 维运动帧（se3_shared.amp 契约），
 # 参考是用户认可的 gyi9exiz model_2200 在 recover 组条件下的起身片段（scripts/record_recover_amp_dataset.py）；
-# 风格奖励与判别器的策略样本都只取 recover 组（掩码组），走路组不受影响。两组观测都不进 actor / critic / CTS 教师组。
+# 风格奖励与判别器的策略样本都只取 recover 组（ROUGH_RECOVER_MASK_GROUP），走路组不受影响。运动帧组不进 actor / critic / CTS 教师组。
 ROUGH_RECOVER_AMP_GROUP = "amp"
-ROUGH_RECOVER_AMP_MASK_GROUP = "amp_mask"
-ROUGH_FALL_POWER_LIMIT_W = 400.0
-ROUGH_FALL_POWER_LIMIT_STEPS = 3
-ROUGH_FALL_POWER_LIMIT_PENALTY = 300.0
 # CTS（2026-10-07 用户定，见 se3_train.cts_observer）：分组标记观测组名与学生 env 间隔（每 4 个 env 1 个学生，教师 : 学生 = 3 : 1）。
 ROUGH_CTS_ROLE_GROUP = "cts_role"
 ROUGH_CTS_STUDENT_EVERY = 4
@@ -538,16 +485,10 @@ def env_cfg(
     cts_teacher_height_scan: bool = True,
     stair_lin_vel_x_min: float | None = None,
     fall_spawn_prob: float = ROUGH_FALL_SPAWN_PROB,
-    fall_lagrange: bool = True,
     fall_teacher: bool = False,
-    fall_power_limit: bool = False,
-    fall_power_limit_w: float = ROUGH_FALL_POWER_LIMIT_W,
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
-    fall_teacher_supervise_after_handoff: bool = False,
-    fall_teacher_target_leash_rad: float | None = None,
-    recover_group: bool = False,
-    yaw_gate: bool = False,
-    recover_amp: bool = False,
+    recover_group: bool = True,
+    recover_amp: bool = True,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -569,23 +510,15 @@ def env_cfg(
         critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
     stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
         ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
-    fall_spawn_prob：平地列 reset 时改从倒地状态库出生的概率，默认 ROUGH_FALL_SPAWN_PROB；play 固定为 0，0 关闭。
-    fall_lagrange：倒地拉格朗日约束（四项罚、M 内归一化、critic 两维）与倒地动作平滑罚，默认开（见 ROUGH_FALL_LAGRANGE）。
+    fall_spawn_prob：recover 组关闭时出生列 reset 改从倒地状态库出生的概率，默认 ROUGH_FALL_SPAWN_PROB；play 固定为 0，0 关闭。
+        recover 组开启时不用（组内每局倒地出生、组外不倒地出生）。
     fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
-    fall_power_limit：倒地功率终止（M 内腿正功率连续 3 步超过 400 W 即终止，单独罚 300，见 ROUGH_FALL_POWER_LIMIT_PENALTY），
-        默认关；play 没有倒地出生，接了也不会触发。
-    fall_power_limit_w：倒地功率终止的腿正功率限值（W），默认 ROUGH_FALL_POWER_LIMIT_W；对照实验开关。
     fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
-        (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。对照实验开关。
-    fall_teacher_supervise_after_handoff / fall_teacher_target_leash_rad：倒地教师 α = 0 后继续出模仿目标、前杆与夹角目标
-        限幅在实测 ±L 内（见 FallTeacherCfg 同名字段），默认关 / None。对照实验开关。
-    recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认关；play 不分组、不倒地出生，奖励 / 终止 /
-        critic 维数与训练相同（组掩码全 False）。
-    yaw_gate：速度课程的 yaw 上限改由转向跟踪（Locomotion/tracking_ang_vel_reward_all）的独立 EMA 驱动
-        （mdp.curriculums.commands_vel_adaptive 的 yaw_gate_enabled），默认关——此时 yaw 上限跟着直线跟踪放开，
-        前约 500 轮就到 ±12 rad/s，与转向能力无关。对照实验开关。
-    recover_amp：recover 组 AMP 的两个观测组（运动帧 + recover 组掩码，见 ROUGH_RECOVER_AMP_* 注释），须同时开 recover_group；
-        train / play 都建（play 掩码全 0），rl_cfg 的 amp_cfg 按组名取。默认关。
+        (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
+    recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
+        critic 维数与训练相同（组掩码全 False）。同时建掩码观测组 ROUGH_RECOVER_MASK_GROUP。
+    recover_amp：recover 组 AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP，须同时开 recover_group；train / play 都建，
+        rl_cfg 的 amp_cfg 按组名取。默认开（rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -741,28 +674,6 @@ def env_cfg(
         stair_height_dead_zone_m=stair_height_dead_zone_m,
         base_height_sigma=base_height_sigma,
     )
-    # 倒地约束（见 ROUGH_FALL_LAGRANGE 注释）：四项拉格朗日罚 + 倒地动作平滑罚。
-    if fall_lagrange:
-        for name in rewards.FALL_LAGRANGE_CONSTRAINTS:
-            cfg.rewards[f"fall_lagrange_{name}"] = RewardTermCfg(
-                func=rewards.fall_lagrange_penalty,
-                weight=-1.0,
-                params={
-                    "constraint": name,
-                    "steps_per_policy_iter": ROUGH_STEPS_PER_POLICY_ITER,
-                    **ROUGH_FALL_LAGRANGE,
-                },
-            )
-        smooth = cfg.rewards["action_smoothness"].params
-        cfg.rewards["fall_action_smoothness"] = RewardTermCfg(
-            func=rewards.fall_action_smoothness,
-            weight=ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT,
-            params={
-                key: smooth[key]
-                for key in ("command_name", "max_penalty", "leg_scale", "wheel_scale")
-                if key in smooth
-            },
-        )
     # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
     if fall_teacher:
         if not play:
@@ -778,10 +689,7 @@ def env_cfg(
                 )
             )
             delayed_action.teacher = FallTeacherCfg(
-                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER,
-                supervise_after_handoff=bool(fall_teacher_supervise_after_handoff),
-                target_leash_rad=fall_teacher_target_leash_rad,
-                **schedule,
+                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
             )
             delayed_action.teacher.validate()
         cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(
@@ -851,9 +759,6 @@ def env_cfg(
 
     # RJ1：合入 J10 的跳跃（见 _apply_jump_mimic）。
     _apply_jump_mimic(cfg)
-    # 倒地功率终止要在 RJ1 把 fall_penalty 换成 is_terminated_except 之后接（见 _apply_fall_power_limit）。
-    if fall_power_limit:
-        _apply_fall_power_limit(cfg, limit_w=fall_power_limit_w)
     # 2026-10-02：观测 34 → 30 维、部署指令六维（去掉 pitch / roll 指令与 wheel_pos_zero，见 tasks.common.no_attitude）。
     apply_no_attitude_layout(cfg)
     if not cts_teacher_height_scan and not cts:
@@ -889,17 +794,10 @@ def env_cfg(
         cfg.commands["velocity_height"] = replace(
             cfg.commands["velocity_height"], stair_lin_vel_x_range=(low, high)
         )
-    # 倒地约束 / 倒地教师的 critic 特权观测（见 observations.py）。必须在 CTS 教师观测组从 critic 派生之后加，
-    # 教师编码器不能看到 M 与教师状态；旧 Exp-CTS（教师直接读整个 critic 组）不加，避免泄漏到教师隐向量。
+    # 倒地教师的 critic 特权观测（见 observations.py）。必须在 CTS 教师观测组从 critic 派生之后加，
+    # 教师编码器不能看到教师状态；旧 Exp-CTS（教师直接读整个 critic 组）不加，避免泄漏到教师隐向量。
     if not (cts and cts_teacher_height_scan):
         fall_terms: dict[str, ObservationTermCfg] = {}
-        if fall_lagrange:
-            fall_terms["fall_constraint_active"] = ObservationTermCfg(
-                func=rough_observations.fall_constraint_active_obs
-            )
-            fall_terms["fall_lagrange_scale"] = ObservationTermCfg(
-                func=rough_observations.fall_lagrange_scale_obs
-            )
         if fall_teacher:
             fall_terms["fall_teacher_active"] = ObservationTermCfg(
                 func=rough_observations.fall_teacher_active_obs
@@ -921,8 +819,6 @@ def env_cfg(
         if "command_vel" in cfg.curriculum:
             params = dict(cfg.curriculum["command_vel"].params or {})
             params["tracking_log_key"] = ROUGH_CURRICULUM_TRACKING_LOG_KEY
-            if yaw_gate:
-                params["yaw_gate_enabled"] = True
             cfg.curriculum["command_vel"] = replace(cfg.curriculum["command_vel"], params=params)
         # 顺序有意义：先结算升降级，再由热身换列（见 curriculums.flat_warmup）。
         cfg.curriculum["terrain_levels"] = CurriculumTermCfg(
@@ -959,9 +855,12 @@ def env_cfg(
             )
 
     if recover_group:
-        if fall_lagrange or fall_power_limit:
-            raise ValueError("recover 组自带奖励与终止，不和倒地拉格朗日 / 功率终止同用")
         _apply_recover_group(cfg, play=play)
+        cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
+            terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
+            concatenate_terms=True,
+            enable_corruption=False,
+        )
     if recover_amp:
         if not recover_group:
             raise ValueError("recover_amp 的风格奖励只作用在 recover 组，须同时开 recover_group")
@@ -969,17 +868,6 @@ def env_cfg(
             terms=build_amp_obs_terms(AMP_FEATURE_NAMES),
             concatenate_terms=True,
             enable_corruption=False,
-        )
-        cfg.observations[ROUGH_RECOVER_AMP_MASK_GROUP] = ObservationGroupCfg(
-            terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
-            concatenate_terms=True,
-            enable_corruption=False,
-        )
-    # M 内奖励归一化必须是最后一个奖励项（rewards.fall_lagrange_normalize 首次调用时核对）。
-    if fall_lagrange:
-        cfg.rewards = dict(cfg.rewards)
-        cfg.rewards["fall_lagrange_normalize"] = RewardTermCfg(
-            func=rewards.fall_lagrange_normalize, weight=1.0
         )
     return cfg
 
@@ -1173,37 +1061,6 @@ def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
     )
 
 
-def _apply_fall_power_limit(cfg: ManagerBasedRlEnvCfg, *, limit_w: float) -> None:
-    """倒地功率终止（见 ROUGH_FALL_POWER_LIMIT_PENALTY 注释）：终止项 + 单独的一次性罚分，并从 fall_penalty 里排除。"""
-    if limit_w <= 0.0:
-        raise ValueError(f"倒地功率限值必须为正数，实际为 {limit_w}")
-    fall = cfg.rewards["fall_penalty"]
-    if fall.func is not rewards.is_terminated_except:
-        raise ValueError(
-            "倒地功率终止要从 fall_penalty 里排除，fall_penalty 须是 rewards.is_terminated_except"
-        )
-    cfg.terminations = dict(cfg.terminations)
-    cfg.terminations["fall_power_limit"] = TerminationTermCfg(
-        func=terminations.fall_power_limit,
-        time_out=False,
-        params={"limit_w": float(limit_w), "steps": ROUGH_FALL_POWER_LIMIT_STEPS},
-    )
-    step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
-    cfg.rewards = dict(cfg.rewards)
-    cfg.rewards["fall_power_limit_penalty"] = RewardTermCfg(
-        func=rewards.termination_term,
-        weight=-ROUGH_FALL_POWER_LIMIT_PENALTY / step_dt,
-        params={"term_name": "fall_power_limit"},
-    )
-    cfg.rewards["fall_penalty"] = replace(
-        fall,
-        params={
-            **fall.params,
-            "exclude_terms": (*fall.params["exclude_terms"], "fall_power_limit"),
-        },
-    )
-
-
 def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
     """DR1（见 ROUGH_DR_* 注释）：改 Flat 继承的 startup 事件参数，Kp/Kd 换成 torch 侧实现，放宽动作延迟。
 
@@ -1376,13 +1233,7 @@ __all__ = [
     "ROUGH_DR_KD_RANGE",
     "ROUGH_DR_KNEE_SPRING_SCALE_RANGE",
     "ROUGH_DR_KP_RANGE",
-    "ROUGH_FALL_ACTION_SMOOTHNESS_WEIGHT",
-    "ROUGH_FALL_LAGRANGE",
-    "ROUGH_FALL_LAGRANGE_LIMITS",
     "ROUGH_FALL_PENALTY",
-    "ROUGH_FALL_POWER_LIMIT_PENALTY",
-    "ROUGH_FALL_POWER_LIMIT_STEPS",
-    "ROUGH_FALL_POWER_LIMIT_W",
     "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
     "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",

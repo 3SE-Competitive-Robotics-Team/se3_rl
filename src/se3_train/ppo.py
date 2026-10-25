@@ -28,9 +28,7 @@ detach，PPO 损失对它的梯度恒为 None，Adam 跳过，不会被 PPO 更�
 actor 自带 estimator_loss(observations) 时（CTS，见 se3_train.cts_observer）改用它给出的损失（学生编码器的隐向量重建），
 并按 cts_role 分别记教师 / 学生 env 的平均单步奖励（Loss/cts_reward_teacher、Loss/cts_reward_student）：
 训练端其余指标被占多数的教师 env 主导，学生 env 才代表部署路径。actor 带 latent_std(observations) 时另记
-Loss/estimator_latent_std（学生隐向量是否塌缩）。CTS 的 student_latent_grad="ppo"（2026-10-22）时学生隐向量不 detach，
-PPO 梯度经它进入学生编码器、由 PPO optimizer 更新（与上面带隐向量的估计器同理），重建损失只剩 vx MSE；
-此时 PPO 优化器里有学生编码器的状态，下面"换学生编码器续训"的形状切换不适用。
+Loss/estimator_latent_std（学生隐向量是否塌缩）。
 
 换学生编码器续训（2026-10-09，单片机部署版 128/128）：`load` 发现 checkpoint 的 estimator 形状与当前不一致时，
 只丢弃 `estimator.*` 参数与估计器独立优化器状态，其余（教师编码器、policy、critic、PPO 优化器）照常加载。
@@ -112,7 +110,6 @@ class _ImitationLoss:
         front_period: float,
         back_period: float,
         shift_back: bool,
-        alpha_weighted: bool = True,
     ) -> None:
         if coef < 0.0 or huber_delta <= 0.0 or front_period <= 0.0:
             raise ValueError(
@@ -126,7 +123,6 @@ class _ImitationLoss:
         self.front_period = float(front_period)
         self.back_period = float(back_period)
         self.shift_back = bool(shift_back)
-        self.alpha_weighted = bool(alpha_weighted)
 
     def augment_batch(self, batch: Any, original_batch_size: int) -> None:
         del batch, original_batch_size
@@ -144,7 +140,7 @@ class _ImitationLoss:
         mean = actor.output_mean[:original_batch_size]
         target = batch.observations[self.group][:original_batch_size]
         active = (target[:, 0] > 0.5).float()
-        alpha = target[:, 1] if self.alpha_weighted else torch.ones_like(target[:, 1])
+        alpha = target[:, 1]
         teacher = self.align(target[:, 2:], mean)
         per_sample = torch.nn.functional.huber_loss(
             mean, teacher, reduction="none", delta=self.huber_delta

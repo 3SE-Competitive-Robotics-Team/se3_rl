@@ -73,14 +73,8 @@ class FallTeacherCfg:
     end_iter: int = 1900
     steps_per_policy_iter: int = 24
     fixed_iteration: int | None = None
-    # 2026-10-24 用户定（PersistBC）：α 退到 0 后状态机继续推进、继续出模仿目标（只监督不执行），配合不乘 α 的模仿损失；
-    # 默认关，α = 0 后状态机停转（旧入口行为）。
-    supervise_after_handoff: bool = False
-    # 限幅开环：前杆 / 夹角目标照原样积分，再限制在实测 ±target_leash_rad 内（下一步从限幅值继续积分）。教师自己执行时
-    # 跟踪误差只有 0.07–0.08 rad，L = 0.3 不触发、与开环逐项一致；策略执行时目标最多领先 L，不会像纯开环那样越积越远
-    # （dqkkieq0 model_1000 上开环目标 − 实测 2 → 47 rad，标定见 .scratch/fall_teacher_probe_20261023/closed_loop_teacher_probe.py）。
-    # None = 纯开环（旧入口行为）。
-    target_leash_rad: float | None = None
+    # PersistBC 的 supervise_after_handoff（α = 0 后继续出模仿目标）与 target_leash_rad（目标限幅开环）2026-10-25 整理时删除，
+    # 复现用 5343bf96。
 
     def validate(self) -> None:
         """拒绝会让教师时序或动作语义静默漂移的配置。"""
@@ -106,8 +100,6 @@ class FallTeacherCfg:
             raise ValueError("须 0 ≤ hold_iters ≤ mid_iter ≤ end_iter")
         if self.steps_per_policy_iter <= 0:
             raise ValueError(f"steps_per_policy_iter 必须为正数，实际 {self.steps_per_policy_iter}")
-        if self.target_leash_rad is not None and self.target_leash_rad <= 0.0:
-            raise ValueError(f"target_leash_rad 必须为正数或 None，实际 {self.target_leash_rad}")
 
     def build(self, env: ManagerBasedRlEnv, term: SerialLegDelayedAction) -> FallTeacher:
         return FallTeacher(self, env, term)
@@ -197,7 +189,7 @@ class FallTeacher:
         if self._fresh:
             return
         self.alpha_value = fall_teacher_alpha(self.current_iteration(), self.cfg)
-        if self.alpha_value <= 0.0 and not self.cfg.supervise_after_handoff:
+        if self.alpha_value <= 0.0:
             self.active.fill_(False)
             self.teacher_raw.zero_()
         else:
@@ -206,17 +198,14 @@ class FallTeacher:
         self._fresh = True
 
     def transform(self, policy_actions: torch.Tensor) -> torch.Tensor:
-        """返回执行动作 π + α·active·(T − π)；α = 0 后直接返回策略动作（supervise_after_handoff 时仍算教师动作、记日志）。"""
+        """返回执行动作 π + α·active·(T − π)；α = 0 后直接返回策略动作。"""
         self.prepare()
         self._fresh = False
         alpha = self.alpha_value
-        if alpha <= 0.0 and not self.cfg.supervise_after_handoff:
+        if alpha <= 0.0:
             return policy_actions
         teacher = self._align(self.teacher_raw, policy_actions)
         self.teacher_action.copy_(teacher)
-        if alpha <= 0.0:
-            self._log(policy_actions, teacher, alpha)
-            return policy_actions
         weight = (self.active.float() * alpha).unsqueeze(1)
         executed = policy_actions + weight * (teacher - policy_actions)
         if self._clip is not None:
@@ -323,17 +312,6 @@ class FallTeacher:
             self.seg,
         )
         self.active = (self.seg >= _FLIP) & (self.seg <= _HOLD)
-
-        # 限幅开环：目标限制在实测 ±L 内（只动接管中的 env）
-        leash = cfg.target_leash_rad
-        if leash is not None:
-            act = self.active.unsqueeze(1)
-            self.theta = torch.where(
-                act, torch.clamp(self.theta, q[:, [0, 2]] - leash, q[:, [0, 2]] + leash), self.theta
-            )
-            self.phi = torch.where(
-                act, torch.clamp(self.phi, phi_now - leash, phi_now + leash), self.phi
-            )
 
     def _teacher_action(self) -> torch.Tensor:
         """当前前杆 / 夹角指令换成策略动作空间（轮速目标 0）。"""
