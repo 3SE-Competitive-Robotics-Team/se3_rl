@@ -230,8 +230,8 @@ ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
 ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
 ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
 ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
-# recover 组掩码观测组（[N, 1]，是否 recover 组）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在 recover 组样本上算）读，
-# 不进 actor / critic / CTS 教师组；recover_group 开时 train / play 都建（play 全 0）。
+# 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
+# CTS 教师组；train / play 都建（play 全 0）。recover 组开时 = 是否 recover 组；关时（消融 −recover 组）= 倒地出生、尚未起身（M）。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
 # recover 组 AMP（2026-10-24 用户定，2026-10-25 起默认开，见 se3_train.amp）：判别器看 19 维运动帧（se3_shared.amp 契约），
 # 参考是用户认可的 gyi9exiz model_2200 在 recover 组条件下的起身片段（scripts/record_recover_amp_dataset.py）；
@@ -516,9 +516,10 @@ def env_cfg(
     fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
     recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
-        critic 维数与训练相同（组掩码全 False）。同时建掩码观测组 ROUGH_RECOVER_MASK_GROUP。
-    recover_amp：recover 组 AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP，须同时开 recover_group；train / play 都建，
-        rl_cfg 的 amp_cfg 按组名取。默认开（rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
+        critic 维数与训练相同（组掩码全 False）。关闭时（消融 −recover 组）倒地出生按 fall_spawn_prob、走共享奖励。
+        两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
+    recover_amp：AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP；train / play 都建，rl_cfg 的 amp_cfg 按组名取。默认开
+        （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -856,14 +857,15 @@ def env_cfg(
 
     if recover_group:
         _apply_recover_group(cfg, play=play)
-        cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
-            terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
-            concatenate_terms=True,
-            enable_corruption=False,
-        )
+        mask_terms = {"recover_group": ObservationTermCfg(func=recover.recover_group_obs)}
+    else:
+        mask_terms = {
+            "fall_recovering": ObservationTermCfg(func=rough_observations.fall_recovering_obs)
+        }
+    cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
+        terms=mask_terms, concatenate_terms=True, enable_corruption=False
+    )
     if recover_amp:
-        if not recover_group:
-            raise ValueError("recover_amp 的风格奖励只作用在 recover 组，须同时开 recover_group")
         cfg.observations[ROUGH_RECOVER_AMP_GROUP] = ObservationGroupCfg(
             terms=build_amp_obs_terms(AMP_FEATURE_NAMES),
             concatenate_terms=True,

@@ -76,6 +76,17 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID = 
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
 )
+# 2026-10-25 用户定的四臂消融（各从零、同 commit、seed 42、3 卡 × 16384）：完整 = Student128，−蒸馏 = Recover-AMP，
+# 以及下面两个入口（临时，消融结论后删除）。
+# −AMP：env 关 AMP 运动帧组，rl 只有 recover 组在线蒸馏。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_AMP_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Ablate-NoAMP"
+)
+# −recover 组：不分组，出生列按 fall_spawn_prob（0.5，约 8% env）倒地出生、走共享奖励；蒸馏与 AMP 改作用在倒地出生、
+# 尚未起身（M）的 env 上（起身掩码组见 env_cfg.ROUGH_RECOVER_MASK_GROUP）。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_RECOVER_GROUP_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Ablate-NoRecoverGroup"
+)
 # 2026-10-25 整理（用户定"只留最终配方链"）：删掉 LowGains、StudentPPO、FallTeacher、FallTeacherBC、FallTeacherBC-PowerLimit /
 # -PowerLimit600 / -PowerLimit600-Alpha800 / -PersistBC、两个 PowerLimit-MLP、Recover-YawGate 入口，以及倒地拉格朗日约束、
 # 倒地功率终止、PersistBC（教师退场后继续监督 + 目标限幅）、学生隐向量 PPO 端到端训练、env_cfg 的 yaw_gate 开关与
@@ -287,8 +298,58 @@ def register() -> None:
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
 
+    # 消融 −AMP：recover 组 + 蒸馏，不建 AMP 运动帧组、rl 不配 AMP。
+    no_amp_kwargs = dict(stair_vx08_kwargs, recover_amp=False)
+    no_amp_env_cfg = env_cfg(**no_amp_kwargs)
+    no_amp_actor = no_amp_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_AMP_TASK_ID,
+        env_cfg=no_amp_env_cfg,
+        play_env_cfg=env_cfg(play=True, **no_amp_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(no_amp_actor.history_length),
+                frame_term_dims=tuple(observation_term_width(name) for name in no_amp_actor.terms),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                policy_distill=_recover_policy_distill(no_amp_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_AMP_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # 消融 −recover 组：不分组、共享奖励下倒地出生；蒸馏与 AMP 作用在 M 上。
+    no_recover_kwargs = dict(stair_vx08_kwargs, recover_group=False)
+    no_recover_env_cfg = env_cfg(**no_recover_kwargs)
+    no_recover_actor = no_recover_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_RECOVER_GROUP_TASK_ID,
+        env_cfg=no_recover_env_cfg,
+        play_env_cfg=env_cfg(play=True, **no_recover_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(no_recover_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in no_recover_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                policy_distill=_recover_policy_distill(no_recover_env_cfg),
+                amp_cfg=_recover_amp_cfg(),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_RECOVER_GROUP_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_AMP_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_ABLATE_NO_RECOVER_GROUP_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
