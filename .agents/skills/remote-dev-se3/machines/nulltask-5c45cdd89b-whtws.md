@@ -394,3 +394,10 @@ bash C:/Users/13567/.local/bin/start-whtws-training.sh \
   - −AMP：`…-Student128-Ablate-NoAMP`，GPU 0–2，W&B [n36if5d6](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/n36if5d6)，PID/PGID `3582442`，state `/workspace/.se3-training-state/whtws/20261025T124321Z`。
   - −recover 组：`…-Student128-Ablate-NoRecoverGroup`，GPU 3–5（--allow-concurrent），W&B [vsjweqne](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/vsjweqne)，PID/PGID `3584364`，state `/workspace/.se3-training-state/whtws/20261025T124456Z`。
   - 参数 `.scratch/cleanup_20261025/whtws_{noamp,norecover}_args.txt`；对照 nulltask1 的完整 ajb8j1ol 与 −蒸馏 2j6xrn05。
+
+## 2026-10-27 Recover-Impact：低撞击起身老师
+
+- 代码 `abb19c7f`（xyh/1020，未推送）= gyi9exiz 配方（d3a8e86）+ recover 组撞击罚：机身与四根腿杆对地接触力超过 1.5 倍体重（≈187 N）的部分，权重 −0.15 / (N·s)，只在 recover 组。配置核对与 gyi9exiz 只差这一项。子模块指针改到 `711257f`（xyh/1026-sim2x，sim2x 默认行为不变）。
+- bundle `fbcf241f..xyh/1020` → `refs/heads/exp/rough-impact-abb19c7`；子模块 bundle `7c3a759..xyh/1026-sim2x` 进 `/workspace/se3-worktrees/.se3-sim2x-mirror`。工作副本 `/workspace/se3-worktrees/rough-impact-abb19c7`（子模块初始化要 `git -c protocol.file.allow=always submodule update --init`；数据集与老师已拷）。中间版 `rough-impact-wip`（fbcf241 + 补丁，src 与 abb19c7f 逐字相同）可删。
+- 撞击罚标定：gyi9exiz model_2200 在本入口回放，倒置每局撞击罚中位 −8.1（超阈冲量 53.7 N·s）、侧躺 −2.8，走路组该项恒 0（`impact_ledger.py`）。GPU 3 单卡 × 1024 smoke 5 轮通过。
+- 15:21 UTC+8 按用户指令开训：GPU 0–5 × 8192、seed 42、5000 轮、save 100、从零，`-c abb19c7`、`-R /workspace/se3-worktrees/rough-impact-abb19c7`（开训前实时复查七卡 2 MiB、无 se3-train）。W&B [m6rxc7v9](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/m6rxc7v9)；PID/PGID `439951`；state `/workspace/.se3-training-state/whtws/20261027T072146Z`；run `logs/rsl_rl/SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Impact/2026-10-27_15-21-53_rough-cts-student128-fallteacherbc-alpha800-recovergroup-impact015-scratch-bench-seed42-6x8192-5k`。第 13 轮无 Traceback / nefc，3.4 s/轮，六卡 13.4–13.8 GB。参数 `.scratch/fall_teacher_probe_20261023/whtws_recoverimpact_args.txt`。对照 gyi9exiz；选 checkpoint 用 `policy_recovery_eval_impact.py`（机身峰值力、>3W 步数、落地速度）+ `Recover/*` 起身率。
