@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import JointGroup
+from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import wheel_actuator_ids
 from se3_train.mdp.rewards import _policy_leg_torque_and_vel
 
@@ -255,6 +256,19 @@ def recover_wheel_speed_excess(env: ManagerBasedRlEnv, threshold: float) -> torc
     )
 
 
+def recover_contact_impact_excess(
+    env: ManagerBasedRlEnv, sensor_names: tuple[str, ...], threshold_n: float
+) -> torch.Tensor:
+    """Σ(传感器, body) max(0, ‖F_对地‖ − threshold_n)（N），只在 recover 组；乘 step_dt 后即超阈冲量（N·s）。"""
+    total = torch.zeros(env.num_envs, device=env.device)
+    for name in sensor_names:
+        force = finite_contact_force_norm(env.scene.sensors[name].data.force)
+        total = total + torch.clamp(force - float(threshold_n), min=0.0).reshape(
+            env.num_envs, -1
+        ).sum(dim=1)
+    return total * recover_group_mask(env).float()
+
+
 def recover_group_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """[N, 1] critic：是否 recover 组。"""
     return recover_group_mask(env).float().unsqueeze(1)
@@ -280,6 +294,7 @@ __all__ = [
     "assign_recover_group",
     "force_recover_commands",
     "recover_ang_vel_excess",
+    "recover_contact_impact_excess",
     "recover_failed",
     "recover_finished",
     "recover_group_mask",

@@ -230,6 +230,14 @@ ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
 ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
 ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
 ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
+# recover 组撞击罚（2026-10-27 用户定，env_cfg(recover_impact=True)，默认关）：机身 base_link 与四根腿杆各自对地接触合力超过
+# 阈值的部分求和、线性计罚，乘 step_dt 即超阈冲量（N·s）。gyi9exiz model_2200 与由它蒸馏的两个学生倒置起身时机身以约
+# 1.7 m/s 砸地，峰值力中位约 1200 N（整机 12.73 kg、体重约 125 N），99% 出现超 3 倍体重的撞击
+# （.scratch/fall_teacher_probe_20261023/policy_recovery_eval_impact.py，Pod 评测 impact_20261027）。
+# 阈值 1.5 倍体重：躺着静压不到体重，翻身支撑的正常接触不计；权重见离线账本（同目录 impact_ledger.py）。
+ROUGH_RECOVER_IMPACT_SENSORS = ("collision_sensor", "leg_contact_sensor")
+ROUGH_RECOVER_IMPACT_THRESHOLD_N = 1.5 * 12.73 * 9.81
+ROUGH_RECOVER_IMPACT_WEIGHT = -0.15
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0）。recover 组开时 = 是否 recover 组；关时（消融 −recover 组）= 倒地出生、尚未起身（M）。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -489,6 +497,7 @@ def env_cfg(
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
     recover_group: bool = True,
     recover_amp: bool = True,
+    recover_impact: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -520,6 +529,7 @@ def env_cfg(
         两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
     recover_amp：AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP；train / play 都建，rl_cfg 的 amp_cfg 按组名取。默认开
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
+    recover_impact：recover 组奖励加机身 + 腿杆撞击罚（见 ROUGH_RECOVER_IMPACT_* 注释），默认关；须 recover_group=True。
     """
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -855,8 +865,10 @@ def env_cfg(
                 params={"command_name": "velocity_height"},
             )
 
+    if recover_impact and not recover_group:
+        raise ValueError("recover_impact 是 recover 组奖励的一项，须 recover_group=True")
     if recover_group:
-        _apply_recover_group(cfg, play=play)
+        _apply_recover_group(cfg, play=play, impact=recover_impact)
         mask_terms = {"recover_group": ObservationTermCfg(func=recover.recover_group_obs)}
     else:
         mask_terms = {
@@ -948,8 +960,9 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
-    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。"""
+def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool, impact: bool = False) -> None:
+    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
+    impact 时 recover 组奖励再加机身 + 腿杆撞击罚（ROUGH_RECOVER_IMPACT_*）。"""
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
     if not play:
@@ -1045,6 +1058,15 @@ def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
             params={"inner": action_rate.func, "params": dict(action_rate.params or {})},
         ),
     }
+    if impact:
+        recover_terms["recover_impact_excess"] = RewardTermCfg(
+            func=recover.recover_contact_impact_excess,
+            weight=ROUGH_RECOVER_IMPACT_WEIGHT,
+            params={
+                "sensor_names": ROUGH_RECOVER_IMPACT_SENSORS,
+                "threshold_n": ROUGH_RECOVER_IMPACT_THRESHOLD_N,
+            },
+        )
     if imitation is not None:
         recover_terms["fall_teacher_imitation"] = imitation
     cfg.rewards = {**walking, **recover_terms}
