@@ -40,6 +40,7 @@ PPO 优化器能原样加载：估计器参数虽在 actor 里，但从未收到
 coef·mean_接管样本(α·Huber(μ − T))，μ 是本 mini-batch 重算的策略均值，T 与 α、接管标记取自观测组 `group`（与该样本观测同一时刻）。
 只靠模仿奖励时（kf3o74t7）前 200 轮策略与教师的动作差不降反升：exp(−mse/σ) 在差距大时几乎为 0，没有梯度。
 T 先按前杆整圈平移到 μ 那一圈（前杆 PD 走最短角，差整圈的动作物理上相同），joint 语义下同侧后杆同步平移。
+`back_follow`（2026-10-27，教师夹角归策略时用）：后杆目标改为 μ_后 + k·(μ_前 − T_前)（μ 不回传梯度），只监督后杆跟前杆转、不监督夹角。
 rsl_rl 5.4 的 PPO.update 只在 symmetry 钩子处允许往总损失里加项（与 PPO 损失同一次反传，走同样的多卡梯度平均与梯度裁剪），
 这里借这个钩子挂模仿项、不做对称增广；同时配真正的 symmetry_cfg 会报错。日志 Loss/imitation（原 symmetry 键改名）。
 
@@ -110,6 +111,7 @@ class _ImitationLoss:
         front_period: float,
         back_period: float,
         shift_back: bool,
+        back_follow: tuple[float, float] | None = None,
     ) -> None:
         if coef < 0.0 or huber_delta <= 0.0 or front_period <= 0.0:
             raise ValueError(
@@ -123,6 +125,7 @@ class _ImitationLoss:
         self.front_period = float(front_period)
         self.back_period = float(back_period)
         self.shift_back = bool(shift_back)
+        self.back_follow = None if back_follow is None else tuple(float(k) for k in back_follow)
 
     def augment_batch(self, batch: Any, original_batch_size: int) -> None:
         del batch, original_batch_size
@@ -142,6 +145,11 @@ class _ImitationLoss:
         active = (target[:, 0] > 0.5).float()
         alpha = target[:, 1]
         teacher = self.align(target[:, 2:], mean)
+        if self.back_follow is not None:
+            # 夹角归策略（fall_teacher fold='policy'）：后杆目标 = μ_后 + k·(μ_前 − T_前)（μ 不回传），只监督跟转量、不监督夹角
+            held = mean.detach()
+            gain = torch.tensor(self.back_follow, device=mean.device, dtype=mean.dtype)
+            teacher[:, [1, 3]] = held[:, [1, 3]] + gain * (held[:, [0, 2]] - teacher[:, [0, 2]])
         per_sample = torch.nn.functional.huber_loss(
             mean, teacher, reduction="none", delta=self.huber_delta
         ).mean(dim=1)

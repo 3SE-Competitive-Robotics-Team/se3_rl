@@ -13,11 +13,13 @@ from .env_cfg import (
     ROUGH_CTS_TEACHER_GROUP,
     ROUGH_FALL_TEACHER_TARGET_GROUP,
     ROUGH_RECOVER_AMP_GROUP,
+    ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED,
     ROUGH_RECOVER_MASK_GROUP,
     ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
     ROUGH_VX_OBSERVER_TARGET_GROUP,
     env_cfg,
 )
+from .fall_teacher import back_follow_gain
 from .rl_cfg import (
     ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
     ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF,
@@ -79,6 +81,9 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_IMPACT_TAS
 # 2026-10-27 用户定：Recover-Impact（m6rxc7v9）老师退场后倒置干脆不翻；用户判断撞击来自教师规定死的轨迹。改回 6 月随机方向教师
 # （fall_teacher.FallTeacherCfg.june_random：只接倒置、每局随机方向、π rad/s、翻正即交还），其余与 gyi9exiz 入口相同、不加撞击罚。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir"
+# 2026-10-27 用户定：RandDir（3zqym1vn）倒置照样砸地（机身峰值力中位约 1.0 kN）。教师夹角不再限制（只给前杆转动，后杆跟转、夹角归策略，
+# 模仿损失后杆只监督跟转量），并加 recover 组撞击罚（权重按折扣口径取 env_cfg.ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED）。相对 RandDir 两处改动。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_FREEFOLD_IMPACT_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir-FreeFold-Impact"
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -134,6 +139,8 @@ def _fall_teacher_imitation_loss(cfg) -> ImitationLossCfg:
     scales = tuple(float(s) for s in action.leg_scales)
     if scales[0] != scales[2] or scales[1] != scales[3]:
         raise ValueError(f"模仿损失按左右同周期对齐，腿部缩放须左右相同，实际 {scales}")
+    teacher = getattr(action, "teacher", None)
+    free_fold = teacher is not None and teacher.fold == "policy"
     return ImitationLossCfg(
         group=ROUGH_FALL_TEACHER_TARGET_GROUP,
         coef=ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF,
@@ -141,6 +148,7 @@ def _fall_teacher_imitation_loss(cfg) -> ImitationLossCfg:
         front_period=2.0 * math.pi / scales[0],
         back_period=2.0 * math.pi / scales[1],
         shift_back=action.leg_action_semantics == "joint",
+        back_follow=back_follow_gain(scales) if free_fold else None,
     )
 
 
@@ -326,6 +334,35 @@ def register() -> None:
                 imitation_loss=_fall_teacher_imitation_loss(recover_randdir_env_cfg),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-RandDir-FreeFold-Impact：RandDir 的教师夹角归策略 + recover 组撞击罚。
+    freefold_kwargs = dict(
+        recover_kwargs,
+        fall_teacher_style="june_random_free_fold",
+        recover_impact=True,
+        recover_impact_weight=ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED,
+    )
+    freefold_env_cfg = env_cfg(**freefold_kwargs)
+    freefold_actor = freefold_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_FREEFOLD_IMPACT_TASK_ID,
+        env_cfg=freefold_env_cfg,
+        play_env_cfg=env_cfg(play=True, **freefold_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(freefold_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in freefold_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(freefold_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_FREEFOLD_IMPACT_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )

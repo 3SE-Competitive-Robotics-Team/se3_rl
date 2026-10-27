@@ -30,15 +30,20 @@ PPO 存的仍是策略自己的采样动作，教师算环境的一部分；α �
 只接倒置（倾角 > 135°，状态库倒置类边界）、每局 reset 随机 ±1 方向、π rad/s 扫到 2π；倾角 < 37°（6 月 pg_z < −0.8）后前杆停住，
 连续 20 步仍在阈值内即交还策略（6 月这段继续扫，R1 实测闭链模型同向续转会再撬翻，故停住），不停顿、不收腿、不保持；
 交还后再倒置可再接，累计接管超过 max_active_s 后本局不再接。夹角折叠沿用上面的限速折叠（现模型没有独立膝关节）。
+同日用户定"夹角不限制"（fold='policy'，入口 Recover-RandDir-FreeFold-Impact）：教师只给前杆转动，后杆跟前杆同量转、
+夹角保持策略自己给的值，模仿损失对后杆也只监督跟转量（se3_train.ppo 的 back_follow）。
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import torch
+
+from se3_shared import RobotConfig
 
 from . import events
 from .rewards import fall_constraint_active
@@ -89,6 +94,9 @@ class FallTeacherCfg:
     exit_stable_steps: int = 0
     # 交还后再满足进入条件可重新接管（6 月做法）；累计接管达到 max_active_s 后本局不再接。只配 release="upright"。
     reentry: bool = False
+    # 夹角：limit 按 fold_rate_rad_s 限速收到折叠下限（教师规定夹角）；policy（2026-10-27 用户定"夹角不限制"）教师只管前杆转动，
+    # 后杆目标 = 策略后杆 + 跟转量，使执行夹角恰为策略自己的夹角（见 back_follow_gain），只支持 joint 语义。
+    fold: Literal["limit", "policy"] = "limit"
     # PersistBC 的 supervise_after_handoff（α = 0 后继续出模仿目标）与 target_leash_rad（目标限幅开环）2026-10-25 整理时删除，
     # 复现用 5343bf96。
 
@@ -124,6 +132,10 @@ class FallTeacherCfg:
             raise ValueError("release='upright' 须 exit_stable_steps ≥ 1")
         if self.release == "tuck" and (self.exit_stable_steps != 0 or self.reentry):
             raise ValueError("exit_stable_steps / reentry 只配 release='upright'")
+        if self.fold not in ("limit", "policy"):
+            raise ValueError(f"未知 fold {self.fold}")
+        if self.fold == "policy" and self.release != "upright":
+            raise ValueError("fold='policy' 只配 release='upright'（收腿段要按夹角收到折叠角）")
 
     @classmethod
     def june_random(cls, **overrides) -> FallTeacherCfg:
@@ -143,6 +155,18 @@ class FallTeacherCfg:
 
     def build(self, env: ManagerBasedRlEnv, term: SerialLegDelayedAction) -> FallTeacher:
         return FallTeacher(self, env, term)
+
+
+def back_follow_gain(leg_scales: Sequence[float]) -> tuple[float, float]:
+    """fold='policy' 的后杆跟转系数 k（左、右）：夹角 φ = c_f·q_前 + c_b·q_后，前杆动作改动 Δ 时后杆动作改动 −k·Δ 即保持 φ，
+    k = c_f·s_前 / (c_b·s_后)。现模型左右系数 (1, −1) / (−1, 1)、四杆缩放相同，k = −1（后杆随前杆同向同量）。"""
+    coeffs = RobotConfig().active_rod_angle_coeffs
+    return tuple(
+        float(coeffs[side][0])
+        * float(leg_scales[2 * side])
+        / (float(coeffs[side][1]) * float(leg_scales[2 * side + 1]))
+        for side in (0, 1)
+    )
 
 
 def fall_teacher_alpha(current_iter: int, cfg: FallTeacherCfg) -> float:
@@ -209,6 +233,10 @@ class FallTeacher:
             self.direction.copy_(self._sample_direction(n))
         self.exit_count = torch.zeros(n, dtype=torch.long, device=device)
         self.timed_out = torch.zeros(n, dtype=torch.bool, device=device)
+        self._free_fold = cfg.fold == "policy"
+        if self._free_fold and not self._joint_semantics:
+            raise ValueError("fold='policy' 只支持 joint 腿部动作语义")
+        self._back_follow = torch.tensor(back_follow_gain(term.cfg.leg_scales), device=device)
         self.teacher_raw = torch.zeros(n, term.action_dim, device=device)
         self.teacher_action = torch.zeros(n, term.action_dim, device=device)
         self.alpha_value = 0.0
@@ -264,6 +292,11 @@ class FallTeacher:
         if alpha <= 0.0:
             return policy_actions
         teacher = self._align(self.teacher_raw, policy_actions)
+        if self._free_fold:
+            # 后杆 = 策略后杆 + 跟转量：执行动作是 π 与 T 的线性插值、夹角对动作线性，故执行夹角恰为策略夹角
+            teacher[:, [1, 3]] = policy_actions[:, [1, 3]] + self._back_follow * (
+                policy_actions[:, [0, 2]] - teacher[:, [0, 2]]
+            )
         self.teacher_action.copy_(teacher)
         weight = (self.active.float() * alpha).unsqueeze(1)
         executed = policy_actions + weight * (teacher - policy_actions)
@@ -344,8 +377,8 @@ class FallTeacher:
             self.theta = self.theta + side * (direction * inc.unsqueeze(1))
             self.sweep = self.sweep + inc
 
-        # 翻正与停顿段夹角限速收向折叠角
-        folding = ((self.seg == _FLIP) | (self.seg == _PAUSE)).unsqueeze(1)
+        # 翻正与停顿段夹角限速收向折叠角（fold='policy' 时夹角归策略，phi 只留进入时刻的值、不进执行动作）
+        folding = ((self.seg == _FLIP) | (self.seg == _PAUSE)).unsqueeze(1) & (not self._free_fold)
         fold_step = float(cfg.fold_rate_rad_s) * dt
         self.phi = torch.where(
             folding, self.phi + torch.clamp(self._fold - self.phi, -fold_step, fold_step), self.phi
@@ -509,6 +542,7 @@ def fall_teacher_imitation(env: ManagerBasedRlEnv, sigma: float = 0.35) -> torch
 __all__ = [
     "FallTeacher",
     "FallTeacherCfg",
+    "back_follow_gain",
     "fall_teacher_alpha",
     "fall_teacher_imitation",
     "fall_teacher_of",

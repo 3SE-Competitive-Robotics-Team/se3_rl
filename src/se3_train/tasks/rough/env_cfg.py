@@ -238,6 +238,10 @@ ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
 ROUGH_RECOVER_IMPACT_SENSORS = ("collision_sensor", "leg_contact_sensor")
 ROUGH_RECOVER_IMPACT_THRESHOLD_N = 1.5 * 12.73 * 9.81
 ROUGH_RECOVER_IMPACT_WEIGHT = -0.15
+# 2026-10-27 m6rxc7v9 用 −0.15 时老师退场后倒置干脆不翻：γ=0.99 下 8 s 截止的失败罚折扣后只剩约 −0.4，撞击罚却在翻身时当场扣，
+# 翻身的折扣价值（gyi9exiz 约 +3）被吃光。按折扣口径粗算（gyi9exiz 超阈冲量折扣后约 37 N·s，撞击罚最多吃掉一半余量）取 −0.05，
+# 给 Recover-RandDir-FreeFold-Impact 用（env_cfg(recover_impact_weight=...)）。
+ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED = -0.05
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0）。recover 组开时 = 是否 recover 组；关时（消融 −recover 组）= 倒地出生、尚未起身（M）。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -499,6 +503,7 @@ def env_cfg(
     recover_group: bool = True,
     recover_amp: bool = True,
     recover_impact: bool = False,
+    recover_impact_weight: float = ROUGH_RECOVER_IMPACT_WEIGHT,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -526,15 +531,16 @@ def env_cfg(
     fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
     fall_teacher_style：教师动作轨迹，"tuck"（默认，固定方向 + 停顿 / 收腿 / 保持，gyi9exiz）| "june_random"
-        （6 月随机方向版，FallTeacherCfg.june_random()，2026-10-27 用户定）。
+        （6 月随机方向版，FallTeacherCfg.june_random()，2026-10-27 用户定）| "june_random_free_fold"（同上、夹角归策略，fold='policy'）。
     recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
         critic 维数与训练相同（组掩码全 False）。关闭时（消融 −recover 组）倒地出生按 fall_spawn_prob、走共享奖励。
         两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
     recover_amp：AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP；train / play 都建，rl_cfg 的 amp_cfg 按组名取。默认开
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
     recover_impact：recover 组奖励加机身 + 腿杆撞击罚（见 ROUGH_RECOVER_IMPACT_* 注释），默认关；须 recover_group=True。
+    recover_impact_weight：撞击罚权重，默认 ROUGH_RECOVER_IMPACT_WEIGHT（−0.15，m6rxc7v9）。
     """
-    if fall_teacher_style not in ("tuck", "june_random"):
+    if fall_teacher_style not in ("tuck", "june_random", "june_random_free_fold"):
         raise ValueError(f"未知 fall_teacher_style {fall_teacher_style}")
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
@@ -710,7 +716,9 @@ def env_cfg(
                 )
             else:
                 delayed_action.teacher = FallTeacherCfg.june_random(
-                    steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
+                    steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER,
+                    fold="policy" if fall_teacher_style == "june_random_free_fold" else "limit",
+                    **schedule,
                 )
             delayed_action.teacher.validate()
         cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(
@@ -878,7 +886,9 @@ def env_cfg(
     if recover_impact and not recover_group:
         raise ValueError("recover_impact 是 recover 组奖励的一项，须 recover_group=True")
     if recover_group:
-        _apply_recover_group(cfg, play=play, impact=recover_impact)
+        _apply_recover_group(
+            cfg, play=play, impact=recover_impact, impact_weight=recover_impact_weight
+        )
         mask_terms = {"recover_group": ObservationTermCfg(func=recover.recover_group_obs)}
     else:
         mask_terms = {
@@ -970,7 +980,13 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool, impact: bool = False) -> None:
+def _apply_recover_group(
+    cfg: ManagerBasedRlEnvCfg,
+    *,
+    play: bool,
+    impact: bool = False,
+    impact_weight: float = ROUGH_RECOVER_IMPACT_WEIGHT,
+) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
     impact 时 recover 组奖励再加机身 + 腿杆撞击罚（ROUGH_RECOVER_IMPACT_*）。"""
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
@@ -1071,7 +1087,7 @@ def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool, impact: bool 
     if impact:
         recover_terms["recover_impact_excess"] = RewardTermCfg(
             func=recover.recover_contact_impact_excess,
-            weight=ROUGH_RECOVER_IMPACT_WEIGHT,
+            weight=float(impact_weight),
             params={
                 "sensor_names": ROUGH_RECOVER_IMPACT_SENSORS,
                 "threshold_n": ROUGH_RECOVER_IMPACT_THRESHOLD_N,
