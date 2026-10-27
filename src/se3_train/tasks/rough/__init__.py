@@ -76,6 +76,9 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID = 
 # （env_cfg.ROUGH_RECOVER_IMPACT_*）。gyi9exiz 倒置起身机身砸地（峰值力中位约 1200 N），由它蒸馏的学生照样砸；
 # 新老师经用户在 sim2x 确认后，重录 AMP 数据、替换蒸馏老师。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_IMPACT_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Impact"
+# 2026-10-27 用户定：Recover-Impact（m6rxc7v9）老师退场后倒置干脆不翻；用户判断撞击来自教师规定死的轨迹。改回 6 月随机方向教师
+# （fall_teacher.FallTeacherCfg.june_random：只接倒置、每局随机方向、π rad/s、翻正即交还），其余与 gyi9exiz 入口相同、不加撞击罚。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir"
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -299,6 +302,30 @@ def register() -> None:
                 imitation_loss=_fall_teacher_imitation_loss(recover_impact_env_cfg),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_IMPACT_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-RandDir：同 Recover，教师换 6 月随机方向版。
+    recover_randdir_kwargs = dict(recover_kwargs, fall_teacher_style="june_random")
+    recover_randdir_env_cfg = env_cfg(**recover_randdir_kwargs)
+    recover_randdir_actor = recover_randdir_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_TASK_ID,
+        env_cfg=recover_randdir_env_cfg,
+        play_env_cfg=env_cfg(play=True, **recover_randdir_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(recover_randdir_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in recover_randdir_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(recover_randdir_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )

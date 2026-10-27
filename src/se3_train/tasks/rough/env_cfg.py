@@ -495,6 +495,7 @@ def env_cfg(
     fall_spawn_prob: float = ROUGH_FALL_SPAWN_PROB,
     fall_teacher: bool = False,
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
+    fall_teacher_style: str = "tuck",
     recover_group: bool = True,
     recover_amp: bool = True,
     recover_impact: bool = False,
@@ -524,6 +525,8 @@ def env_cfg(
     fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
     fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
+    fall_teacher_style：教师动作轨迹，"tuck"（默认，固定方向 + 停顿 / 收腿 / 保持，gyi9exiz）| "june_random"
+        （6 月随机方向版，FallTeacherCfg.june_random()，2026-10-27 用户定）。
     recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
         critic 维数与训练相同（组掩码全 False）。关闭时（消融 −recover 组）倒地出生按 fall_spawn_prob、走共享奖励。
         两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
@@ -531,6 +534,8 @@ def env_cfg(
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
     recover_impact：recover 组奖励加机身 + 腿杆撞击罚（见 ROUGH_RECOVER_IMPACT_* 注释），默认关；须 recover_group=True。
     """
+    if fall_teacher_style not in ("tuck", "june_random"):
+        raise ValueError(f"未知 fall_teacher_style {fall_teacher_style}")
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
@@ -699,9 +704,14 @@ def env_cfg(
                     )
                 )
             )
-            delayed_action.teacher = FallTeacherCfg(
-                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
-            )
+            if fall_teacher_style == "tuck":
+                delayed_action.teacher = FallTeacherCfg(
+                    steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
+                )
+            else:
+                delayed_action.teacher = FallTeacherCfg.june_random(
+                    steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
+                )
             delayed_action.teacher.validate()
         cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(
             func=fall_teacher_imitation,

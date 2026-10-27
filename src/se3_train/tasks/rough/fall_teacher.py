@@ -1,6 +1,7 @@
 """倒地起身脚本教师（2026-10-23 用户定）：6 月 recovery_teacher 路线在现闭链模型上的移植。
 
-6 月版（gpu-8 Pod 上做、代码只剩 laptop 快照）是倒置时前髋固定方向扫动 + 动作层 α 混合 + 模仿奖励；直接照搬不行：
+6 月版（gpu-8 Pod 上做、代码只剩 laptop 快照）是倒置时前髋扫动（每局 reset 随机 ±1 方向、整局固定）+ 动作层 α 混合
++ 模仿奖励；直接照搬不行：
 当时是开链模型、左右关节同号、腿部动作是直接关节角，而现在 Rough 是闭链、左右前杆镜像、腿部动作为 joint 语义
 （四根主动杆绝对目标，夹角隐含）。动作段落照 R1 开环参考（se3_tools/recovery_reference.py，现模型实测可翻正）：
 
@@ -23,13 +24,19 @@ PPO 存的仍是策略自己的采样动作，教师算环境的一部分；α �
 参数由开环探针定（.scratch/fall_teacher_probe_20261023/teacher_probe.py，α=1、10 s）：固定正向 2.0 rad/s、夹角 3 rad/s 限速折叠，
 倒置 0.73 / 侧躺 0.75 翻正，四项峰值（腿速、机身角速度、轮速、腿正功率）都在旧拉格朗日限值内；夹角一步折叠腿速 p90 19–20 rad/s，
 侧躺反向转大多翻正后又翻回去。
+
+2026-10-27 用户定加回 6 月的随机方向版（FallTeacherCfg.june_random()）：上面这套固定方向 + 停顿 / 收腿 / 保持的整段轨迹决定了
+起身时机身砸地（gyi9exiz 倒置峰值力中位约 1.2 kN，由它蒸馏的学生照样砸），加撞击罚（m6rxc7v9）后策略干脆不翻。随机方向版
+只接倒置（倾角 > 135°，状态库倒置类边界）、每局 reset 随机 ±1 方向、π rad/s 扫到 2π；倾角 < 37°（6 月 pg_z < −0.8）后前杆停住，
+连续 20 步仍在阈值内即交还策略（6 月这段继续扫，R1 实测闭链模型同向续转会再撬翻，故停住），不停顿、不收腿、不保持；
+交还后再倒置可再接，累计接管超过 max_active_s 后本局不再接。夹角折叠沿用上面的限速折叠（现模型没有独立膝关节）。
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
@@ -46,6 +53,7 @@ _SEGMENT_NAMES = ("flip", "pause", "tuck", "hold")
 _RECOVERY_LOG_CLASSES = ("side", "inverted")
 _RECOVERY_LOG_HORIZONS_S = (3.0, 8.0)
 _OFF_ENV_SEED = 20261023
+_DIRECTION_SEED = 20261027
 
 
 @dataclass(kw_only=True)
@@ -73,6 +81,14 @@ class FallTeacherCfg:
     end_iter: int = 1900
     steps_per_policy_iter: int = 24
     fixed_iteration: int | None = None
+    # 方向：fixed 用 direction；random_episode 每局 reset 随机 ±1（50/50，专用随机数发生器）、整局固定。
+    direction_mode: Literal["fixed", "random_episode"] = "fixed"
+    # 翻正之后：tuck 走停顿 → 反向收腿 → 保持（gyi9exiz）；upright 是 6 月做法——倾角 < stop_tilt_deg 后前杆停住，
+    # 连续 exit_stable_steps 步仍在阈值内即交还，越出阈值继续扫；扫满 max_sweep 不进保持段，停在原角度等翻正或超时。
+    release: Literal["tuck", "upright"] = "tuck"
+    exit_stable_steps: int = 0
+    # 交还后再满足进入条件可重新接管（6 月做法）；累计接管达到 max_active_s 后本局不再接。只配 release="upright"。
+    reentry: bool = False
     # PersistBC 的 supervise_after_handoff（α = 0 后继续出模仿目标）与 target_leash_rad（目标限幅开环）2026-10-25 整理时删除，
     # 复现用 5343bf96。
 
@@ -100,6 +116,30 @@ class FallTeacherCfg:
             raise ValueError("须 0 ≤ hold_iters ≤ mid_iter ≤ end_iter")
         if self.steps_per_policy_iter <= 0:
             raise ValueError(f"steps_per_policy_iter 必须为正数，实际 {self.steps_per_policy_iter}")
+        if self.direction_mode not in ("fixed", "random_episode"):
+            raise ValueError(f"未知 direction_mode {self.direction_mode}")
+        if self.release not in ("tuck", "upright"):
+            raise ValueError(f"未知 release {self.release}")
+        if self.release == "upright" and self.exit_stable_steps < 1:
+            raise ValueError("release='upright' 须 exit_stable_steps ≥ 1")
+        if self.release == "tuck" and (self.exit_stable_steps != 0 or self.reentry):
+            raise ValueError("exit_stable_steps / reentry 只配 release='upright'")
+
+    @classmethod
+    def june_random(cls, **overrides) -> FallTeacherCfg:
+        """6 月随机方向版（2026-10-27 用户定，见模块 docstring）：只接倒置、每局随机方向、π rad/s 扫到 2π、翻正即交还、可重接。"""
+        params = dict(
+            enter_tilt_deg=135.0,
+            direction_mode="random_episode",
+            sweep_speed_rad_s=math.pi,
+            max_sweep_rad=2.0 * math.pi,
+            stop_tilt_deg=math.degrees(math.acos(0.8)),
+            release="upright",
+            exit_stable_steps=20,
+            reentry=True,
+        )
+        params.update(overrides)
+        return cls(**params)
 
     def build(self, env: ManagerBasedRlEnv, term: SerialLegDelayedAction) -> FallTeacher:
         return FallTeacher(self, env, term)
@@ -159,6 +199,16 @@ class FallTeacher:
         self.tuck_target = torch.zeros(n, 2, device=device)
         self.used = torch.zeros(n, dtype=torch.bool, device=device)
         self.active = torch.zeros(n, dtype=torch.bool, device=device)
+        self.direction = torch.full((n,), float(cfg.direction), device=device)
+        self._random_direction = cfg.direction_mode == "random_episode"
+        # 多卡各 rank 的 env seed 不同（agent seed + rank），方向序列随之错开。
+        self._direction_generator = torch.Generator(device=device).manual_seed(
+            _DIRECTION_SEED + int(getattr(env.cfg, "seed", None) or 0)
+        )
+        if self._random_direction:
+            self.direction.copy_(self._sample_direction(n))
+        self.exit_count = torch.zeros(n, dtype=torch.long, device=device)
+        self.timed_out = torch.zeros(n, dtype=torch.bool, device=device)
         self.teacher_raw = torch.zeros(n, term.action_dim, device=device)
         self.teacher_action = torch.zeros(n, term.action_dim, device=device)
         self.alpha_value = 0.0
@@ -172,13 +222,22 @@ class FallTeacher:
 
     def reset(self, env_ids: torch.Tensor) -> None:
         """episode reset：清段落与锁存（index_fill_ 不从主机拷标量，避免 GPU 同步），下次观测重新准备。"""
-        for buffer in (self.seg, self.seg_t, self.active_t, self.sweep):
+        for buffer in (self.seg, self.seg_t, self.active_t, self.sweep, self.exit_count):
             buffer.index_fill_(0, env_ids, 0)
-        for buffer in (self.used, self.active):
+        for buffer in (self.used, self.active, self.timed_out):
             buffer.index_fill_(0, env_ids, False)
         self.teacher_raw.index_fill_(0, env_ids, 0.0)
         self.teacher_action.index_fill_(0, env_ids, 0.0)
+        if self._random_direction:
+            self.direction.index_copy_(0, env_ids, self._sample_direction(env_ids.numel()))
         self._fresh = False
+
+    def _sample_direction(self, count: int) -> torch.Tensor:
+        """count 个 ±1（各 50%），用专用发生器，不动全局随机流。"""
+        draw = torch.rand(
+            count, generator=self._direction_generator, device=self._direction_generator.device
+        )
+        return torch.where(draw < 0.5, -1.0, 1.0)
 
     def prepare(self) -> None:
         """在观测时刻（上一步物理与 reset 之后、策略出动作之前）推进状态机并算出下一步的教师动作；每步只做一次。
@@ -225,11 +284,12 @@ class FallTeacher:
         coeffs = self._coeffs
         side = self._side_sign.unsqueeze(0)
 
-        # 进入：每个 episode 只接一次
+        # 进入：默认每个 episode 只接一次；reentry 时交还后可重接，累计接管超时后不再接
+        can_enter = ~self.timed_out if cfg.reentry else ~self.used
         enter = (
             fall_constraint_active(env)
             & ~self.off_env
-            & ~self.used
+            & can_enter
             & (self.seg == _IDLE)
             & (tilt > float(cfg.enter_tilt_deg))
         )
@@ -243,24 +303,46 @@ class FallTeacher:
         enter2 = enter.unsqueeze(1)
         self.theta = torch.where(enter2, q[:, [0, 2]], self.theta)
         self.phi = torch.where(enter2, phi_now, self.phi)
-        for buffer_name in ("sweep", "seg_t", "active_t"):
+        # active_t 只在 reset 清零：单次接管时与进入时清零等价，重接时按整局累计
+        for buffer_name in ("sweep", "seg_t"):
             buffer = getattr(self, buffer_name)
             setattr(self, buffer_name, torch.where(enter, torch.zeros_like(buffer), buffer))
         self.seg = torch.where(enter, torch.full_like(self.seg, _FLIP), self.seg)
         self.used |= enter
 
-        # ① 翻正：先判是否翻正，再推进；转满 max_sweep 仍没翻正直接进保持段
         flipping = self.seg == _FLIP
-        flipped = flipping & (tilt < float(cfg.stop_tilt_deg))
-        self.seg = torch.where(flipped, torch.full_like(self.seg, _PAUSE), self.seg)
-        self.seg_t = torch.where(flipped, torch.zeros_like(self.seg_t), self.seg_t)
-        advance = flipping & ~flipped
-        inc = float(cfg.sweep_speed_rad_s) * dt * advance.float()
-        self.theta = self.theta + side * (float(cfg.direction) * inc).unsqueeze(1)
-        self.sweep = self.sweep + inc
-        exhausted = advance & (self.sweep >= float(cfg.max_sweep_rad))
-        self.seg = torch.where(exhausted, torch.full_like(self.seg, _HOLD), self.seg)
-        self.seg_t = torch.where(exhausted, torch.zeros_like(self.seg_t), self.seg_t)
+        upright = tilt < float(cfg.stop_tilt_deg)
+        direction = self.direction.unsqueeze(1)
+        if cfg.release == "tuck":
+            # ① 翻正：先判是否翻正，再推进；转满 max_sweep 仍没翻正直接进保持段
+            flipped = flipping & upright
+            self.seg = torch.where(flipped, torch.full_like(self.seg, _PAUSE), self.seg)
+            self.seg_t = torch.where(flipped, torch.zeros_like(self.seg_t), self.seg_t)
+            advance = flipping & ~flipped
+            inc = float(cfg.sweep_speed_rad_s) * dt * advance.float()
+            self.theta = self.theta + side * (direction * inc.unsqueeze(1))
+            self.sweep = self.sweep + inc
+            exhausted = advance & (self.sweep >= float(cfg.max_sweep_rad))
+            self.seg = torch.where(exhausted, torch.full_like(self.seg, _HOLD), self.seg)
+            self.seg_t = torch.where(exhausted, torch.zeros_like(self.seg_t), self.seg_t)
+        else:
+            # ① 翻正（6 月做法）：阈值内前杆停住计数，连续 exit_stable_steps 步即交还；越出阈值清零续扫，扫满 max_sweep 停在原角度
+            self.exit_count = torch.where(
+                flipping & upright, self.exit_count + 1, torch.zeros_like(self.exit_count)
+            )
+            released = flipping & (self.exit_count >= int(cfg.exit_stable_steps))
+            after = _IDLE if cfg.reentry else _DONE
+            self.seg = torch.where(released, torch.full_like(self.seg, after), self.seg)
+            self.exit_count = torch.where(
+                released, torch.zeros_like(self.exit_count), self.exit_count
+            )
+            advance = flipping & ~upright
+            inc = torch.minimum(
+                float(cfg.sweep_speed_rad_s) * dt * advance.float(),
+                (float(cfg.max_sweep_rad) - self.sweep).clamp(min=0.0),
+            )
+            self.theta = self.theta + side * (direction * inc.unsqueeze(1))
+            self.sweep = self.sweep + inc
 
         # 翻正与停顿段夹角限速收向折叠角
         folding = ((self.seg == _FLIP) | (self.seg == _PAUSE)).unsqueeze(1)
@@ -273,7 +355,7 @@ class FallTeacher:
         pausing = self.seg == _PAUSE
         self.seg_t = self.seg_t + dt * pausing.float()
         to_tuck = pausing & (self.seg_t >= float(cfg.pause_s))
-        u = -side * float(cfg.direction)
+        u = -side * direction
         delta = torch.remainder(u * (self._sit.unsqueeze(0) - self.theta), 2.0 * math.pi)
         self.tuck_target = torch.where(
             to_tuck.unsqueeze(1), self.theta + u * delta, self.tuck_target
@@ -306,11 +388,9 @@ class FallTeacher:
         )
         teaching = (self.seg >= _FLIP) & (self.seg <= _HOLD)
         self.active_t = self.active_t + dt * teaching.float()
-        self.seg = torch.where(
-            teaching & (self.active_t >= float(cfg.max_active_s)),
-            torch.full_like(self.seg, _DONE),
-            self.seg,
-        )
+        timeout = teaching & (self.active_t >= float(cfg.max_active_s))
+        self.seg = torch.where(timeout, torch.full_like(self.seg, _DONE), self.seg)
+        self.timed_out |= timeout
         self.active = (self.seg >= _FLIP) & (self.seg <= _HOLD)
 
     def _teacher_action(self) -> torch.Tensor:
@@ -355,6 +435,11 @@ class FallTeacher:
         log["FallTeacher/alpha"] = torch.full((), alpha, device=device)
         log["FallTeacher/active_frac"] = (self.active & fall).float().sum() / n_fall
         log["FallTeacher/entered_frac"] = (self.used & fall).float().sum() / n_fall
+        if self._random_direction:
+            entered = self.used & fall
+            log["FallTeacher/dir_pos_frac"] = (
+                entered & (self.direction > 0)
+            ).float().sum() / entered.float().sum().clamp(min=1.0)
         for index, name in enumerate(_SEGMENT_NAMES, start=_FLIP):
             log[f"FallTeacher/seg_{name}_frac"] = (
                 (self.seg == index) & fall
@@ -384,6 +469,16 @@ class FallTeacher:
                     log[f"FallTeacher/{group}_recovered_within_{horizon:.0f}s_{class_name}"] = (
                         ok & pool
                     ).float().sum() / pool.float().sum().clamp(min=1.0)
+                if self._random_direction:
+                    # 随机方向：接过教师的 env 按本局方向拆开看起身率
+                    for sign_name, sign in (
+                        ("pos", self.direction > 0),
+                        ("neg", self.direction < 0),
+                    ):
+                        pool = old & in_class & self.used & sign
+                        log[
+                            f"FallTeacher/dir_{sign_name}_recovered_within_{horizon:.0f}s_{class_name}"
+                        ] = (ok & pool).float().sum() / pool.float().sum().clamp(min=1.0)
 
 
 def fall_teacher_of(env: ManagerBasedRlEnv) -> FallTeacher | None:
