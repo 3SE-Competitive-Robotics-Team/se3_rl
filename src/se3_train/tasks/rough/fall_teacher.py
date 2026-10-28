@@ -100,9 +100,10 @@ class FallTeacherCfg:
     # 模仿损失常驻（2026-10-28 用户定，同 10-24 PersistBC 思路，该实现 10-25 已删、复现用 5343bf96）：α 退到 0 后状态机继续推进、
     # 继续出模仿目标（只监督不执行）；监督目标组的权重列恒为 1（模仿损失不乘 α）。默认关，α = 0 后状态机停转。
     supervise_after_retire: bool = False
-    # 限幅开环：前杆 / 夹角目标照原样积分后限制在实测 ±target_leash_rad 内（下一步从限幅值继续积分），只动接管中的 env。
-    # 教师自己执行时跟踪误差 0.07–0.08 rad，L = 0.3 不触发；策略执行时目标最多领先 L，不会像纯开环那样越积越远
-    # （PersistBC 标定：dqkkieq0 model_1000 上开环目标 − 实测 2 → 47 rad）。None = 纯开环。
+    # 限幅开环：前杆 / 夹角目标照原样积分后限制在实测 ±target_leash_rad 内（下一步从限幅值继续积分），只动接管中的 env，
+    # 且只在 α = 0（只监督不执行）时生效：策略执行时目标最多领先 L，不会像纯开环那样越积越远（PersistBC 标定：dqkkieq0
+    # model_1000 上开环目标 − 实测 2 → 47 rad）。教师执行段不限：随机方向版 π rad/s 下 α=0.85 时约 27% 接管步会顶到 0.3 rad，
+    # 一直限会改掉教师轨迹（2026-10-28 GPU 核对）。None = 纯开环。
     target_leash_rad: float | None = None
     # PersistBC 的 supervise_after_handoff（α = 0 后继续出模仿目标）与 target_leash_rad（目标限幅开环）2026-10-25 整理时删除，
     # 复现用 5343bf96。
@@ -438,9 +439,9 @@ class FallTeacher:
         self.timed_out |= timeout
         self.active = (self.seg >= _FLIP) & (self.seg <= _HOLD)
 
-        # 限幅开环：目标限制在实测 ±L 内（只动接管中的 env）
+        # 限幅开环：目标限制在实测 ±L 内（只动接管中的 env，只在 α = 0 只监督不执行时；教师执行段保持原轨迹）
         leash = cfg.target_leash_rad
-        if leash is not None:
+        if leash is not None and self.alpha_value <= 0.0:
             act = self.active.unsqueeze(1)
             self.theta = torch.where(
                 act, torch.clamp(self.theta, q[:, [0, 2]] - leash, q[:, [0, 2]] + leash), self.theta
