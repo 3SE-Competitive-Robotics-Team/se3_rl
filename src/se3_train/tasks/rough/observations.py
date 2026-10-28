@@ -44,7 +44,9 @@ def fall_teacher_alpha_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def fall_teacher_target_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """[N, 8]：PPO 模仿损失的监督目标 [接管标记, α, 教师动作 6 维（未按策略对齐的原始表示）]，与本步观测同一时刻。
+    """[N, 8]：PPO 模仿损失的监督目标 [接管标记, 监督权重, 教师动作 6 维（未按策略对齐的原始表示）]，与本步观测同一时刻。
+
+    监督权重即 α（模仿损失乘 α）；教师 supervise_after_retire 时恒为 1（α 退到 0 后照常监督，模仿损失不乘 α）。
 
     只进单独的观测组（env_cfg.ROUGH_FALL_TEACHER_TARGET_GROUP），不进 actor / critic / CTS 教师编码器；没有教师时全 0。
     """
@@ -52,7 +54,8 @@ def fall_teacher_target_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     if teacher is None:
         return torch.zeros(env.num_envs, 8, device=env.device)
     teacher.prepare()
-    alpha = torch.full((env.num_envs, 1), float(teacher.alpha_value), device=env.device)
+    weight = 1.0 if teacher.cfg.supervise_after_retire else float(teacher.alpha_value)
+    alpha = torch.full((env.num_envs, 1), weight, device=env.device)
     return torch.cat((teacher.active.float().unsqueeze(1), alpha, teacher.teacher_raw), dim=1)
 
 

@@ -205,6 +205,9 @@ ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
 # PPO 模仿损失的监督目标观测组（observations.fall_teacher_target_obs，[接管, α, 教师动作 6 维]），只给算法读，
 # 不进 actor / critic / CTS 教师编码器；fall_teacher=True 时 train / play 都建（play 全 0），见 rl_cfg 的模仿损失。
 ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
+# 模仿损失常驻（env_cfg(fall_teacher_persist_loss=True)，2026-10-28 用户定）：教师执行照常退场，α = 0 后状态机继续推进、只监督不执行，
+# 模仿损失不乘 α；开环目标限在实测 ±0.3 rad 内（FallTeacherCfg.target_leash_rad，取值沿用 10-24 PersistBC 标定）。
+ROUGH_FALL_TEACHER_TARGET_LEASH_RAD = 0.3
 # recover 组（2026-10-24 用户定，2026-10-25 起默认开，见 recover.py）：倒地出生那几列里固定抽 ROUGH_RECOVER_GROUP_FRACTION
 # 的 env（约占全体 10%）每局倒地出生、只练起身，其余 env 只练走路、不再倒地出生。共用一套奖励时，倒地期每秒约 −110、站起后
 # 每秒约 +14，晚起身 1 s 差约 124 分，任何约束都在和这个"速度溢价"对抗（dqkkieq0 / tf2qsg6r 教师退场后都滑回暴起）。
@@ -504,6 +507,7 @@ def env_cfg(
     fall_teacher: bool = False,
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
     fall_teacher_style: str = "tuck",
+    fall_teacher_persist_loss: bool = False,
     recover_group: bool = True,
     recover_amp: bool = True,
     recover_impact: bool = False,
@@ -537,6 +541,7 @@ def env_cfg(
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
     fall_teacher_style：教师动作轨迹，"tuck"（默认，固定方向 + 停顿 / 收腿 / 保持，gyi9exiz）| "june_random"
         （6 月随机方向版，FallTeacherCfg.june_random()，2026-10-27 用户定）| "june_random_free_fold"（同上、夹角归策略，fold='policy'）。
+    fall_teacher_persist_loss：模仿损失常驻（见 ROUGH_FALL_TEACHER_TARGET_LEASH_RAD 注释），默认关。
     recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
         critic 维数与训练相同（组掩码全 False）。关闭时（消融 −recover 组）倒地出生按 fall_spawn_prob、走共享奖励。
         两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
@@ -716,6 +721,11 @@ def env_cfg(
                     )
                 )
             )
+            if fall_teacher_persist_loss:
+                schedule.update(
+                    supervise_after_retire=True,
+                    target_leash_rad=ROUGH_FALL_TEACHER_TARGET_LEASH_RAD,
+                )
             if fall_teacher_style == "tuck":
                 delayed_action.teacher = FallTeacherCfg(
                     steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule

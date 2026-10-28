@@ -98,6 +98,10 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IM
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_TEACHER_STAY_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Recover-RandDir-Impact015-BaseWheel-TeacherStay"
 # α 调度的 (hold, mid, end) 轮次都取 int32 上限：hold 永远不到，α 恒为 alpha_start（0.85）。
 _FALL_TEACHER_NEVER_RETIRE = (2**31 - 1, 2**31 - 1, 2**31 - 1)
+# 2026-10-28 用户更正：要的是"模仿损失不退场、老师执行照常退场"（TeacherStay aoj8n9nr 理解错了，停在 880 轮）。
+# = TeacherStay 换回 Alpha800 退场调度 + fall_teacher_persist_loss（退场后只监督不执行、模仿损失不乘 α、目标限幅 ±0.3 rad）；
+# 撞击罚同为 −0.15（机身 + 两轮）。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir-Impact015-BaseWheel-LossStay"
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -430,6 +434,34 @@ def register() -> None:
                 imitation_loss=_fall_teacher_imitation_loss(teacher_stay_env_cfg),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_TEACHER_STAY_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-RandDir-Impact015-BaseWheel-LossStay：老师执行照常退场，模仿损失常驻；撞击罚 −0.15（机身 + 两轮）。
+    loss_stay_kwargs = dict(
+        base_wheel_kwargs,
+        fall_teacher_persist_loss=True,
+        recover_impact_weight=ROUGH_RECOVER_IMPACT_WEIGHT,
+    )
+    loss_stay_env_cfg = env_cfg(**loss_stay_kwargs)
+    loss_stay_actor = loss_stay_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_TASK_ID,
+        env_cfg=loss_stay_env_cfg,
+        play_env_cfg=env_cfg(play=True, **loss_stay_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(loss_stay_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in loss_stay_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(loss_stay_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
