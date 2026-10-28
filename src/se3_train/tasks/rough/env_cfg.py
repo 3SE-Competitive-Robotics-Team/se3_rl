@@ -242,6 +242,10 @@ ROUGH_RECOVER_IMPACT_WEIGHT = -0.15
 # 翻身的折扣价值（gyi9exiz 约 +3）被吃光。按折扣口径粗算（gyi9exiz 超阈冲量折扣后约 37 N·s，撞击罚最多吃掉一半余量）取 −0.05，
 # 给 Recover-RandDir-FreeFold-Impact / Recover-RandDir-Impact 用（env_cfg(recover_impact_weight=...)）。
 ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED = -0.05
+# 2026-10-28 用户定：RandDir-Impact（hiphaauf）罚腿杆后动作变怪——翻身本要靠腿杆撬地（gyi9exiz 腿杆峰值力 p90 280–450 N），
+# 腿杆被罚、轮子却免费，策略把冲击转到轮子上。改为机身 + 两轮（wheel_sensor，每轮对地合力）计罚、腿杆不计，阈值同为每个部位 1.5 倍体重
+# （静站每轮约承 62 N，落轮超过 187 N 才算砸）。
+ROUGH_RECOVER_IMPACT_SENSORS_BASE_WHEEL = ("collision_sensor", "wheel_sensor")
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0）。recover 组开时 = 是否 recover 组；关时（消融 −recover 组）= 倒地出生、尚未起身（M）。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -504,6 +508,7 @@ def env_cfg(
     recover_amp: bool = True,
     recover_impact: bool = False,
     recover_impact_weight: float = ROUGH_RECOVER_IMPACT_WEIGHT,
+    recover_impact_sensors: tuple[str, ...] = ROUGH_RECOVER_IMPACT_SENSORS,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -539,6 +544,7 @@ def env_cfg(
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
     recover_impact：recover 组奖励加机身 + 腿杆撞击罚（见 ROUGH_RECOVER_IMPACT_* 注释），默认关；须 recover_group=True。
     recover_impact_weight：撞击罚权重，默认 ROUGH_RECOVER_IMPACT_WEIGHT（−0.15，m6rxc7v9）。
+    recover_impact_sensors：撞击罚计入的对地接触传感器，默认 ROUGH_RECOVER_IMPACT_SENSORS（机身 + 腿杆）。
     """
     if fall_teacher_style not in ("tuck", "june_random", "june_random_free_fold"):
         raise ValueError(f"未知 fall_teacher_style {fall_teacher_style}")
@@ -887,7 +893,11 @@ def env_cfg(
         raise ValueError("recover_impact 是 recover 组奖励的一项，须 recover_group=True")
     if recover_group:
         _apply_recover_group(
-            cfg, play=play, impact=recover_impact, impact_weight=recover_impact_weight
+            cfg,
+            play=play,
+            impact=recover_impact,
+            impact_weight=recover_impact_weight,
+            impact_sensors=recover_impact_sensors,
         )
         mask_terms = {"recover_group": ObservationTermCfg(func=recover.recover_group_obs)}
     else:
@@ -986,6 +996,7 @@ def _apply_recover_group(
     play: bool,
     impact: bool = False,
     impact_weight: float = ROUGH_RECOVER_IMPACT_WEIGHT,
+    impact_sensors: tuple[str, ...] = ROUGH_RECOVER_IMPACT_SENSORS,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
     impact 时 recover 组奖励再加机身 + 腿杆撞击罚（ROUGH_RECOVER_IMPACT_*）。"""
@@ -1089,7 +1100,7 @@ def _apply_recover_group(
             func=recover.recover_contact_impact_excess,
             weight=float(impact_weight),
             params={
-                "sensor_names": ROUGH_RECOVER_IMPACT_SENSORS,
+                "sensor_names": tuple(impact_sensors),
                 "threshold_n": ROUGH_RECOVER_IMPACT_THRESHOLD_N,
             },
         )

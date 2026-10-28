@@ -13,6 +13,7 @@ from .env_cfg import (
     ROUGH_CTS_TEACHER_GROUP,
     ROUGH_FALL_TEACHER_TARGET_GROUP,
     ROUGH_RECOVER_AMP_GROUP,
+    ROUGH_RECOVER_IMPACT_SENSORS_BASE_WHEEL,
     ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED,
     ROUGH_RECOVER_MASK_GROUP,
     ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
@@ -87,6 +88,9 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_FR
 # 2026-10-28 用户定：FreeFold-Impact（6hog7h75）动作怪——夹角放开后教师演示不出翻身，策略 2900 轮才自己摸出翻法且不稳。
 # 改回 RandDir 的收夹角教师，只加撞击罚（−0.05），与 RandDir（3zqym1vn）单变量对照。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir-Impact"
+# 2026-10-28 用户定：RandDir-Impact（hiphaauf）动作变怪，撞击罚改为机身 + 两轮、腿杆不计（env_cfg.ROUGH_RECOVER_IMPACT_SENSORS_BASE_WHEEL），
+# 其余与 RandDir-Impact 相同（单变量：计罚部位）。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT_BASE_WHEEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir-Impact-BaseWheel"
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -365,6 +369,32 @@ def register() -> None:
                 imitation_loss=_fall_teacher_imitation_loss(randdir_impact_env_cfg),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-RandDir-Impact-BaseWheel：同上，撞击罚只计机身 + 两轮。
+    base_wheel_kwargs = dict(
+        randdir_impact_kwargs, recover_impact_sensors=ROUGH_RECOVER_IMPACT_SENSORS_BASE_WHEEL
+    )
+    base_wheel_env_cfg = env_cfg(**base_wheel_kwargs)
+    base_wheel_actor = base_wheel_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT_BASE_WHEEL_TASK_ID,
+        env_cfg=base_wheel_env_cfg,
+        play_env_cfg=env_cfg(play=True, **base_wheel_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(base_wheel_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in base_wheel_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(base_wheel_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT_BASE_WHEEL_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
