@@ -240,7 +240,7 @@ ROUGH_RECOVER_IMPACT_THRESHOLD_N = 1.5 * 12.73 * 9.81
 ROUGH_RECOVER_IMPACT_WEIGHT = -0.15
 # 2026-10-27 m6rxc7v9 用 −0.15 时老师退场后倒置干脆不翻：γ=0.99 下 8 s 截止的失败罚折扣后只剩约 −0.4，撞击罚却在翻身时当场扣，
 # 翻身的折扣价值（gyi9exiz 约 +3）被吃光。按折扣口径粗算（gyi9exiz 超阈冲量折扣后约 37 N·s，撞击罚最多吃掉一半余量）取 −0.05，
-# 给 Recover-RandDir-FreeFold-Impact 用（env_cfg(recover_impact_weight=...)）。
+# 给 Recover-RandDir-FreeFold-Impact / Recover-RandDir-Impact 用（env_cfg(recover_impact_weight=...)）。
 ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED = -0.05
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0）。recover 组开时 = 是否 recover 组；关时（消融 −recover 组）= 倒地出生、尚未起身（M）。
