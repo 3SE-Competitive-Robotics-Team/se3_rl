@@ -186,14 +186,14 @@ ROUGH_WHEEL_TORQUE_ENVELOPE = "rated_point"
 # 3–10 ms 的 ds1z5s9z 与不带滞后的 60/3/0.2 版（jzzbtqjz）上车都振。已知副作用：滞后版实车静站前后游荡 0.2–0.4 m/s。
 # 以往验证都在 30/2/0.1 训练增益下；60/3/0.2 + 滞后首次上车要专门看振荡。None 关闭（复现 10-20 前默认）。
 ROUGH_WHEEL_TORQUE_LAG_RANGE_S: tuple[float, float] | None = (0.005, 0.015)
-# 倒地出生（2026-10-20 用户定，见 tasks/rough/events.reset_from_fall_states）：出生列（ROUGH_FALL_SPAWN_TERRAIN_NAMES）每次 reset
-# 以此概率改从倒地状态库出生；状态库由 se3_tools.fall_state_cache 生成（4 万条，通电 75% / 断电 25%），
-# MJCF 改动后哈希校验会报错，需重新生成。类别权重对应 upright/tilted/side/inverted，默认等权（库里侧躺只占 1 成）。
+# 倒地出生（2026-10-20 用户定，见 tasks/rough/events.reset_from_fall_states）：2026-10-24 起只有 recover 组（出生列里抽出的
+# ROUGH_RECOVER_GROUP_FRACTION）每局从倒地状态库出生，其余 env 不倒地出生；状态库由 se3_tools.fall_state_cache 生成
+# （4 万条，通电 75% / 断电 25%），MJCF 改动后哈希校验会报错，需重新生成。类别权重对应 upright/tilted/side/inverted，
+# 默认等权（库里侧躺只占 1 成）。10-20 到 10-25 的"出生列按概率 0.5 倒地出生、走共享奖励"做法 10-29 整理时删除，复现用 86c81a60。
 ROUGH_FALL_STATE_CACHE = _RESOURCES / "recovery_states" / "fall_states_d1ed876b_40k.npz"
-ROUGH_FALL_SPAWN_PROB = 0.5
 ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 出生列（2026-10-20 用户定）：平地、障碍（出生点在中心 2 m 空平台上，实测穿透 ≤0.2 cm）、波浪（出生高度按出生点
-# 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%，× ROUGH_FALL_SPAWN_PROB ≈ 8% 的 env 倒地出生。
+# 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%。
 # 不能用 ROUGH_TERRAIN_COMMAND_FLAT_NAMES（那是"按平地分布发指令"的列，含斜坡与台阶）。
 ROUGH_FALL_SPAWN_TERRAIN_NAMES = ("flat", "obstacles", "wave")
 # 倒地约束的历史路线（死区罚 b3odjuk6、CaT 0c644416 / e06a29f2 / f4f102ea、拉格朗日乘子 dfde5296 / 704d362a / 777ebff3、
@@ -205,9 +205,6 @@ ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
 # PPO 模仿损失的监督目标观测组（observations.fall_teacher_target_obs，[接管, α, 教师动作 6 维]），只给算法读，
 # 不进 actor / critic / CTS 教师编码器；fall_teacher=True 时 train / play 都建（play 全 0），见 rl_cfg 的模仿损失。
 ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
-# 模仿损失常驻（env_cfg(fall_teacher_persist_loss=True)，2026-10-28 用户定）：教师执行照常退场，α = 0 后状态机继续推进、只监督不执行，
-# 模仿损失不乘 α；开环目标限在实测 ±0.3 rad 内（FallTeacherCfg.target_leash_rad，取值沿用 10-24 PersistBC 标定）。
-ROUGH_FALL_TEACHER_TARGET_LEASH_RAD = 0.3
 # recover 组（2026-10-24 用户定，2026-10-25 起默认开，见 recover.py）：倒地出生那几列里固定抽 ROUGH_RECOVER_GROUP_FRACTION
 # 的 env（约占全体 10%）每局倒地出生、只练起身，其余 env 只练走路、不再倒地出生。共用一套奖励时，倒地期每秒约 −110、站起后
 # 每秒约 +14，晚起身 1 s 差约 124 分，任何约束都在和这个"速度溢价"对抗（dqkkieq0 / tf2qsg6r 教师退场后都滑回暴起）。
@@ -233,24 +230,8 @@ ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
 ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
 ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
 ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
-# recover 组撞击罚（2026-10-27 用户定，env_cfg(recover_impact=True)，默认关）：机身 base_link 与四根腿杆各自对地接触合力超过
-# 阈值的部分求和、线性计罚，乘 step_dt 即超阈冲量（N·s）。gyi9exiz model_2200 与由它蒸馏的两个学生倒置起身时机身以约
-# 1.7 m/s 砸地，峰值力中位约 1200 N（整机 12.73 kg、体重约 125 N），99% 出现超 3 倍体重的撞击
-# （.scratch/fall_teacher_probe_20261023/policy_recovery_eval_impact.py，Pod 评测 impact_20261027）。
-# 阈值 1.5 倍体重：躺着静压不到体重，翻身支撑的正常接触不计；权重见离线账本（同目录 impact_ledger.py）。
-ROUGH_RECOVER_IMPACT_SENSORS = ("collision_sensor", "leg_contact_sensor")
-ROUGH_RECOVER_IMPACT_THRESHOLD_N = 1.5 * 12.73 * 9.81
-ROUGH_RECOVER_IMPACT_WEIGHT = -0.15
-# 2026-10-27 m6rxc7v9 用 −0.15 时老师退场后倒置干脆不翻：γ=0.99 下 8 s 截止的失败罚折扣后只剩约 −0.4，撞击罚却在翻身时当场扣，
-# 翻身的折扣价值（gyi9exiz 约 +3）被吃光。按折扣口径粗算（gyi9exiz 超阈冲量折扣后约 37 N·s，撞击罚最多吃掉一半余量）取 −0.05，
-# 给 Recover-RandDir-FreeFold-Impact / Recover-RandDir-Impact 用（env_cfg(recover_impact_weight=...)）。
-ROUGH_RECOVER_IMPACT_WEIGHT_DISCOUNTED = -0.05
-# 2026-10-28 用户定：RandDir-Impact（hiphaauf）罚腿杆后动作变怪——翻身本要靠腿杆撬地（gyi9exiz 腿杆峰值力 p90 280–450 N），
-# 腿杆被罚、轮子却免费，策略把冲击转到轮子上。改为机身 + 两轮（wheel_sensor，每轮对地合力）计罚、腿杆不计，阈值同为每个部位 1.5 倍体重
-# （静站每轮约承 62 N，落轮超过 187 N 才算砸）。
-ROUGH_RECOVER_IMPACT_SENSORS_BASE_WHEEL = ("collision_sensor", "wheel_sensor")
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
-# CTS 教师组；train / play 都建（play 全 0）。recover 组开时 = 是否 recover 组；关时（消融 −recover 组）= 倒地出生、尚未起身（M）。
+# CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
 # recover 组 AMP（2026-10-24 用户定，2026-10-25 起默认开，见 se3_train.amp）：判别器看 19 维运动帧（se3_shared.amp 契约），
 # 参考是用户认可的 gyi9exiz model_2200 在 recover 组条件下的起身片段（scripts/record_recover_amp_dataset.py）；
@@ -503,17 +484,9 @@ def env_cfg(
     cts: bool = False,
     cts_teacher_height_scan: bool = True,
     stair_lin_vel_x_min: float | None = None,
-    fall_spawn_prob: float = ROUGH_FALL_SPAWN_PROB,
     fall_teacher: bool = False,
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
-    fall_teacher_style: str = "tuck",
-    fall_teacher_persist_loss: bool = False,
-    fall_teacher_target_leash_rad: float | None = ROUGH_FALL_TEACHER_TARGET_LEASH_RAD,
-    recover_group: bool = True,
     recover_amp: bool = True,
-    recover_impact: bool = False,
-    recover_impact_weight: float = ROUGH_RECOVER_IMPACT_WEIGHT,
-    recover_impact_sensors: tuple[str, ...] = ROUGH_RECOVER_IMPACT_SENSORS,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -535,26 +508,15 @@ def env_cfg(
         critic 本身不变；须配 cts_rl_cfg(teacher_obs_group=ROUGH_CTS_TEACHER_GROUP)。
     stair_lin_vel_x_min：台阶类列（ROUGH_STAIR_COMMAND_TERRAIN_NAMES）前进指令下限；None = 沿用
         ROUGH_STAIR_LIN_VEL_X_RANGE[0]，上限不变。对照实验开关。
-    fall_spawn_prob：recover 组关闭时出生列 reset 改从倒地状态库出生的概率，默认 ROUGH_FALL_SPAWN_PROB；play 固定为 0，0 关闭。
-        recover 组开启时不用（组内每局倒地出生、组外不倒地出生）。
     fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
     fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
-    fall_teacher_style：教师动作轨迹，"tuck"（默认，固定方向 + 停顿 / 收腿 / 保持，gyi9exiz）| "june_random"
-        （6 月随机方向版，FallTeacherCfg.june_random()，2026-10-27 用户定）| "june_random_free_fold"（同上、夹角归策略，fold='policy'）。
-    fall_teacher_persist_loss：模仿损失常驻（见 ROUGH_FALL_TEACHER_TARGET_LEASH_RAD 注释），默认关。
-    fall_teacher_target_leash_rad：模仿损失常驻时的目标限幅（rad），默认 ROUGH_FALL_TEACHER_TARGET_LEASH_RAD；None 不限（纯开环）。
-    recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
-        critic 维数与训练相同（组掩码全 False）。关闭时（消融 −recover 组）倒地出生按 fall_spawn_prob、走共享奖励。
-        两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
     recover_amp：AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP；train / play 都建，rl_cfg 的 amp_cfg 按组名取。默认开
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
-    recover_impact：recover 组奖励加机身 + 腿杆撞击罚（见 ROUGH_RECOVER_IMPACT_* 注释），默认关；须 recover_group=True。
-    recover_impact_weight：撞击罚权重，默认 ROUGH_RECOVER_IMPACT_WEIGHT（−0.15，m6rxc7v9）。
-    recover_impact_sensors：撞击罚计入的对地接触传感器，默认 ROUGH_RECOVER_IMPACT_SENSORS（机身 + 腿杆）。
+
+    recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
+    （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
     """
-    if fall_teacher_style not in ("tuck", "june_random", "june_random_free_fold"):
-        raise ValueError(f"未知 fall_teacher_style {fall_teacher_style}")
     if stair_height_reference not in ("support", "window"):
         raise ValueError(
             f"stair_height_reference 只能是 'support' 或 'window'，实际为 {stair_height_reference!r}"
@@ -675,7 +637,8 @@ def env_cfg(
         mode="reset",
         params={
             "cache_path": str(ROUGH_FALL_STATE_CACHE),
-            "prob": 0.0 if play else float(fall_spawn_prob),
+            # 训练时 _apply_recover_group 改为按组出生（不看 prob）；play 不分组，0 即不倒地出生。
+            "prob": 0.0,
             "class_weights": ROUGH_FALL_SPAWN_CLASS_WEIGHTS,
             "terrain_type_names": ROUGH_FALL_SPAWN_TERRAIN_NAMES,
         },
@@ -723,21 +686,9 @@ def env_cfg(
                     )
                 )
             )
-            if fall_teacher_persist_loss:
-                schedule.update(
-                    supervise_after_retire=True,
-                    target_leash_rad=fall_teacher_target_leash_rad,
-                )
-            if fall_teacher_style == "tuck":
-                delayed_action.teacher = FallTeacherCfg(
-                    steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
-                )
-            else:
-                delayed_action.teacher = FallTeacherCfg.june_random(
-                    steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER,
-                    fold="policy" if fall_teacher_style == "june_random_free_fold" else "limit",
-                    **schedule,
-                )
+            delayed_action.teacher = FallTeacherCfg(
+                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
+            )
             delayed_action.teacher.validate()
         cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(
             func=fall_teacher_imitation,
@@ -901,23 +852,11 @@ def env_cfg(
                 params={"command_name": "velocity_height"},
             )
 
-    if recover_impact and not recover_group:
-        raise ValueError("recover_impact 是 recover 组奖励的一项，须 recover_group=True")
-    if recover_group:
-        _apply_recover_group(
-            cfg,
-            play=play,
-            impact=recover_impact,
-            impact_weight=recover_impact_weight,
-            impact_sensors=recover_impact_sensors,
-        )
-        mask_terms = {"recover_group": ObservationTermCfg(func=recover.recover_group_obs)}
-    else:
-        mask_terms = {
-            "fall_recovering": ObservationTermCfg(func=rough_observations.fall_recovering_obs)
-        }
+    _apply_recover_group(cfg, play=play)
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
-        terms=mask_terms, concatenate_terms=True, enable_corruption=False
+        terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
+        concatenate_terms=True,
+        enable_corruption=False,
     )
     if recover_amp:
         cfg.observations[ROUGH_RECOVER_AMP_GROUP] = ObservationGroupCfg(
@@ -1002,16 +941,8 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_recover_group(
-    cfg: ManagerBasedRlEnvCfg,
-    *,
-    play: bool,
-    impact: bool = False,
-    impact_weight: float = ROUGH_RECOVER_IMPACT_WEIGHT,
-    impact_sensors: tuple[str, ...] = ROUGH_RECOVER_IMPACT_SENSORS,
-) -> None:
-    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
-    impact 时 recover 组奖励再加机身 + 腿杆撞击罚（ROUGH_RECOVER_IMPACT_*）。"""
+def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
+    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。"""
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
     if not play:
@@ -1107,15 +1038,6 @@ def _apply_recover_group(
             params={"inner": action_rate.func, "params": dict(action_rate.params or {})},
         ),
     }
-    if impact:
-        recover_terms["recover_impact_excess"] = RewardTermCfg(
-            func=recover.recover_contact_impact_excess,
-            weight=float(impact_weight),
-            params={
-                "sensor_names": tuple(impact_sensors),
-                "threshold_n": ROUGH_RECOVER_IMPACT_THRESHOLD_N,
-            },
-        )
     if imitation is not None:
         recover_terms["fall_teacher_imitation"] = imitation
     cfg.rewards = {**walking, **recover_terms}
@@ -1308,7 +1230,6 @@ __all__ = [
     "ROUGH_DR_KP_RANGE",
     "ROUGH_FALL_PENALTY",
     "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
-    "ROUGH_FALL_SPAWN_PROB",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
     "ROUGH_FALL_STATE_CACHE",
     "ROUGH_FALL_TEACHER_IMITATION_SIGMA",

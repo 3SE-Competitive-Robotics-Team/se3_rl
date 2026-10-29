@@ -16,7 +16,6 @@ class ImitationLossCfg:
 
     group：监督目标观测组 [接管, α, 教师动作 6 维]；front_period / back_period：前杆 / 后杆整圈对应的动作量（2π / 缩放），
     T 先按前杆整圈平移到 μ 那一圈，shift_back=True（joint 语义）时同侧后杆同步平移、夹角不变。
-    back_follow：教师夹角归策略时的后杆跟转系数（左、右，见 tasks.rough.fall_teacher.back_follow_gain）；None 时后杆照常监督教师值。
     """
 
     group: str = "fall_teacher_target"
@@ -25,7 +24,6 @@ class ImitationLossCfg:
     front_period: float = 0.0
     back_period: float = 0.0
     shift_back: bool = True
-    back_follow: tuple[float, float] | None = None
 
 
 @dataclass

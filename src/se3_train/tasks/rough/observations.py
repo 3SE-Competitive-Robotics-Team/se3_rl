@@ -1,5 +1,5 @@
-"""本任务的特权观测：倒地教师的状态（critic），以及没有 recover 组时的起身掩码（拉格朗日倒地约束的 M 标记与缩放两维
-2026-10-25 随约束一起删除）。
+"""本任务的特权观测：倒地教师的状态（critic）与模仿损失的监督目标（没有 recover 组时的起身掩码 fall_recovering_obs
+2026-10-29 随消融入口一起删除，复现用 86c81a60）。
 
 倒地教师（2026-10-23 起，见 fall_teacher.py）：教师接管时执行动作被混入教师动作、另有模仿奖励，α 随轮次退火，
 critic 同样要知道当前是否被接管以及 α。这些维度只进 critic 组，不进 actor 与 CTS 教师编码器（部署时没有 M 与教师）。
@@ -12,16 +12,9 @@ from typing import TYPE_CHECKING
 import torch
 
 from .fall_teacher import fall_teacher_of
-from .rewards import fall_constraint_active
 
 if TYPE_CHECKING:
     from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
-
-
-def fall_recovering_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """[N, 1]：本 env 是否倒地出生、尚未起身（M，见 rewards.fall_constraint_active）。没有 recover 组时作起身掩码
-    （env_cfg.ROUGH_RECOVER_MASK_GROUP），给 AMP 与网络老师蒸馏读；不进 actor / critic / CTS 教师组。"""
-    return fall_constraint_active(env).float().unsqueeze(1)
 
 
 def fall_teacher_active_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -44,9 +37,7 @@ def fall_teacher_alpha_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def fall_teacher_target_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """[N, 8]：PPO 模仿损失的监督目标 [接管标记, 监督权重, 教师动作 6 维（未按策略对齐的原始表示）]，与本步观测同一时刻。
-
-    监督权重即 α（模仿损失乘 α）；教师 supervise_after_retire 时恒为 1（α 退到 0 后照常监督，模仿损失不乘 α）。
+    """[N, 8]：PPO 模仿损失的监督目标 [接管标记, α, 教师动作 6 维（未按策略对齐的原始表示）]，与本步观测同一时刻。
 
     只进单独的观测组（env_cfg.ROUGH_FALL_TEACHER_TARGET_GROUP），不进 actor / critic / CTS 教师编码器；没有教师时全 0。
     """
@@ -54,13 +45,11 @@ def fall_teacher_target_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     if teacher is None:
         return torch.zeros(env.num_envs, 8, device=env.device)
     teacher.prepare()
-    weight = 1.0 if teacher.cfg.supervise_after_retire else float(teacher.alpha_value)
-    alpha = torch.full((env.num_envs, 1), weight, device=env.device)
+    alpha = torch.full((env.num_envs, 1), float(teacher.alpha_value), device=env.device)
     return torch.cat((teacher.active.float().unsqueeze(1), alpha, teacher.teacher_raw), dim=1)
 
 
 __all__ = [
-    "fall_recovering_obs",
     "fall_teacher_active_obs",
     "fall_teacher_alpha_obs",
     "fall_teacher_target_obs",
