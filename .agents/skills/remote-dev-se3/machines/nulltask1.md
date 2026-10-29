@@ -710,3 +710,9 @@ listener 真正消失后才创建新的，避免 `Address in use` 重启循环�
   - 完整配方：`…-Student128`，GPU 0–2，W&B [ajb8j1ol](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/ajb8j1ol)，PID/PGID `2946383`，state `/workspace/.se3-training-state/nulltask1/20261025T124941Z-00655`。
   - −蒸馏：`…-Student128-Recover-AMP`，GPU 3–5（AllowConcurrent），W&B [2j6xrn05](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/2j6xrn05)，PID/PGID `2947666`，state `/workspace/.se3-training-state/nulltask1/20261025T125006Z-02251`。
   - 包装 `.scratch/cleanup_20261025/launch_n1_ablate_{full,nodistill}.ps1`；首轮 5.4–5.5 s/轮、六卡 95% / 23 GB。
+
+## 2026-10-29 LossStay-NoLeash 准备（未开训）
+
+- 代码 `86c81a60`（xyh/1020，未推送）：入口 `…-Alpha800-Recover-RandDir-Impact015-BaseWheel-LossStay-NoLeash` = whtws 的 LossStay（zxmvuilz）去掉 ±0.3 rad 目标限幅（env_cfg `fall_teacher_target_leash_rad=None`），其余相同。zxmvuilz 退场后倒置归零，诊断是限幅让学生不翻也能压低模仿损失。
+- bundle `fbcf241f..xyh/1020` → `refs/heads/exp/rough-noleash-86c81a6`；子模块 bundle `7c3a759..xyh/1026-sim2x` 进 `/workspace/se3-worktrees/.se3-sim2x-mirror`（711257f）。工作副本 `/workspace/se3-worktrees/rough-noleash-86c81a6`（HEAD=86c81a60、干净，数据集与老师从 rough-ablate-fbcf241 拷）。配置核对（CPU，`.scratch/fall_teacher_probe_20261023/check_no_leash.py`）只差 target_leash_rad。
+- 2026-10-29 六卡被他人 var_sampling 任务占满（各约 81 GB、89–100%，已跑约 21 h），GPU smoke 与开训待空卡。启动包装 `.scratch/fall_teacher_probe_20261023/launch_n1_noleash.ps1`（pwsh 7，默认 dry run，`-Launch` 正式起）。
