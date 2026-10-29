@@ -508,6 +508,7 @@ def env_cfg(
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
     fall_teacher_style: str = "tuck",
     fall_teacher_persist_loss: bool = False,
+    fall_teacher_target_leash_rad: float | None = ROUGH_FALL_TEACHER_TARGET_LEASH_RAD,
     recover_group: bool = True,
     recover_amp: bool = True,
     recover_impact: bool = False,
@@ -542,6 +543,7 @@ def env_cfg(
     fall_teacher_style：教师动作轨迹，"tuck"（默认，固定方向 + 停顿 / 收腿 / 保持，gyi9exiz）| "june_random"
         （6 月随机方向版，FallTeacherCfg.june_random()，2026-10-27 用户定）| "june_random_free_fold"（同上、夹角归策略，fold='policy'）。
     fall_teacher_persist_loss：模仿损失常驻（见 ROUGH_FALL_TEACHER_TARGET_LEASH_RAD 注释），默认关。
+    fall_teacher_target_leash_rad：模仿损失常驻时的目标限幅（rad），默认 ROUGH_FALL_TEACHER_TARGET_LEASH_RAD；None 不限（纯开环）。
     recover_group：recover 组（见 ROUGH_RECOVER_* 注释与 recover.py），默认开；play 不分组、不倒地出生，奖励 / 终止 /
         critic 维数与训练相同（组掩码全 False）。关闭时（消融 −recover 组）倒地出生按 fall_spawn_prob、走共享奖励。
         两种情况都建起身掩码观测组 ROUGH_RECOVER_MASK_GROUP（见该常量注释）。
@@ -724,7 +726,7 @@ def env_cfg(
             if fall_teacher_persist_loss:
                 schedule.update(
                     supervise_after_retire=True,
-                    target_leash_rad=ROUGH_FALL_TEACHER_TARGET_LEASH_RAD,
+                    target_leash_rad=fall_teacher_target_leash_rad,
                 )
             if fall_teacher_style == "tuck":
                 delayed_action.teacher = FallTeacherCfg(

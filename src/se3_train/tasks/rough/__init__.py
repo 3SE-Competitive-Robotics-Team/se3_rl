@@ -102,6 +102,9 @@ _FALL_TEACHER_NEVER_RETIRE = (2**31 - 1, 2**31 - 1, 2**31 - 1)
 # = TeacherStay 换回 Alpha800 退场调度 + fall_teacher_persist_loss（退场后只监督不执行、模仿损失不乘 α、目标限幅 ±0.3 rad）；
 # 撞击罚同为 −0.15（机身 + 两轮）。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir-Impact015-BaseWheel-LossStay"
+# 2026-10-29 用户定：LossStay（zxmvuilz）老师退场后倒置起身率归零——±0.3 rad 限幅让目标只领先实测 0.3 rad，学生不翻也能把模仿损失
+# 压低。去掉限幅（目标照开环扫到 2π），其余与 LossStay 相同（单变量）。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_NO_LEASH_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-RandDir-Impact015-BaseWheel-LossStay-NoLeash"
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -462,6 +465,30 @@ def register() -> None:
                 imitation_loss=_fall_teacher_imitation_loss(loss_stay_env_cfg),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-RandDir-Impact015-BaseWheel-LossStay-NoLeash：同 LossStay，去掉目标限幅。
+    no_leash_kwargs = dict(loss_stay_kwargs, fall_teacher_target_leash_rad=None)
+    no_leash_env_cfg = env_cfg(**no_leash_kwargs)
+    no_leash_actor = no_leash_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_NO_LEASH_TASK_ID,
+        env_cfg=no_leash_env_cfg,
+        play_env_cfg=env_cfg(play=True, **no_leash_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(no_leash_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in no_leash_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(no_leash_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_RANDDIR_IMPACT015_BASE_WHEEL_LOSS_STAY_NO_LEASH_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
