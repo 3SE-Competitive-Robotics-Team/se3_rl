@@ -448,3 +448,9 @@ bash C:/Users/13567/.local/bin/start-whtws-training.sh \
 - bundle `adfbd292..xyh/1020` → `refs/heads/exp/recovery-cleanup-e8420b9`；工作副本 `/workspace/se3-worktrees/eq-05654e5b`（删前）与 `eq-e8420b97`（删后），核对完可删。
 - CPU 逐位比对（`/workspace/se3-evals/recovery_cleanup_20261030/`，`record.py` 64 env、episode 缩到 2 s、随机动作 200 步、每任务 128 次 reset）：Flat、Crawl、Crawl-Slope、Jump-Mimic、Rough、Rough-GRU、Student128、FallTeacherBC-Alpha800-Recover 全部观测组 / 奖励 / 终止逐位一致（`compare.txt`）。WheelDog 在 CPU 上新旧都报 `deg2rad(float)`（自身 rewards 的旧问题），且只用共享 events 里未改动的域随机化函数，不受影响。
 - GPU 0–4 各 × 8192 smoke 5 轮通过：Flat-MLP、Crawl-MLP、Jump-Mimic-MLP、Student128、FallTeacherBC-Alpha800-Recover（日志 `smoke-{0..4}.log`）。
+
+### 2026-10-30 Recover-Catch（倒地教师 catch 释放）
+
+- 开环扫参与录像在 `/workspace/se3-evals/catch_sweep_20261030/`（`catch_sweep.py`、`record_teacher.py`；工作副本 `eq-catch` = e8420b97 + 未提交的 fall_teacher.py）。
+- bundle `e8420b97..xyh/1020` → `refs/heads/exp/recover-catch-2af06e12`；工作副本 `/workspace/se3-worktrees/recover-catch-2af06e12`（`.venv` 软链主 checkout）。GPU 0 × 1024 smoke 5 轮通过（`/workspace/se3-evals/recover_catch_smoke_20261030/smoke.log`，seg_pause_frac 0）。
+- 21:28 UTC+8 按用户指令开训 `SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Catch`：GPU 0–5 × 8192、seed 42、5000 轮、save 100，`-c 2af06e1 -R` 上述工作副本，与 gyi9exiz 同规模，只差倒地教师释放方式。W&B [uglay7z1](https://wandb.ai/luzhongjin365-se3/SE3-WheelLegged-Rough/runs/uglay7z1)；PID/PGID `2592653`；state `/workspace/.se3-training-state/whtws/20261030T132802Z`；run `logs/rsl_rl/SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Catch/2026-10-30_21-28-09_rough-cts-student128-fallteacherbc-alpha800-recovergroup-catch-scratch-seed42-6x8192-5k`（在工作副本下）。第 10 轮无 Traceback。启动器不传 `-p` 时 W&B 项目默认取任务名，对照 run 要显式 `-p SE3-WheelLegged-Rough`。
