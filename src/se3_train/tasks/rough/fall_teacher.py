@@ -10,6 +10,7 @@
   ② 停顿 pause_s；
   ③ 反向收腿：前杆沿翻正的反方向转到 R1 蹲坐构型（与 sit_front 同余的最近位置，同向续转会再撬翻），夹角同时收到折叠角；
   ④ 保持 hold_s 后交还策略（站起来由策略负责）；每个 episode 只接一次，总时长超过 max_active_s 也交还。
+release="catch"（2026-10-30）时 ①–③ 换成：翻正到倾角 < catch_tilt 即停转，前杆与夹角限速转到站姿（轮子先接住机身），再 ④。
 
 接管条件：倒地出生、尚未起身（rewards.fall_constraint_active）、倾角 > enter_tilt，且不在对照子集里——倒地出生 env 里按 env 号
 固定 off_env_fraction 不接教师，记录不靠教师的起身率（也起教师 dropout 的作用）。
@@ -30,7 +31,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
@@ -65,6 +66,14 @@ class FallTeacherCfg:
     sit_front_rad: tuple[float, float] = (0.292, -0.293)
     hold_s: float = 1.5
     max_active_s: float = 8.0
+    # 翻正之后（2026-10-30 用户定试 catch）：tuck 是上面的 ② 停顿 → ③ 反向收腿 → ④ 保持（gyi9exiz）；catch 是倾角降到
+    # catch_tilt_deg 以下就停转、前杆与夹角以 catch_rate_rad_s 限速转到站姿（默认关节角），保持 hold_s 后交还——
+    # gyi9exiz 倒置的机身峰值力 89% 出现在翻正后倾角 0–30°：腿收着、机身从 ~18 cm 落下底面着地（见 .scratch/recover_impact_diag_20261030），
+    # catch 让轮子先接住。前杆转到站姿的哪一圈由 catch_direction 定：nearest 最近、forward 沿翻正方向续转、backward 反向。
+    release: Literal["tuck", "catch"] = "tuck"
+    catch_tilt_deg: float = 45.0
+    catch_rate_rad_s: float = 8.0
+    catch_direction: Literal["nearest", "forward", "backward"] = "nearest"
     off_env_fraction: float = 0.1
     alpha_start: float = 0.85
     alpha_mid: float = 0.45
@@ -91,6 +100,19 @@ class FallTeacherCfg:
         for name in ("fold_margin_rad", "pause_s", "hold_s"):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} 不能为负，实际 {getattr(self, name)}")
+        if self.release not in ("tuck", "catch"):
+            raise ValueError(f"release 只能是 tuck / catch，实际 {self.release}")
+        if self.catch_direction not in ("nearest", "forward", "backward"):
+            raise ValueError(
+                f"catch_direction 只能是 nearest / forward / backward，实际 {self.catch_direction}"
+            )
+        if self.release == "catch":
+            if not 0.0 < self.catch_tilt_deg < self.enter_tilt_deg:
+                raise ValueError(
+                    f"须 0 < catch_tilt_deg < enter_tilt_deg，实际 {self.catch_tilt_deg} / {self.enter_tilt_deg}"
+                )
+            if self.catch_rate_rad_s <= 0.0:
+                raise ValueError(f"catch_rate_rad_s 必须为正数，实际 {self.catch_rate_rad_s}")
         if self.max_active_s <= 0.0:
             raise ValueError(f"max_active_s 必须为正数，实际 {self.max_active_s}")
         if not 0.0 <= self.off_env_fraction < 1.0:
@@ -158,6 +180,7 @@ class FallTeacher:
         self.theta = torch.zeros(n, 2, device=device)
         self.phi = torch.zeros(n, 2, device=device)
         self.tuck_target = torch.zeros(n, 2, device=device)
+        self.tuck_phi_target = torch.full((n, 2), self._fold, device=device)
         self.used = torch.zeros(n, dtype=torch.bool, device=device)
         self.active = torch.zeros(n, dtype=torch.bool, device=device)
         self.teacher_raw = torch.zeros(n, term.action_dim, device=device)
@@ -250,11 +273,37 @@ class FallTeacher:
         self.seg = torch.where(enter, torch.full_like(self.seg, _FLIP), self.seg)
         self.used |= enter
 
-        # ① 翻正：先判是否翻正，再推进；转满 max_sweep 仍没翻正直接进保持段
+        # ① 翻正：先判是否翻正，再推进；转满 max_sweep 仍没翻正直接进保持段。
+        # catch 模式在倾角 < catch_tilt 时停转，直接进 ③（复用收腿段的限速逼近），目标换成站姿。
+        catch = cfg.release == "catch"
         flipping = self.seg == _FLIP
-        flipped = flipping & (tilt < float(cfg.stop_tilt_deg))
-        self.seg = torch.where(flipped, torch.full_like(self.seg, _PAUSE), self.seg)
+        release_tilt = cfg.catch_tilt_deg if catch else cfg.stop_tilt_deg
+        flipped = flipping & (tilt < float(release_tilt))
+        self.seg = torch.where(
+            flipped, torch.full_like(self.seg, _TUCK if catch else _PAUSE), self.seg
+        )
         self.seg_t = torch.where(flipped, torch.zeros_like(self.seg_t), self.seg_t)
+        if catch:
+            stand = self._term._entity.data.default_joint_pos[:, self._leg_ids]
+            stand_theta = stand[:, [0, 2]]
+            stand_phi = torch.stack(
+                (
+                    coeffs[0, 0] * stand[:, 0] + coeffs[0, 1] * stand[:, 1],
+                    coeffs[1, 0] * stand[:, 2] + coeffs[1, 1] * stand[:, 3],
+                ),
+                dim=1,
+            )
+            two_pi = 2.0 * math.pi
+            if cfg.catch_direction == "nearest":
+                step_to = torch.remainder(stand_theta - self.theta + math.pi, two_pi) - math.pi
+            else:
+                u = side * float(cfg.direction)
+                if cfg.catch_direction == "backward":
+                    u = -u
+                step_to = u * torch.remainder(u * (stand_theta - self.theta), two_pi)
+            f2 = flipped.unsqueeze(1)
+            self.tuck_target = torch.where(f2, self.theta + step_to, self.tuck_target)
+            self.tuck_phi_target = torch.where(f2, stand_phi, self.tuck_phi_target)
         advance = flipping & ~flipped
         inc = float(cfg.sweep_speed_rad_s) * dt * advance.float()
         self.theta = self.theta + side * (float(cfg.direction) * inc).unsqueeze(1)
@@ -282,19 +331,21 @@ class FallTeacher:
         self.seg = torch.where(to_tuck, torch.full_like(self.seg, _TUCK), self.seg)
 
         tucking = (self.seg == _TUCK).unsqueeze(1)
-        tuck_step = float(cfg.tuck_speed_rad_s) * dt
+        tuck_step = float(cfg.catch_rate_rad_s if catch else cfg.tuck_speed_rad_s) * dt
         self.theta = torch.where(
             tucking,
             self.theta + torch.clamp(self.tuck_target - self.theta, -tuck_step, tuck_step),
             self.theta,
         )
         self.phi = torch.where(
-            tucking, self.phi + torch.clamp(self._fold - self.phi, -tuck_step, tuck_step), self.phi
+            tucking,
+            self.phi + torch.clamp(self.tuck_phi_target - self.phi, -tuck_step, tuck_step),
+            self.phi,
         )
         tucked = (
             (self.seg == _TUCK)
             & ((self.tuck_target - self.theta).abs().amax(dim=1) < 1e-5)
-            & ((self.phi - self._fold).abs().amax(dim=1) < 1e-5)
+            & ((self.phi - self.tuck_phi_target).abs().amax(dim=1) < 1e-5)
         )
         self.seg = torch.where(tucked, torch.full_like(self.seg, _HOLD), self.seg)
         self.seg_t = torch.where(tucked, torch.zeros_like(self.seg_t), self.seg_t)

@@ -205,6 +205,18 @@ ROUGH_FALL_TEACHER_IMITATION_SIGMA = 0.35
 # PPO 模仿损失的监督目标观测组（observations.fall_teacher_target_obs，[接管, α, 教师动作 6 维]），只给算法读，
 # 不进 actor / critic / CTS 教师编码器；fall_teacher=True 时 train / play 都建（play 全 0），见 rl_cfg 的模仿损失。
 ROUGH_FALL_TEACHER_TARGET_GROUP = "fall_teacher_target"
+# 倒地教师 catch 释放（2026-10-30 用户定，env_cfg(fall_teacher_catch=True)）：gyi9exiz 的 tuck 教师翻正后收着腿停顿，
+# 机身从约 18 cm 落地砸出 kN 级峰值；catch 在倾角 < 65° 就停转、限速 8 rad/s 把腿转到站姿，让轮子先接住。
+# 参数取开环扫参最好的一组（.scratch/recover_impact_diag_20261030/catch_sweep.py，whtws catch_sweep_20261030）：
+# 倒置 6 s 起身 0.45 → 0.89–0.91、机身峰值中位 ≈ 940 → 470 N，侧躺 0.44–0.47 → 0.65–0.69。enter_tilt 提到 100°
+# 是为满足 catch_tilt < enter_tilt，代价是 < 100° 的侧躺出生不接管、由策略自己起。剩下的撞击交给 recover 组奖励。
+ROUGH_FALL_TEACHER_CATCH = {
+    "release": "catch",
+    "catch_tilt_deg": 65.0,
+    "catch_rate_rad_s": 8.0,
+    "catch_direction": "nearest",
+    "enter_tilt_deg": 100.0,
+}
 # recover 组（2026-10-24 用户定，2026-10-25 起默认开，见 recover.py）：倒地出生那几列里固定抽 ROUGH_RECOVER_GROUP_FRACTION
 # 的 env（约占全体 10%）每局倒地出生、只练起身，其余 env 只练走路、不再倒地出生。共用一套奖励时，倒地期每秒约 −110、站起后
 # 每秒约 +14，晚起身 1 s 差约 124 分，任何约束都在和这个"速度溢价"对抗（dqkkieq0 / tf2qsg6r 教师退场后都滑回暴起）。
@@ -486,6 +498,7 @@ def env_cfg(
     stair_lin_vel_x_min: float | None = None,
     fall_teacher: bool = False,
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
+    fall_teacher_catch: bool = False,
     recover_amp: bool = True,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
@@ -511,6 +524,7 @@ def env_cfg(
     fall_teacher：倒地起身脚本教师（动作项混合 + 模仿奖励 + critic 两维，见 fall_teacher.py），默认关；play 不接教师。
     fall_teacher_alpha_iters：倒地教师 α 调度的 (hold_iters, mid_iter, end_iter)；None 沿用 FallTeacherCfg 默认
         (600, 1300, 1900)。α 值本身（0.85 / 0.45 / 0）不变。
+    fall_teacher_catch：倒地教师翻正后换成 catch 释放（ROUGH_FALL_TEACHER_CATCH），默认 tuck；须 fall_teacher=True。
     recover_amp：AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP；train / play 都建，rl_cfg 的 amp_cfg 按组名取。默认开
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
 
@@ -673,6 +687,8 @@ def env_cfg(
         base_height_sigma=base_height_sigma,
     )
     # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
+    if fall_teacher_catch and not fall_teacher:
+        raise ValueError("fall_teacher_catch 须配 fall_teacher=True")
     if fall_teacher:
         if not play:
             schedule = (
@@ -686,8 +702,9 @@ def env_cfg(
                     )
                 )
             )
+            release = ROUGH_FALL_TEACHER_CATCH if fall_teacher_catch else {}
             delayed_action.teacher = FallTeacherCfg(
-                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule
+                steps_per_policy_iter=ROUGH_STEPS_PER_POLICY_ITER, **schedule, **release
             )
             delayed_action.teacher.validate()
         cfg.rewards["fall_teacher_imitation"] = RewardTermCfg(

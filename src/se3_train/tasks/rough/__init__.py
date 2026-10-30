@@ -72,6 +72,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover"
 )
+# 2026-10-30 用户定：Recover 的单变量对照——倒地教师翻正后从 tuck（收腿停顿）换成 catch（倾角 < 65° 就伸腿到站姿、
+# 轮子接住，见 env_cfg.ROUGH_FALL_TEACHER_CATCH），压翻正后机身砸地；其余同 gyi9exiz。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Catch"
+)
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -272,6 +277,28 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    # Recover-Catch：Recover 只换倒地教师的翻正后释放方式。
+    catch_kwargs = dict(recover_kwargs, fall_teacher_catch=True)
+    catch_env_cfg = env_cfg(**catch_kwargs)
+    catch_actor = catch_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID,
+        env_cfg=catch_env_cfg,
+        play_env_cfg=env_cfg(play=True, **catch_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(catch_actor.history_length),
+                frame_term_dims=tuple(observation_term_width(name) for name in catch_actor.terms),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(catch_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     # Recover-AMP（6iwgpa2m）：env 默认（recover 组 + AMP），rl 只有 AMP、不蒸馏。
     recover_amp_env_cfg = env_cfg(**stair_vx08_kwargs)
     recover_amp_actor = recover_amp_env_cfg.observations["actor"]
@@ -298,6 +325,7 @@ def register() -> None:
 
 
 __all__ = [
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
