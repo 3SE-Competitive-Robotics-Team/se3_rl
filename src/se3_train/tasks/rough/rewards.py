@@ -34,7 +34,6 @@ import torch.distributed
 from se3_shared.torch_constants import device_constant
 from se3_train.mdp.rewards import (
     _DEFAULT_ASSET_CFG,
-    _recovery_reset_mask,
     _tracking_upright_gate,
     _wheel_pos_body_frame,
 )
@@ -117,7 +116,7 @@ def base_height_penalty_support_on_terrain(
     if mask is None:
         return penalty
     cmd = env.command_manager.get_command(command_name)
-    active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
+    active = ~(cmd[:, 5] > 0.5)
     frame_z = env.scene[height_sensor_name].data.frame_pos_w[:, 0, 2]
     height = frame_z - ground_height_estimate(env, support_sensor_name)
     error = height - cmd[:, 4]
@@ -172,7 +171,7 @@ def base_height_penalty_window_on_terrain(
     if mask is None:
         return penalty
     cmd = env.command_manager.get_command(command_name)
-    active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
+    active = ~(cmd[:, 5] > 0.5)
     frame_z = env.scene[height_sensor_name].data.frame_pos_w[:, 0, 2]
     error = frame_z - ground_height_estimate(env, window_sensor_name) - cmd[:, 4]
     shaped = error

@@ -1,4 +1,4 @@
-"""Recovery-Stand 腿部几何对齐工具。"""
+"""左右轮几何对齐工具（轮距与前后错位），源自已删除的 Recovery-Stand 任务。"""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def wheel_alignment_penalty(
 
 def _wheel_body_ids(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> list[int]:
     """缓存左右轮 body 在 articulation 内的局部索引。"""
-    attr_name = f"_recovery_wheel_body_ids_{asset_cfg.name}"
+    attr_name = f"_leg_alignment_wheel_body_ids_{asset_cfg.name}"
     cached = getattr(env, attr_name, None)
     if isinstance(cached, list) and len(cached) == 2:
         return cached

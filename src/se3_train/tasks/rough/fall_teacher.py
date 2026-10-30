@@ -3,7 +3,7 @@
 6 月版（gpu-8 Pod 上做、代码只剩 laptop 快照）是倒置时前髋扫动（每局 reset 随机 ±1 方向、整局固定；随机方向版移植 10-29 已删，复现用 86c81a60）
 + 动作层 α 混合 + 模仿奖励；直接照搬不行：
 当时是开链模型、左右关节同号、腿部动作是直接关节角，而现在 Rough 是闭链、左右前杆镜像、腿部动作为 joint 语义
-（四根主动杆绝对目标，夹角隐含）。动作段落照 R1 开环参考（se3_tools/recovery_reference.py，现模型实测可翻正）：
+（四根主动杆绝对目标，夹角隐含）。动作段落照 R1 开环参考（生成器 se3_tools/recovery_reference.py 与数据 assets/trajectories/recovery_ref_v1/ 已于 2026-10-29 删除，复现用 05654e5b；现模型实测可翻正）：
 
   ① 翻正：前杆按物理同向匀速转（policy 坐标左 +d·ω、右 −d·ω），后杆随前杆转、夹角以 fold_rate 限速收到折叠角
      （机械下限 + margin），轮速目标 0；倾角 < stop_tilt 结束；累计转过 max_sweep 仍没翻正，直接进保持段；

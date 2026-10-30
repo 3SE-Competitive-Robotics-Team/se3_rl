@@ -216,56 +216,22 @@ class VelocityHeightCommandTerm(CommandTerm):
             self._resampling_for_reset = previous_resampling_for_reset
 
     def _log_bad_orientation_diagnostics(self, env_ids: torch.Tensor) -> None:
-        """上报 bad_orientation 在恢复样本和平地样本中的拆分来源。"""
+        """上报 reset 时 bad_orientation 终止的 env 数。"""
         diag = (
             self._env.extras.get("_bad_orientation_diag") if hasattr(self._env, "extras") else None
         )
         if not isinstance(diag, dict):
             return
 
-        raw_bad = diag.get("raw_bad")
-        counted_bad = diag.get("counted_bad")
         terminated = diag.get("terminated")
-        recovery_mask = diag.get("recovery_mask")
-        recovery_grace = diag.get("recovery_grace")
-        tensors = (raw_bad, counted_bad, terminated, recovery_mask, recovery_grace)
-        if not all(
-            isinstance(item, torch.Tensor) and item.shape[0] == self.num_envs for item in tensors
-        ):
+        if not (isinstance(terminated, torch.Tensor) and terminated.shape[0] == self.num_envs):
             return
 
-        reset_recovery = recovery_mask[env_ids]
-        reset_flat = ~reset_recovery
-        reset_terminated = terminated[env_ids]
-        reset_raw_bad = raw_bad[env_ids]
-        reset_counted_bad = counted_bad[env_ids]
-        reset_grace = recovery_grace[env_ids]
-
-        # 每个 policy step 的 reset 都会走到这里：全程保持 0 维 GPU tensor 且不
-        # 触发 mask.any()/.item() 之类的主机同步；空 mask 用 clamp 分母得 0。
-        def _masked_rate(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-            selected = (values.float() * mask.float()).sum()
-            return selected / mask.float().sum().clamp(min=1.0)
-
+        # 每个 policy step 的 reset 都会走到这里：保持 0 维 GPU tensor，不触发主机同步。
+        # 旧 recovery 拆分（bad_orientation_recovery 与 Recovery/bad_orientation_*）随旧机制于
+        # 2026-10-29 删除，复现用 05654e5b；flat 口径即全部 reset env。
         log = self._env.extras.setdefault("log", {})
-        log.update(
-            {
-                "Episode_Termination/bad_orientation_recovery": (reset_terminated & reset_recovery)
-                .float()
-                .sum(),
-                "Episode_Termination/bad_orientation_flat": (reset_terminated & reset_flat)
-                .float()
-                .sum(),
-                "Recovery/bad_orientation_raw_rate": _masked_rate(reset_raw_bad, reset_recovery),
-                "Recovery/bad_orientation_counted_rate": _masked_rate(
-                    reset_counted_bad, reset_recovery
-                ),
-                "Recovery/bad_orientation_grace_rate": _masked_rate(reset_grace, reset_recovery),
-                "Recovery/bad_orientation_termination_rate": _masked_rate(
-                    reset_terminated, reset_recovery
-                ),
-            }
-        )
+        log["Episode_Termination/bad_orientation_flat"] = terminated[env_ids].float().sum()
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         """为指定环境重新采样指令。"""

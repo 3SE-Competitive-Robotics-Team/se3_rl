@@ -75,4 +75,4 @@ connect equality 只约束两个端点重合，不能区分四杆机构的正常
 关节没有范围，软约束可在冲击下穿过共线奇异位形。**正确做法**：按正常几何全工作区
 限制被动轴符号和外侧范围：左 `lf1/coupler=[-1.45,0]/[0,1.67]`，右侧镜像；不可用高
 damping 或大 armature 掩盖分支穿越。修改范围后必须用跌落沉降批次统计分支错误率，
-再重新生成带当前 MJCF 哈希的 recovery cache。
+再重新生成带当前 MJCF 哈希的倒地状态库（`se3_tools.fall_state_cache`；旧 recovery cache 生成器已于 2026-10-29 删除）。

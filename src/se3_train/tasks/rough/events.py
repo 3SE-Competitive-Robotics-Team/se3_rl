@@ -4,7 +4,7 @@
 "只看台阶列"的均值，所以分列诊断仍走 interval 事件直接写 `extras["log"]`。
 
 倒地出生（2026-10-20）：`reset_from_fall_states` 从 `se3_tools.fall_state_cache` 生成的状态库里取停稳的倒地状态，
-覆盖平地列一部分 env 的初始根状态与关节状态；不经过旧 recovery 机制（`mdp.recovery_state` 的门控保持关闭），
+覆盖平地列一部分 env 的初始根状态与关节状态；与旧 recovery 机制（`mdp.recovery_state`，2026-10-29 已删，复现用 05654e5b）无关，
 奖励按普通 env 计价。
 """
 

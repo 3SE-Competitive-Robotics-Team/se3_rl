@@ -27,8 +27,6 @@ se3-train = "se3_train.cli:main"
 se3-play = "se3_train.play:main"
 se3-joint-viewer = "se3_tools.joint_viewer:main"
 se3-joint-diag = "se3_tools.joint_diag:main"
-se3-recovery-state-cache = "se3_tools.recovery_state_cache:main"
-se3-recovery-state-cache-mjlab = "se3_tools.recovery_state_cache_mjlab:main"
 se3-bench = "se3_tools.bench.cli:main"
 
 [build-system]

@@ -32,7 +32,7 @@ def _serialleg_spec_for_training(
     使机器人与平面障碍碰撞，而不是与台阶地形碰撞。
 
     collision_geom_group：不为 None 时把 MJCF 里 group 0 的碰撞 geom 改到该 group。
-    只改内存里的 spec，MJCF 文件不动（recovery 状态缓存按文件字节校验）。geom group 只影响
+    只改内存里的 spec，MJCF 文件不动（倒地状态库 `se3_tools.fall_state_cache` 按文件字节校验）。geom group 只影响
     渲染与射线传感器、不影响碰撞；rough 线用它让 `include_geom_groups=(0,)` 的高度射线只看
     地形，不再打到自己的腿和轮子，与 mjlab 资产库 collision=3 / visual=2 的约定一致。
 

@@ -258,7 +258,6 @@ class SerialLegDelayedAction(ActionTerm):
         self._ctbc_wheel_delta_xz.zero_()
         state = getattr(self._env, "stair_climb_state", None)
         if state is not None and state.kff != 0.0:
-            recovery_active = getattr(self._env, "_recovery_reset_mask", None)
             bias_fn = getattr(state, "ff_bias", None)
             if callable(bias_fn):
                 self._ctbc_output_bias[:] = state.ff_bias()
@@ -288,23 +287,10 @@ class SerialLegDelayedAction(ActionTerm):
                     )
             if action_delta is None:
                 return
-            if (
-                isinstance(recovery_active, torch.Tensor)
-                and recovery_active.shape[0] == self.num_envs
-            ):
-                active_recovery = recovery_active.to(device=self.device, dtype=torch.bool)
-                action_delta[active_recovery] = 0.0
-                self._ctbc_wheel_delta_xz[active_recovery] = 0.0
             self._apply_ctbc_action_delta(action_delta)
             wheel_action_delta_fn = getattr(state, "ff_wheel_action_delta", None)
             if callable(wheel_action_delta_fn):
-                wheel_action_delta = wheel_action_delta_fn()
-                if (
-                    isinstance(recovery_active, torch.Tensor)
-                    and recovery_active.shape[0] == self.num_envs
-                ):
-                    wheel_action_delta[active_recovery] = 0.0
-                self._apply_ctbc_wheel_action_delta(wheel_action_delta)
+                self._apply_ctbc_wheel_action_delta(wheel_action_delta_fn())
 
     def apply_actions(self) -> None:
         if self._max_delay_steps > 0:

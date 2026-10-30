@@ -986,7 +986,6 @@ class RoughRuntimeTests(unittest.TestCase):
         把台阶列 env 平移到"机身与左轮在第一级踏面、右轮仍在中心平台"并悬空一步：机身射线参考抬一整阶，
         支撑面参考只抬半阶，两种口径相差半阶，罚值必须跟着支撑面走。
         """
-        from se3_train.mdp.rewards import _recovery_reset_mask
         from se3_train.mdp.terrain_height import frame_height_above_terrain, ground_height_estimate
         from se3_train.tasks.flat.rewards import flat_base_height_penalty_no_jump
         from se3_train.tasks.rough.stair_rewards import _geometry
@@ -1009,7 +1008,7 @@ class RoughRuntimeTests(unittest.TestCase):
             _step_once(env)
 
             cmd = env.command_manager.get_command("velocity_height")
-            active = (~(cmd[:, 5] > 0.5)) & (~_recovery_reset_mask(env))
+            active = ~(cmd[:, 5] > 0.5)
             ground_ray = ground_height_estimate(env, "base_height_sensor")
             ground_support = ground_height_estimate(env, ROUGH_BASE_HEIGHT_SUPPORT_SENSOR)
             gap = ground_ray - ground_support

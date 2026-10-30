@@ -7,7 +7,7 @@
 ## 0. 三条底线（先看，再动 CAD）
 
 **0.1 产出的是 v4，不覆盖 v3。**
-一旦几何或惯性变了，所有已训练 checkpoint 的默认站姿、recovery cache、ONNX 部署包络全部失效
+一旦几何或惯性变了，所有已训练 checkpoint 的默认站姿、倒地状态库（`se3_tools.fall_state_cache`）、ONNX 部署包络全部失效
 （参见 `bd5866e` 那次静平衡重标定的后果）。新模型走
 `assets/robots/serialleg/mjcf/serialleg_closed_chain_v4.xml`，v3 原样留着，
 等 v4 跑通对照训练再切默认。

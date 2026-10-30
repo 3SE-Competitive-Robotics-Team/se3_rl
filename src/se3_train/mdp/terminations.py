@@ -8,7 +8,6 @@ import torch
 
 from se3_shared import policy_leg_position_error_torch
 from se3_shared.torch_constants import device_index
-from se3_train.mdp import recovery_state
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import policy_leg_joint_ids
 
@@ -26,11 +25,6 @@ def _should_log_step(
     step = int(getattr(env, "common_step_counter", 0))
     interval = max(1, int(getattr(env, "_se3_termination_log_interval_steps", interval)))
     return interval <= 1 or (step - 1) % interval == 0
-
-
-def _recovery_reset_mask(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """返回当前仍处于 recovery active 模式的 env。"""
-    return recovery_state.recovery_active_mask(env)
 
 
 def time_out(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -68,8 +62,6 @@ class BadOrientationDelayed:
         env: ManagerBasedRlEnv,
         limit_angle: float = 0.5236,
         max_steps: int = 100,
-        recovery_grace_steps: int = 0,
-        recovery_terminate: bool = True,
         active_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if (
@@ -82,23 +74,13 @@ class BadOrientationDelayed:
         robot = env.scene["robot"]
         pg_z = robot.data.projected_gravity_b[:, 2]
         tilt_angle = torch.acos(torch.clamp(-pg_z, -1.0, 1.0))
-        raw_bad = tilt_angle > limit_angle
-        bad = raw_bad
-        recovery_mask = _recovery_reset_mask(env)
+        bad = tilt_angle > limit_angle
         if active_mask is not None:
             if active_mask.shape != (env.num_envs,):
                 raise ValueError(
                     f"active_mask 必须是 ({env.num_envs},)，实际为 {active_mask.shape}。"
                 )
             active_mask = active_mask.to(device=env.device, dtype=torch.bool)
-        in_recovery_grace = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
-        if not recovery_terminate:
-            bad = bad & ~recovery_mask
-        if recovery_grace_steps > 0:
-            in_recovery_grace = recovery_mask & (
-                env.episode_length_buf <= int(recovery_grace_steps)
-            )
-            bad = bad & ~in_recovery_grace
 
         if active_mask is None:
             self._fail_count[bad] += 1
@@ -112,41 +94,10 @@ class BadOrientationDelayed:
 
         terminated = self._fail_count > max_steps
         if active_mask is not None:
-            bad = bad & active_mask
             terminated = terminated & active_mask
         if hasattr(env, "extras"):
-            if _should_log_step(env):
-                mask_float = recovery_mask.float()
-                denominator = mask_float.sum().clamp_min(1.0)
-                rates = (
-                    torch.stack(
-                        (
-                            (raw_bad.float() * mask_float).sum(),
-                            (bad.float() * mask_float).sum(),
-                            (in_recovery_grace.float() * mask_float).sum(),
-                            (terminated.float() * mask_float).sum(),
-                        )
-                    )
-                    / denominator
-                )
-                # 保持 0 维 GPU tensor 入 log，避免 rollout 内主机同步；
-                # RSL-RL logger 在迭代末统一转换。
-                env.extras.setdefault("log", {}).update(
-                    {
-                        "Recovery/bad_orientation_raw_rate": rates[0],
-                        "Recovery/bad_orientation_counted_rate": rates[1],
-                        "Recovery/bad_orientation_grace_rate": rates[2],
-                        "Recovery/bad_orientation_termination_rate": rates[3],
-                    }
-                )
-            # reset 日志会被清空，所以先缓存逐环境诊断，由 command reset 阶段搬运到 log。
-            env.extras["_bad_orientation_diag"] = {
-                "raw_bad": raw_bad.detach(),
-                "counted_bad": bad.detach(),
-                "terminated": terminated.detach(),
-                "recovery_mask": recovery_mask.detach().clone(),
-                "recovery_grace": in_recovery_grace.detach(),
-            }
+            # reset 日志会被清空，所以先缓存逐环境终止标记，由 command reset 阶段搬运到 log。
+            env.extras["_bad_orientation_diag"] = {"terminated": terminated.detach()}
 
         return terminated
 
@@ -161,7 +112,6 @@ bad_orientation_delayed = BadOrientationDelayed()
 def catastrophic_state(
     env: ManagerBasedRlEnv,
     max_leg_pos_error: float | None = 3.0,
-    ignore_recovery_leg_pos_error: bool = False,
     max_leg_vel: float = 120.0,
     max_root_lin_vel: float = 80.0,
     max_root_ang_vel: float = 500.0,
@@ -194,10 +144,6 @@ def catastrophic_state(
     else:
         leg_error = policy_leg_position_error_torch(leg_pos, leg_default)
         leg_pos_bad = torch.any(torch.abs(leg_error) > float(max_leg_pos_error), dim=1)
-    leg_pos_bad_raw = leg_pos_bad
-    recovery_mask = recovery_state.recovery_active_mask(env)
-    if ignore_recovery_leg_pos_error and recovery_mask.shape[0] == env.num_envs:
-        leg_pos_bad = leg_pos_bad & ~recovery_mask
     leg_vel_bad = torch.any(torch.abs(leg_vel) > float(max_leg_vel), dim=1)
     root_lin_bad = torch.linalg.norm(root_lin_vel, dim=1) > float(max_root_lin_vel)
     root_ang_bad = torch.linalg.norm(root_ang_vel, dim=1) > float(max_root_ang_vel)
@@ -210,12 +156,6 @@ def catastrophic_state(
                 "Episode_Termination/catastrophic_state": terminated.float().mean(),
                 "Debug/catastrophic_nonfinite": (~finite).float().mean(),
                 "Debug/catastrophic_leg_pos": leg_pos_bad.float().mean(),
-                "Debug/catastrophic_leg_pos_raw": leg_pos_bad_raw.float().mean(),
-                "Debug/catastrophic_leg_pos_recovery": (
-                    (leg_pos_bad_raw & recovery_mask).float().mean()
-                    if recovery_mask.shape[0] == env.num_envs
-                    else 0.0
-                ),
                 "Debug/catastrophic_leg_vel": leg_vel_bad.float().mean(),
                 "Debug/catastrophic_root_vel": (root_lin_bad | root_ang_bad).float().mean(),
                 "Debug/catastrophic_height": height_bad.float().mean(),
@@ -232,8 +172,6 @@ def leg_contact(
     jump_force_threshold: float | None = None,
     jump_landing_force_threshold: float | None = None,
     jump_grace_steps: int = 0,
-    recovery_grace_steps: int = 0,
-    recovery_terminate: bool = True,
     terminate: bool = True,
 ) -> torch.Tensor:
     """腿部 link 接触地面即时终止（膝盖着地 = 非法运动模式）。
@@ -253,12 +191,6 @@ def leg_contact(
     has_contact = max_force > force_threshold
     terminate_threshold = torch.full_like(max_force, force_threshold)
     terminate_contact = has_contact
-    recovery_mask = _recovery_reset_mask(env)
-    if not recovery_terminate:
-        terminate_contact = terminate_contact & ~recovery_mask
-    if recovery_grace_steps > 0:
-        in_recovery_grace = recovery_mask & (env.episode_length_buf <= int(recovery_grace_steps))
-        terminate_contact = terminate_contact & ~in_recovery_grace
 
     # 精细拆分诊断：写入 extras["_leg_contact_diag"]（不是 log，log 在 reset 时会被清空）
     # command_manager._update_metrics 在 reset 之后调用，从此处读取并搬入 extras["log"]

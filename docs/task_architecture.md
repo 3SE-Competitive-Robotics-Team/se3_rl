@@ -31,8 +31,9 @@ Flat 基线已合并 D2–D8 的已验证改动。2026-09-13 清理后，GRU、H
 阶段命名写在 task id 里。跳跃任务目前只有 `PreTrain` 和 `FineTune` 两个正式入口。
 
 倒地自启的 Recovery-Discovery 任务族（含 `tasks/recovery/` 共享实现）已于 2026-09-25 删除；
-复现历史实验请使用对应 Git commit。stair 的 recovery rehearsal 仍复用 `mdp/` 下的 recovery
-复位、奖励与状态掩码。
+复现历史实验请使用对应 Git commit。其后残留在 `mdp/` 下的旧 recovery 复位、奖励、终止门控与状态掩码
+（`mdp/recovery_state.py`、`se3_shared/recovery.py`、旧状态库生成器等）已于 2026-10-29 删除，复现用 `05654e5b`。
+Rough 现行的倒地出生 / 起身走 `tasks/rough/` 下的独立实现（`reset_from_fall_states`、`recover.py`），不依赖它们。
 
 ## 单个 task 的目录结构
 

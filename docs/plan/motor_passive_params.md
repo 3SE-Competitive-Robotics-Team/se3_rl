@@ -46,7 +46,7 @@ armature 是无来源占位值；真实链路的转子惯量、减速器/链传�
    armature 名义值 = J_rotor × 81，DR 收窄到 ±20%。
 2. 空载转动读电流，库仑摩擦 = Kt_rotor × I₀ × 9，回填 frictionloss。
 3. 轮组同法复核（M3508 手册值为 19.2:1 整机数据，14:1 改装件建议实测）。
-4. 回填属 MJCF 变更 → recovery cache 必须随之重新生成（hash 守卫强制）。
+4. 回填属 MJCF 变更 → 倒地状态库（`se3_tools.fall_state_cache`）必须随之重新生成（hash 守卫强制）。
 
 ## 注意
 
