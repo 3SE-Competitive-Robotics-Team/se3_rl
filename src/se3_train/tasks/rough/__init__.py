@@ -84,6 +84,9 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPA
 # 2026-10-31 用户定：Recover-Catch-Impact 的单变量对照——机身撞击罚 −0.1 → −0.2（env_cfg.ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG），
 # 对照 ub6z8ipr。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Catch-Impact02"
+# 2026-10-31 用户定：Recover-Catch-Impact02 的单变量对照——轮子落地也计撞击罚（单轮 3 倍体重、−0.2，与机身同价，见
+# env_cfg.ROUGH_RECOVER_WHEEL_IMPACT_*），对照 mzxd7dmq。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_WHEEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Catch-Impact02-Wheel"
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -354,6 +357,30 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    # Recover-Catch-Impact02-Wheel：Recover-Catch-Impact02 加轮子撞击罚。
+    impact02_wheel_kwargs = dict(impact02_kwargs, recover_wheel_impact=True)
+    impact02_wheel_env_cfg = env_cfg(**impact02_wheel_kwargs)
+    impact02_wheel_actor = impact02_wheel_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_WHEEL_TASK_ID,
+        env_cfg=impact02_wheel_env_cfg,
+        play_env_cfg=env_cfg(play=True, **impact02_wheel_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(impact02_wheel_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in impact02_wheel_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                imitation_loss=_fall_teacher_imitation_loss(impact02_wheel_env_cfg),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_WHEEL_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     # Recover-AMP（6iwgpa2m）：env 默认（recover 组 + AMP），rl 只有 AMP、不蒸馏。
     recover_amp_env_cfg = env_cfg(**stair_vx08_kwargs)
     recover_amp_actor = recover_amp_env_cfg.observations["actor"]
@@ -381,6 +408,7 @@ def register() -> None:
 
 __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_WHEEL_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",

@@ -7,7 +7,7 @@
   到 episode_s 正常结束。两种结束都按真终止处理（不自举），recover 组的回报只含本局奖励，
   起身后能走路拿多少分不计入——早起身不再值钱，暴起就不再是最优解。
 奖励（只对 recover 组）：站稳后每秒 +1、站稳那一步一次性 +20、失败一次性 −20，加腿 + 轮正功率 / 机身角速度 / 腿速 / 轮速
-超限的线性罚与动作变化率，可选机身对地撞击超阈冲量罚（recover_base_impact_excess）；走路组原有奖励在 recover 组上
+超限的线性罚与动作变化率，可选机身 / 轮子对地撞击超阈冲量罚（recover_impact_excess）；走路组原有奖励在 recover 组上
 整体抵消（recover_mask_walking_rewards，必须排在全部走路奖励之后、recover 奖励之前）。recover 组指令每步强制为零速（保留高度指令），站稳后与走路组的静站样本目标一致。
 critic 另有 recover 分组、本局已过时间 / episode_s、是否已站稳三维（不进 actor / CTS 教师组）。
 """
@@ -275,12 +275,13 @@ def recover_wheel_speed_excess(env: ManagerBasedRlEnv, threshold: float) -> torc
     )
 
 
-def recover_base_impact_excess(
+def recover_impact_excess(
     env: ManagerBasedRlEnv, sensor_name: str, threshold_n: float
 ) -> torch.Tensor:
-    """max(0, ‖F_机身对地‖ − threshold_n)（N），只在 recover 组；乘 step_dt 后即超阈冲量（N·s）。
+    """Σ_slot max(0, ‖F_对地‖ − threshold_n)（N），只在 recover 组；乘 step_dt 后即超阈冲量（N·s）。
 
-    只计机身：轮子本该先着地接住（w0wawesv 罚轮子没压住砸地），腿杆要撬地翻身（hiphaauf 罚腿杆动作变怪）。
+    阈值按传感器的每个接触体分别比（wheel_sensor 两轮各一份，即单轮阈值）。机身（collision_sensor）与轮子
+    （wheel_sensor）各挂一项；腿杆不计——要撬地翻身（hiphaauf 罚腿杆动作变怪）。
     """
     force = finite_contact_force_norm(env.scene.sensors[sensor_name].data.force)
     excess = torch.clamp(force - float(threshold_n), min=0.0).reshape(env.num_envs, -1).sum(dim=1)
@@ -312,11 +313,11 @@ __all__ = [
     "assign_recover_group",
     "force_recover_commands",
     "recover_ang_vel_excess",
-    "recover_base_impact_excess",
     "recover_failed",
     "recover_finished",
     "recover_group_mask",
     "recover_group_obs",
+    "recover_impact_excess",
     "recover_leg_speed_excess",
     "recover_mask_walking_rewards",
     "recover_only",

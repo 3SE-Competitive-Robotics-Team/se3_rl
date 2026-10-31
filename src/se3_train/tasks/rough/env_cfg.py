@@ -261,6 +261,14 @@ ROUGH_RECOVER_BASE_IMPACT_WEIGHT = -0.1
 # 软着地与硬着地每局罚分只差约 0.5 分，相当于早起身约 0.15 s，压不住砸地。−0.2 时硬着地策略翻身仍优于躺着的比例
 # 倒置 0.84 / 侧躺 0.91，软着地策略 0.97；−0.3 降到 0.73 / 0.82，躺平风险回来，故只加到 −0.2。
 ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG = -0.2
+# 轮子撞击罚（2026-10-31 用户定，env_cfg(recover_wheel_impact=True)，默认关，给 Recover-Catch-Impact02-Wheel 用）：Impact02
+# （mzxd7dmq）model_2800 倒置机身峰值中位 501 N，但只罚机身后冲击转到了轮子落地——单轮峰值中位 356 N（无罚 uglay7z1 253 N）、
+# 超 3 倍体重 45%、超 5 倍 13%（.scratch/recover_impact_diag_20261030/wheel_contact.py）。按机身同价计轮子（单轮阈值 3 倍体重、
+# −0.2），机身与轮子之间不再有免费的落点。账本（wheel_ledger.py，mzxd7dmq-2800，翻正截止 3 s）：两轮超阈冲量折扣值 p50 0、
+# p90 4.5 N·s，翻身仍优于躺着的比例 倒置 0.902 → 0.900、侧躺 0.797 → 0.772，不新增躺平风险。
+ROUGH_RECOVER_WHEEL_IMPACT_SENSOR = "wheel_sensor"
+ROUGH_RECOVER_WHEEL_IMPACT_THRESHOLD_N = ROUGH_RECOVER_BASE_IMPACT_THRESHOLD_N
+ROUGH_RECOVER_WHEEL_IMPACT_WEIGHT = ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -522,6 +530,7 @@ def env_cfg(
     recover_flip_deadline: bool = False,
     recover_base_impact: bool = False,
     recover_base_impact_weight: float = ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
+    recover_wheel_impact: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -552,6 +561,7 @@ def env_cfg(
     recover_flip_deadline：recover 组加翻正截止 ROUGH_RECOVER_FLIP_DEADLINE_S（见注释），默认关。
     recover_base_impact：recover 组奖励加机身撞击罚 ROUGH_RECOVER_BASE_IMPACT_*（见注释），默认关。
     recover_base_impact_weight：机身撞击罚权重，默认 ROUGH_RECOVER_BASE_IMPACT_WEIGHT（−0.1，ub6z8ipr）；须 recover_base_impact=True。
+    recover_wheel_impact：recover 组奖励加轮子撞击罚 ROUGH_RECOVER_WHEEL_IMPACT_*（单轮阈值，见注释），默认关。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -900,6 +910,7 @@ def env_cfg(
         flip_deadline=recover_flip_deadline,
         base_impact=recover_base_impact,
         base_impact_weight=recover_base_impact_weight,
+        wheel_impact=recover_wheel_impact,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -996,10 +1007,12 @@ def _apply_recover_group(
     flip_deadline: bool = False,
     base_impact: bool = False,
     base_impact_weight: float = ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
+    wheel_impact: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
-    flip_deadline 时终止加翻正截止，base_impact 时奖励加机身撞击罚（ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_*）。
+    flip_deadline 时终止加翻正截止，base_impact / wheel_impact 时奖励加机身 / 轮子撞击罚
+    （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1099,11 +1112,20 @@ def _apply_recover_group(
     }
     if base_impact:
         recover_terms["recover_base_impact_excess"] = RewardTermCfg(
-            func=recover.recover_base_impact_excess,
+            func=recover.recover_impact_excess,
             weight=float(base_impact_weight),
             params={
                 "sensor_name": ROUGH_RECOVER_BASE_IMPACT_SENSOR,
                 "threshold_n": ROUGH_RECOVER_BASE_IMPACT_THRESHOLD_N,
+            },
+        )
+    if wheel_impact:
+        recover_terms["recover_wheel_impact_excess"] = RewardTermCfg(
+            func=recover.recover_impact_excess,
+            weight=ROUGH_RECOVER_WHEEL_IMPACT_WEIGHT,
+            params={
+                "sensor_name": ROUGH_RECOVER_WHEEL_IMPACT_SENSOR,
+                "threshold_n": ROUGH_RECOVER_WHEEL_IMPACT_THRESHOLD_N,
             },
         )
     if imitation is not None:
