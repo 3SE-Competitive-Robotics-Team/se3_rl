@@ -2,11 +2,13 @@
 
 固定一部分 env 只练倒地起身、用自己的奖励，其余 env 只练走路、不再倒地出生。recover 组一局固定长度、每局都倒地出生：
   站稳 = 倾角 < 15° 且离出生点地面 ≥ 0.17 m 连续 stable_hold_s；截止 deadline_s 前没站稳、或站稳后倾角 > refall_tilt_deg，
-  都算失败并终止（一次性罚分）；到 episode_s 正常结束。两种结束都按真终止处理（不自举），recover 组的回报只含本局奖励，
+  都算失败并终止（一次性罚分）；可选翻正截止 flip_deadline_s：此后还没站稳且倾角 > refall_tilt_deg 也算失败
+  （躺着不动的代价从截止处的 −20·γ^400 ≈ −0.36 提到 −20·γ^150 ≈ −4.4，见 env_cfg.ROUGH_RECOVER_FLIP_DEADLINE_S）；
+  到 episode_s 正常结束。两种结束都按真终止处理（不自举），recover 组的回报只含本局奖励，
   起身后能走路拿多少分不计入——早起身不再值钱，暴起就不再是最优解。
 奖励（只对 recover 组）：站稳后每秒 +1、站稳那一步一次性 +20、失败一次性 −20，加腿 + 轮正功率 / 机身角速度 / 腿速 / 轮速
-超限的线性罚与动作变化率；走路组原有奖励在 recover 组上整体抵消（recover_mask_walking_rewards，必须排在全部走路奖励之后、
-recover 奖励之前）。recover 组指令每步强制为零速（保留高度指令），站稳后与走路组的静站样本目标一致。
+超限的线性罚与动作变化率，可选机身对地撞击超阈冲量罚（recover_base_impact_excess）；走路组原有奖励在 recover 组上
+整体抵消（recover_mask_walking_rewards，必须排在全部走路奖励之后、recover 奖励之前）。recover 组指令每步强制为零速（保留高度指令），站稳后与走路组的静站样本目标一致。
 critic 另有 recover 分组、本局已过时间 / episode_s、是否已站稳三维（不进 actor / CTS 教师组）。
 """
 
@@ -17,6 +19,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from se3_shared import JointGroup
+from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import wheel_actuator_ids
 from se3_train.mdp.rewards import _policy_leg_torque_and_vel
 
@@ -79,6 +82,8 @@ class _RecoverState:
         self.hold_steps = round(float(params["stable_hold_s"]) / dt)
         self.deadline_steps = round(float(params["deadline_s"]) / dt)
         self.episode_steps = round(float(params["episode_s"]) / dt)
+        flip = params.get("flip_deadline_s")
+        self.flip_deadline_steps = None if flip is None else round(float(flip) / dt)
         self.up_n = torch.zeros(n, dtype=torch.long, device=device)
         self.stable = torch.zeros(n, dtype=torch.bool, device=device)
         self.just_stable = torch.zeros(n, dtype=torch.bool, device=device)
@@ -86,10 +91,11 @@ class _RecoverState:
         self.failed = torch.zeros(n, dtype=torch.bool, device=device)
         self.timeout = torch.zeros(n, dtype=torch.bool, device=device)
         self.refall = torch.zeros(n, dtype=torch.bool, device=device)
+        self.flip_late = torch.zeros(n, dtype=torch.bool, device=device)
         self.finished = torch.zeros(n, dtype=torch.bool, device=device)
         self.last_step = -1
-        # 指数平均的本局结局数：[成功结束, 超时, 又倒, 站稳用时之和]
-        self._ema = torch.zeros(4, device=device)
+        # 指数平均的本局结局数：[成功结束, 超时, 又倒, 翻正超时, 站稳用时之和]
+        self._ema = torch.zeros(5, device=device)
 
     def step(self, env: ManagerBasedRlEnv) -> None:
         step = int(env.common_step_counter)
@@ -119,7 +125,15 @@ class _RecoverState:
         self.stable |= self.just_stable
         self.timeout = group & ~self.stable & (steps >= self.deadline_steps)
         self.refall = group & self.stable & ~self.just_stable & (tilt > float(p["refall_tilt_deg"]))
-        self.failed = self.timeout | self.refall
+        if self.flip_deadline_steps is not None:
+            self.flip_late = (
+                group
+                & ~self.stable
+                & ~self.timeout
+                & (steps >= self.flip_deadline_steps)
+                & (tilt > float(p["refall_tilt_deg"]))
+            )
+        self.failed = self.timeout | self.refall | self.flip_late
         self.finished = group & ~self.failed & (steps >= self.episode_steps)
         self._log(env)
 
@@ -131,16 +145,19 @@ class _RecoverState:
                 success.float().sum(),
                 self.timeout.float().sum(),
                 self.refall.float().sum(),
+                self.flip_late.float().sum(),
                 (self.stable_t * success.float()).sum(),
             )
         )
         self._ema.mul_(1.0 - 1.0 / _LOG_EMA_STEPS).add_(counts)
-        ended = self._ema[:3].sum().clamp(min=1.0)
+        ended = self._ema[:4].sum().clamp(min=1.0)
         log = env.extras.setdefault("log", {})
         log["Recover/success_frac"] = self._ema[0] / ended
         log["Recover/timeout_frac"] = self._ema[1] / ended
         log["Recover/refall_frac"] = self._ema[2] / ended
-        log["Recover/stable_time_s"] = self._ema[3] / self._ema[0].clamp(min=1.0)
+        if self.flip_deadline_steps is not None:
+            log["Recover/flip_late_frac"] = self._ema[3] / ended
+        log["Recover/stable_time_s"] = self._ema[4] / self._ema[0].clamp(min=1.0)
 
 
 def recover_state(env: ManagerBasedRlEnv, params: dict | None = None) -> _RecoverState:
@@ -163,8 +180,10 @@ def recover_failed(
     stable_tilt_deg: float,
     stable_height_m: float,
     refall_tilt_deg: float,
+    flip_deadline_s: float | None = None,
 ) -> torch.Tensor:
-    """终止项（非 time_out）：recover 组截止前没站稳或站稳后又倒。"""
+    """终止项（非 time_out）：recover 组截止前没站稳、站稳后又倒，或（flip_deadline_s 非 None）翻正截止后仍倾角
+    > refall_tilt_deg。"""
     params = dict(
         deadline_s=deadline_s,
         episode_s=episode_s,
@@ -172,6 +191,7 @@ def recover_failed(
         stable_tilt_deg=stable_tilt_deg,
         stable_height_m=stable_height_m,
         refall_tilt_deg=refall_tilt_deg,
+        flip_deadline_s=flip_deadline_s,
     )
     state = recover_state(env, params)
     state.step(env)
@@ -255,6 +275,18 @@ def recover_wheel_speed_excess(env: ManagerBasedRlEnv, threshold: float) -> torc
     )
 
 
+def recover_base_impact_excess(
+    env: ManagerBasedRlEnv, sensor_name: str, threshold_n: float
+) -> torch.Tensor:
+    """max(0, ‖F_机身对地‖ − threshold_n)（N），只在 recover 组；乘 step_dt 后即超阈冲量（N·s）。
+
+    只计机身：轮子本该先着地接住（w0wawesv 罚轮子没压住砸地），腿杆要撬地翻身（hiphaauf 罚腿杆动作变怪）。
+    """
+    force = finite_contact_force_norm(env.scene.sensors[sensor_name].data.force)
+    excess = torch.clamp(force - float(threshold_n), min=0.0).reshape(env.num_envs, -1).sum(dim=1)
+    return excess * recover_group_mask(env).float()
+
+
 def recover_group_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
     """[N, 1] critic：是否 recover 组。"""
     return recover_group_mask(env).float().unsqueeze(1)
@@ -280,6 +312,7 @@ __all__ = [
     "assign_recover_group",
     "force_recover_commands",
     "recover_ang_vel_excess",
+    "recover_base_impact_excess",
     "recover_failed",
     "recover_finished",
     "recover_group_mask",

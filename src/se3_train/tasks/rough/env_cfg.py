@@ -242,6 +242,20 @@ ROUGH_RECOVER_LEG_SPEED_THRESHOLD = 10.0
 ROUGH_RECOVER_LEG_SPEED_WEIGHT = -1.0
 ROUGH_RECOVER_WHEEL_SPEED_THRESHOLD = 20.0
 ROUGH_RECOVER_WHEEL_SPEED_WEIGHT = -0.1
+# 翻正截止 + 机身撞击罚（2026-10-31 用户定，env_cfg(recover_flip_deadline=True, recover_base_impact=True)，默认关）：
+# Recover-Catch 闭环（uglay7z1-2600）教师退场后倒置出生机身峰值中位仍约 1.0 kN、p90 1.9 kN（gyi9exiz-2200 为 1.2 / 2.4 kN），
+# catch 开环的减半没保住。此前撞击罚（m6rxc7v9 −0.15、w0wawesv）一加就躺平，根因是折扣：8 s 截止的 −20 折到出生时只剩
+# −20·0.99^400 ≈ −0.36，翻身时扣的撞击罚稍大就不如躺着。离线账本（.scratch/recover_impact_diag_20261030/impact_ledger_v2.py，
+# whtws impact_policy_20261031）：
+# - 翻正截止 3 s：此后还没站稳且倾角 > 60°（与又倒同阈值）即失败，躺着的代价变 −20·0.99^150 ≈ −4.4；现策略只多杀侧躺 1.1%、
+#   倒置 0（首次倾角 < 60° 的 p99：倒置 0.94 s、侧躺 3.06 s）。critic 已有本局时间观测，判据是马尔可夫的。
+# - 机身撞击罚只计机身（collision_sensor）：阈值 3 倍体重 ≈ 375 N，线性超阈冲量、权重 −0.1。uglay7z1 倒置超阈冲量折扣值
+#   p50 16、p90 32 N·s，配合 3 s 截止翻身仍优于躺着的比例 倒置 0.94 / 侧躺 0.91（不加截止只剩 0.48 左右）；
+#   硬着地与软着地约差 1.5 分，相当于晚起身约 0.45 s，速度溢价压不过它。
+ROUGH_RECOVER_FLIP_DEADLINE_S = 3.0
+ROUGH_RECOVER_BASE_IMPACT_SENSOR = "collision_sensor"
+ROUGH_RECOVER_BASE_IMPACT_THRESHOLD_N = 3.0 * 12.7287 * 9.81
+ROUGH_RECOVER_BASE_IMPACT_WEIGHT = -0.1
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -500,6 +514,8 @@ def env_cfg(
     fall_teacher_alpha_iters: tuple[int, int, int] | None = None,
     fall_teacher_catch: bool = False,
     recover_amp: bool = True,
+    recover_flip_deadline: bool = False,
+    recover_base_impact: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -527,6 +543,8 @@ def env_cfg(
     fall_teacher_catch：倒地教师翻正后换成 catch 释放（ROUGH_FALL_TEACHER_CATCH），默认 tuck；须 fall_teacher=True。
     recover_amp：AMP 的运动帧观测组 ROUGH_RECOVER_AMP_GROUP；train / play 都建，rl_cfg 的 amp_cfg 按组名取。默认开
         （rl 不配 amp_cfg 时这一组只是多算、不影响训练）。
+    recover_flip_deadline：recover 组加翻正截止 ROUGH_RECOVER_FLIP_DEADLINE_S（见注释），默认关。
+    recover_base_impact：recover 组奖励加机身撞击罚 ROUGH_RECOVER_BASE_IMPACT_*（见注释），默认关。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -869,7 +887,9 @@ def env_cfg(
                 params={"command_name": "velocity_height"},
             )
 
-    _apply_recover_group(cfg, play=play)
+    _apply_recover_group(
+        cfg, play=play, flip_deadline=recover_flip_deadline, base_impact=recover_base_impact
+    )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
         concatenate_terms=True,
@@ -958,8 +978,13 @@ def _apply_jump_mimic(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
-    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。"""
+def _apply_recover_group(
+    cfg: ManagerBasedRlEnvCfg, *, play: bool, flip_deadline: bool = False, base_impact: bool = False
+) -> None:
+    """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
+
+    flip_deadline 时终止加翻正截止，base_impact 时奖励加机身撞击罚（ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_*）。
+    """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
     if not play:
@@ -993,6 +1018,7 @@ def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
             "stable_tilt_deg": events.FALL_RECOVERED_TILT_DEG,
             "stable_height_m": events.FALL_RECOVERED_MIN_HEIGHT_M,
             "refall_tilt_deg": ROUGH_RECOVER_REFALL_TILT_DEG,
+            "flip_deadline_s": ROUGH_RECOVER_FLIP_DEADLINE_S if flip_deadline else None,
         },
     )
     cfg.terminations["recover_finished"] = TerminationTermCfg(
@@ -1055,6 +1081,15 @@ def _apply_recover_group(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
             params={"inner": action_rate.func, "params": dict(action_rate.params or {})},
         ),
     }
+    if base_impact:
+        recover_terms["recover_base_impact_excess"] = RewardTermCfg(
+            func=recover.recover_base_impact_excess,
+            weight=ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
+            params={
+                "sensor_name": ROUGH_RECOVER_BASE_IMPACT_SENSOR,
+                "threshold_n": ROUGH_RECOVER_BASE_IMPACT_THRESHOLD_N,
+            },
+        )
     if imitation is not None:
         recover_terms["fall_teacher_imitation"] = imitation
     cfg.rewards = {**walking, **recover_terms}
