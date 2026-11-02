@@ -269,6 +269,16 @@ ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG = -0.2
 ROUGH_RECOVER_WHEEL_IMPACT_SENSOR = "wheel_sensor"
 ROUGH_RECOVER_WHEEL_IMPACT_THRESHOLD_N = ROUGH_RECOVER_BASE_IMPACT_THRESHOLD_N
 ROUGH_RECOVER_WHEEL_IMPACT_WEIGHT = ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG
+# 势函数整形（2026-11-01 用户定，env_cfg(recover_potential=True)，给 Recover-Potential 用）：不带脚本教师 / AMP 的纯 reward 起身老师。
+# 站稳每秒 +1 与站稳一次性 +20 都让早站稳更值钱（速度溢价），去掉，换成 W·(γΦ(s′) − Φ(s))，真终止状态 Φ ≡ 0。
+# episodic 任务终止势取 0 时（Ng 1999）这一项的逐局折扣和恒为 −W·Φ(s₀)，与何时翻、怎么翻都无关：不改最优策略、不给快翻溢价，
+# 只把"翻了一半"变成稠密的局部信号——6iwgpa2m（recover 组 + AMP、无教师）1100 轮倒置起身 0，奖励在站稳前全是 0。
+# Φ = 0.5·(1 − 倾角/180°) + 0.5·min(离出生点地面高度/0.17 m, 1)：倾角按角度线性（1nvtka54 的 (1−g_z)²/4 与 2w33l0iq 的
+# (1−g_z)/2 对倾角的导数在正倒置处为 0），高度项对齐站稳判据。W 取与失败罚同量级的 20。γ 必须等于 PPO 的 γ（入口注册时校验）。
+# 不改最优策略也意味着起身动机全靠失败罚，必须带翻正截止：只有 8 s 截止时躺着折到出生只亏 −20·0.99^400 ≈ −0.36，
+# 温和起身的超限罚与动作变化率约 1 分（recover_reward_ledger），躺平最优；3 s 翻正截止下躺着 ≈ −4.4，温和翻身才划算。
+ROUGH_RECOVER_POTENTIAL_WEIGHT = 20.0
+ROUGH_RECOVER_POTENTIAL_GAMMA = 0.99
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -531,6 +541,7 @@ def env_cfg(
     recover_base_impact: bool = False,
     recover_base_impact_weight: float = ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
     recover_wheel_impact: bool = False,
+    recover_potential: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -562,6 +573,8 @@ def env_cfg(
     recover_base_impact：recover 组奖励加机身撞击罚 ROUGH_RECOVER_BASE_IMPACT_*（见注释），默认关。
     recover_base_impact_weight：机身撞击罚权重，默认 ROUGH_RECOVER_BASE_IMPACT_WEIGHT（−0.1，ub6z8ipr）；须 recover_base_impact=True。
     recover_wheel_impact：recover 组奖励加轮子撞击罚 ROUGH_RECOVER_WHEEL_IMPACT_*（单轮阈值，见注释），默认关。
+    recover_potential：recover 组站稳 +1/s 与 +20 换成势函数整形 ROUGH_RECOVER_POTENTIAL_*（见注释），默认关；
+        须 recover_flip_deadline=True。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -724,6 +737,10 @@ def env_cfg(
     # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
     if fall_teacher_catch and not fall_teacher:
         raise ValueError("fall_teacher_catch 须配 fall_teacher=True")
+    if recover_potential and not recover_flip_deadline:
+        raise ValueError(
+            "recover_potential 须配 recover_flip_deadline=True（见 ROUGH_RECOVER_POTENTIAL_* 注释）"
+        )
     if fall_teacher:
         if not play:
             schedule = (
@@ -911,6 +928,7 @@ def env_cfg(
         base_impact=recover_base_impact,
         base_impact_weight=recover_base_impact_weight,
         wheel_impact=recover_wheel_impact,
+        potential=recover_potential,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -1008,11 +1026,13 @@ def _apply_recover_group(
     base_impact: bool = False,
     base_impact_weight: float = ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
     wheel_impact: bool = False,
+    potential: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
     flip_deadline 时终止加翻正截止，base_impact / wheel_impact 时奖励加机身 / 轮子撞击罚
-    （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）。
+    （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）；
+    potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1035,6 +1055,12 @@ def _apply_recover_group(
         interval_range_s=(0.0, 0.0),
         params={"command_name": "velocity_height"},
     )
+    if potential:
+        cfg.events["snapshot_recover_potential"] = EventTermCfg(
+            func=recover.snapshot_recover_potential,
+            mode="step",
+            params={"stable_height_m": events.FALL_RECOVERED_MIN_HEIGHT_M},
+        )
 
     cfg.terminations = dict(cfg.terminations)
     cfg.terminations["recover_failed"] = TerminationTermCfg(
@@ -1126,6 +1152,16 @@ def _apply_recover_group(
             params={
                 "sensor_name": ROUGH_RECOVER_WHEEL_IMPACT_SENSOR,
                 "threshold_n": ROUGH_RECOVER_WHEEL_IMPACT_THRESHOLD_N,
+            },
+        )
+    if potential:
+        del recover_terms["recover_stand"], recover_terms["recover_success"]
+        recover_terms["recover_potential_shaping"] = RewardTermCfg(
+            func=recover.recover_potential_shaping,
+            weight=ROUGH_RECOVER_POTENTIAL_WEIGHT,
+            params={
+                "gamma": ROUGH_RECOVER_POTENTIAL_GAMMA,
+                "stable_height_m": events.FALL_RECOVERED_MIN_HEIGHT_M,
             },
         )
     if imitation is not None:

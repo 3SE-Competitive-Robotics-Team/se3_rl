@@ -7,13 +7,15 @@
   到 episode_s 正常结束。两种结束都按真终止处理（不自举），recover 组的回报只含本局奖励，
   起身后能走路拿多少分不计入——早起身不再值钱，暴起就不再是最优解。
 奖励（只对 recover 组）：站稳后每秒 +1、站稳那一步一次性 +20、失败一次性 −20，加腿 + 轮正功率 / 机身角速度 / 腿速 / 轮速
-超限的线性罚与动作变化率，可选机身 / 轮子对地撞击超阈冲量罚（recover_impact_excess）；走路组原有奖励在 recover 组上
+超限的线性罚与动作变化率，可选机身 / 轮子对地撞击超阈冲量罚（recover_impact_excess）；可选把站稳 +1/s 与 +20 换成
+势函数整形（recover_potential_shaping，见 env_cfg.ROUGH_RECOVER_POTENTIAL_*）；走路组原有奖励在 recover 组上
 整体抵消（recover_mask_walking_rewards，必须排在全部走路奖励之后、recover 奖励之前）。recover 组指令每步强制为零速（保留高度指令），站稳后与走路组的静站样本目标一致。
 critic 另有 recover 分组、本局已过时间 / episode_s、是否已站稳三维（不进 actor / CTS 教师组）。
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
 
 RECOVER_GROUP_ATTR = "_se3_recover_group"
 _STATE_ATTR = "_se3_recover_state"
+_POTENTIAL_ATTR = "_se3_recover_potential"
 _RECOVER_TERM_NAMES = ("recover_failed", "recover_finished")
 _LOG_EMA_STEPS = 100.0
 
@@ -223,6 +226,48 @@ def recover_success(env: ManagerBasedRlEnv) -> torch.Tensor:
     return recover_state(env).just_stable.float()
 
 
+def recover_potential(env: ManagerBasedRlEnv, stable_height_m: float) -> torch.Tensor:
+    """Φ ∈ [0, 1] = 0.5·(1 − 倾角 / 180°) + 0.5·min(离出生点地面高度 / stable_height_m, 1)，倾角按角度线性。"""
+    robot = env.scene["robot"]
+    pg_z = robot.data.projected_gravity_b[:, 2]
+    tilt = torch.acos(torch.clamp(-pg_z, -1.0, 1.0)) / math.pi
+    ground = getattr(env, events._FALL_GROUND_Z_ATTR, None)
+    height = robot.data.root_link_pos_w[:, 2] - (ground if ground is not None else 0.0)
+    return 0.5 * (1.0 - tilt) + 0.5 * torch.clamp(height / float(stable_height_m), 0.0, 1.0)
+
+
+def snapshot_recover_potential(
+    env: ManagerBasedRlEnv, env_ids: torch.Tensor | None, stable_height_m: float
+) -> None:
+    """step 事件（reset 与 forward 之后）：给刚 reset 的 env 记新局首个状态的 Φ(s₀)；其余 env 沿用奖励时刻记下的 Φ。"""
+    del env_ids
+    phi = recover_potential(env, stable_height_m)
+    prev = getattr(env, _POTENTIAL_ATTR, None)
+    if prev is None:
+        setattr(env, _POTENTIAL_ATTR, phi)
+        return
+    prev.copy_(torch.where(env.episode_length_buf == 0, phi, prev))
+
+
+def recover_potential_shaping(
+    env: ManagerBasedRlEnv, gamma: float, stable_height_m: float
+) -> torch.Tensor:
+    """(γ·Φ(s′) − Φ(s)) / step_dt（权重即整形尺度 W），只在 recover 组；本步真终止的 env 取 Φ(s′) = 0。
+
+    Φ(s′) 用奖励时刻的状态（与其余奖励同样滞后一个物理子步）并留作下一步的 Φ(s)，新局首步的 Φ(s₀) 由
+    snapshot_recover_potential 补，逐局折扣求和严格等于 −W·Φ(s₀)。首次调用前没有 Φ(s)，整形记 0。
+    """
+    phi_next = recover_potential(env, stable_height_m)
+    prev = getattr(env, _POTENTIAL_ATTR, None)
+    setattr(env, _POTENTIAL_ATTR, phi_next)
+    if prev is None:
+        return torch.zeros_like(phi_next)
+    terminal = env.termination_manager.terminated
+    target = torch.where(terminal, torch.zeros_like(phi_next), float(gamma) * phi_next)
+    shaping = (target - prev) / float(env.step_dt)
+    return shaping * recover_group_mask(env).float()
+
+
 def recover_only(env: ManagerBasedRlEnv, inner, params: dict) -> torch.Tensor:
     """任意函数型奖励项只在 recover 组上计。"""
     return inner(env, **params) * recover_group_mask(env).float()
@@ -321,10 +366,13 @@ __all__ = [
     "recover_leg_speed_excess",
     "recover_mask_walking_rewards",
     "recover_only",
+    "recover_potential",
+    "recover_potential_shaping",
     "recover_power_excess",
     "recover_stable_obs",
     "recover_stand",
     "recover_success",
     "recover_time_obs",
     "recover_wheel_speed_excess",
+    "snapshot_recover_potential",
 ]

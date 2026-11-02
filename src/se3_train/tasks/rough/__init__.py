@@ -15,6 +15,7 @@ from .env_cfg import (
     ROUGH_RECOVER_AMP_GROUP,
     ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG,
     ROUGH_RECOVER_MASK_GROUP,
+    ROUGH_RECOVER_POTENTIAL_GAMMA,
     ROUGH_STAIR_LIN_VEL_X_MIN_VX08,
     ROUGH_VX_OBSERVER_TARGET_GROUP,
     env_cfg,
@@ -87,6 +88,12 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPA
 # 2026-10-31 用户定：Recover-Catch-Impact02 的单变量对照——轮子落地也计撞击罚（单轮 3 倍体重、−0.2，与机身同价，见
 # env_cfg.ROUGH_RECOVER_WHEEL_IMPACT_*），对照 mzxd7dmq。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPACT02_WHEEL_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-FallTeacherBC-Alpha800-Recover-Catch-Impact02-Wheel"
+# 2026-11-01 用户定：纯 reward 起身老师——recover 组不带脚本教师 / AMP，站稳 +1/s 与 +20 换成势函数整形（不给快翻溢价，
+# 见 env_cfg.ROUGH_RECOVER_POTENTIAL_*），带翻正截止 3 s 与机身撞击罚 −0.1。对照 6iwgpa2m（无教师）与 ub6z8ipr（同截止与撞击罚、
+# 带 catch 教师）。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-Potential"
+)
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -381,6 +388,35 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    # Recover-Potential：recover 组势函数整形 + 翻正截止 + 机身撞击罚，不带教师 / AMP / 蒸馏。
+    potential_kwargs = dict(
+        stair_vx08_kwargs,
+        recover_amp=False,
+        recover_flip_deadline=True,
+        recover_base_impact=True,
+        recover_potential=True,
+    )
+    potential_env_cfg = env_cfg(**potential_kwargs)
+    potential_actor = potential_env_cfg.observations["actor"]
+    potential_rl_cfg = cts_rl_cfg(
+        history_length=int(potential_actor.history_length),
+        frame_term_dims=tuple(observation_term_width(name) for name in potential_actor.terms),
+        target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+        role_group=ROUGH_CTS_ROLE_GROUP,
+        teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+        student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+    )
+    if potential_rl_cfg.algorithm.gamma != ROUGH_RECOVER_POTENTIAL_GAMMA:
+        raise ValueError("势函数整形的 γ 须等于 PPO 的 γ（ROUGH_RECOVER_POTENTIAL_GAMMA）")
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID,
+        env_cfg=potential_env_cfg,
+        play_env_cfg=env_cfg(play=True, **potential_kwargs),
+        rl_cfg=bind_task_name(
+            potential_rl_cfg, EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     # Recover-AMP（6iwgpa2m）：env 默认（recover 组 + AMP），rl 只有 AMP、不蒸馏。
     recover_amp_env_cfg = env_cfg(**stair_vx08_kwargs)
     recover_amp_actor = recover_amp_env_cfg.observations["actor"]
@@ -413,6 +449,7 @@ __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",
     "EXP_CTS_NOSCAN_TASK_ID",
