@@ -312,7 +312,6 @@ def reset_from_fall_states(
         cache.weights = cache.sample_weights(tuple(class_weights))
         half_extent = float(xy_offset_m) + float(footprint_radius_m) + 0.1
         setattr(env, _FALL_HEIGHT_MAP_ATTR, _SpawnHeightMap(env, terrain_type_names, half_extent))
-    height_map: _SpawnHeightMap = getattr(env, _FALL_HEIGHT_MAP_ATTR)
 
     if group is not None:
         eligible = group[ids].clone()
@@ -336,6 +335,25 @@ def reset_from_fall_states(
         return
 
     k = torch.multinomial(cache.weights, n, replacement=True)
+    spawn_from_state_cache(env, asset, sel, cache, k, xy_offset_m, footprint_radius_m)
+    getattr(env, _FALL_CLASS_ATTR)[sel] = cache.tilt_class[k]
+
+
+def spawn_from_state_cache(
+    env: ManagerBasedRlEnv,
+    asset,
+    sel: torch.Tensor,
+    cache: _FallStateCache,
+    k: torch.Tensor,
+    xy_offset_m: float,
+    footprint_radius_m: float,
+) -> None:
+    """把状态库第 k 条状态写给 sel 这些 env（随机 yaw、地块中心 ±xy_offset_m、按出生点地面修正高度），记入倒地出生掩码与出生地面高度。
+
+    倒地类别（_FALL_CLASS_ATTR）由调用方写。须在 reset_from_fall_states 至少调用过一次之后用（高度图与掩码由它建）。
+    """
+    n = sel.numel()
+    height_map: _SpawnHeightMap = getattr(env, _FALL_HEIGHT_MAP_ATTR)
     yaw = (torch.rand(n, device=env.device) * 2.0 - 1.0) * math.pi
     z_axis = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand(n, 3)
     q_yaw = quat_from_angle_axis(yaw, z_axis)
@@ -357,8 +375,7 @@ def reset_from_fall_states(
     asset.write_root_link_pose_to_sim(torch.cat((pos, quat), dim=1), env_ids=sel)
     asset.write_root_link_velocity_to_sim(vel, env_ids=sel)
     asset.write_joint_state_to_sim(cache.joint_pos[k], cache.joint_vel[k], env_ids=sel)
-    fall_mask[sel] = True
-    getattr(env, _FALL_CLASS_ATTR)[sel] = cache.tilt_class[k]
+    getattr(env, FALL_SPAWN_MASK_ATTR)[sel] = True
     getattr(env, _FALL_GROUND_Z_ATTR)[sel] = ground
 
 
@@ -375,11 +392,12 @@ def fall_recovery_within(
     if fall_mask is None or cache is None:
         return None
     age = env.episode_length_buf.float() * env.step_dt
-    old = fall_mask & (age >= float(horizon_s))
+    classes: torch.Tensor = getattr(env, _FALL_CLASS_ATTR)
+    # 类别 < 0 是反向课程从起身轨迹中段出生的 env（recover.reset_from_recover_trajectories），不算倒地出生
+    old = fall_mask & (classes >= 0) & (age >= float(horizon_s))
     recovered: torch.Tensor = getattr(env, _FALL_RECOVERED_ATTR)
     recover_time: torch.Tensor = getattr(env, _FALL_RECOVER_TIME_ATTR)
     ok = old & recovered & (recover_time <= float(horizon_s))
-    classes: torch.Tensor = getattr(env, _FALL_CLASS_ATTR)
     n_class = len(cache.class_names)
     index = torch.where(old, classes, torch.full_like(classes, n_class))
     count = torch.bincount(index, minlength=n_class + 1)[:n_class].float()
@@ -428,15 +446,17 @@ def log_fall_recovery(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> N
     recover_time[:] = torch.where(first, env.episode_length_buf.float() * env.step_dt, recover_time)
     recovered |= first
 
-    fall = fall_mask.float()
+    classes: torch.Tensor = getattr(env, _FALL_CLASS_ATTR)
+    # 起身率只看倒地状态库出生（类别 ≥ 0），反向课程从起身轨迹中段出生的 env（类别 −1）不算
+    from_cache = fall_mask & (classes >= 0)
+    fall = from_cache.float()
     n_fall = fall.sum().clamp(min=1.0)
-    done = (recovered & fall_mask).float()
+    done = (recovered & from_cache).float()
     log = env.extras.setdefault("log", {})
     log["Recovery/fall_env_rate"] = fall.mean()
     log["Recovery/upright_now_rate"] = (up.float() * fall).sum() / n_fall
     log["Recovery/recovered_rate"] = done.sum() / n_fall
     log["Recovery/time_to_upright_s"] = (recover_time * done).sum() / done.sum().clamp(min=1.0)
-    classes: torch.Tensor = getattr(env, _FALL_CLASS_ATTR)
     for index, name in enumerate(cache.class_names):
         in_class = (fall_mask & (classes == index)).float()
         log[f"Recovery/recovered_rate_{name}"] = (done * in_class).sum() / in_class.sum().clamp(
@@ -475,5 +495,6 @@ __all__ = [
     "log_reward_split_by_column",
     "reset_from_fall_states",
     "set_curriculum_env_mask",
+    "spawn_from_state_cache",
     "stair_facing_yaw",
 ]

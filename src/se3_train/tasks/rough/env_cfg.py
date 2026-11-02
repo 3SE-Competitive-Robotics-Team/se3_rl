@@ -279,6 +279,23 @@ ROUGH_RECOVER_WHEEL_IMPACT_WEIGHT = ROUGH_RECOVER_BASE_IMPACT_WEIGHT_STRONG
 # 温和起身的超限罚与动作变化率约 1 分（recover_reward_ledger），躺平最优；3 s 翻正截止下躺着 ≈ −4.4，温和翻身才划算。
 ROUGH_RECOVER_POTENTIAL_WEIGHT = 20.0
 ROUGH_RECOVER_POTENTIAL_GAMMA = 0.99
+# 反向课程（2026-11-02 用户定，env_cfg(recover_reverse=True)，给 Recover-Potential-Reverse 用）：Recover-Potential（ertzp9ja）
+# 侧躺 0.05 → 0.75 自己学会，倒置跑满 5000 轮始终 ≤ 0.1——势函数只给局部梯度，倒置翻身要先做一整套协调的大幅扫腿，
+# 机身倾角才开始变，探索碰不到。按 Florensa 2017（reverse curriculum）从目标附近往回放开出生状态：
+# 状态库 = mzxd7dmq（Recover-Catch-Impact02）model_2500 在 recover 组闭环回放、第一次就站稳的侧躺 / 倒置轨迹，出生到
+# 开始站起（站稳前那段连续直立的起点）每 2 步一条（se3_tools.recover_state_cache，60k，两类各半，站稳率 0.97 / 0.99，
+# 离开始站起的剩余时间倒置 p50 0.6 s、最大 3.2 s）。只用状态、不用动作，学到的翻法仍由奖励决定。
+# recover 组每局以 PROB 改从状态库出生，只取剩余时间 ≤ cap 的状态（两类等权）；cap 从 CAP_START 起，本档反向出生
+# ≥ MIN_EPISODES 局且成功率 ≥ ADVANCE_RATE 时加 CAP_STEP，直到覆盖整条轨迹（含倒地那一刻）。其余一半仍从倒地状态库出生，
+# Recovery/recovered_rate_* 只看这一半，可与 ertzp9ja 直接比。
+ROUGH_RECOVER_REVERSE_CACHE = (
+    _RESOURCES / "recovery_states" / "recover_traj_d1ed876b_mzxd7dmq2500_60k.npz"
+)
+ROUGH_RECOVER_REVERSE_PROB = 0.5
+ROUGH_RECOVER_REVERSE_CAP_START_S = 0.25
+ROUGH_RECOVER_REVERSE_CAP_STEP_S = 0.25
+ROUGH_RECOVER_REVERSE_ADVANCE_RATE = 0.8
+ROUGH_RECOVER_REVERSE_MIN_EPISODES = 500
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -542,6 +559,7 @@ def env_cfg(
     recover_base_impact_weight: float = ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
     recover_wheel_impact: bool = False,
     recover_potential: bool = False,
+    recover_reverse: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -575,6 +593,7 @@ def env_cfg(
     recover_wheel_impact：recover 组奖励加轮子撞击罚 ROUGH_RECOVER_WHEEL_IMPACT_*（单轮阈值，见注释），默认关。
     recover_potential：recover 组站稳 +1/s 与 +20 换成势函数整形 ROUGH_RECOVER_POTENTIAL_*（见注释），默认关；
         须 recover_flip_deadline=True。
+    recover_reverse：recover 组反向课程出生 ROUGH_RECOVER_REVERSE_*（见注释），默认关；play 不接。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -929,6 +948,7 @@ def env_cfg(
         base_impact_weight=recover_base_impact_weight,
         wheel_impact=recover_wheel_impact,
         potential=recover_potential,
+        reverse=recover_reverse,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -1027,12 +1047,14 @@ def _apply_recover_group(
     base_impact_weight: float = ROUGH_RECOVER_BASE_IMPACT_WEIGHT,
     wheel_impact: bool = False,
     potential: bool = False,
+    reverse: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
     flip_deadline 时终止加翻正截止，base_impact / wheel_impact 时奖励加机身 / 轮子撞击罚
     （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）；
-    potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）。
+    potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）；reverse 时训练加反向课程出生
+    （ROUGH_RECOVER_REVERSE_*）。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1049,6 +1071,20 @@ def _apply_recover_group(
         cfg.events["reset_from_fall_states"] = replace(
             spawn, params={**spawn.params, "group_mask_attr": recover.RECOVER_GROUP_ATTR}
         )
+        if reverse:
+            # 字典序即执行序：插在 reset_from_fall_states 之后，覆盖它刚写的部分 recover 组 env
+            cfg.events["reset_from_recover_trajectories"] = EventTermCfg(
+                func=recover.reset_from_recover_trajectories,
+                mode="reset",
+                params={
+                    "cache_path": str(ROUGH_RECOVER_REVERSE_CACHE),
+                    "prob": ROUGH_RECOVER_REVERSE_PROB,
+                    "cap_start_s": ROUGH_RECOVER_REVERSE_CAP_START_S,
+                    "cap_step_s": ROUGH_RECOVER_REVERSE_CAP_STEP_S,
+                    "advance_rate": ROUGH_RECOVER_REVERSE_ADVANCE_RATE,
+                    "min_episodes": ROUGH_RECOVER_REVERSE_MIN_EPISODES,
+                },
+            )
     cfg.events["force_recover_commands"] = EventTermCfg(
         func=recover.force_recover_commands,
         mode="interval",

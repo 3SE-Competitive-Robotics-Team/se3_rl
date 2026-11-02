@@ -8,7 +8,8 @@
   起身后能走路拿多少分不计入——早起身不再值钱，暴起就不再是最优解。
 奖励（只对 recover 组）：站稳后每秒 +1、站稳那一步一次性 +20、失败一次性 −20，加腿 + 轮正功率 / 机身角速度 / 腿速 / 轮速
 超限的线性罚与动作变化率，可选机身 / 轮子对地撞击超阈冲量罚（recover_impact_excess）；可选把站稳 +1/s 与 +20 换成
-势函数整形（recover_potential_shaping，见 env_cfg.ROUGH_RECOVER_POTENTIAL_*）；走路组原有奖励在 recover 组上
+势函数整形（recover_potential_shaping，见 env_cfg.ROUGH_RECOVER_POTENTIAL_*）；可选反向课程出生
+（reset_from_recover_trajectories，见 env_cfg.ROUGH_RECOVER_REVERSE_*）；走路组原有奖励在 recover 组上
 整体抵消（recover_mask_walking_rewards，必须排在全部走路奖励之后、recover 奖励之前）。recover 组指令每步强制为零速（保留高度指令），站稳后与走路组的静站样本目标一致。
 critic 另有 recover 分组、本局已过时间 / episode_s、是否已站稳三维（不进 actor / CTS 教师组）。
 """
@@ -16,8 +17,10 @@ critic 另有 recover 分组、本局已过时间 / episode_s、是否已站稳�
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 
 from se3_shared import JointGroup
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
 RECOVER_GROUP_ATTR = "_se3_recover_group"
 _STATE_ATTR = "_se3_recover_state"
 _POTENTIAL_ATTR = "_se3_recover_potential"
+_REVERSE_ATTR = "_se3_recover_reverse"
 _RECOVER_TERM_NAMES = ("recover_failed", "recover_finished")
 _LOG_EMA_STEPS = 100.0
 
@@ -268,6 +272,90 @@ def recover_potential_shaping(
     return shaping * recover_group_mask(env).float()
 
 
+class _ReverseCurriculum:
+    """反向课程状态：起身轨迹状态库、当前出生上限 cap（离开始站起的剩余时间）与本档结局计数，全是张量、不同步 GPU。
+
+    每个 rank 各自推进（多卡时各卡的 cap 可能差一两档）。
+    """
+
+    def __init__(self, env: ManagerBasedRlEnv, cache_path: str, cap_start_s: float) -> None:
+        robot = env.scene["robot"]
+        self.cache = events._FallStateCache(Path(cache_path), tuple(robot.joint_names), env.device)
+        data = np.load(cache_path)
+        device = env.device
+        self.remaining = torch.as_tensor(data["remaining_s"], dtype=torch.float32, device=device)
+        spawn_class = torch.as_tensor(data["spawn_class"], dtype=torch.long, device=device)
+        # 各出生类别（侧躺 / 倒置）等权：每条状态权重 = 1 / 该类条数
+        counts = torch.bincount(spawn_class).float()
+        self.base_weights = 1.0 / counts[spawn_class]
+        self.max_remaining = float(self.remaining.max())
+        self.cap = torch.tensor(float(cap_start_s), device=device)
+        self.episodes = torch.zeros((), device=device)
+        self.successes = torch.zeros((), device=device)
+        self.rate = torch.zeros((), device=device)
+        self.spawned = torch.zeros(env.num_envs, dtype=torch.bool, device=device)
+
+
+def reset_from_recover_trajectories(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    cache_path: str,
+    prob: float,
+    cap_start_s: float,
+    cap_step_s: float,
+    advance_rate: float,
+    min_episodes: int,
+    xy_offset_m: float = 0.1,
+    footprint_radius_m: float = 0.5,
+) -> None:
+    """reset 事件（排在 reset_from_fall_states 之后）：recover 组按 prob 改从起身轨迹状态库出生，只取离开始站起
+    剩余时间 ≤ cap 的状态（反向课程，见 env_cfg.ROUGH_RECOVER_REVERSE_* 注释）。
+
+    先结算这批 env 上一局（若是反向出生）的结局：站稳且没失败算成功。本档累计 ≥ min_episodes 局且成功率
+    ≥ advance_rate 时 cap += cap_step_s（到状态库最大剩余时间为止，即覆盖整条轨迹含倒地出生那一刻）并清零计数。
+    反向出生的 env 倒地类别记 −1，Recovery/* 的按类起身率只看倒地状态库出生。
+    """
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    ids = env_ids.to(device=env.device, dtype=torch.long)
+    cur: _ReverseCurriculum | None = getattr(env, _REVERSE_ATTR, None)
+    if cur is None:
+        cur = _ReverseCurriculum(env, cache_path, cap_start_s)
+        setattr(env, _REVERSE_ATTR, cur)
+
+    state = getattr(env, _STATE_ATTR, None)
+    if state is not None:
+        prev = cur.spawned[ids]
+        ok = state.stable[ids] & ~state.failed[ids]
+        cur.episodes += prev.float().sum()
+        cur.successes += (prev & ok).float().sum()
+        cur.rate = cur.successes / cur.episodes.clamp(min=1.0)
+        advance = (cur.episodes >= float(min_episodes)) & (cur.rate >= float(advance_rate))
+        cur.cap = torch.where(
+            advance, (cur.cap + float(cap_step_s)).clamp(max=cur.max_remaining), cur.cap
+        )
+        cur.episodes = torch.where(advance, torch.zeros_like(cur.episodes), cur.episodes)
+        cur.successes = torch.where(advance, torch.zeros_like(cur.successes), cur.successes)
+    cur.spawned[ids] = False
+
+    eligible = recover_group_mask(env)[ids] & (
+        torch.rand(ids.numel(), device=env.device) < float(prob)
+    )
+    sel = ids[eligible]
+    log = env.extras.setdefault("log", {})
+    log["Recover/reverse_cap_s"] = cur.cap
+    log["Recover/reverse_success_frac"] = cur.rate
+    if sel.numel() == 0:
+        return
+    weights = cur.base_weights * (cur.remaining <= cur.cap + 1e-6).float()
+    k = torch.multinomial(weights, sel.numel(), replacement=True)
+    events.spawn_from_state_cache(
+        env, env.scene["robot"], sel, cur.cache, k, xy_offset_m, footprint_radius_m
+    )
+    getattr(env, events._FALL_CLASS_ATTR)[sel] = -1
+    cur.spawned[sel] = True
+
+
 def recover_only(env: ManagerBasedRlEnv, inner, params: dict) -> torch.Tensor:
     """任意函数型奖励项只在 recover 组上计。"""
     return inner(env, **params) * recover_group_mask(env).float()
@@ -374,5 +462,6 @@ __all__ = [
     "recover_success",
     "recover_time_obs",
     "recover_wheel_speed_excess",
+    "reset_from_recover_trajectories",
     "snapshot_recover_potential",
 ]

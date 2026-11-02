@@ -1,5 +1,6 @@
 """崎岖地形行走任务（MLP / GRU）、台阶定向评测入口，CTS → Student128 部署链入口（Student128 即最终配方），以及最终配方的来源入口 Recover / Recover-AMP。"""
 
+import copy
 import math
 
 from mjlab.tasks.registry import register_mjlab_task
@@ -93,6 +94,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPA
 # 带 catch 教师）。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-Potential"
+)
+# 2026-11-02 用户定：Recover-Potential 的单变量对照——recover 组加反向课程出生（起身轨迹状态库，见
+# env_cfg.ROUGH_RECOVER_REVERSE_*），对照 ertzp9ja（倒置始终 ≤ 0.1）。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-Potential-Reverse"
 )
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
@@ -417,6 +423,19 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    # Recover-Potential-Reverse：Recover-Potential 只加反向课程出生，rl 同 Recover-Potential。
+    reverse_kwargs = dict(potential_kwargs, recover_reverse=True)
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID,
+        env_cfg=env_cfg(**reverse_kwargs),
+        play_env_cfg=env_cfg(play=True, **reverse_kwargs),
+        # bind_task_name 原地改名，须另拷一份
+        rl_cfg=bind_task_name(
+            copy.deepcopy(potential_rl_cfg),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     # Recover-AMP（6iwgpa2m）：env 默认（recover 组 + AMP），rl 只有 AMP、不蒸馏。
     recover_amp_env_cfg = env_cfg(**stair_vx08_kwargs)
     recover_amp_actor = recover_amp_env_cfg.observations["actor"]
@@ -449,6 +468,7 @@ __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID",
