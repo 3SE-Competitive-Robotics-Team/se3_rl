@@ -445,6 +445,24 @@ def stair_only_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
     )
 
 
+def flat_only_terrains_cfg(*, num_rows: int = 10) -> TerrainGeneratorCfg:
+    """只有平地一列的地形集（2026-11-02 用户定）：recover 老师只练起身，走路练成什么样不重要、倒地出生本来就只在平地类列，
+    不必带台阶 / 坡 / 随机地形（十列合计约 800 个 geom，平地一列 14 个）。保留课程模式，列掩码与倒地出生照常可用；
+    倒地出生列里只剩 flat，recover 组按 ROUGH_RECOVER_GROUP_FRACTION 占全体 env。"""
+    return TerrainGeneratorCfg(
+        size=ROUGH_PATCH_SIZE,
+        border_width=5.0,
+        border_height=1.0,
+        num_rows=num_rows,
+        num_cols=1,
+        curriculum=True,
+        difficulty_range=(0.0, 1.0),
+        color_scheme="none",
+        sub_terrains={"flat": flat(proportion=1.0, size=ROUGH_PATCH_SIZE)},
+        add_lights=False,
+    )
+
+
 __all__ = [
     "ROUGH_HFIELD_HORIZONTAL_SCALE",
     "ROUGH_JUMP_COLUMN",
@@ -477,6 +495,7 @@ __all__ = [
     "ROUGH_WAVE_COLUMN",
     "ROUGH_WAVE_NUM_WAVES",
     "TwoStepStairsTerrainCfg",
+    "flat_only_terrains_cfg",
     "rough_terrains_cfg",
     "stair_only_terrains_cfg",
 ]

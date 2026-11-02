@@ -31,7 +31,7 @@ from .rl_cfg import (
     recover_amp_cfg,
     rl_cfg,
 )
-from .terrains import stair_only_terrains_cfg
+from .terrains import flat_only_terrains_cfg, stair_only_terrains_cfg
 
 TASK_ID = "SE3-WheelLegged-Rough"
 # M16：同一份 env_cfg，只把 actor/critic 换成 GRU（rl_cfg.gru_rl_cfg）。
@@ -95,8 +95,9 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_IMPA
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-Potential"
 )
-# 2026-11-02 用户定：Recover-Potential 的单变量对照——recover 组加反向课程出生（起身轨迹状态库，见
-# env_cfg.ROUGH_RECOVER_REVERSE_*），对照 ertzp9ja（倒置始终 ≤ 0.1）。临时入口，结论后删除。
+# 2026-11-02 用户定：Recover-Potential 加反向课程出生（起身轨迹状态库，见 env_cfg.ROUGH_RECOVER_REVERSE_*），
+# 地形只留平地（terrains.flat_only_terrains_cfg：recover 老师不需要地形，省时间；recover 组随之从约 1 成 env 变成 6 成）。
+# 对照 ertzp9ja（倒置始终 ≤ 0.1），相对它改了反向课程与地形两处。临时入口，结论后删除。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-Potential-Reverse"
 )
@@ -423,8 +424,10 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
-    # Recover-Potential-Reverse：Recover-Potential 只加反向课程出生，rl 同 Recover-Potential。
-    reverse_kwargs = dict(potential_kwargs, recover_reverse=True)
+    # Recover-Potential-Reverse：Recover-Potential 加反向课程出生、地形只留平地，rl 同 Recover-Potential。
+    reverse_kwargs = dict(
+        potential_kwargs, recover_reverse=True, terrain_generator=flat_only_terrains_cfg()
+    )
     register_mjlab_task(
         task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID,
         env_cfg=env_cfg(**reverse_kwargs),
