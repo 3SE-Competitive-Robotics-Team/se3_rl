@@ -285,8 +285,8 @@ ROUGH_RECOVER_POTENTIAL_GAMMA = 0.99
 # 状态库 = mzxd7dmq（Recover-Catch-Impact02）model_2500 在 recover 组闭环回放、第一次就站稳的侧躺 / 倒置轨迹，出生到
 # 开始站起（站稳前那段连续直立的起点）每 2 步一条（se3_tools.recover_state_cache，60k，两类各半，站稳率 0.97 / 0.99，
 # 离开始站起的剩余时间倒置 p50 0.6 s、最大 3.2 s）。只用状态、不用动作，学到的翻法仍由奖励决定。
-# recover 组每局以 PROB 改从状态库出生，只取剩余时间 ≤ cap 的状态（两类等权）；cap 从 CAP_START 起，本档反向出生
-# ≥ MIN_EPISODES 局且成功率 ≥ ADVANCE_RATE 时加 CAP_STEP，直到覆盖整条轨迹（含倒地那一刻）。其余一半仍从倒地状态库出生，
+# recover 组每局以 PROB 改从状态库出生，只取剩余时间 ≤ cap 的状态（两类等权）；cap 从 CAP_START 起，反向出生每攒满
+# MIN_EPISODES 局结算一次窗口成功率（结算后清零），≥ ADVANCE_RATE 时加 CAP_STEP，直到覆盖整条轨迹（含倒地那一刻）。其余一半仍从倒地状态库出生，
 # Recovery/recovered_rate_* 只看这一半，可与 ertzp9ja 直接比。
 ROUGH_RECOVER_REVERSE_CACHE = (
     _RESOURCES / "recovery_states" / "recover_traj_d1ed876b_mzxd7dmq2500_60k.npz"

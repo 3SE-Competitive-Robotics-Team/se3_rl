@@ -311,8 +311,9 @@ def reset_from_recover_trajectories(
     """reset 事件（排在 reset_from_fall_states 之后）：recover 组按 prob 改从起身轨迹状态库出生，只取离开始站起
     剩余时间 ≤ cap 的状态（反向课程，见 env_cfg.ROUGH_RECOVER_REVERSE_* 注释）。
 
-    先结算这批 env 上一局（若是反向出生）的结局：站稳且没失败算成功。本档累计 ≥ min_episodes 局且成功率
-    ≥ advance_rate 时 cap += cap_step_s（到状态库最大剩余时间为止，即覆盖整条轨迹含倒地出生那一刻）并清零计数。
+    先结算这批 env 上一局（若是反向出生）的结局：站稳且没失败算成功。每攒满 min_episodes 局为一个窗口，窗口成功率
+    ≥ advance_rate 时 cap += cap_step_s（到状态库最大剩余时间为止，即覆盖整条轨迹含倒地出生那一刻），结算后清零计数；
+    Recover/reverse_success_frac 记最近一个完整窗口的成功率。
     反向出生的 env 倒地类别记 −1，Recovery/* 的按类起身率只看倒地状态库出生。
     """
     if env_ids is None:
@@ -329,13 +330,17 @@ def reset_from_recover_trajectories(
         ok = state.stable[ids] & ~state.failed[ids]
         cur.episodes += prev.float().sum()
         cur.successes += (prev & ok).float().sum()
-        cur.rate = cur.successes / cur.episodes.clamp(min=1.0)
-        advance = (cur.episodes >= float(min_episodes)) & (cur.rate >= float(advance_rate))
+        # 按窗口判：每攒满 min_episodes 局结算一次再清零，不论升没升档——只在升档时清零的话，
+        # 开训初期随机策略的失败会一直留在分母里，成功率追不上门槛（ntci2jfq 344 轮单局已 ~0.8、累计才 0.40）
+        full = cur.episodes >= float(min_episodes)
+        window_rate = cur.successes / cur.episodes.clamp(min=1.0)
+        cur.rate = torch.where(full, window_rate, cur.rate)
+        advance = full & (window_rate >= float(advance_rate))
         cur.cap = torch.where(
             advance, (cur.cap + float(cap_step_s)).clamp(max=cur.max_remaining), cur.cap
         )
-        cur.episodes = torch.where(advance, torch.zeros_like(cur.episodes), cur.episodes)
-        cur.successes = torch.where(advance, torch.zeros_like(cur.successes), cur.successes)
+        cur.episodes = torch.where(full, torch.zeros_like(cur.episodes), cur.episodes)
+        cur.successes = torch.where(full, torch.zeros_like(cur.successes), cur.successes)
     cur.spawned[ids] = False
 
     eligible = recover_group_mask(env)[ids] & (
