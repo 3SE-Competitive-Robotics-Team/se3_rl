@@ -101,6 +101,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-Potential-Reverse"
 )
+# 2026-11-03 用户定：recover 组奖励与终止整套换成 6 月上车版（model_5999_gru，见 env_cfg.ROUGH_RECOVER_JUNE_*），
+# 不带教师 / AMP / 蒸馏 / 反向课程，地形只留平地。对照 yn8l1fk6（势函数 + 反向课程，同平地）。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-June"
+)
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -439,6 +444,23 @@ def register() -> None:
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
+    # Recover-June：recover 组换 6 月上车版奖励与终止、地形只留平地，rl 同 Recover-Potential。
+    june_kwargs = dict(
+        stair_vx08_kwargs,
+        recover_amp=False,
+        recover_june=True,
+        terrain_generator=flat_only_terrains_cfg(),
+    )
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID,
+        env_cfg=env_cfg(**june_kwargs),
+        play_env_cfg=env_cfg(play=True, **june_kwargs),
+        rl_cfg=bind_task_name(
+            copy.deepcopy(potential_rl_cfg),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
     # Recover-AMP（6iwgpa2m）：env 默认（recover 组 + AMP），rl 只有 AMP、不蒸馏。
     recover_amp_env_cfg = env_cfg(**stair_vx08_kwargs)
     recover_amp_actor = recover_amp_env_cfg.observations["actor"]
@@ -471,6 +493,7 @@ __all__ = [
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_CATCH_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_FALL_TEACHER_BC_ALPHA800_RECOVER_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID",
+    "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_TASK_ID",
     "EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID",

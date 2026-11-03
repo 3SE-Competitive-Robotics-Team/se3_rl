@@ -9,7 +9,8 @@
 奖励（只对 recover 组）：站稳后每秒 +1、站稳那一步一次性 +20、失败一次性 −20，加腿 + 轮正功率 / 机身角速度 / 腿速 / 轮速
 超限的线性罚与动作变化率，可选机身 / 轮子对地撞击超阈冲量罚（recover_impact_excess）；可选把站稳 +1/s 与 +20 换成
 势函数整形（recover_potential_shaping，见 env_cfg.ROUGH_RECOVER_POTENTIAL_*）；可选反向课程出生
-（reset_from_recover_trajectories，见 env_cfg.ROUGH_RECOVER_REVERSE_*）；走路组原有奖励在 recover 组上
+（reset_from_recover_trajectories，见 env_cfg.ROUGH_RECOVER_REVERSE_*）；可选整套换成 6 月上车版（model_5999_gru）的奖励
+（recover_walking_term / recover_quiet 等，见 env_cfg.ROUGH_RECOVER_JUNE_* 注释）；走路组原有奖励在 recover 组上
 整体抵消（recover_mask_walking_rewards，必须排在全部走路奖励之后、recover 奖励之前）。recover 组指令每步强制为零速（保留高度指令），站稳后与走路组的静站样本目标一致。
 critic 另有 recover 分组、本局已过时间 / episode_s、是否已站稳三维（不进 actor / CTS 教师组）。
 """
@@ -24,6 +25,7 @@ import numpy as np
 import torch
 
 from se3_shared import JointGroup
+from se3_train.mdp import rewards as mdp_rewards
 from se3_train.mdp.contact_utils import finite_contact_force_norm
 from se3_train.mdp.joint_indices import wheel_actuator_ids
 from se3_train.mdp.rewards import _policy_leg_torque_and_vel
@@ -361,6 +363,114 @@ def reset_from_recover_trajectories(
     cur.spawned[sel] = True
 
 
+def recover_walking_term(env: ManagerBasedRlEnv, term_name: str) -> torch.Tensor:
+    """recover 组上取走路奖励表里 term_name 这一项本步的原始值（_step_reward / 权重），其余 env 为 0。
+
+    6 月配方里与走路组同函数、同参数的项直接复用走路组这一步已算好的值，不重复调用：有的函数带状态
+    （action_smoothness 记上两拍动作）或写课程用的日志键，同一步调两次会互相覆盖。须排在 term_name 之后。
+    """
+    manager = env.reward_manager
+    names = manager._term_names
+    index = names.index(term_name)
+    weight = float(manager._term_cfgs[index].weight)
+    if weight == 0.0:
+        raise ValueError(f"走路奖励 {term_name} 权重为 0，_step_reward 里没有它的原始值")
+    raw = manager._step_reward[:, index] / weight
+    return raw * recover_group_mask(env).float()
+
+
+def recover_quiet(env: ManagerBasedRlEnv, inner, params: dict) -> torch.Tensor:
+    """任意函数型奖励项只在 recover 组上计，且丢掉它写进 extras["log"] 的东西。
+
+    走路组的同名函数会写速度课程读的日志键（如 Locomotion/tracking_lin_vel_reward_curriculum），
+    recover 组换参数再调一次不能把它盖掉。
+    """
+    log = env.extras.get("log")
+    snapshot = dict(log) if isinstance(log, dict) else None
+    value = inner(env, **params)
+    if snapshot is not None:
+        log.clear()
+        log.update(snapshot)
+    return value * recover_group_mask(env).float()
+
+
+_RECOVER_SMOOTH_STATE_ATTR = "_se3_recover_action_smooth_state"
+
+
+def recover_action_smoothness(env: ManagerBasedRlEnv, **params) -> torch.Tensor:
+    """recover 组的 action_smoothness（6 月参数），用自己的上两拍动作缓存。
+
+    走路组的 action_smoothness 同一步已经把共享缓存推进了一拍，这里换入自己的缓存调用、调完换回，
+    两份二阶差分互不干扰。
+    """
+    keys = (mdp_rewards._ACTION_SMOOTH_PREV_ATTR, mdp_rewards._ACTION_SMOOTH_PREV_PREV_ATTR)
+    walking = tuple(getattr(env, key, None) for key in keys)
+    own = getattr(env, _RECOVER_SMOOTH_STATE_ATTR, (None, None))
+    for key, value in zip(keys, own, strict=True):
+        setattr(env, key, value)
+    try:
+        value = recover_quiet(env, mdp_rewards.action_smoothness, params)
+        setattr(env, _RECOVER_SMOOTH_STATE_ATTR, tuple(getattr(env, key, None) for key in keys))
+    finally:
+        for key, saved in zip(keys, walking, strict=True):
+            setattr(env, key, saved)
+    return value
+
+
+def recover_upright_orientation_l2(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    gate_start_deg: float = 60.0,
+    gate_full_deg: float = 20.0,
+    roll_scale_rad: float = 0.14,
+    pitch_scale_rad: float = 0.20,
+    roll_weight: float = 1.5,
+    pitch_weight: float = 1.0,
+    max_penalty: float = 6.0,
+) -> torch.Tensor:
+    """接近直立后按轴罚 pitch / roll 误差（6 月 e8029484 recovery_upright_orientation_l2 原样移植，去掉日志），只在 recover 组。"""
+    robot = env.scene["robot"]
+    cmd = env.command_manager.get_command(command_name)
+    pg = robot.data.projected_gravity_b
+    gate = mdp_rewards._near_upright_gate(
+        pg[:, 2], gate_start_deg=float(gate_start_deg), gate_full_deg=float(gate_full_deg)
+    )
+    jump_flag = (
+        cmd[:, 5] > 0.5
+        if cmd.shape[1] > 5
+        else torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    )
+    active = (gate > 0.0) & ~jump_flag
+    pitch_error = torch.asin(torch.clamp(pg[:, 0], -1.0, 1.0)) - cmd[:, 2]
+    roll_error = torch.asin(torch.clamp(-pg[:, 1], -1.0, 1.0)) - cmd[:, 3]
+    pitch_term = (pitch_error / max(float(pitch_scale_rad), 1.0e-6)) ** 2
+    roll_term = (roll_error / max(float(roll_scale_rad), 1.0e-6)) ** 2
+    penalty = torch.clamp(
+        float(roll_weight) * roll_term + float(pitch_weight) * pitch_term, max=float(max_penalty)
+    )
+    return penalty * gate * active.float() * recover_group_mask(env).float()
+
+
+def recover_upright_leg_contact(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    sensor_name: str,
+    force_threshold: float = 1.0,
+    min_upright_gate: float = 0.5,
+) -> torch.Tensor:
+    """接近直立后罚腿部触地 × 直立因子（6 月 e8029484 upright_leg_contact_penalty 原样移植，去掉日志），只在 recover 组。"""
+    cmd = env.command_manager.get_command(command_name)
+    jump_flag = cmd[:, 5] > 0.5
+    robot = env.scene["robot"]
+    gate = mdp_rewards._upright_factor(robot.data.projected_gravity_b[:, 2])
+    active = (~jump_flag) & (gate >= float(min_upright_gate))
+    data = env.scene.sensors[sensor_name].data
+    if data.force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    has_contact = (finite_contact_force_norm(data.force) > float(force_threshold)).any(dim=1)
+    return has_contact.float() * gate * active.float() * recover_group_mask(env).float()
+
+
 def recover_only(env: ManagerBasedRlEnv, inner, params: dict) -> torch.Tensor:
     """任意函数型奖励项只在 recover 组上计。"""
     return inner(env, **params) * recover_group_mask(env).float()
@@ -450,6 +560,7 @@ __all__ = [
     "RECOVER_GROUP_ATTR",
     "assign_recover_group",
     "force_recover_commands",
+    "recover_action_smoothness",
     "recover_ang_vel_excess",
     "recover_failed",
     "recover_finished",
@@ -462,10 +573,14 @@ __all__ = [
     "recover_potential",
     "recover_potential_shaping",
     "recover_power_excess",
+    "recover_quiet",
     "recover_stable_obs",
     "recover_stand",
     "recover_success",
     "recover_time_obs",
+    "recover_upright_leg_contact",
+    "recover_upright_orientation_l2",
+    "recover_walking_term",
     "recover_wheel_speed_excess",
     "reset_from_recover_trajectories",
     "snapshot_recover_potential",

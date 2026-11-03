@@ -296,6 +296,31 @@ ROUGH_RECOVER_REVERSE_CAP_START_S = 0.25
 ROUGH_RECOVER_REVERSE_CAP_STEP_S = 0.25
 ROUGH_RECOVER_REVERSE_ADVANCE_RATE = 0.8
 ROUGH_RECOVER_REVERSE_MIN_EPISODES = 500
+# 6 月上车版奖励（2026-11-03 用户定，env_cfg(recover_june=True)，给 Recover-June 用）：势函数 + 失败罚的 recover 组
+# （ertzp9ja、yn8l1fk6）起身动作难看——门槛以下的动作不计价、成败只有两个一次性 ±20。改照 6 月上车的
+# assets/base_model/model_5999_gru.pt（abbtask 2026-06-09_05-06-14_recovery_overdrive_resume_4100_e802948_tb，源码 e8029484，
+# 该 run params/env.yaml）的奖励与终止：
+# - 起身靠全程稠密的 upward +2·(1−g_z)²（倒置 0、侧躺 2/s、直立 8/s）、倒置时的高度罚（−800·Δh²·|g_z|）与站起后才拿得到的
+#   零速跟踪，不设失败罚 / 成功奖励 / 截止，倒地不终止，recover 组一局就是 20 s 走到 time_out（自举）；
+# - 能量（τ²、|τq̇|、q̈²）与动作变化率全程罚，姿态 / 平滑 / 对称 / 触地 / 默认姿态罚只在接近直立时生效（直立门控）。
+# 与走路组同函数、同参数的项直接取走路组本步的原始值（recover.recover_walking_term），参数不同的单独调（recover.recover_quiet
+# 丢掉它的日志，免得盖掉速度课程读的键），6 月独有的两项（分轴姿态罚、直立腿触地罚）在 recover.py 原样移植。
+# 与 6 月不同、不跟着改的：动作空间（6 月 leg_scales π / 0.7548、clip 1，这里保持 Rough 部署契约）、闭链 MJCF、
+# CTS MLP（6 月 GRU）、倒地出生用状态库（6 月全姿态 + 全关节随机）、起身与走路分组（6 月同局先起身再走）。
+ROUGH_RECOVER_JUNE_TRACKING_UPRIGHT_FULL_COS = math.cos(math.radians(15.0))
+# 复用走路组原始值的项：{recover 组项名: (走路组项名, 6 月权重)}；须与 6 月同函数同参数（_recover_june_reward_terms 里核对）。
+ROUGH_RECOVER_JUNE_SHARED_TERMS: dict[str, tuple[str, float]] = {
+    "recover_june_upward": ("upward", 2.0),
+    "recover_june_ang_vel_xy": ("ang_vel_xy", -0.05),
+    "recover_june_leg_torques": ("leg_torques", -2.5e-5),
+    "recover_june_leg_dof_acc": ("leg_dof_acc", -2.5e-7),
+    "recover_june_leg_power": ("leg_power", -2.0e-5),
+    "recover_june_action_rate": ("action_rate", -0.05),
+    "recover_june_dof_pos_limits": ("dof_pos_limits", -5.0),
+    "recover_june_collision": ("collision", -1.0),
+    "recover_june_contact_forces": ("contact_forces", -1.5e-4),
+    "recover_june_stand_still": ("stand_still", -2.0),
+}
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -560,6 +585,7 @@ def env_cfg(
     recover_wheel_impact: bool = False,
     recover_potential: bool = False,
     recover_reverse: bool = False,
+    recover_june: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -594,6 +620,8 @@ def env_cfg(
     recover_potential：recover 组站稳 +1/s 与 +20 换成势函数整形 ROUGH_RECOVER_POTENTIAL_*（见注释），默认关；
         须 recover_flip_deadline=True。
     recover_reverse：recover 组反向课程出生 ROUGH_RECOVER_REVERSE_*（见注释），默认关；play 不接。
+    recover_june：recover 组奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*，见注释），默认关；与 recover_flip_deadline /
+        recover_base_impact / recover_wheel_impact / recover_potential / recover_reverse 互斥。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -756,6 +784,16 @@ def env_cfg(
     # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
     if fall_teacher_catch and not fall_teacher:
         raise ValueError("fall_teacher_catch 须配 fall_teacher=True")
+    if recover_june and (
+        recover_flip_deadline
+        or recover_base_impact
+        or recover_wheel_impact
+        or recover_potential
+        or recover_reverse
+    ):
+        raise ValueError(
+            "recover_june 换掉了 recover 组整套奖励与终止，不能再叠其它 recover_* 开关"
+        )
     if recover_potential and not recover_flip_deadline:
         raise ValueError(
             "recover_potential 须配 recover_flip_deadline=True（见 ROUGH_RECOVER_POTENTIAL_* 注释）"
@@ -949,6 +987,7 @@ def env_cfg(
         wheel_impact=recover_wheel_impact,
         potential=recover_potential,
         reverse=recover_reverse,
+        june=recover_june,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -1048,13 +1087,15 @@ def _apply_recover_group(
     wheel_impact: bool = False,
     potential: bool = False,
     reverse: bool = False,
+    june: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
     flip_deadline 时终止加翻正截止，base_impact / wheel_impact 时奖励加机身 / 轮子撞击罚
     （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）；
     potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）；reverse 时训练加反向课程出生
-    （ROUGH_RECOVER_REVERSE_*）。
+    （ROUGH_RECOVER_REVERSE_*）；june 时奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*）：不加 recover 组终止，
+    一局走到 time_out。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1099,6 +1140,17 @@ def _apply_recover_group(
         )
 
     cfg.terminations = dict(cfg.terminations)
+    if june:
+        walking = dict(cfg.rewards)
+        cfg.rewards = {
+            **walking,
+            "recover_mask_walking_rewards": RewardTermCfg(
+                func=recover.recover_mask_walking_rewards, weight=1.0
+            ),
+            **_recover_june_reward_terms(walking),
+        }
+        _add_recover_critic_obs(cfg, episode_s=float(cfg.episode_length_s))
+        return
     cfg.terminations["recover_failed"] = TerminationTermCfg(
         func=recover.recover_failed,
         time_out=False,
@@ -1203,7 +1255,11 @@ def _apply_recover_group(
     if imitation is not None:
         recover_terms["fall_teacher_imitation"] = imitation
     cfg.rewards = {**walking, **recover_terms}
+    _add_recover_critic_obs(cfg, episode_s=ROUGH_RECOVER_EPISODE_S)
 
+
+def _add_recover_critic_obs(cfg: ManagerBasedRlEnvCfg, *, episode_s: float) -> None:
+    """critic 加 recover 组三维：是否 recover 组、本局已过时间 / episode_s、是否已站稳（没有 recover 组终止时恒 0）。"""
     critic = cfg.observations["critic"]
     cfg.observations["critic"] = replace(
         critic,
@@ -1211,11 +1267,148 @@ def _apply_recover_group(
             **critic.terms,
             "recover_group": ObservationTermCfg(func=recover.recover_group_obs),
             "recover_time": ObservationTermCfg(
-                func=recover.recover_time_obs, params={"episode_s": ROUGH_RECOVER_EPISODE_S}
+                func=recover.recover_time_obs, params={"episode_s": float(episode_s)}
             ),
             "recover_stable": ObservationTermCfg(func=recover.recover_stable_obs),
         },
     )
+
+
+def _recover_june_reward_terms(walking: dict) -> dict[str, RewardTermCfg]:
+    """6 月上车版的 recover 组奖励（ROUGH_RECOVER_JUNE_* 注释；权重与参数取自 model_5999_gru 那条 run 的 params/env.yaml）。"""
+    # 复用的走路项须与 6 月同函数、同参数（not_jumping / off_column 外壳在平地 recover 组上不起作用），否则报错
+    expect = {
+        "upward": ("upward", {}),
+        "ang_vel_xy": ("ang_vel_xy", {}),
+        "leg_torques": ("leg_torques", {}),
+        "leg_dof_acc": ("leg_dof_acc", {}),
+        "leg_power": ("leg_power", {}),
+        "action_rate": ("action_rate", {"leg_scale": 1.0, "wheel_scale": 1.0}),
+        "dof_pos_limits": ("dof_pos_limits", {}),
+        "collision": ("collision", {"sensor_name": "collision_sensor"}),
+        "contact_forces": ("contact_forces", {"threshold": 35.0, "sensor_name": "wheel_sensor"}),
+        "stand_still": (
+            "stand_still",
+            {
+                "command_name": "velocity_height",
+                "command_threshold": 0.1,
+                "default_height": 0.22,
+                "height_tolerance": 40.0,
+            },
+        ),
+    }
+    for name, (func_name, params) in expect.items():
+        term = walking[name]
+        inner = (term.params or {}).get("inner")
+        func = inner if inner is not None else term.func
+        actual = term.params.get("params", {}) if inner is not None else (term.params or {})
+        actual = {k: v for k, v in actual.items() if k != "asset_cfg"}
+        if func.__name__ != func_name or actual != params:
+            raise ValueError(
+                f"走路奖励 {name} 已不是 6 月的 {func_name}{params}，不能直接复用：{actual}"
+            )
+    terms = {
+        key: RewardTermCfg(
+            func=recover.recover_walking_term, weight=weight, params={"term_name": walking_name}
+        )
+        for key, (walking_name, weight) in ROUGH_RECOVER_JUNE_SHARED_TERMS.items()
+    }
+
+    def quiet(func, weight: float, **params) -> RewardTermCfg:
+        return RewardTermCfg(
+            func=recover.recover_quiet, weight=weight, params={"inner": func, "params": params}
+        )
+
+    full_cos = ROUGH_RECOVER_JUNE_TRACKING_UPRIGHT_FULL_COS
+    terms |= {
+        "recover_june_tracking_lin_vel": quiet(
+            mdp_rewards.tracking_lin_vel,
+            3.0,
+            command_name="velocity_height",
+            sigma_move=0.08,
+            sigma_stand=0.1,
+            vz_weight=0.0,
+            use_upright_gate=True,
+            tracking_upright_full_cos=full_cos,
+        ),
+        "recover_june_tracking_ang_vel": quiet(
+            mdp_rewards.tracking_ang_vel,
+            1.5,
+            command_name="velocity_height",
+            sigma=0.25,
+            sigma_cmd_scale=0.4,
+            ratio_blend=0.2,
+            use_upright_gate=True,
+            tracking_upright_full_cos=full_cos,
+        ),
+        "recover_june_tracking_height": quiet(
+            mdp_rewards.tracking_height,
+            -800.0,
+            command_name="velocity_height",
+            sigma=0.0025,
+            height_sensor_name="base_height_sensor",
+            kernel="l2",
+            use_upright_gate=False,
+            use_pose_end_gate=True,
+            upright_gate_angle_deg=30.0,
+            inverted_gate_angle_deg=150.0,
+        ),
+        "recover_june_lin_vel_z": quiet(mdp_rewards.lin_vel_z, -2.0),
+        "recover_june_joint_mirror": quiet(mdp_rewards.joint_mirror, -0.05),
+        "recover_june_joint_pos_penalty": quiet(
+            mdp_rewards.joint_pos_penalty,
+            -1.0,
+            command_name="velocity_height",
+            stand_still_scale=5.0,
+            velocity_threshold=0.5,
+            command_threshold=0.1,
+        ),
+        "recover_june_wheel_contact_without_cmd": quiet(
+            mdp_rewards.feet_contact_without_cmd,
+            0.1,
+            command_name="velocity_height",
+            force_threshold=1.0,
+            cmd_threshold=0.1,
+            sensor_name="wheel_sensor",
+        ),
+        "recover_june_upright_orientation_l2": RewardTermCfg(
+            func=recover.recover_upright_orientation_l2,
+            weight=-0.5,
+            params={
+                "command_name": "velocity_height",
+                "gate_start_deg": 60.0,
+                "gate_full_deg": 20.0,
+                "roll_scale_rad": 0.14,
+                "pitch_scale_rad": 0.2,
+                "roll_weight": 1.5,
+                "pitch_weight": 1.0,
+                "max_penalty": 6.0,
+            },
+        ),
+        "recover_june_action_smoothness": RewardTermCfg(
+            func=recover.recover_action_smoothness,
+            weight=-0.01,
+            params={
+                "command_name": "velocity_height",
+                "gate_start_deg": 60.0,
+                "gate_full_deg": 30.0,
+                "max_penalty": 80.0,
+                "leg_scale": 1.0,
+                "wheel_scale": 1.0,
+            },
+        ),
+        "recover_june_upright_leg_contact": RewardTermCfg(
+            func=recover.recover_upright_leg_contact,
+            weight=-1.0,
+            params={
+                "command_name": "velocity_height",
+                "sensor_name": "leg_contact_sensor",
+                "force_threshold": 1.0,
+                "min_upright_gate": 0.0,
+            },
+        ),
+    }
+    return terms
 
 
 def _apply_rough_domain_randomization(cfg: ManagerBasedRlEnvCfg, *, play: bool) -> None:
