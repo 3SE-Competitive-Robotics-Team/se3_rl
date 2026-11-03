@@ -106,6 +106,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_POTENTIAL_REVERSE_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-June"
 )
+# 2026-11-03 用户定：Recover-June 的单变量对照——recover 组加腿 + 轮正功率超额罚（见 env_cfg.ROUGH_RECOVER_JUNE_SHARED_TERMS
+# 后的注释）。对照 sooaiehz。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_POWER_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-June-Power"
+)
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -458,6 +463,18 @@ def register() -> None:
         rl_cfg=bind_task_name(
             copy.deepcopy(potential_rl_cfg),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-June-Power：Recover-June 加腿 + 轮正功率超额罚。
+    june_power_kwargs = dict(june_kwargs, recover_june_power=True)
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_POWER_TASK_ID,
+        env_cfg=env_cfg(**june_power_kwargs),
+        play_env_cfg=env_cfg(play=True, **june_power_kwargs),
+        rl_cfg=bind_task_name(
+            copy.deepcopy(potential_rl_cfg),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_POWER_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )

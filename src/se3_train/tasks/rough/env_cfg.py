@@ -321,6 +321,12 @@ ROUGH_RECOVER_JUNE_SHARED_TERMS: dict[str, tuple[str, float]] = {
     "recover_june_contact_forces": ("contact_forces", -1.5e-4),
     "recover_june_stand_still": ("stand_still", -2.0),
 }
+# 6 月版加功率罚（2026-11-03 用户定，env_cfg(recover_june=True, recover_june_power=True)，默认关）：sooaiehz model_1200
+# 起身太猛。确定性回放对照 mzxd7dmq-2500（倒置出生，峰值中位）：机身 / 单轮接触力 531 / 336 vs 492 / 381 N 基本持平，
+# 猛在轮子空转顶满（轮速 69 vs 34 rad/s、轮正功率 221 vs 74 W）与腿正功率（761 vs 567 W，侧躺 609 vs 411 W）——
+# 6 月的能量罚只算腿、权重小到可以忽略（|τq̇| × 2e-5）。复用 gyi9exiz 那版 recover 组的腿 + 轮正功率超额罚
+# （recover.recover_power_excess，ROUGH_RECOVER_POWER_THRESHOLD_W 300 W 以上部分 × ROUGH_RECOVER_POWER_WEIGHT −0.05/W·s），
+# 只在 recover 组、全程生效；站立平衡的功率远低于 300 W，不受影响。
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -586,6 +592,7 @@ def env_cfg(
     recover_potential: bool = False,
     recover_reverse: bool = False,
     recover_june: bool = False,
+    recover_june_power: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -622,6 +629,8 @@ def env_cfg(
     recover_reverse：recover 组反向课程出生 ROUGH_RECOVER_REVERSE_*（见注释），默认关；play 不接。
     recover_june：recover 组奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*，见注释），默认关；与 recover_flip_deadline /
         recover_base_impact / recover_wheel_impact / recover_potential / recover_reverse 互斥。
+    recover_june_power：6 月版 recover 组加腿 + 轮正功率超额罚（见 ROUGH_RECOVER_JUNE_SHARED_TERMS 后的注释），默认关；
+        须 recover_june=True。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -794,6 +803,8 @@ def env_cfg(
         raise ValueError(
             "recover_june 换掉了 recover 组整套奖励与终止，不能再叠其它 recover_* 开关"
         )
+    if recover_june_power and not recover_june:
+        raise ValueError("recover_june_power 须配 recover_june=True")
     if recover_potential and not recover_flip_deadline:
         raise ValueError(
             "recover_potential 须配 recover_flip_deadline=True（见 ROUGH_RECOVER_POTENTIAL_* 注释）"
@@ -988,6 +999,7 @@ def env_cfg(
         potential=recover_potential,
         reverse=recover_reverse,
         june=recover_june,
+        june_power=recover_june_power,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -1088,6 +1100,7 @@ def _apply_recover_group(
     potential: bool = False,
     reverse: bool = False,
     june: bool = False,
+    june_power: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
@@ -1095,7 +1108,7 @@ def _apply_recover_group(
     （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）；
     potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）；reverse 时训练加反向课程出生
     （ROUGH_RECOVER_REVERSE_*）；june 时奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*）：不加 recover 组终止，
-    一局走到 time_out。
+    一局走到 time_out；june_power 时再加腿 + 轮正功率超额罚。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1149,6 +1162,12 @@ def _apply_recover_group(
             ),
             **_recover_june_reward_terms(walking),
         }
+        if june_power:
+            cfg.rewards["recover_june_power_excess"] = RewardTermCfg(
+                func=recover.recover_power_excess,
+                weight=ROUGH_RECOVER_POWER_WEIGHT,
+                params={"threshold_w": ROUGH_RECOVER_POWER_THRESHOLD_W},
+            )
         _add_recover_critic_obs(cfg, episode_s=float(cfg.episode_length_s))
         return
     cfg.terminations["recover_failed"] = TerminationTermCfg(
