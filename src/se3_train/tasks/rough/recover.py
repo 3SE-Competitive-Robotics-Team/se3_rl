@@ -523,6 +523,20 @@ def recover_wheel_speed_excess(env: ManagerBasedRlEnv, threshold: float) -> torc
     )
 
 
+def recover_wheel_air_speed_sq(
+    env: ManagerBasedRlEnv, sensor_name: str, force_threshold_n: float
+) -> torch.Tensor:
+    """Σ轮 悬空 · ω_轮²（rad²/s²），只在 recover 组；悬空 = 该轮对地接触合力 ≤ force_threshold_n。
+
+    wheel_sensor 的接触体按 l_wheel / r_wheel 排，与 JointGroup.WHEEL_NAMES 同序。
+    """
+    joints, _ = _wheel_ids(env)
+    wheel_vel = env.scene["robot"].data.joint_vel[:, joints]
+    force = finite_contact_force_norm(env.scene.sensors[sensor_name].data.force)
+    airborne = (force.reshape(env.num_envs, -1) <= float(force_threshold_n)).float()
+    return (airborne * wheel_vel.square()).sum(dim=1) * recover_group_mask(env).float()
+
+
 def recover_impact_excess(
     env: ManagerBasedRlEnv, sensor_name: str, threshold_n: float
 ) -> torch.Tensor:

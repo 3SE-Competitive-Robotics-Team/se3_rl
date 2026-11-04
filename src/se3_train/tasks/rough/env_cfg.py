@@ -327,6 +327,14 @@ ROUGH_RECOVER_JUNE_SHARED_TERMS: dict[str, tuple[str, float]] = {
 # 6 月的能量罚只算腿、权重小到可以忽略（|τq̇| × 2e-5）。复用 gyi9exiz 那版 recover 组的腿 + 轮正功率超额罚
 # （recover.recover_power_excess，ROUGH_RECOVER_POWER_THRESHOLD_W 300 W 以上部分 × ROUGH_RECOVER_POWER_WEIGHT −0.05/W·s），
 # 只在 recover 组、全程生效；站立平衡的功率远低于 300 W，不受影响。
+# 6 月版加轮子悬空转速罚（2026-11-04 用户定，env_cfg(recover_june=True, recover_june_wheel_air=True)，默认关）：用户认可 sooaiehz，
+# 但轮子在空中空转顶满（回放倒置轮速峰值中位 69 rad/s ≈ 上限）。87u5oaz3 的功率罚管不住轮子——轮子力矩上限 2.21 N·m，满速单轮
+# 也才约 150 W，进不了 300 W 的合计门槛；它前 1500 轮压住了腿、后期被翻正奖励买回。改为直接对悬空轮的转速计价：
+# recover.recover_wheel_air_speed_sq，Σ轮 悬空·ω²，悬空判据同 6 月 wheel_contact_without_cmd 的 1 N。平方是为了只压高速空转、
+# 低速调整近乎免费；权重按"两轮都在空中满速空转（2×69²≈9500）的扣分 ≈ 侧躺时的翻正奖励 2/s"定，即 −2e-4（满速 −1.9/s，
+# 20 rad/s 时 −0.16/s）。着地轮不计（贴地转是在走 / 撬身）。只在 recover 组、全程生效；与 recover_june_power 是两个独立对照。
+ROUGH_RECOVER_JUNE_WHEEL_AIR_FORCE_THRESHOLD_N = 1.0
+ROUGH_RECOVER_JUNE_WHEEL_AIR_WEIGHT = -2.0e-4
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -593,6 +601,7 @@ def env_cfg(
     recover_reverse: bool = False,
     recover_june: bool = False,
     recover_june_power: bool = False,
+    recover_june_wheel_air: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -630,6 +639,8 @@ def env_cfg(
     recover_june：recover 组奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*，见注释），默认关；与 recover_flip_deadline /
         recover_base_impact / recover_wheel_impact / recover_potential / recover_reverse 互斥。
     recover_june_power：6 月版 recover 组加腿 + 轮正功率超额罚（见 ROUGH_RECOVER_JUNE_SHARED_TERMS 后的注释），默认关；
+        须 recover_june=True。
+    recover_june_wheel_air：6 月版 recover 组加轮子悬空转速罚（ROUGH_RECOVER_JUNE_WHEEL_AIR_*，见注释），默认关；
         须 recover_june=True。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
@@ -805,6 +816,8 @@ def env_cfg(
         )
     if recover_june_power and not recover_june:
         raise ValueError("recover_june_power 须配 recover_june=True")
+    if recover_june_wheel_air and not recover_june:
+        raise ValueError("recover_june_wheel_air 须配 recover_june=True")
     if recover_potential and not recover_flip_deadline:
         raise ValueError(
             "recover_potential 须配 recover_flip_deadline=True（见 ROUGH_RECOVER_POTENTIAL_* 注释）"
@@ -1000,6 +1013,7 @@ def env_cfg(
         reverse=recover_reverse,
         june=recover_june,
         june_power=recover_june_power,
+        june_wheel_air=recover_june_wheel_air,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -1101,6 +1115,7 @@ def _apply_recover_group(
     reverse: bool = False,
     june: bool = False,
     june_power: bool = False,
+    june_wheel_air: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
@@ -1108,7 +1123,7 @@ def _apply_recover_group(
     （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）；
     potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）；reverse 时训练加反向课程出生
     （ROUGH_RECOVER_REVERSE_*）；june 时奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*）：不加 recover 组终止，
-    一局走到 time_out；june_power 时再加腿 + 轮正功率超额罚。
+    一局走到 time_out；june_power 时再加腿 + 轮正功率超额罚，june_wheel_air 时再加轮子悬空转速罚。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1167,6 +1182,15 @@ def _apply_recover_group(
                 func=recover.recover_power_excess,
                 weight=ROUGH_RECOVER_POWER_WEIGHT,
                 params={"threshold_w": ROUGH_RECOVER_POWER_THRESHOLD_W},
+            )
+        if june_wheel_air:
+            cfg.rewards["recover_june_wheel_air_speed"] = RewardTermCfg(
+                func=recover.recover_wheel_air_speed_sq,
+                weight=ROUGH_RECOVER_JUNE_WHEEL_AIR_WEIGHT,
+                params={
+                    "sensor_name": "wheel_sensor",
+                    "force_threshold_n": ROUGH_RECOVER_JUNE_WHEEL_AIR_FORCE_THRESHOLD_N,
+                },
             )
         _add_recover_critic_obs(cfg, episode_s=float(cfg.episode_length_s))
         return

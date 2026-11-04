@@ -111,6 +111,11 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_POWER_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-June-Power"
 )
+# 2026-11-04 用户定：Recover-June 的单变量对照——recover 组加轮子悬空转速罚（见 env_cfg.ROUGH_RECOVER_JUNE_WHEEL_AIR_*）。
+# 对照 sooaiehz。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_WHEEL_AIR_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-June-WheelAir"
+)
 # 2026-10-24 用户定：recover 组 + AMP 起身风格，不带教师（6iwgpa2m）。最终配方续训的起点，也是消融"去掉蒸馏"一臂。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-Recover-AMP"
@@ -475,6 +480,18 @@ def register() -> None:
         rl_cfg=bind_task_name(
             copy.deepcopy(potential_rl_cfg),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_POWER_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Recover-June-WheelAir：Recover-June 加轮子悬空转速罚。
+    june_wheel_air_kwargs = dict(june_kwargs, recover_june_wheel_air=True)
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_WHEEL_AIR_TASK_ID,
+        env_cfg=env_cfg(**june_wheel_air_kwargs),
+        play_env_cfg=env_cfg(play=True, **june_wheel_air_kwargs),
+        rl_cfg=bind_task_name(
+            copy.deepcopy(potential_rl_cfg),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_JUNE_WHEEL_AIR_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
