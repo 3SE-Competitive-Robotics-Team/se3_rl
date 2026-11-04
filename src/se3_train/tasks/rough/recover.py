@@ -537,6 +537,41 @@ def recover_wheel_air_speed_sq(
     return (airborne * wheel_vel.square()).sum(dim=1) * recover_group_mask(env).float()
 
 
+_TOUCHDOWN_ATTR = "_se3_recover_wheel_touchdown"
+
+
+def recover_wheel_touchdown_speed_excess(
+    env: ManagerBasedRlEnv, sensor_name: str, force_threshold_n: float, speed_threshold: float
+) -> torch.Tensor:
+    """Σ轮 触地 · max(0, v_落 − speed_threshold)² / step_dt，只在 recover 组；权重即每次触地每 (m/s)² 的扣分。
+
+    触地 = 该轮对地接触合力本步 > force_threshold_n、上一步 ≤ force_threshold_n；v_落 取上一步（接触前）轮心
+    世界系竖直速度的向下分量。上一步状态记在 env 上、每步奖励时刻更新；新局首步（episode_length_buf ≤ 1）的
+    上一步状态属于上一局，不计。首次调用前没有上一步，记 0。
+    """
+    robot = env.scene["robot"]
+    bodies = getattr(env, "_se3_recover_wheel_body_ids", None)
+    if bodies is None:
+        bodies = torch.tensor(
+            robot.find_bodies(("l_wheel_Link", "r_wheel_Link"), preserve_order=True)[0],
+            device=env.device,
+            dtype=torch.long,
+        )
+        env._se3_recover_wheel_body_ids = bodies
+    force = finite_contact_force_norm(env.scene.sensors[sensor_name].data.force)
+    on = force.reshape(env.num_envs, -1) > float(force_threshold_n)
+    down = torch.clamp(-robot.data.body_link_lin_vel_w[:, bodies, 2], min=0.0)
+    prev = getattr(env, _TOUCHDOWN_ATTR, None)
+    setattr(env, _TOUCHDOWN_ATTR, (on, down))
+    if prev is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    prev_on, prev_down = prev
+    onset = on & ~prev_on & (env.episode_length_buf > 1).unsqueeze(1)
+    excess = torch.clamp(prev_down - float(speed_threshold), min=0.0)
+    penalty = (onset.float() * excess.square()).sum(dim=1) / float(env.step_dt)
+    return penalty * recover_group_mask(env).float()
+
+
 def recover_impact_excess(
     env: ManagerBasedRlEnv, sensor_name: str, threshold_n: float
 ) -> torch.Tensor:

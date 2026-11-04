@@ -337,6 +337,16 @@ ROUGH_RECOVER_JUNE_SHARED_TERMS: dict[str, tuple[str, float]] = {
 # 被买回的覆辙；×10 后照 sooaiehz 的转法每局约 −5（约 7%），两轮满速空转 −19/s（高于直立 upward 8/s），20 rad/s 时 −1.6/s。
 ROUGH_RECOVER_JUNE_WHEEL_AIR_FORCE_THRESHOLD_N = 1.0
 ROUGH_RECOVER_JUNE_WHEEL_AIR_WEIGHT = -2.0e-3
+# 6 月版加轮子触地速度罚（2026-11-04 用户定，env_cfg(recover_june=True, recover_june_touchdown=True)，默认关）：用户要柔顺触地。
+# 触地诊断（.scratch/recover_june_20261103/wheel_touchdown_diag.py，fdrykn18-1600 / sooaiehz-1600 确定性回放）：单轮峰值
+# 81–91% 落在触地后 ≤ 2 步、78–88% 在翻正之前（翻身转下来轮子拍地），不是着地后撑出来的；触地后 0.1 s 峰值力随触地前
+# 轮心下落速度单调涨：< 0.5 m/s 中位约 85 N（单轮静站约 62 N）、0.5–0.75 约 105、0.75–1 约 160、1–1.5 约 190、2–3 约 250、
+# > 3 m/s 约 310 N；峰值那次触地的下落速度中位 1.2–1.3 m/s、p90 2.5–3.3。直接罚接触力的那版（j7vtpd7o）力对动作响应尖、
+# 后期倒置塌掉；改罚策略能直接控制、与峰值力单调对应的触地速度：recover.recover_wheel_touchdown_speed_excess，
+# 每次触地 max(0, v_落 − 0.75)²（0.75 m/s 以下峰值约为静站 1.7 倍以内，站稳后的小晃动不受影响）。权重 −2：按 fdrykn18-1600
+# 的落法每局 Σ 超额² ≈ 4.2 (m/s)²，约 −8.5、为 upward 累计 75 的一成；单次 2 m/s 触地 −3.1、4 m/s −21（直立 upward 8/s）。
+ROUGH_RECOVER_JUNE_TOUCHDOWN_SPEED_THRESHOLD = 0.75
+ROUGH_RECOVER_JUNE_TOUCHDOWN_WEIGHT = -2.0
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
@@ -604,6 +614,7 @@ def env_cfg(
     recover_june: bool = False,
     recover_june_power: bool = False,
     recover_june_wheel_air: bool = False,
+    recover_june_touchdown: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -643,6 +654,8 @@ def env_cfg(
     recover_june_power：6 月版 recover 组加腿 + 轮正功率超额罚（见 ROUGH_RECOVER_JUNE_SHARED_TERMS 后的注释），默认关；
         须 recover_june=True。
     recover_june_wheel_air：6 月版 recover 组加轮子悬空转速罚（ROUGH_RECOVER_JUNE_WHEEL_AIR_*，见注释），默认关；
+        须 recover_june=True。
+    recover_june_touchdown：6 月版 recover 组加轮子触地速度罚（ROUGH_RECOVER_JUNE_TOUCHDOWN_*，见注释），默认关；
         须 recover_june=True。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
@@ -820,6 +833,8 @@ def env_cfg(
         raise ValueError("recover_june_power 须配 recover_june=True")
     if recover_june_wheel_air and not recover_june:
         raise ValueError("recover_june_wheel_air 须配 recover_june=True")
+    if recover_june_touchdown and not recover_june:
+        raise ValueError("recover_june_touchdown 须配 recover_june=True")
     if recover_potential and not recover_flip_deadline:
         raise ValueError(
             "recover_potential 须配 recover_flip_deadline=True（见 ROUGH_RECOVER_POTENTIAL_* 注释）"
@@ -1016,6 +1031,7 @@ def env_cfg(
         june=recover_june,
         june_power=recover_june_power,
         june_wheel_air=recover_june_wheel_air,
+        june_touchdown=recover_june_touchdown,
     )
     cfg.observations[ROUGH_RECOVER_MASK_GROUP] = ObservationGroupCfg(
         terms={"recover_group": ObservationTermCfg(func=recover.recover_group_obs)},
@@ -1118,6 +1134,7 @@ def _apply_recover_group(
     june: bool = False,
     june_power: bool = False,
     june_wheel_air: bool = False,
+    june_touchdown: bool = False,
 ) -> None:
     """recover 组（见 ROUGH_RECOVER_* 注释）：分组与按组倒地出生、零速指令、终止、奖励（走路奖励在 recover 组上抵消）与 critic 三维。
 
@@ -1125,7 +1142,7 @@ def _apply_recover_group(
     （ROUGH_RECOVER_FLIP_DEADLINE_S / ROUGH_RECOVER_BASE_IMPACT_* / ROUGH_RECOVER_WHEEL_IMPACT_*）；
     potential 时站稳 +1/s 与 +20 换成势函数整形（ROUGH_RECOVER_POTENTIAL_*）；reverse 时训练加反向课程出生
     （ROUGH_RECOVER_REVERSE_*）；june 时奖励与终止整套换成 6 月上车版（ROUGH_RECOVER_JUNE_*）：不加 recover 组终止，
-    一局走到 time_out；june_power 时再加腿 + 轮正功率超额罚，june_wheel_air 时再加轮子悬空转速罚。
+    一局走到 time_out；june_power 时再加腿 + 轮正功率超额罚，june_wheel_air 时再加轮子悬空转速罚，june_touchdown 时再加轮子触地速度罚。
     """
     step_dt = float(cfg.sim.mujoco.timestep) * int(cfg.decimation)
     cfg.events = dict(cfg.events)
@@ -1192,6 +1209,16 @@ def _apply_recover_group(
                 params={
                     "sensor_name": "wheel_sensor",
                     "force_threshold_n": ROUGH_RECOVER_JUNE_WHEEL_AIR_FORCE_THRESHOLD_N,
+                },
+            )
+        if june_touchdown:
+            cfg.rewards["recover_june_wheel_touchdown_speed"] = RewardTermCfg(
+                func=recover.recover_wheel_touchdown_speed_excess,
+                weight=ROUGH_RECOVER_JUNE_TOUCHDOWN_WEIGHT,
+                params={
+                    "sensor_name": "wheel_sensor",
+                    "force_threshold_n": ROUGH_RECOVER_JUNE_WHEEL_AIR_FORCE_THRESHOLD_N,
+                    "speed_threshold": ROUGH_RECOVER_JUNE_TOUCHDOWN_SPEED_THRESHOLD,
                 },
             )
         _add_recover_critic_obs(cfg, episode_s=float(cfg.episode_length_s))
