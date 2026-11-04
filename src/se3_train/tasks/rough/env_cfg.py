@@ -331,10 +331,12 @@ ROUGH_RECOVER_JUNE_SHARED_TERMS: dict[str, tuple[str, float]] = {
 # 但轮子在空中空转顶满（回放倒置轮速峰值中位 69 rad/s ≈ 上限）。87u5oaz3 的功率罚管不住轮子——轮子力矩上限 2.21 N·m，满速单轮
 # 也才约 150 W，进不了 300 W 的合计门槛；它前 1500 轮压住了腿、后期被翻正奖励买回。改为直接对悬空轮的转速计价：
 # recover.recover_wheel_air_speed_sq，Σ轮 悬空·ω²，悬空判据同 6 月 wheel_contact_without_cmd 的 1 N。平方是为了只压高速空转、
-# 低速调整近乎免费；权重按"两轮都在空中满速空转（2×69²≈9500）的扣分 ≈ 侧躺时的翻正奖励 2/s"定，即 −2e-4（满速 −1.9/s，
-# 20 rad/s 时 −0.16/s）。着地轮不计（贴地转是在走 / 撬身）。只在 recover 组、全程生效；与 recover_june_power 是两个独立对照。
+# 低速调整近乎免费。着地轮不计（贴地转是在走 / 撬身）。只在 recover 组、全程生效；与 recover_june_power 是两个独立对照。
+# 权重 −2e-3（用户定）：先按"两轮满速空转 ≈ 侧躺翻正奖励 2/s"试的 −2e-4，账本（sooaiehz-1500 确定性回放 10 s，
+# check_june_wheel_air.py）每局只扣 侧躺 0.38 / 倒置 0.55，不到 upward 累计 75 的 1%，早翻正 0.1 s 就赚回来，会重蹈功率罚
+# 被买回的覆辙；×10 后照 sooaiehz 的转法每局约 −5（约 7%），两轮满速空转 −19/s（高于直立 upward 8/s），20 rad/s 时 −1.6/s。
 ROUGH_RECOVER_JUNE_WHEEL_AIR_FORCE_THRESHOLD_N = 1.0
-ROUGH_RECOVER_JUNE_WHEEL_AIR_WEIGHT = -2.0e-4
+ROUGH_RECOVER_JUNE_WHEEL_AIR_WEIGHT = -2.0e-3
 # 起身掩码观测组（[N, 1]）：给 AMP（风格奖励与判别器的策略样本）和网络老师蒸馏（损失只在掩码样本上算）读，不进 actor / critic /
 # CTS 教师组；train / play 都建（play 全 0），值 = 是否 recover 组。
 ROUGH_RECOVER_MASK_GROUP = "recover_mask"
