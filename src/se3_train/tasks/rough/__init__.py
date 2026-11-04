@@ -26,6 +26,7 @@ from .rl_cfg import (
     ROUGH_FALL_TEACHER_IMITATION_LOSS_COEF,
     ROUGH_FALL_TEACHER_IMITATION_LOSS_HUBER_DELTA,
     ROUGH_RECOVER_DISTILL_TEACHER_CKPT,
+    ROUGH_RECOVER_JUNE_DISTILL_TEACHER_CKPT,
     cts_rl_cfg,
     gru_rl_cfg,
     recover_amp_cfg,
@@ -68,6 +69,12 @@ EXP_CTS_NOSCAN_STAIR_VX08_TASK_ID = "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairV
 # gyi9exiz model_2200（见 rl_cfg.ROUGH_RECOVER_DISTILL_*，全程保持）。
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128"
+)
+# 2026-11-04 用户定：Student128 的起身改学 6saj3n6y model_4600——关掉 AMP，recover 组奖励换成老师训练时那套
+# （6 月版 + 悬空转速罚 + 触地速度罚，见 env_cfg.ROUGH_RECOVER_JUNE_*），在线蒸馏老师换成
+# rl_cfg.ROUGH_RECOVER_JUNE_DISTILL_TEACHER_CKPT，地形与走路组同 Student128。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-JuneTouchdown-Distill"
 )
 # 2026-10-24 用户定：recover 组——倒地起身单独成组、用自己的奖励（不按时间扣分、限时站稳、超限线性罚，见 env_cfg.ROUGH_RECOVER_*），
 # 走路组不再倒地出生；倒地脚本教师（α 400–600–800、模仿损失乘 α）只在 recover 组前期混合（gyi9exiz）。
@@ -146,11 +153,13 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_RECOVER_AMP_TASK_ID = (
 # CTS-NoScan-StairVx08-JumpExitPen 已有结论，入口与专用开关删除；复现用 846c4fcd。
 
 
-def _recover_policy_distill(cfg) -> PolicyDistillCfg:
+def _recover_policy_distill(
+    cfg, teacher_checkpoint=ROUGH_RECOVER_DISTILL_TEACHER_CKPT
+) -> PolicyDistillCfg:
     """recover 组网络老师蒸馏：整圈周期按本入口动作项的腿部缩放算（与倒地教师模仿损失同一套对齐）。"""
     imitation = _fall_teacher_imitation_loss(cfg)
     return PolicyDistillCfg(
-        teacher_checkpoint=str(ROUGH_RECOVER_DISTILL_TEACHER_CKPT),
+        teacher_checkpoint=str(teacher_checkpoint),
         mask_group=ROUGH_RECOVER_MASK_GROUP,
         role_group=ROUGH_CTS_ROLE_GROUP,
         coef=imitation.coef,
@@ -291,6 +300,38 @@ def register() -> None:
                 amp_cfg=_recover_amp_cfg(),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Student128-JuneTouchdown-Distill：Student128 去掉 AMP，recover 组换 6saj3n6y 的奖励，蒸馏老师换 6saj3n6y model_4600。
+    june_distill_kwargs = dict(
+        stair_vx08_kwargs,
+        recover_amp=False,
+        recover_june=True,
+        recover_june_wheel_air=True,
+        recover_june_touchdown=True,
+    )
+    june_distill_env_cfg = env_cfg(**june_distill_kwargs)
+    june_distill_actor = june_distill_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_TASK_ID,
+        env_cfg=june_distill_env_cfg,
+        play_env_cfg=env_cfg(play=True, **june_distill_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(june_distill_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in june_distill_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                policy_distill=_recover_policy_distill(
+                    june_distill_env_cfg, ROUGH_RECOVER_JUNE_DISTILL_TEACHER_CKPT
+                ),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )

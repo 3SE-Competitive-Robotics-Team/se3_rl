@@ -81,6 +81,15 @@ ROUGH_RECOVER_AMP_DISCRIMINATOR_BATCH = 4096
 # 同结构同观测，部署路径前向），只在 recover 组样本上算，系数沿用倒地教师模仿损失的 0.2 / Huber δ 1，全程不退火。
 # 老师权重与 AMP 数据集放在一起（assets/amp/ 不进 git，换机器要拷）。
 ROUGH_RECOVER_DISTILL_TEACHER_CKPT = ROUGH_RECOVER_AMP_DATASET_ROOT / "gyi9exiz_model_2200.pt"
+# Student128-JuneTouchdown-Distill 的蒸馏老师（2026-11-04 用户定）：6saj3n6y（Recover-June-WheelAir-Touchdown，873c017e）
+# model_4600，与 Student128 同结构同观测。来源与回放结论见同目录 README；.pt 不进 git，换机器要拷。
+ROUGH_RECOVER_JUNE_DISTILL_TEACHER_CKPT = (
+    Path(__file__).resolve().parents[4]
+    / "assets"
+    / "base_model"
+    / "recover_6saj3n6y_4600"
+    / "model_4600.pt"
+)
 
 
 @dataclass
