@@ -76,6 +76,12 @@ EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_TASK_ID = (
 EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_TASK_ID = (
     "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-JuneTouchdown-Distill"
 )
+# 2026-11-06 用户定：Student128-JuneTouchdown-Distill 的单变量对照——只把腿增益从 60 / 3 降到 45 / 2（轮 kd 0.2 不变），
+# 看腿更软能否被动减小触地冲击，同时不像 LowGains（30 / 2 / 0.1，腿轮一起降）那样中速超速。对照 or5zcycn。
+# 蒸馏老师 6saj3n6y 是在 60 / 3 下训的，同一组目标位置在 45 / 2 下力矩更小。临时入口，结论后删除。
+EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_LEG45_TASK_ID = (
+    "SE3-WheelLegged-Rough-Exp-CTS-NoScan-StairVx08-Student128-JuneTouchdown-Distill-Leg45"
+)
 # 2026-10-24 用户定：recover 组——倒地起身单独成组、用自己的奖励（不按时间扣分、限时站稳、超限线性罚，见 env_cfg.ROUGH_RECOVER_*），
 # 走路组不再倒地出生；倒地脚本教师（α 400–600–800、模仿损失乘 α）只在 recover 组前期混合（gyi9exiz）。
 # 保留原因：它的 model_2200 是最终配方在线蒸馏的老师与 AMP 参考数据来源，要能复现。
@@ -332,6 +338,32 @@ def register() -> None:
                 ),
             ),
             EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_TASK_ID,
+        ),
+        runner_cls=Se3ProfiledOnPolicyRunner,
+    )
+    # Student128-JuneTouchdown-Distill-Leg45：同上，只把腿增益改成 45 / 2。
+    june_distill_leg45_kwargs = dict(june_distill_kwargs, leg_kp=45.0, leg_kd=2.0)
+    june_distill_leg45_env_cfg = env_cfg(**june_distill_leg45_kwargs)
+    june_distill_leg45_actor = june_distill_leg45_env_cfg.observations["actor"]
+    register_mjlab_task(
+        task_id=EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_LEG45_TASK_ID,
+        env_cfg=june_distill_leg45_env_cfg,
+        play_env_cfg=env_cfg(play=True, **june_distill_leg45_kwargs),
+        rl_cfg=bind_task_name(
+            cts_rl_cfg(
+                history_length=int(june_distill_leg45_actor.history_length),
+                frame_term_dims=tuple(
+                    observation_term_width(name) for name in june_distill_leg45_actor.terms
+                ),
+                target_group=ROUGH_VX_OBSERVER_TARGET_GROUP,
+                role_group=ROUGH_CTS_ROLE_GROUP,
+                teacher_obs_group=ROUGH_CTS_TEACHER_GROUP,
+                student_hidden_dims=ROUGH_CTS_STUDENT_HIDDEN_DIMS_MCU,
+                policy_distill=_recover_policy_distill(
+                    june_distill_leg45_env_cfg, ROUGH_RECOVER_JUNE_DISTILL_TEACHER_CKPT
+                ),
+            ),
+            EXP_CTS_NOSCAN_STAIR_VX08_STUDENT128_JUNE_TOUCHDOWN_DISTILL_LEG45_TASK_ID,
         ),
         runner_cls=Se3ProfiledOnPolicyRunner,
     )
