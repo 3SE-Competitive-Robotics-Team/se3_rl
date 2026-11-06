@@ -48,7 +48,7 @@ from se3_shared.fourbar import (
     policy_to_closedchain_passive_pos_torch,
 )
 from se3_train.mdp.events import randomize_friction, randomize_knee_spring_force
-from se3_train.robot_cfg import _MJCF_PATH
+from se3_train.robot_cfg import serialleg_mjcf_path
 from se3_train.tasks.rough.env_cfg import env_cfg as rough_env_cfg
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -113,9 +113,14 @@ def _axis_angle_quat(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
     return torch.cat((torch.cos(half).unsqueeze(-1), axis * torch.sin(half).unsqueeze(-1)), dim=-1)
 
 
-def _build(num_envs: int, device: str) -> tuple[Scene, Simulation, SimpleNamespace]:
-    """按 Rough 训练配置搭只用于落定的场景：平面地形、无传感器、机器人与仿真参数不变。"""
-    cfg = rough_env_cfg(play=False)
+def _build(
+    num_envs: int, device: str, guide_wheels: bool = False
+) -> tuple[Scene, Simulation, SimpleNamespace]:
+    """按 Rough 训练配置搭只用于落定的场景：平面地形、无传感器、机器人与仿真参数不变。
+
+    guide_wheels：机器人换成带底盘导轮的变体 MJCF（env_cfg(guide_wheels=True) 的入口用这份状态库）。
+    """
+    cfg = rough_env_cfg(play=False, guide_wheels=guide_wheels)
     scene_cfg = cfg.scene
     scene_cfg.num_envs = int(num_envs)
     scene_cfg.terrain = TerrainEntityCfg(terrain_type="plane")
@@ -277,7 +282,8 @@ def generate(args: argparse.Namespace) -> Path:
     gen = torch.Generator(device=device)
     gen.manual_seed(int(args.seed))
     torch.manual_seed(int(args.seed))
-    scene, sim, shim = _build(args.num_envs, device)
+    scene, sim, shim = _build(args.num_envs, device, guide_wheels=bool(args.guide_wheels))
+    mjcf_path = serialleg_mjcf_path(bool(args.guide_wheels))
     robot = scene["robot"]
     names = tuple(str(name) for name in robot.joint_names)
     leg_ids = [names.index(name) for name in JointGroup.POLICY_LEG_NAMES]
@@ -401,8 +407,8 @@ def generate(args: argparse.Namespace) -> Path:
         "format_version": FORMAT_VERSION,
         "generator": "se3_tools.fall_state_cache",
         "git_commit": _git_commit(),
-        "mjcf": str(_MJCF_PATH.relative_to(_PROJECT_ROOT)),
-        "mjcf_sha256": _file_sha256(_MJCF_PATH),
+        "mjcf": str(mjcf_path.relative_to(_PROJECT_ROOT)),
+        "mjcf_sha256": _file_sha256(mjcf_path),
         "sim_dt": dt,
         "num_states": int(args.num_states),
         "attempted": int(attempted),
@@ -460,6 +466,9 @@ def main() -> None:
     parser.add_argument("--max-root-lin-speed", type=float, default=0.2)
     parser.add_argument("--max-root-ang-speed", type=float, default=0.5)
     parser.add_argument("--max-joint-speed", type=float, default=1.0)
+    parser.add_argument(
+        "--guide-wheels", action="store_true", help="在带底盘导轮的变体 MJCF 上落定"
+    )
     generate(parser.parse_args())
 
 

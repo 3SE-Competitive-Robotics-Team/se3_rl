@@ -123,20 +123,29 @@ def stair_facing_yaw(
 
 
 class _FallStateCache:
-    """倒地状态库：一次性读进设备，校验 MJCF 哈希与关节名，关节列按实体顺序重排。"""
+    """倒地状态库：一次性读进设备，校验 MJCF 哈希与关节名，关节列按实体顺序重排。
 
-    def __init__(self, path: Path, joint_names: tuple[str, ...], device: str):
+    mjcf_path：训练实体实际加载的 MJCF（导轮变体等），状态库须在同一份 MJCF 上落定；默认正式 MJCF。
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        joint_names: tuple[str, ...],
+        device: str,
+        mjcf_path: Path = _MJCF_PATH,
+    ):
         if not path.is_file():
             raise FileNotFoundError(
                 f"倒地状态库不存在：{path}；用 `python -m se3_tools.fall_state_cache` 生成"
             )
         data = np.load(path)
         meta = json.loads(str(data["metadata_json"]))
-        mjcf_sha = hashlib.sha256(_MJCF_PATH.read_bytes()).hexdigest()
+        mjcf_sha = hashlib.sha256(Path(mjcf_path).read_bytes()).hexdigest()
         if meta.get("mjcf_sha256") != mjcf_sha:
             raise ValueError(
                 f"倒地状态库 {path.name} 的 MJCF 哈希 {str(meta.get('mjcf_sha256'))[:8]} 与当前 "
-                f"{_MJCF_PATH.name} 的 {mjcf_sha[:8]} 不一致，模型改过，需重新生成状态库"
+                f"{Path(mjcf_path).name} 的 {mjcf_sha[:8]} 不一致，模型改过，需重新生成状态库"
             )
         cache_names = tuple(str(name) for name in data["joint_names"])
         if set(cache_names) != set(joint_names):
@@ -271,6 +280,7 @@ def reset_from_fall_states(
     footprint_radius_m: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     group_mask_attr: str | None = None,
+    mjcf_path: str | None = None,
 ) -> None:
     """reset 事件：指定列一部分 env 改从倒地状态库出生（排在 reset_root_state / reset_joints 之后，只覆盖选中的 env）。
 
@@ -281,6 +291,7 @@ def reset_from_fall_states(
     FALL_SPAWN_MASK_ATTR（本 episode 不计入速度课程信号），并记下倾角类别与出生地面高度供日志用。
     group_mask_attr：给定时改为"该掩码里的 env 每局都倒地出生、其余 env 一律不倒地出生"（recover 组，见 recover.py），
     忽略 prob 与跳跃 / 高姿态起步的排除（这些 env 本来就只在倒地出生的列里抽）。
+    mjcf_path：训练实体实际加载的 MJCF，状态库按它校验哈希；None 为正式 MJCF。
     """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device)
@@ -307,7 +318,12 @@ def reset_from_fall_states(
 
     cache: _FallStateCache | None = getattr(env, _FALL_CACHE_ATTR, None)
     if cache is None:
-        cache = _FallStateCache(Path(cache_path), tuple(asset.joint_names), env.device)
+        cache = _FallStateCache(
+            Path(cache_path),
+            tuple(asset.joint_names),
+            env.device,
+            mjcf_path=_MJCF_PATH if mjcf_path is None else Path(mjcf_path),
+        )
         setattr(env, _FALL_CACHE_ATTR, cache)
         cache.weights = cache.sample_weights(tuple(class_weights))
         half_extent = float(xy_offset_m) + float(footprint_radius_m) + 0.1

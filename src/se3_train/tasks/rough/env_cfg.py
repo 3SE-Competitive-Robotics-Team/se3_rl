@@ -85,7 +85,7 @@ from se3_train.mdp import events as mdp_events
 from se3_train.mdp import observations as mdp_observations
 from se3_train.mdp import rewards as mdp_rewards
 from se3_train.mdp.amp_observations import build_amp_obs_terms
-from se3_train.robot_cfg import _RESOURCES, get_serialleg_closedchain_cfg
+from se3_train.robot_cfg import _RESOURCES, get_serialleg_closedchain_cfg, serialleg_mjcf_path
 from se3_train.tasks.common.no_attitude import apply_no_attitude_layout
 from se3_train.tasks.flat.env_cfg import (
     FLAT_ACTION_SMOOTHNESS_SPRING,
@@ -200,6 +200,12 @@ ROUGH_WHEEL_TORQUE_LAG_RANGE_S: tuple[float, float] | None = (0.005, 0.015)
 # （4 万条，通电 75% / 断电 25%），MJCF 改动后哈希校验会报错，需重新生成。类别权重对应 upright/tilted/side/inverted，
 # 默认等权（库里侧躺只占 1 成）。10-20 到 10-25 的"出生列按概率 0.5 倒地出生、走共享奖励"做法 10-29 整理时删除，复现用 86c81a60。
 ROUGH_FALL_STATE_CACHE = _RESOURCES / "recovery_states" / "fall_states_d1ed876b_40k.npz"
+# 导轮 MJCF 版状态库（2026-11-06，env_cfg(guide_wheels=True) 用）：真车已装底盘导轮，导轮变体的机身底部凸包也切过段、
+# 下凸裁掉（导轮比机身最低面低 5.4 mm），旧库在无导轮模型上落定，俯卧构型放到新模型上会穿进地面几毫米、出生就被弹开；
+# 关节集也多了 6 个导轮关节。用 `python -m se3_tools.fall_state_cache --guide-wheels` 在导轮 MJCF 上重新落定，其余参数同旧库。
+ROUGH_FALL_STATE_CACHE_GUIDE_WHEELS = (
+    _RESOURCES / "recovery_states" / "fall_states_78b3eafc_40k.npz"
+)
 ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 出生列（2026-10-20 用户定）：平地、障碍（出生点在中心 2 m 空平台上，实测穿透 ≤0.2 cm）、波浪（出生高度按出生点
 # 周围最高地面修正，见 events._SpawnHeightMap）。合计占全体约 17%。
@@ -628,6 +634,7 @@ def env_cfg(
     recover_june_wheel_air: bool = False,
     recover_june_touchdown: bool = False,
     stair_power: bool = False,
+    guide_wheels: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -671,6 +678,8 @@ def env_cfg(
     recover_june_touchdown：6 月版 recover 组加轮子触地速度罚（ROUGH_RECOVER_JUNE_TOUCHDOWN_*，见注释），默认关；
         须 recover_june=True。
     stair_power：台阶类列加电机正功率罚（ROUGH_STAIR_POWER_WEIGHT，见注释），默认关。
+    guide_wheels：机器人换成带底盘导轮的变体 MJCF（robot_cfg.GUIDE_WHEEL_MJCF_PATH），倒地状态库随之换成
+        ROUGH_FALL_STATE_CACHE_GUIDE_WHEELS，默认关。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -694,6 +703,7 @@ def env_cfg(
             collision_geom_group=ROUGH_ROBOT_COLLISION_GEOM_GROUP,
             leg_torque_envelope_scale=ROUGH_LEG_TORQUE_ENVELOPE_SCALE,
             wheel_torque_envelope=wheel_torque_envelope,
+            guide_wheels=guide_wheels,
             wheel_torque_lag_tau_range_s=(
                 None
                 if wheel_torque_lag_range_s is None
@@ -794,7 +804,10 @@ def env_cfg(
         func=events.reset_from_fall_states,
         mode="reset",
         params={
-            "cache_path": str(ROUGH_FALL_STATE_CACHE),
+            "cache_path": str(
+                ROUGH_FALL_STATE_CACHE_GUIDE_WHEELS if guide_wheels else ROUGH_FALL_STATE_CACHE
+            ),
+            "mjcf_path": str(serialleg_mjcf_path(guide_wheels)),
             # 训练时 _apply_recover_group 改为按组出生（不看 prob）；play 不分组，0 即不倒地出生。
             "prob": 0.0,
             "class_weights": ROUGH_FALL_SPAWN_CLASS_WEIGHTS,
@@ -1679,6 +1692,7 @@ __all__ = [
     "ROUGH_FALL_SPAWN_CLASS_WEIGHTS",
     "ROUGH_FALL_SPAWN_TERRAIN_NAMES",
     "ROUGH_FALL_STATE_CACHE",
+    "ROUGH_FALL_STATE_CACHE_GUIDE_WHEELS",
     "ROUGH_FALL_TEACHER_IMITATION_SIGMA",
     "ROUGH_FALL_TEACHER_IMITATION_WEIGHT",
     "ROUGH_FALL_TEACHER_TARGET_GROUP",
