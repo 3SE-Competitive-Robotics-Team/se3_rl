@@ -159,6 +159,15 @@ ROUGH_ALL_TERRAIN_TYPE_NAMES = tuple(ROUGH_RANDOM_TERRAIN_PROPORTIONS)
 
 # 台阶专项奖励（A12；消融 A7/A8：撤掉任一项台阶列速度归零）。
 ROUGH_STAIR_CLIMB_PROGRESS_WEIGHT = 3.0
+# 台阶类列电机正功率罚（2026-11-06 用户定，env_cfg(stair_power=True)，默认关）：用户要降上台阶功率。诊断
+# （.scratch/stair_power_20261106/stair_power_breakdown.py，or5zcycn-4999）：上台阶腿正功率约 105 W、轮约 45 W（平地 9 / 6 W），
+# 76–86% 的腿正功与约 1000 W 的峰值都在抬轮 / 升身段，腿负功约为正功一半（推了又收），爬升 1 m 花 715 J（抬身本身 125 J）；
+# 实际速度被策略自限在约 1 m/s、与指令无关，降腿增益（Leg45）也没省功率。改为直接计价：stair_rewards.stair_motor_power_pos，
+# 台阶类列（ROUGH_REWARD_TERRAIN_TYPE_NAMES）上 Σ腿 max(0, τq̇) + Σ轮 max(0, τω)，recover 组不计。权重按账本：or5zcycn 训练末段
+# 台阶列正奖励合计约 16.6/s（其中 stair_climb_progress 1.6、stair_support_height 3.9、tracking_lin_vel 4.9），按 150 W 正功率
+# 取约 15% → −0.017/W（−2.5/s）；省 50 W 换回 0.85/s，约为进度奖励一半，爬台阶本身仍远比不爬划算。原有 leg_power（|τq̇|，−1.03e-4）
+# 在台阶列只有 −0.02/s，形同免费。
+ROUGH_STAIR_POWER_WEIGHT = -0.017
 ROUGH_STAIR_SUPPORT_HEIGHT_WEIGHT = 4.0
 # 速度违令二次罚（A6 起台阶列，A15 起全六列，lin_vel_scale 3.0）M37 起删除：3.0 下 1.0 m/s 误差只罚 0.20、
 # 斜率不到 1，是常数税不是远端梯度（m37_reward_prune_20260927）。
@@ -618,6 +627,7 @@ def env_cfg(
     recover_june_power: bool = False,
     recover_june_wheel_air: bool = False,
     recover_june_touchdown: bool = False,
+    stair_power: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """带官方地形课程与地形感知高度下限的崎岖地形环境配置。
 
@@ -660,6 +670,7 @@ def env_cfg(
         须 recover_june=True。
     recover_june_touchdown：6 月版 recover 组加轮子触地速度罚（ROUGH_RECOVER_JUNE_TOUCHDOWN_*，见注释），默认关；
         须 recover_june=True。
+    stair_power：台阶类列加电机正功率罚（ROUGH_STAIR_POWER_WEIGHT，见注释），默认关。
 
     recover 组（见 ROUGH_RECOVER_* 注释与 recover.py）恒开：play 不分组、不倒地出生，奖励 / 终止 / critic 维数与训练相同
     （组掩码全 False）；起身掩码观测组 ROUGH_RECOVER_MASK_GROUP 即组掩码。
@@ -819,6 +830,12 @@ def env_cfg(
         stair_height_dead_zone_m=stair_height_dead_zone_m,
         base_height_sigma=base_height_sigma,
     )
+    if stair_power:
+        cfg.rewards["stair_motor_power"] = RewardTermCfg(
+            func=stair_rewards.stair_motor_power_pos,
+            weight=ROUGH_STAIR_POWER_WEIGHT,
+            params={"terrain_type_names": ROUGH_REWARD_TERRAIN_TYPE_NAMES},
+        )
     # 倒地起身脚本教师（见 ROUGH_FALL_TEACHER_IMITATION_WEIGHT 注释）：训练期才接，play / 导出不接。
     if fall_teacher_catch and not fall_teacher:
         raise ValueError("fall_teacher_catch 须配 fall_teacher=True")

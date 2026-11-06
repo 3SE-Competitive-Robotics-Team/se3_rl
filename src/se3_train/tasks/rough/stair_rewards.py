@@ -1,4 +1,4 @@
-"""倒金字塔上台阶的新增进度与逐阶双轮支撑奖励，不接管策略动作。"""
+"""倒金字塔上台阶的新增进度与逐阶双轮支撑奖励（另有台阶列电机正功率罚），不接管策略动作。"""
 
 from __future__ import annotations
 
@@ -7,9 +7,13 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from se3_shared import JointGroup
 from se3_shared.torch_constants import device_index
+from se3_train.mdp.joint_indices import wheel_actuator_ids
+from se3_train.mdp.rewards import _policy_leg_torque_and_vel
 
 from .columns import column_mask
+from .recover import recover_group_mask
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -161,3 +165,32 @@ def stair_support_height(
     log["Rough/stair_supported_steps"] = candidate.sum() / denom
     log["Rough/stair_new_supported_steps"] = gain.sum() / denom
     return gain / env.step_dt
+
+
+def stair_motor_power_pos(
+    env: ManagerBasedRlEnv,
+    terrain_type_names: tuple[str, ...] = ("stairs_up",),
+) -> torch.Tensor:
+    """台阶类列上的电机正功率 Σ腿 max(0, τq̇) + Σ轮 max(0, τω)（W），其余列与 recover 组为 0。"""
+    mask = column_mask(env, terrain_type_names)
+    if mask is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    robot = env.scene["robot"]
+    cached = getattr(env, "_se3_stair_power_wheel_ids", None)
+    if cached is None:
+        joints, _ = robot.find_joints(JointGroup.WHEEL_NAMES, preserve_order=True)
+        cached = (
+            torch.tensor(joints, device=env.device, dtype=torch.long),
+            torch.tensor(wheel_actuator_ids(robot), device=env.device, dtype=torch.long),
+        )
+        env._se3_stair_power_wheel_ids = cached
+    wheel_joints, wheel_actuators = cached
+    torque, leg_vel = _policy_leg_torque_and_vel(env, robot)
+    wheel_power = (
+        robot.data.actuator_force[:, wheel_actuators] * robot.data.joint_vel[:, wheel_joints]
+    )
+    power = torch.clamp(torque * leg_vel, min=0.0).sum(dim=1) + torch.clamp(
+        wheel_power, min=0.0
+    ).sum(dim=1)
+    power = torch.nan_to_num(power, nan=0.0, posinf=0.0, neginf=0.0)
+    return power * (mask & ~recover_group_mask(env)).float()
