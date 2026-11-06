@@ -204,7 +204,7 @@ ROUGH_FALL_STATE_CACHE = _RESOURCES / "recovery_states" / "fall_states_d1ed876b_
 # 下凸裁掉（导轮比机身最低面低 5.4 mm），旧库在无导轮模型上落定，俯卧构型放到新模型上会穿进地面几毫米、出生就被弹开；
 # 关节集也多了 6 个导轮关节。用 `python -m se3_tools.fall_state_cache --guide-wheels` 在导轮 MJCF 上重新落定，其余参数同旧库。
 ROUGH_FALL_STATE_CACHE_GUIDE_WHEELS = (
-    _RESOURCES / "recovery_states" / "fall_states_78b3eafc_40k.npz"
+    _RESOURCES / "recovery_states" / "fall_states_110ca0a8_40k.npz"
 )
 ROUGH_FALL_SPAWN_CLASS_WEIGHTS = (1.0, 1.0, 1.0, 1.0)
 # 出生列（2026-10-20 用户定）：平地、障碍（出生点在中心 2 m 空平台上，实测穿透 ≤0.2 cm）、波浪（出生高度按出生点
