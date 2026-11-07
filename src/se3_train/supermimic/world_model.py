@@ -85,7 +85,7 @@ class WorldModel(nn.Module):
         self.register_buffer("xi_ready", torch.zeros((), dtype=torch.bool))
         self.register_buffer("reward_scale", torch.ones(max(self.num_learned, 1)))
         self.register_buffer("command_scale", torch.tensor(_COMMAND_SCALE))
-        self._loss_step_fn = None
+        self._window_fn = None
         self.to(device)
 
     # ------------------------------------------------------------------ 归一化
@@ -175,29 +175,11 @@ class WorldModel(nn.Module):
         """
         k = actions.shape[0]
         xi_norm = self.normalize_xi(xi)
-        s = states[0]
-        state_loss = term_loss = reward_loss = 0.0
-        acc = torch.zeros((), device=states.device)
-        first = last = None
         inv_scale = 1.0 / self.reward_scale[: self.num_learned]
-        step_fn = self._loss_step_fn or self._loss_step
-        for j in range(k):
-            s, sl, tl, rl, nse, ok = step_fn(
-                s,
-                actions[j],
-                xi_norm,
-                states[j + 1],
-                done[j],
-                cmd[j],
-                learned_targets[j],
-                inv_scale,
-            )
-            state_loss = state_loss + sl
-            term_loss = term_loss + tl
-            reward_loss = reward_loss + rl
-            first = nse if first is None else first
-            last = nse
-            acc = acc + ok
+        window_fn = self._window_fn or self._window
+        state_loss, term_loss, reward_loss, first, last, acc = window_fn(
+            states, actions, xi_norm, done, cmd, learned_targets, inv_scale
+        )
         loss = (
             state_loss / k
             + self.cfg.termination_loss_weight * term_loss / k
@@ -212,6 +194,24 @@ class WorldModel(nn.Module):
             "termination_acc": (acc / k).detach(),
         }
         return loss, metrics
+
+    def _window(self, states, actions, xi_norm, done, cmd, targets, inv_scale):
+        """k 步窗口整体（编译时展开成一张图）：返回 (状态损失和, 终止 BCE 和, 奖励 MSE 和, 首步误差, 末步误差, 准确率和)。"""
+        s = states[0]
+        state_loss = term_loss = reward_loss = acc = torch.zeros((), device=states.device)
+        first = last = torch.zeros((), device=states.device)
+        for j in range(actions.shape[0]):
+            s, sl, tl, rl, nse, ok = self._loss_step(
+                s, actions[j], xi_norm, states[j + 1], done[j], cmd[j], targets[j], inv_scale
+            )
+            state_loss = state_loss + sl
+            term_loss = term_loss + tl
+            reward_loss = reward_loss + rl
+            acc = acc + ok
+            if j == 0:
+                first = nse
+            last = nse
+        return state_loss, term_loss, reward_loss, first, last, acc
 
     def _loss_step(self, s, action, xi_norm, s_true, done, cmd, target, inv_scale):
         """Eq. 1 的一步自回归：返回 (ŝ_{j+1}, 状态损失, 终止 BCE, 奖励 MSE, 归一化误差, 终止准确率)。"""
@@ -234,7 +234,9 @@ class WorldModel(nn.Module):
         不编译时每步是几百个逐元素小算子，2026-11-07 nulltask1 A800 剖析：一次更新 2.2 s 里矩阵乘只占 117 ms，
         其余是 kernel launch 与 Python 开销。复现仓库同样编译了这一步。
         """
-        self._loss_step_fn = torch.compile(self._loss_step, dynamic=False) if enabled else None
+        # 整个 k 步窗口编译成一张图：逐步编译时每批要调 k 次前向 + k 次反传的编译函数，每次 CPU 侧
+        # autograd / launch 约 1.3–2.4 ms（2026-11-07 剖析：世界模型更新 GPU 176 ms、墙钟 220 ms）
+        self._window_fn = torch.compile(self._window, dynamic=False) if enabled else None
 
     @torch.no_grad()
     def rollout_error(

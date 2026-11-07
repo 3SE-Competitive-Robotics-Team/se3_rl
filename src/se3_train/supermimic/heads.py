@@ -456,5 +456,9 @@ class ObservationHead:
     def add_noise(self, obs: torch.Tensor) -> torch.Tensor:
         return obs + torch.rand_like(obs) * (self.noise_hi - self.noise_lo) + self.noise_lo
 
+    def sample_noise(self, like: torch.Tensor) -> torch.Tensor:
+        """与 add_noise 同分布的加性噪声（单独采样，方便放在编译图外面）。"""
+        return torch.rand_like(like) * (self.noise_hi - self.noise_lo) + self.noise_lo
+
 
 __all__ = ["HeadContext", "ObservationHead", "RewardHeads"]

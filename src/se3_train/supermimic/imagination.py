@@ -33,30 +33,30 @@ class ImaginedRollout:
 
 
 class ImaginationStep:
-    """想象中的单步，拆成两个可编译单元；策略网络（rsl_rl actor 吃 TensorDict）留在两者之间不编译。
+    """想象中的一步：观测头 → 策略 → 世界模型一步 → 终止概率 → 学习 / 解析奖励，整体编译成一张图。
 
-    - `observe(s, a_prev, cmd, xi, ep)`：解析观测；
-    - `transition(s, a, a_prev, a_prev2, cmd, xi, xi_norm, ep)`：世界模型一步 + 终止概率 + 学习 / 解析奖励，
-      返回 (s_{t+1}, d_{t+1}, r_{t+1}（已乘 dt）, 解析项 (T_a, n), 学习项 (n, K))。
-    不编译时每步上千个逐元素小算子，GPU 大半时间在等 kernel launch（见 WorldModel.enable_compile 注释）。
+    `step(s, a_prev, a_prev2, cmd, xi, xi_norm, ep, noise)` 返回
+    (a_t, s_{t+1}, d_{t+1}, r_{t+1}（已乘 dt）, 解析项 (T_a, n), 学习项 (n, K))；noise 是加到观测上的噪声（不加噪时传 0）。
+    策略必须是纯张量函数（runner 直接调 actor 的 obs 归一化与 MLP，不经 TensorDict），这样才能和前后两段放进同一张图。
+    不编译时每步上千个逐元素小算子；拆成多张图时每次调用 CPU 侧约 1.3–2.4 ms（见 WorldModel.enable_compile 注释）。
     """
 
     def __init__(
-        self, wm: WorldModel, obs_head: ObservationHead, reward_heads: RewardHeads, compile: bool
+        self,
+        wm: WorldModel,
+        obs_head: ObservationHead,
+        reward_heads: RewardHeads,
+        policy: Callable[[torch.Tensor], torch.Tensor],
+        compile: bool,
     ):
-        self.wm, self.obs_head, self.reward_heads = wm, obs_head, reward_heads
+        self.wm, self.obs_head, self.reward_heads, self.policy = wm, obs_head, reward_heads, policy
         self.analytic_names = list(reward_heads.analytic_names)
-        self.observe = torch.compile(self._observe, dynamic=False) if compile else self._observe
-        self.transition = (
-            torch.compile(self._transition, dynamic=False) if compile else self._transition
-        )
+        self.step = torch.compile(self._step, dynamic=False) if compile else self._step
 
-    def _observe(self, s, a_prev, cmd, xi, ep):
-        ctx = HeadContext(self.wm.spec, s, a_prev, a_prev, a_prev, cmd, xi, ep)
-        return self.obs_head.clean(ctx)
-
-    def _transition(self, s, a, a_prev, a_prev2, cmd, xi, xi_norm, ep):
+    def _step(self, s, a_prev, a_prev2, cmd, xi, xi_norm, ep, noise):
         wm, heads = self.wm, self.reward_heads
+        obs = self.obs_head.clean(HeadContext(wm.spec, s, a_prev, a_prev, a_prev, cmd, xi, ep))
+        a = self.policy(obs + noise)
         s_next = wm.step(s, a, xi_norm)
         d = torch.sigmoid(wm.termination_logits(s_next, xi_norm, cmd))
         learned = wm.learned_rewards(s, s_next, a, xi_norm, cmd)
@@ -65,12 +65,11 @@ class ImaginationStep:
         )
         terms = torch.stack([analytic[name] for name in self.analytic_names], dim=0)
         r = (learned.sum(-1) + heads.fall_weight * d + terms.sum(0)) * heads.step_dt
-        return s_next, d, r, terms, learned
+        return a, s_next, d, r, terms, learned
 
 
 def imagine(
     step: ImaginationStep,
-    policy: Callable[[torch.Tensor], torch.Tensor],
     start: StartBatch,
     horizon: int,
     observation_noise: bool = True,
@@ -88,16 +87,12 @@ def imagine(
     dones, survivals = [torch.zeros(n, device=device)], [c]
     analytic_sum = torch.zeros(len(step.analytic_names), device=device)
     learned_sum = torch.zeros(max(wm.num_learned, 1), device=device)
+    zero_noise = torch.zeros(n, step.obs_head.dim, device=device)
 
     for t in range(horizon):
-        cmd = start.commands[t]
-        ep = start.episode_step + t
-        obs = step.observe(s, a_prev, cmd, start.xi, ep)
-        if observation_noise:
-            obs = step.obs_head.add_noise(obs)
-        a = policy(obs)
-        s_next, d, r, terms, learned = step.transition(
-            s, a, a_prev, a_prev2, cmd, start.xi, xi_norm, ep
+        noise = step.obs_head.sample_noise(zero_noise) if observation_noise else zero_noise
+        a, s_next, d, r, terms, learned = step.step(
+            s, a_prev, a_prev2, start.commands[t], start.xi, xi_norm, start.episode_step + t, noise
         )
         analytic_sum = analytic_sum + terms.detach().mean(-1)
         learned_sum = learned_sum + learned.detach().reshape(n, -1).mean(0)

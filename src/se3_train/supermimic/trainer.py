@@ -104,7 +104,7 @@ class ActorCriticTrainer:
         self.critic_opt = torch.optim.Adam(
             critic.parameters(), lr=cfg.critic_learning_rate, **_fused(critic)
         )
-        self.step = ImaginationStep(wm, obs_head, reward_heads, compile=cfg.compile)
+        self.step = ImaginationStep(wm, obs_head, reward_heads, policy_fn, compile=cfg.compile)
 
     def set_lr(self, actor_lr: float, critic_lr: float) -> None:
         for group in self.actor_opt.param_groups:
@@ -126,7 +126,6 @@ class ActorCriticTrainer:
         try:
             ro = imagine(
                 self.step,
-                self.policy_fn,
                 start,
                 cfg.horizon,
                 observation_noise=cfg.observation_noise,

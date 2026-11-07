@@ -20,7 +20,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 import torch
-from tensordict import TensorDict
 
 from se3_train.runner import Se3ProfiledOnPolicyRunner
 from se3_train.training_runtime import IterationTiming, write_training_status
@@ -122,7 +121,9 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
 
     def _policy(self, obs: torch.Tensor) -> torch.Tensor:
         """想象中的策略：确定性输出，按包装器的 clip_actions 裁剪（等于 env 里 ActionManager.action）。"""
-        action = self.alg.actor(TensorDict({"actor": obs}, batch_size=[obs.shape[0]]))
+        # 等价于 MLPModel.forward（单观测组、确定性输出），但不经 TensorDict，能放进想象单步的编译图
+        actor = self.alg.actor
+        action = actor.distribution.deterministic_output(actor.mlp(actor.obs_normalizer(obs)))
         if self._clip_actions is not None:
             action = torch.clamp(action, -self._clip_actions, self._clip_actions)
         return action
@@ -196,6 +197,14 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
         obs = self.env.get_observations().to(self.device)
         actor = self.alg.actor
         actor.train()  # 只为让 obs 归一化在真实采集时更新；前向始终是确定性输出
+        with torch.no_grad():
+            # 想象里的 _policy 绕开了 TensorDict，这里核对它与 actor 前向一致（换 actor 结构时第一时间报错）
+            ref = actor(obs)
+            if self._clip_actions is not None:
+                ref = torch.clamp(ref, -self._clip_actions, self._clip_actions)
+            err = float((self._policy(obs["actor"]) - ref).abs().max())
+        if err > 1.0e-5:
+            raise RuntimeError(f"_policy 与 actor 前向不一致（最大差 {err:.3e}），检查 actor 结构")
         self.recorder.prime()
         self.wm.fit_xi(self.recorder.reader.read_xi())
         self.logger.init_logging_writer()
