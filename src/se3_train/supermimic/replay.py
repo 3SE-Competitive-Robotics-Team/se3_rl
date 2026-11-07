@@ -68,6 +68,8 @@ class ReplayBuffer:
         self.valid = torch.zeros(E, T, dtype=torch.bool, device=self.device)
         self.ptr = torch.zeros(E, dtype=torch.long, device=self.device)
         self.ep_counter = torch.zeros(E, dtype=torch.long, device=self.device)
+        self.filled = torch.zeros(E, dtype=torch.long, device=self.device)
+        """每个 env 已写入的行数（封顶 T）：有效行就是写指针之前这么多行组成的环形区间。"""
         self.rows_written = 0
 
     # ------------------------------------------------------------------ 写
@@ -87,6 +89,7 @@ class ReplayBuffer:
         self.terminal[env_ids, p] = terminal
         self.valid[env_ids, p] = True
         self.ptr[env_ids] = (p + 1) % self.T
+        self.filled[env_ids] = torch.clamp(self.filled[env_ids] + 1, max=self.T)
         self.rows_written += int(env_ids.numel())
 
     @torch.no_grad()
@@ -120,32 +123,34 @@ class ReplayBuffer:
         return ok
 
     @torch.no_grad()
-    def candidates(self, mask: torch.Tensor) -> torch.Tensor:
-        """掩码里所有可采样行的扁平下标（一次主机同步）。
+    def _draw(
+        self, mask: torch.Tensor, n: int, rounds: int = 16
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """在掩码有效行里抽 n 个 (env, time)，全程不同步主机。
 
-        不用 `torch.multinomial(mask.float(), n, replacement=True)`：权重全为 1 时它与「在有效行里均匀有放回抽」
-        同分布，但要对 E×T（4096×1000）整张表做归一化，2026-11-07 A800 剖析每次约 3.4 ms，世界模型一次更新
-        10 批光这一项就 34 ms（占 GPU 时间 15%）。同一次更新内缓存不变，有效行只需算一次。
+        先均匀抽 env，再在它已写入的环形区间（写指针之前 filled 行）里均匀抽时间，拒绝掉掩码无效的
+        （跨 episode、终止行、紧挨写指针），每个样本试 `rounds` 次取第一个有效的。无效行最多约两成
+        （warmup 刚结束、已写 40 行、窗口 8 步时），16 次全落空的概率约 1e-11，落空时退回第一次的抽样。
+        每个 env 内部严格均匀；各 env 之间按 env 均匀（与「全体有效行均匀」只差在各 env 终止行数不同）。
+
+        不用 nonzero + randint：nonzero 要同步主机，actor–critic 的起点采样会卡在这里等世界模型那批 GPU 计算做完，
+        CPU 没法提前下发 actor–critic 的 kernel（2026-11-07 py-spy：这个同步占全进程 15.7%）。也不用
+        multinomial：对 4096×1000 整张表归一化每次约 3.4 ms。
         """
-        idx = mask.reshape(-1).nonzero().squeeze(-1)
-        if idx.numel() == 0:
-            raise RuntimeError("回放缓存里还没有可采样的行")
-        return idx
-
-    def _draw(self, candidates: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
-        pick = torch.randint(candidates.numel(), (n,), device=self.device)
-        idx = candidates[pick]
-        return idx // self.T, idx % self.T
-
-    def window_candidates(self, k: int) -> torch.Tensor:
-        return self.candidates(self.window_mask(k))
+        e = torch.randint(self.E, (rounds, n), device=self.device)
+        off = (torch.rand(rounds, n, device=self.device) * self.filled[e]).long()
+        t = (self.ptr[e] - 1 - off) % self.T
+        ok = mask[e, t]
+        first = ok.to(torch.uint8).argmax(0)  # 第一个有效的那一轮；全无效时为 0
+        cols = torch.arange(n, device=self.device)
+        return e[first, cols], t[first, cols]
 
     @torch.no_grad()
-    def sample_windows(self, n: int, k: int, candidates: torch.Tensor | None = None) -> WindowBatch:
-        """candidates 为 `window_candidates(k)` 的结果；同一次更新内多批共用，避免每批重算掩码。"""
-        if candidates is None:
-            candidates = self.window_candidates(k)
-        e, t = self._draw(candidates, n)
+    def sample_windows(self, n: int, k: int, mask: torch.Tensor | None = None) -> WindowBatch:
+        """mask 为 `window_mask(k)` 的结果；同一次更新内缓存不变，多批共用，避免每批重算。"""
+        if mask is None:
+            mask = self.window_mask(k)
+        e, t = self._draw(mask, n)
         tt = (t[None, :] + torch.arange(k + 1, device=self.device)[:, None]) % self.T
         ee = e[None, :].expand(k + 1, n)
         return WindowBatch(
@@ -162,7 +167,7 @@ class ReplayBuffer:
         dist = self._dist_to_ptr()
         mask = self.valid & ~self.terminal
         mask &= dist < self.T - 3  # 前两行历史不能是刚被覆盖的
-        e, t = self._draw(self.candidates(mask), n)
+        e, t = self._draw(mask, n)
         same = self.ep_id[e, t]
 
         def back(j: int) -> torch.Tensor:
@@ -183,7 +188,7 @@ class ReplayBuffer:
             & (dist[ee, tt] <= dist[e, t][None, :])
         )
         ok = torch.cumprod(ok.long(), dim=0).bool()  # 第一次失效之后全部失效
-        last = ok.long().sum(0) - 1  # ≥ 0（起点自身有效）
+        last = (ok.long().sum(0) - 1).clamp(min=0)  # 起点自身有效时 ≥ 0；抽样落空的极端情况下夹到 0
         hold = torch.minimum(offs[:, None].expand(-1, n), last[None, :])
         t_cmd = (t[None, :] + hold) % self.T
         return StartBatch(

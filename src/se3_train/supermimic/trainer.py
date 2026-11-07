@@ -36,12 +36,12 @@ class WorldModelTrainer:
         """返回设备上的标量张量（不在这里同步主机，由 runner 每轮汇总一次）。"""
         agg: dict[str, torch.Tensor] = {}
         # 同一次更新里缓存不变：有效窗口只算一次，10 批共用
-        candidates = buffer.window_candidates(self.cfg.window)
+        mask = buffer.window_mask(self.cfg.window)
         if self._learned_index_t is None:
             self._learned_index_t = torch.tensor(self.learned_index, device=buffer.device)
         for _ in range(self.cfg.batches_per_update):
             mark_cudagraph_step()  # 每批一次前向 + 反传：上一批回放的输出不再需要
-            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window, candidates)
+            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window, mask)
             targets = w.reward_terms.index_select(-1, self._learned_index_t)
             self.wm.update_reward_scale(targets)
             loss, metrics = self.wm.window_loss(
