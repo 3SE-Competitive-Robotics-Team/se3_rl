@@ -29,6 +29,11 @@ ROUGH_SUPERMIMIC_DROPPED_EVENTS = (
     "log_fall_recovery",
     "push_robots",
 )
+ROUGH_SUPERMIMIC_DROPPED_REWARD_PREFIXES = ("recover_", "stair_", "mimic_")
+"""recover 组奖励；台阶类与跳跃 mimic 奖励按设计只在台阶列 / 跳跃列生效，纯平地上应恒 0。
+
+注意：`stair_heading_hold` 在地形里找不到台阶列时列掩码为 None，会退化成全体 env 都罚（−6 × 航向误差²，
+2026-11-06 GPU 核对实测平地上均值 2.9/步），所以这里必须显式去掉，不能靠"平地上自然为 0"。"""
 ROUGH_SUPERMIMIC_DROPPED_CURRICULA = ("push_disturbance",)
 ROUGH_SUPERMIMIC_DROPPED_OBS_GROUPS = ("amp", "recover_mask")
 ROUGH_SUPERMIMIC_REPLAY_CAPACITY = 1000
@@ -39,7 +44,11 @@ def env_cfg(play: bool = False, *, replay: bool = True) -> ManagerBasedRlEnvCfg:
     """纯平地 Rough + 去 recover 组与推扰；replay=True 时挂 SuperMimic 回放 recorder。"""
     cfg = rough_env_cfg(play=play, terrain_generator=flat_only_terrains_cfg())
     cfg.events = {k: v for k, v in cfg.events.items() if k not in ROUGH_SUPERMIMIC_DROPPED_EVENTS}
-    cfg.rewards = {k: v for k, v in cfg.rewards.items() if not k.startswith("recover_")}
+    cfg.rewards = {
+        k: v
+        for k, v in cfg.rewards.items()
+        if not k.startswith(ROUGH_SUPERMIMIC_DROPPED_REWARD_PREFIXES)
+    }
     cfg.terminations = {k: v for k, v in cfg.terminations.items() if not k.startswith("recover_")}
     if cfg.curriculum:
         cfg.curriculum = {

@@ -245,7 +245,8 @@ class StateSpec:
 
 def _quat_from_rotvec(rotvec: torch.Tensor) -> torch.Tensor:
     """旋转向量 → 四元数，角度 0 附近数值稳定（零向量给单位四元数）。"""
-    angle = torch.linalg.norm(rotvec, dim=-1)
+    # 零向量处 norm 的反传是 0/0；加 1e-12 再开方，角度偏差 ≤ 1e-6 rad
+    angle = torch.sqrt(rotvec.square().sum(-1) + 1.0e-12)
     safe = torch.where(angle > 1.0e-8, angle, torch.ones_like(angle))
     axis = rotvec / safe[..., None]
     quat = quat_from_angle_axis(angle, axis)

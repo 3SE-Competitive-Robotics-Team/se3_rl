@@ -30,6 +30,7 @@ from se3_shared import RobotConfig as SharedRobotConfig
 from se3_train.mdp import observations as obs_fns
 from se3_train.mdp import rewards as flat_rewards
 from se3_train.mdp.action_period import front_action_periods_from_env
+from se3_train.tasks.flat import rewards as flat_task_rewards
 from se3_train.tasks.jump_mimic import mdp as jump_mdp
 from se3_train.tasks.rough import rewards as rough_rewards
 
@@ -214,6 +215,7 @@ _ANALYTIC_REWARDS = {
     flat_rewards.action_rate: _action_rate,
     flat_rewards.dof_pos_limits: _dof_pos_limits,
     flat_rewards.is_alive: _is_alive,
+    flat_task_rewards.is_alive: _is_alive,  # Flat 配置用的是 mjlab 的 is_alive
     rough_rewards.tracking_lin_vel_narrow: _tracking_lin_vel_narrow,
     flat_rewards.upward: _upward,
 }
@@ -294,8 +296,11 @@ class RewardHeads:
             acc[:, 4:6] ** 2
         ).sum(1)
         penalty = torch.clamp(penalty, max=float(kw["max_penalty"]))
+        # acos 在 ±1 处导数无穷；float32 下倾角 < 0.03° 时 pg_z 就精确等于 −1，反传会出 inf × 0 = NaN。
+        # 夹到 1 − 1e-6 只改变 0.08° 以内的倾角，门控在 30° 以内本来就饱和为 1，数值不变。
+        pg_z = torch.clamp(ctx.projected_gravity[:, 2], -1.0 + 1.0e-6, 1.0 - 1.0e-6)
         gate = flat_rewards._near_upright_gate(
-            ctx.projected_gravity[:, 2],
+            pg_z,
             gate_start_deg=float(kw["gate_start_deg"]),
             gate_full_deg=float(kw["gate_full_deg"]),
         )
