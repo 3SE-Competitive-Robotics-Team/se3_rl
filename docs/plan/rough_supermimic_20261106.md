@@ -70,6 +70,22 @@ MLP 2048×3，输入 = 特征 + 裁剪后的动作 + 归一化 ξ。
   余弦衰减到 0.03×（按总 env 步数的 250/320）、梯度裁剪范数 1.0 + 逐元素 0.1、缓存每 env 1000 步。
 - 第 1 阶段单卡；checkpoint 多一个 `supermimic_{it}.pt`（世界模型、critic、优化器）。
 
+## 性能（2026-11-07，nulltask1 A800，1024 env）
+
+首版 smoke 每轮 19 s。剖析：一次更新 2.2 s 里矩阵乘只占 117 ms，其余是每步几百个逐元素小算子的 kernel launch 与
+Python 开销（四元数、FK、13 项解析奖励、积分与误差，世界模型 8 步 × 10 批、想象 32 步前向 + 反传各来一遍）。修法：
+
+1. `WorldModel._loss_step` 与 `ImaginationStep.observe / transition` 用 `torch.compile` 编译成固定形状的融合图
+   （复现仓库同样编译了这两步，移植时漏了）；
+2. 编译后仍被切成几十张图：mjlab 的四元数函数带 `@torch.jit.script`，dynamo 追不进 → 换成 `supermimic/quat.py`
+   纯 torch 版（双精度误差 ≤ 4e-16）；se3_shared 的前杆周期解析走 numpy → 构造时解析一次；
+3. fused Adam；更新指标留在设备上，每轮只同步一次主机。
+
+结果：世界模型更新 878 → 228 ms，actor–critic 更新 1393 → 193 ms，三张编译图均 0 断点、无重编译；编译前后窗口损失
+相对差 3e-7。smoke 稳态 4.7–5.2 s/轮（首轮含编译 12 s），5000 轮单卡约 7 h。剩余开销主要是 2048×3 世界模型的
+矩阵乘（实测约 40 TFLOPS），也就是论文超参（UTD 0.4、每次 10×2048 窗口 + 4096×32 想象）本身的计算量；
+再快只能动超参或换 bf16。剖析脚本 `.scratch/supermimic/profile_update.py`。
+
 ## 相对复现仓库的修正
 
 复现仓库在 episode 结束时把最后一个 transition 行也标成终止（`done = terminated`），该行状态被当作窗口中间目标时
