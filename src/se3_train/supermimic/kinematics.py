@@ -61,6 +61,13 @@ class TreeKinematics:
     def body_index(self, mj_model: mujoco.MjModel, name: str) -> int:
         """按 body 名返回本 FK 内的局部下标。"""
         bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if bid < 0:
+            # mjlab 场景里实体元素名带前缀（如 robot/l_wheel_Link），按后缀匹配
+            for b in self.body_ids:
+                full = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, b) or ""
+                if full.endswith("/" + name):
+                    bid = b
+                    break
         if bid < 0 or bid not in self._local:
             raise KeyError(f"机器人里没有 body {name}")
         return self._local[bid]
