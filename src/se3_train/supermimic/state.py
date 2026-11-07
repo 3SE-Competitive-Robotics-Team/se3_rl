@@ -33,13 +33,11 @@ from dataclasses import dataclass
 import mujoco
 import torch
 from mjlab.utils.lab_api.math import (
-    axis_angle_from_quat,
     matrix_from_quat,
     normalize,
     quat_apply,
     quat_apply_inverse,
     quat_conjugate,
-    quat_from_angle_axis,
     quat_mul,
 )
 
@@ -195,7 +193,7 @@ class StateSpec:
         """归一化误差 (…, ERROR_DIM)。"""
         q1 = normalize(s_pred[..., S_QUAT])
         q2 = normalize(s_true[..., S_QUAT])
-        rot = axis_angle_from_quat(quat_mul(quat_conjugate(q2), q1))
+        rot = _rotvec_from_quat(quat_mul(quat_conjugate(q2), q1))
         dq = s_pred[..., S_HINGE] - s_true[..., S_HINGE]
         dq_leg = torch.atan2(torch.sin(dq), torch.cos(dq))[..., self.leg_idx]
         dqd = s_pred[..., S_HINGE_VEL] - s_true[..., S_HINGE_VEL]
@@ -245,9 +243,8 @@ class StateSpec:
 def heading_quat(quat: torch.Tensor) -> torch.Tensor:
     """quat 绕世界 z 轴的 twist 分量（swing-twist 分解）：normalize(w, 0, 0, z)。
 
-    不用 mjlab 的 yaw_quat：它按机身 x 轴的水平投影取航向，俯仰 ±90° 时 1/|x_xy| 奇异，随机动作下首轮世界模型
-    梯度范数到 1e8（2026-11-06 GPU 核对）。twist 分解只在绕水平轴转 180° 附近奇异（此时早已触发终止）；
-    机身水平时两者相同。
+    不用 mjlab 的 yaw_quat：它按机身 x 轴的水平投影取航向，俯仰 ±90° 时导数 1/|x_xy| 奇异。twist 分解只在
+    绕水平轴转 180° 附近奇异（此时早已触发终止）；机身水平时两者相同。
     """
     w, z = quat[..., 0:1], quat[..., 3:4]
     norm = torch.sqrt(w.square() + z.square() + 1.0e-8)
@@ -255,16 +252,44 @@ def heading_quat(quat: torch.Tensor) -> torch.Tensor:
     return torch.cat([w / norm, zeros, zeros, z / norm], dim=-1)
 
 
+_SMALL_ANGLE = 1.0e-3
+
+
 def _quat_from_rotvec(rotvec: torch.Tensor) -> torch.Tensor:
-    """旋转向量 → 四元数，角度 0 附近数值稳定（零向量给单位四元数）。"""
-    # 零向量处 norm 的反传是 0/0；加 1e-12 再开方，角度偏差 ≤ 1e-6 rad
-    angle = torch.sqrt(rotvec.square().sum(-1) + 1.0e-12)
-    safe = torch.where(angle > 1.0e-8, angle, torch.ones_like(angle))
-    axis = rotvec / safe[..., None]
-    quat = quat_from_angle_axis(angle, axis)
-    # 极小角时 axis 方向无意义，用一阶近似 [1, v/2]
-    small = torch.cat([torch.ones_like(angle[..., None]), 0.5 * rotvec], dim=-1)
-    return torch.where((angle > 1.0e-8)[..., None], quat, normalize(small))
+    """旋转向量 r → 四元数 [cos(θ/2), sin(θ/2)/θ · r]，θ = |r|。
+
+    不能先算单位轴 r/θ 再转：机身静止（reset 后角速度精确为 0）时 θ→0，r/θ 的反传是 1/θ，
+    首轮世界模型梯度范数到 1e8（2026-11-06 GPU 核对）。这里 sin(θ/2)/θ 在小角度用泰勒展开
+    1/2 − θ²/48，θ 本身加 1e-12 再开方，整条链对 r 光滑。
+    """
+    theta_sq = rotvec.square().sum(-1, keepdim=True)
+    theta = torch.sqrt(theta_sq + 1.0e-12)
+    small = theta < _SMALL_ANGLE
+    safe = torch.where(small, torch.ones_like(theta), theta)
+    k = torch.where(small, 0.5 - theta_sq / 48.0, torch.sin(0.5 * safe) / safe)
+    w = torch.where(small, 1.0 - theta_sq / 8.0, torch.cos(0.5 * theta))
+    return normalize(torch.cat([w, k * rotvec], dim=-1))
+
+
+def _rotvec_from_quat(quat: torch.Tensor) -> torch.Tensor:
+    """单位四元数 → 旋转向量 2·atan2(|v|, w)/|v| · v，取 w ≥ 0 的一支；|v|→0 处用泰勒展开，对 q 光滑。
+
+    mjlab 的 axis_angle_from_quat 在 |v| = 0 时 norm 的反传是 0/0（预测与真值姿态恰好相同时会出现）。
+    """
+    quat = torch.where(quat[..., 0:1] < 0.0, -quat, quat)
+    w, v = quat[..., 0:1], quat[..., 1:4]
+    mag_sq = v.square().sum(-1, keepdim=True)
+    mag = torch.sqrt(mag_sq + 1.0e-12)
+    small = mag < _SMALL_ANGLE
+    safe = torch.where(small, torch.ones_like(mag), mag)
+    # 小角度：2·atan2(m, w)/m ≈ 2/w · (1 − m²/(3w²))
+    w_safe = torch.clamp(w, min=1.0e-6)
+    scale = torch.where(
+        small,
+        2.0 / w_safe * (1.0 - mag_sq / (3.0 * w_safe.square())),
+        2.0 * torch.atan2(safe, w) / safe,
+    )
+    return scale * v
 
 
 class SimStateReader:
