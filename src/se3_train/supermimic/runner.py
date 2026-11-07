@@ -92,6 +92,14 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
             )
         clip = self.cfg.get("clip_actions")
         self._clip_actions = None if clip is None else float(clip)
+        norm = getattr(actor, "obs_normalizer", None)
+        if hasattr(norm, "_mean") and hasattr(norm, "_std"):
+            self._norm_mean = norm._mean.detach().clone()
+            self._norm_std = norm._std.detach().clone()
+            self._norm_eps = float(norm.eps)
+        else:  # obs_normalization=False 时是 Identity
+            self._norm_mean = self._norm_std = None
+            self._norm_eps = 0.0
         self.wm_trainer = WorldModelTrainer(
             self.wm, self.sm_cfg.world_model, self.reward_heads.learned_index
         )
@@ -123,10 +131,26 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
         """想象中的策略：确定性输出，按包装器的 clip_actions 裁剪（等于 env 里 ActionManager.action）。"""
         # 等价于 MLPModel.forward（单观测组、确定性输出），但不经 TensorDict，能放进想象单步的编译图
         actor = self.alg.actor
-        action = actor.distribution.deterministic_output(actor.mlp(actor.obs_normalizer(obs)))
+        if self._norm_mean is not None:
+            # = EmpiricalNormalization.forward，但读的是地址固定的副本（见 _sync_policy_norm）
+            obs = (obs - self._norm_mean) / (self._norm_std + self._norm_eps)
+        action = actor.distribution.deterministic_output(actor.mlp(obs))
         if self._clip_actions is not None:
             action = torch.clamp(action, -self._clip_actions, self._clip_actions)
         return action
+
+    def _sync_policy_norm(self) -> None:
+        """把 actor 的 obs 归一化统计量原地拷进固定副本。
+
+        rsl_rl 的 EmpiricalNormalization.update 每次都重新赋值 `_mean/_std`（新张量、新地址），CUDA Graphs
+        （reduce-overhead）把模块缓冲区当作地址固定的静态输入，地址一变就整张想象图重录：2026-11-07 smoke
+        每次更新约 35 s。每次 actor–critic 更新前同步一次；采集时的 actor 前向仍用原归一化器。
+        """
+        if self._norm_mean is None:
+            return
+        norm = self.alg.actor.obs_normalizer
+        self._norm_mean.copy_(norm._mean)
+        self._norm_std.copy_(norm._std)
 
     # ------------------------------------------------------------------ checkpoint
 
@@ -199,6 +223,7 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
         actor.train()  # 只为让 obs 归一化在真实采集时更新；前向始终是确定性输出
         with torch.no_grad():
             # 想象里的 _policy 绕开了 TensorDict，这里核对它与 actor 前向一致（换 actor 结构时第一时间报错）
+            self._sync_policy_norm()
             ref = actor(obs)
             if self._clip_actions is not None:
                 ref = torch.clamp(ref, -self._clip_actions, self._clip_actions)
@@ -243,6 +268,7 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                     t0 = time.perf_counter()
                     lr = self._set_lr(total_env_steps)
                     m_wm = self.wm_trainer.update(self.buffer)
+                    self._sync_policy_norm()
                     m_ac = self.ac_trainer.update(self.buffer)
                     self.num_updates += 1
                     for k, v in m_wm.items():
