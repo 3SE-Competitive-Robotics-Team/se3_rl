@@ -16,7 +16,7 @@ from .heads import ObservationHead, RewardHeads
 from .imagination import ImaginationStep, gae_targets, imagine, policy_objective
 from .replay import ReplayBuffer
 from .state import FEAT_DIM, XI_DIM
-from .world_model import COMMAND_DIM, MLP, WorldModel
+from .world_model import COMMAND_DIM, MLP, WorldModel, mark_cudagraph_step
 
 
 class WorldModelTrainer:
@@ -26,7 +26,7 @@ class WorldModelTrainer:
         self.learned_index = list(learned_index)
         self._learned_index_t: torch.Tensor | None = None
         self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.learning_rate, **_fused(wm))
-        wm.enable_compile(cfg.compile)
+        wm.enable_compile(cfg.compile, cfg.compile_mode)
 
     def set_lr(self, lr: float) -> None:
         for group in self.opt.param_groups:
@@ -40,6 +40,7 @@ class WorldModelTrainer:
         if self._learned_index_t is None:
             self._learned_index_t = torch.tensor(self.learned_index, device=buffer.device)
         for _ in range(self.cfg.batches_per_update):
+            mark_cudagraph_step()  # 每批一次前向 + 反传：上一批回放的输出不再需要
             w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window, candidates)
             targets = w.reward_terms.index_select(-1, self._learned_index_t)
             self.wm.update_reward_scale(targets)
@@ -104,7 +105,14 @@ class ActorCriticTrainer:
         self.critic_opt = torch.optim.Adam(
             critic.parameters(), lr=cfg.critic_learning_rate, **_fused(critic)
         )
-        self.step = ImaginationStep(wm, obs_head, reward_heads, policy_fn, compile=cfg.compile)
+        self.step = ImaginationStep(
+            wm,
+            obs_head,
+            reward_heads,
+            policy_fn,
+            compile=cfg.compile,
+            compile_mode=cfg.compile_mode,
+        )
 
     def set_lr(self, actor_lr: float, critic_lr: float) -> None:
         for group in self.actor_opt.param_groups:

@@ -20,6 +20,18 @@ COMMAND_DIM = 8
 _COMMAND_SCALE = (2.0, 0.25, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0)
 
 
+def compile_mode_arg(mode: str) -> str | None:
+    """配置里的 compile_mode → torch.compile 的 mode 参数。"""
+    if mode not in ("default", "reduce-overhead"):
+        raise ValueError(f"compile_mode 只支持 default / reduce-overhead，实际 {mode}")
+    return None if mode == "default" else mode
+
+
+def mark_cudagraph_step() -> None:
+    """CUDA Graphs（reduce-overhead）下标记新一轮的开始：此前回放的输出可被覆盖。default 模式下是空操作。"""
+    torch.compiler.cudagraph_mark_step_begin()
+
+
 class MLP(nn.Module):
     """SiLU MLP；zero_last 时最后一层零初始化，last_gain 时正交初始化最后一层。"""
 
@@ -228,7 +240,7 @@ class WorldModel(nn.Module):
         ok = ((logits.detach() > 0).float() == done).float().mean()
         return s_next, sq.sum(-1).mean(), bce, mse, nse, ok
 
-    def enable_compile(self, enabled: bool) -> None:
+    def enable_compile(self, enabled: bool, mode: str = "default") -> None:
         """把单步损失编译成一个融合图（固定 batch 形状）。
 
         不编译时每步是几百个逐元素小算子，2026-11-07 nulltask1 A800 剖析：一次更新 2.2 s 里矩阵乘只占 117 ms，
@@ -236,7 +248,11 @@ class WorldModel(nn.Module):
         """
         # 整个 k 步窗口编译成一张图：逐步编译时每批要调 k 次前向 + k 次反传的编译函数，每次 CPU 侧
         # autograd / launch 约 1.3–2.4 ms（2026-11-07 剖析：世界模型更新 GPU 176 ms、墙钟 220 ms）
-        self._window_fn = torch.compile(self._window, dynamic=False) if enabled else None
+        self._window_fn = (
+            torch.compile(self._window, dynamic=False, mode=compile_mode_arg(mode))
+            if enabled
+            else None
+        )
 
     @torch.no_grad()
     def rollout_error(

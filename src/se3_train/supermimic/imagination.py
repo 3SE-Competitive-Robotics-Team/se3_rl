@@ -14,7 +14,7 @@ import torch
 
 from .heads import HeadContext, ObservationHead, RewardHeads
 from .replay import StartBatch
-from .world_model import WorldModel
+from .world_model import WorldModel, compile_mode_arg, mark_cudagraph_step
 
 
 @dataclass
@@ -48,10 +48,15 @@ class ImaginationStep:
         reward_heads: RewardHeads,
         policy: Callable[[torch.Tensor], torch.Tensor],
         compile: bool,
+        compile_mode: str = "default",
     ):
         self.wm, self.obs_head, self.reward_heads, self.policy = wm, obs_head, reward_heads, policy
         self.analytic_names = list(reward_heads.analytic_names)
-        self.step = torch.compile(self._step, dynamic=False) if compile else self._step
+        self.step = (
+            torch.compile(self._step, dynamic=False, mode=compile_mode_arg(compile_mode))
+            if compile
+            else self._step
+        )
 
     def _step(self, s, a_prev, a_prev2, cmd, xi, xi_norm, ep, noise):
         wm, heads = self.wm, self.reward_heads
@@ -88,6 +93,7 @@ def imagine(
     analytic_sum = torch.zeros(len(step.analytic_names), device=device)
     learned_sum = torch.zeros(max(wm.num_learned, 1), device=device)
     zero_noise = torch.zeros(n, step.obs_head.dim, device=device)
+    mark_cudagraph_step()  # 新一次 rollout：上一次回放的输出不再需要
 
     for t in range(horizon):
         noise = step.obs_head.sample_noise(zero_noise) if observation_noise else zero_noise
