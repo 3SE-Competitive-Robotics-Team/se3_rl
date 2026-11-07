@@ -135,6 +135,20 @@ runner smoke（1024 + bf16，8 轮）：稳态每轮 2.52–2.75 s（采集约 1
 （2048 + tf32 同期 0.092）。1024 宽时 actor–critic 又回到 CPU 侧受限，bf16 对它无效；采集比裸 env.step（0.7 s）
 多出约 0.55 s 的 runner 开销，是下一个可压的点。注意：11-07 12:29 开训的对照 p7dv60ea 用的是 2048 + tf32。
 
+### 第五轮：采集开销核查（2026-11-07）
+
+日志里采集约 1.1–1.27 s，而剖析脚本单测 env.step 只要 0.72 s。逐项排查（`.scratch/supermimic/profile_collect*.py`、py-spy）：
+
+- runner 自身（obs 归一化、actor、加噪、logger）合计 0.6 ms/步，recorder 0.5 ms/步，不是开销来源；
+- 早期日志的 1.27 s 有一部分是计时归属：更新异步排队，被下一个 env.step 的首次同步吃进去。现在每批更新后同步一次再计时（CUDA event 不可靠：cudagraph 回放不一定在当前 stream 上排队）；
+- 剩下的约 1.1 s 是 Rough env 的真实开销：训练用 `init_at_random_ep_len`，每步约 2–3% 的 env 在 reset，`_reset_idx`
+  占 env.step 约 25%（重采关节、抬机身两次全量 forward、重采指令）。单测脚本所有 env 同时从头开始、几乎不 reset，所以只有 0.72 s。
+  PPO 同样付这部分（每轮约 1.07 s 里几乎全是它），不是 SuperMimic 特有的。
+
+顺带修掉两处更新侧的损耗：回放采样里 `nonzero` 的主机同步（py-spy 占全进程 15.7%，改为无同步的拒绝采样，
+GPU 核对：抽到无效行 0、按行分布与纯随机一致）；编译与 CUDA Graphs 录制后 `gc.freeze()`（GC 开 / 关每次更新 172 / 161 ms）。
+smoke（1024 + bf16，12 轮）稳态每轮 2.50–2.72 s（采集约 1.1 s、学习 1.42 / 1.58 s，交替是 9 / 10 次更新）。
+
 ## 相对复现仓库的修正
 
 复现仓库在 episode 结束时把最后一个 transition 行也标成终止（`done = terminated`），该行状态被当作窗口中间目标时
