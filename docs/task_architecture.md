@@ -13,6 +13,7 @@
 | `jump_mimic/` | `SE3-WheelLegged-Jump-Mimic-MLP` | 单独的跳跃 mimic 策略（MLP、34 维观测、从头训、平地前进跳）：无下蹲参考 0.20–0.50 m、四项模仿奖励（腿长 / 机身高度 / 竖直速度 / 接触）、偏离参考 0.12 m 提前终止、无 RSI、jump_phase 一维相位。参考时钟 `clock.JumpReferenceClock` 与 rough 共用。J1–J10 的对照入口与 J5/J6 的 `jump_flag/` 任务已于 2026-10-02 删除，J10 配置成为默认；复现用对应 commit（J7 09493b2、J9 4c7ce37、J10 e3c3a0a），结论见 `docs/plan/j7_*` 至 `j10_*`。参考由 `uv run se3-jump-to` 生成（默认即训练用的四条）。 |
 | `flat/` | `SE3-WheelLegged-Flat-MLP` | 仅保留 D11 单帧 MLP 基线；共享配置仍供其他任务复用 |
 | `crawl/` | `SE3-WheelLegged-Crawl-MLP` / `SE3-WheelLegged-Crawl-Slope-MLP` | 趴地移动（2026-10-17）：机身压在底盘导轮上、主轮在后方推动的平地 vx 跟踪（不转向）。Flat-MLP 薄覆盖：带导轮变体 MJCF `serialleg_closed_chain_v3_guide_wheels.xml`、高度指令固定 0.1359 m、出生即趴姿、删 `stand_still`、课程终值 vx 1.5、不给转向指令（yaw 恒 0）、导轮承重罚 −5 与左右主轮 Δx²+Δz² 对称罚 −50、速度课程在导轮承重达标后才推进、动作零点（实体默认姿态）为趴姿并加趴姿姿态罚 −1、actor 用 Rough 的小网络 128/64/32（STM32 片内部署）。斜坡版同一 MDP，地形为自建「平地-上坡-平台」直线坡（0–15°，2026-10-18 起替换 mjlab 倒金字塔 0–0.15），出生朝 +x、按前进距离升降级，姿态项改为相对局部坡面（3×3 射线法线）。详见 `docs/plan/crawl_guide_wheels_20261017.md`。 |
+| `rough_supermimic/` | `SE3-WheelLegged-Rough-SuperMimic` / `SE3-WheelLegged-Rough-SuperMimic-PPO` | SuperMimic 世界模型 + BPTT 训练 Rough 速度跟踪（2026-11-06，第 1 阶段纯平地）：Rough 默认配置换纯平地地形、去 recover 组与推扰；SuperMimic 入口用 `se3_train.supermimic.runner.SuperMimicRunner`，PPO 入口是同 env 的 Rough MLP 对照。详见 `docs/plan/rough_supermimic_20261106.md`。临时入口，结论后并入或删除。 |
 
 **Flat 基线已于 2026-09-06 冻结**，取 D11 的配置（W&B `mher9vfk`，commit `236666c`）：不带任何命令行覆盖直接跑
 `SE3-WheelLegged-Flat-MLP` 即可复现。除已合并的奖励与动作改动外，`num_steps_per_env` 由 64 改为 24（D 系列

@@ -189,6 +189,7 @@ se3_train/
 │   ├── flat/        # SE3-WheelLegged-Flat-MLP
 │   ├── jump_mimic/  # SE3-WheelLegged-Jump-Mimic-MLP（跳跃参考模仿）
 │   ├── crawl/       # SE3-WheelLegged-Crawl-MLP / -Crawl-Slope-MLP（底盘导轮趴地移动）
+│   ├── rough_supermimic/  # SE3-WheelLegged-Rough-SuperMimic(-PPO)（世界模型 + BPTT，训练器在 se3_train/supermimic/）
 │   └── wheel_dog/   # WheelDog 任务（独立 minidog 机器人）
 └── mdp/
     ├── actions.py          # SerialLegDelayedAction — 自定义 6D 动作项

@@ -11,6 +11,7 @@ from . import (
     flat,
     jump_mimic,
     rough,
+    rough_supermimic,
     wheel_dog,
 )
 
@@ -22,6 +23,7 @@ def register_all_tasks() -> None:
     jump_mimic.register()
     wheel_dog.register()
     crawl.register()
+    rough_supermimic.register()
 
 
 __all__ = ["register_all_tasks"]
