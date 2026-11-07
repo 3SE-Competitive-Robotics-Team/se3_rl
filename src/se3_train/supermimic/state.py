@@ -32,7 +32,13 @@ from dataclasses import dataclass
 
 import mujoco
 import torch
-from mjlab.utils.lab_api.math import (
+
+from se3_shared import JointGroup
+from se3_train.actuators import LaggedDcMotorActuator
+from se3_train.mdp.joint_indices import policy_leg_joint_ids, tensor_ids
+from se3_train.mdp.observations import dr_model_params_obs, knee_gas_spring_force_obs
+
+from .quat import (
     matrix_from_quat,
     normalize,
     quat_apply,
@@ -40,11 +46,6 @@ from mjlab.utils.lab_api.math import (
     quat_conjugate,
     quat_mul,
 )
-
-from se3_shared import JointGroup
-from se3_train.actuators import LaggedDcMotorActuator
-from se3_train.mdp.joint_indices import policy_leg_joint_ids, tensor_ids
-from se3_train.mdp.observations import dr_model_params_obs, knee_gas_spring_force_obs
 
 NQ = 17
 NV = 16

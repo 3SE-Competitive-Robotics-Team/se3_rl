@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import mujoco
 import torch
-from mjlab.utils.lab_api.math import quat_apply, quat_from_angle_axis, quat_mul
+
+from .quat import quat_apply, quat_from_angle_axis, quat_mul
 
 
 class TreeKinematics:
