@@ -517,6 +517,16 @@ def _non_jump_reset_mask(
     return mask
 
 
+def _forward_kinematics(env: ManagerBasedRlEnv) -> None:
+    """只算运动学（body / geom / site 位姿），不跑碰撞、约束、传感器；全部 world 一起算（kernel 按 world 并行）。"""
+    import mujoco_warp as mjwarp
+    import warp as wp
+
+    sim = env.sim
+    with wp.ScopedDevice(sim.wp_device):
+        mjwarp.kinematics(sim.wp_model, sim.wp_data)
+
+
 def _lift_root_to_wheel_clearance(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -537,7 +547,12 @@ def _lift_root_to_wheel_clearance(
         return
     active_env_ids = env_ids[active_local]
 
-    env.sim.forward()
+    if terrain_height_sensor_names:
+        env.sim.forward()  # 地形射线要用完整 forward 后的几何与传感器上下文
+    else:
+        # 原点模式只读轮 body 的 xpos：只跑运动学（与 forward 第一阶段同一个 kernel，xpos 逐位相同），
+        # 省掉碰撞、约束求解与传感器。2026-11-07 py-spy：reset 占 env.step 约 30%，这里的全量 forward 是最大一块。
+        _forward_kinematics(env)
     target_wheel_center_height = _FOURBAR_WHEEL_RADIUS_M + float(min_clearance)
     terrain_center_clearance = _wheel_center_clearance_from_terrain_sensors(
         env,
@@ -570,7 +585,8 @@ def _lift_root_to_wheel_clearance(
         quat = asset.data.root_link_quat_w[active_env_ids].clone()
         pos[:, 2] += adjustment
         asset.write_root_link_pose_to_sim(torch.cat([pos, quat], dim=-1), env_ids=active_env_ids)
-        env.sim.forward()
+        # 不再在这里全量 forward：env.step 在 reset 之后对全部 env 统一 forward 一次（mjlab 约定事件写状态后
+        # 不读派生量），之后的 reset 事件（倒地出生、反向课程）与指令重采样都不读 reset env 的派生量。
 
     if hasattr(env, "extras") and _should_log_reset_diagnostics(env):
         log = env.extras.setdefault("log", {})
