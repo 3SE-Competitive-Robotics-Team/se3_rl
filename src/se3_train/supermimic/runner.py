@@ -239,12 +239,17 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
         steps_per_it = int(sched.steps_per_iteration)
         total_env_steps = total_it * steps_per_it
         lr = self._set_lr(total_env_steps)
+        use_events = torch.cuda.is_available() and str(self.device).startswith("cuda")
         for it in range(start_it, total_it):
-            t_collect = t_learn = 0.0
+            # 计时口径：学习段 = 各次更新的 GPU 实际耗时（CUDA event，不额外同步）；采集段 = 整轮墙钟 − 学习段。
+            # 不能直接用 perf_counter 包住 env.step：更新（CUDA Graphs 回放）是异步排队的，下一个 env.step
+            # 第一次同步时才等它做完，这段等待会被错算进采集（2026-11-07：日志采集 1.27 s，实际 env.step 0.72 s）。
+            t_iter0 = time.perf_counter()
+            learn_events: list[tuple] = []
+            t_learn_cpu = 0.0
             agg: dict[str, torch.Tensor] = {}
             agg_n = 0
             for _ in range(steps_per_it):
-                t0 = time.perf_counter()
                 with torch.no_grad():
                     actor.update_normalization(obs)
                     action = actor(obs)
@@ -258,7 +263,6 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                     )
                     self.logger.process_env_step(rewards, dones, extras, None)
                 self.env_steps += 1
-                t_collect += time.perf_counter() - t0
 
                 if self.env_steps < sched.warmup_env_steps:
                     continue
@@ -266,6 +270,9 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                 while self._utd_acc >= 1.0:
                     self._utd_acc -= 1.0
                     t0 = time.perf_counter()
+                    if use_events:
+                        ev0 = torch.cuda.Event(enable_timing=True)
+                        ev0.record()
                     lr = self._set_lr(total_env_steps)
                     m_wm = self.wm_trainer.update(self.buffer)
                     self._sync_policy_norm()
@@ -276,10 +283,20 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                     for k, v in m_ac.items():
                         agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v.detach()
                     agg_n += 1
-                    t_learn += time.perf_counter() - t0
+                    if use_events:
+                        ev1 = torch.cuda.Event(enable_timing=True)
+                        ev1.record()
+                        learn_events.append((ev0, ev1))
+                    t_learn_cpu += time.perf_counter() - t0
 
             # 各项在设备上累加，这里每轮只同步一次主机
             loss_dict = {k: float(v) / agg_n for k, v in agg.items()} if agg_n else {}
+            if learn_events:
+                learn_events[-1][1].synchronize()
+                t_learn = sum(a.elapsed_time(b) for a, b in learn_events) / 1000.0
+            else:
+                t_learn = t_learn_cpu
+            t_collect = max(time.perf_counter() - t_iter0 - t_learn, 0.0)
             if agg_n and self.buffer.size > 2048:
                 err = self.wm_trainer.online_error(self.buffer)
                 loss_dict["wm/online_nse_1step"] = float(err[0])
