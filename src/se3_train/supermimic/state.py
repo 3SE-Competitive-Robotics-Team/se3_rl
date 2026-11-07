@@ -11,7 +11,7 @@
     每个控制步前几个子步执行的仍是上一拍动作（SerialLegDelayedAction._action_fifo），不带它 s 不是马尔可夫的。
     wheel_lag：轮执行器一阶滞后的输出状态（LaggedDcMotorActuator._lagged，N·m），同理。
 
-规范化特征（网络输入，航向不变）：根高 1、去航向姿态 rot6d 6、航向系线速度 3、机身角速度 3、
+规范化特征（网络输入，航向不变，航向取绕 z 轴的 twist 分量，见 heading_quat）：根高 1、去航向姿态 rot6d 6、航向系线速度 3、机身角速度 3、
     8 个非轮铰链 sin/cos 16（前杆可整周转，用 sin/cos 而不是原角）、铰链速度 10、prev_action 6、wheel_lag 2。
     轮角连续累计、物理上无关，不进特征。
 
@@ -41,7 +41,6 @@ from mjlab.utils.lab_api.math import (
     quat_conjugate,
     quat_from_angle_axis,
     quat_mul,
-    yaw_quat,
 )
 
 from se3_shared import JointGroup
@@ -150,7 +149,7 @@ class StateSpec:
     def canonical(self, s: torch.Tensor) -> torch.Tensor:
         """航向不变、已缩放的网络输入特征 (…, FEAT_DIM)。"""
         quat = normalize(s[..., S_QUAT])
-        heading = yaw_quat(quat)
+        heading = heading_quat(quat)
         local = quat_mul(quat_conjugate(heading), quat)
         rot6d = matrix_from_quat(local)[..., :2].reshape(*quat.shape[:-1], 6)
         v_h = quat_apply_inverse(heading, s[..., S_LIN])
@@ -179,7 +178,7 @@ class StateSpec:
         dv_h, dw_b, dqd = d[..., 0:3], d[..., 3:6], d[..., 6:16]
         dp_h, dth_b, dq, dlag = d[..., 16:19], d[..., 19:22], d[..., 22:32], d[..., 32:34]
         quat = normalize(s[..., S_QUAT])
-        heading = yaw_quat(quat)
+        heading = heading_quat(quat)
         v_new = s[..., S_LIN] + quat_apply(heading, dv_h)
         w_new = s[..., S_ANG] + dw_b
         qd_new = s[..., S_HINGE_VEL] + dqd
@@ -241,6 +240,19 @@ class StateSpec:
 
     def wheel_vel(self, s: torch.Tensor) -> torch.Tensor:
         return s[..., S_HINGE_VEL][..., self.wheel_idx]
+
+
+def heading_quat(quat: torch.Tensor) -> torch.Tensor:
+    """quat 绕世界 z 轴的 twist 分量（swing-twist 分解）：normalize(w, 0, 0, z)。
+
+    不用 mjlab 的 yaw_quat：它按机身 x 轴的水平投影取航向，俯仰 ±90° 时 1/|x_xy| 奇异，随机动作下首轮世界模型
+    梯度范数到 1e8（2026-11-06 GPU 核对）。twist 分解只在绕水平轴转 180° 附近奇异（此时早已触发终止）；
+    机身水平时两者相同。
+    """
+    w, z = quat[..., 0:1], quat[..., 3:4]
+    norm = torch.sqrt(w.square() + z.square() + 1.0e-8)
+    zeros = torch.zeros_like(w)
+    return torch.cat([w / norm, zeros, zeros, z / norm], dim=-1)
 
 
 def _quat_from_rotvec(rotvec: torch.Tensor) -> torch.Tensor:
@@ -356,4 +368,5 @@ __all__ = [
     "HingeLayout",
     "SimStateReader",
     "StateSpec",
+    "heading_quat",
 ]
