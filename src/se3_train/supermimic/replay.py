@@ -120,16 +120,32 @@ class ReplayBuffer:
         return ok
 
     @torch.no_grad()
-    def _sample(self, mask: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
-        flat = mask.reshape(-1).float()
-        if not bool(flat.any()):
+    def candidates(self, mask: torch.Tensor) -> torch.Tensor:
+        """掩码里所有可采样行的扁平下标（一次主机同步）。
+
+        不用 `torch.multinomial(mask.float(), n, replacement=True)`：权重全为 1 时它与「在有效行里均匀有放回抽」
+        同分布，但要对 E×T（4096×1000）整张表做归一化，2026-11-07 A800 剖析每次约 3.4 ms，世界模型一次更新
+        10 批光这一项就 34 ms（占 GPU 时间 15%）。同一次更新内缓存不变，有效行只需算一次。
+        """
+        idx = mask.reshape(-1).nonzero().squeeze(-1)
+        if idx.numel() == 0:
             raise RuntimeError("回放缓存里还没有可采样的行")
-        idx = torch.multinomial(flat, n, replacement=True)
+        return idx
+
+    def _draw(self, candidates: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        pick = torch.randint(candidates.numel(), (n,), device=self.device)
+        idx = candidates[pick]
         return idx // self.T, idx % self.T
 
+    def window_candidates(self, k: int) -> torch.Tensor:
+        return self.candidates(self.window_mask(k))
+
     @torch.no_grad()
-    def sample_windows(self, n: int, k: int) -> WindowBatch:
-        e, t = self._sample(self.window_mask(k), n)
+    def sample_windows(self, n: int, k: int, candidates: torch.Tensor | None = None) -> WindowBatch:
+        """candidates 为 `window_candidates(k)` 的结果；同一次更新内多批共用，避免每批重算掩码。"""
+        if candidates is None:
+            candidates = self.window_candidates(k)
+        e, t = self._draw(candidates, n)
         tt = (t[None, :] + torch.arange(k + 1, device=self.device)[:, None]) % self.T
         ee = e[None, :].expand(k + 1, n)
         return WindowBatch(
@@ -143,9 +159,10 @@ class ReplayBuffer:
 
     @torch.no_grad()
     def sample_starts(self, n: int, horizon: int) -> StartBatch:
+        dist = self._dist_to_ptr()
         mask = self.valid & ~self.terminal
-        mask &= self._dist_to_ptr() < self.T - 3  # 前两行历史不能是刚被覆盖的
-        e, t = self._sample(mask, n)
+        mask &= dist < self.T - 3  # 前两行历史不能是刚被覆盖的
+        e, t = self._draw(self.candidates(mask), n)
         same = self.ep_id[e, t]
 
         def back(j: int) -> torch.Tensor:
@@ -163,7 +180,7 @@ class ReplayBuffer:
             self.valid[ee, tt]
             & (self.ep_id[ee, tt] == same[None, :])
             & ~self.terminal[ee, tt]
-            & (self._dist_to_ptr()[ee, tt] <= self._dist_to_ptr()[e, t][None, :])
+            & (dist[ee, tt] <= dist[e, t][None, :])
         )
         ok = torch.cumprod(ok.long(), dim=0).bool()  # 第一次失效之后全部失效
         last = ok.long().sum(0) - 1  # ≥ 0（起点自身有效）

@@ -24,6 +24,7 @@ class WorldModelTrainer:
         self.wm = wm
         self.cfg = cfg
         self.learned_index = list(learned_index)
+        self._learned_index_t: torch.Tensor | None = None
         self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.learning_rate, **_fused(wm))
         wm.enable_compile(cfg.compile)
 
@@ -34,9 +35,13 @@ class WorldModelTrainer:
     def update(self, buffer: ReplayBuffer) -> dict[str, torch.Tensor]:
         """返回设备上的标量张量（不在这里同步主机，由 runner 每轮汇总一次）。"""
         agg: dict[str, torch.Tensor] = {}
+        # 同一次更新里缓存不变：有效窗口只算一次，10 批共用
+        candidates = buffer.window_candidates(self.cfg.window)
+        if self._learned_index_t is None:
+            self._learned_index_t = torch.tensor(self.learned_index, device=buffer.device)
         for _ in range(self.cfg.batches_per_update):
-            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
-            targets = w.reward_terms[..., self.learned_index]
+            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window, candidates)
+            targets = w.reward_terms.index_select(-1, self._learned_index_t)
             self.wm.update_reward_scale(targets)
             loss, metrics = self.wm.window_loss(
                 w.states, w.actions, w.xi, w.done, w.command, targets
