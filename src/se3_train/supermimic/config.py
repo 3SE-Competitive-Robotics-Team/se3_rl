@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 class WorldModelCfg:
     """世界模型网络与 k 步窗口拟合。"""
 
-    hidden_dims: tuple[int, ...] = (2048, 2048, 2048)
+    hidden_dims: tuple[int, ...] = (1024, 1024, 1024)
+    """论文是 2048×3（29 自由度人形）。2026-11-07 用户定改 1024×3：SerialLeg 状态只有 41 维，开 CUDA Graphs 后
+    宽度是学习段的主要开销；smoke 第 7 轮 8 步误差 0.126（2048 宽同期 0.092）。"""
     termination_hidden_dims: tuple[int, ...] = (256, 256)
     reward_hidden_dims: tuple[int, ...] = (512, 512)
     window: int = 8
@@ -23,10 +25,12 @@ class WorldModelCfg:
     grad_clip_norm: float = 1.0
     termination_loss_weight: float = 1.0
     reward_loss_weight: float = 1.0
-    precision: str = "tf32"
+    precision: str = "bf16"
     """三个 MLP（动力学 / 终止 / 奖励头）的矩阵乘精度："tf32" 或 "bf16"（autocast，输出转回 fp32）。
 
-    状态积分、误差、损失、Adam 主权重始终 fp32；bf16 只作用在网络内部，不会在 k 步积分里累积舍入。"""
+    状态积分、误差、损失、Adam 主权重始终 fp32；bf16 只作用在网络内部，不会在 k 步积分里累积舍入。
+    2026-11-07 用户定默认 bf16：与 tf32 相比窗口损失相对差 1.5e-6、1 步预测差 7e-7（模型自身误差 0.32）、
+    想象 32 步奖励均差 2.8e-3（量级 3）。"""
     compile: bool = True
     """torch.compile 单步损失（不编译时每次更新慢约一个量级，见 WorldModel.enable_compile）。"""
     compile_mode: str = "reduce-overhead"
