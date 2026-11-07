@@ -98,6 +98,9 @@ class WorldModel(nn.Module):
         self.register_buffer("reward_scale", torch.ones(max(self.num_learned, 1)))
         self.register_buffer("command_scale", torch.tensor(_COMMAND_SCALE))
         self._window_fn = None
+        if cfg.precision not in ("tf32", "bf16"):
+            raise ValueError(f"world_model.precision 只支持 tf32 / bf16，实际 {cfg.precision}")
+        self._bf16 = cfg.precision == "bf16"
         self.to(device)
 
     # ------------------------------------------------------------------ 归一化
@@ -125,6 +128,13 @@ class WorldModel(nn.Module):
         rms = targets.reshape(-1, self.num_learned).square().mean(0).sqrt().clamp(min=1.0e-6)
         self.reward_scale.mul_(momentum).add_((1.0 - momentum) * rms)
 
+    def _mlp(self, net: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """网络前向；precision=bf16 时在 autocast 里算，输出转回 fp32 再进积分 / 损失。"""
+        if not self._bf16:
+            return net(x)
+        with torch.autocast(device_type=x.device.type, dtype=torch.bfloat16):
+            return net(x).float()
+
     def clip_action(self, action: torch.Tensor) -> torch.Tensor:
         if self.action_clip is None:
             return action
@@ -135,14 +145,14 @@ class WorldModel(nn.Module):
     def step(self, s: torch.Tensor, action: torch.Tensor, xi_norm: torch.Tensor) -> torch.Tensor:
         """一步动力学；action 为 ActionManager 语义（未裁剪），模型内按动作项同样裁剪。"""
         a = self.clip_action(action)
-        delta = self.dynamics(torch.cat([self.spec.canonical(s), a, xi_norm], dim=-1))
+        delta = self._mlp(self.dynamics, torch.cat([self.spec.canonical(s), a, xi_norm], dim=-1))
         return self.spec.integrate(s, delta, a)
 
     def termination_logits(
         self, s_next: torch.Tensor, xi_norm: torch.Tensor, cmd: torch.Tensor
     ) -> torch.Tensor:
         x = torch.cat([self.spec.canonical(s_next), xi_norm, self.normalize_command(cmd)], dim=-1)
-        return self.termination(x).squeeze(-1)
+        return self._mlp(self.termination, x).squeeze(-1)
 
     def learned_rewards_normalized(
         self,
@@ -162,7 +172,7 @@ class WorldModel(nn.Module):
             ],
             dim=-1,
         )
-        return self.reward(x)[..., : self.num_learned]
+        return self._mlp(self.reward, x)[..., : self.num_learned]
 
     def learned_rewards(self, s, s_next, action, xi_norm, cmd) -> torch.Tensor:
         """学习项的加权值（weight × 项值，未乘 dt）(…, K)。"""

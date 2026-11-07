@@ -23,6 +23,10 @@ class WorldModelCfg:
     grad_clip_norm: float = 1.0
     termination_loss_weight: float = 1.0
     reward_loss_weight: float = 1.0
+    precision: str = "tf32"
+    """三个 MLP（动力学 / 终止 / 奖励头）的矩阵乘精度："tf32" 或 "bf16"（autocast，输出转回 fp32）。
+
+    状态积分、误差、损失、Adam 主权重始终 fp32；bf16 只作用在网络内部，不会在 k 步积分里累积舍入。"""
     compile: bool = True
     """torch.compile 单步损失（不编译时每次更新慢约一个量级，见 WorldModel.enable_compile）。"""
     compile_mode: str = "reduce-overhead"
