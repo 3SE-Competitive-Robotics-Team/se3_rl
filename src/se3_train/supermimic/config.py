@@ -25,8 +25,11 @@ class WorldModelCfg:
     reward_loss_weight: float = 1.0
     compile: bool = True
     """torch.compile 单步损失（不编译时每次更新慢约一个量级，见 WorldModel.enable_compile）。"""
-    compile_mode: str = "default"
-    """torch.compile 的 mode："default" 或 "reduce-overhead"（CUDA Graphs，每张图回放只算一次 launch）。"""
+    compile_mode: str = "reduce-overhead"
+    """torch.compile 的 mode："reduce-overhead"（CUDA Graphs，每张图回放只算一次 launch）或 "default"。
+
+    2026-11-07 nulltask1 A800、4096 env：每次更新 launch 约 2.7 万 → 3600，smoke 每轮 4.5–4.8 → 3.65–3.94 s，
+    窗口损失与 default 相对差 7e-8。图里读到的模块张量必须地址固定（见 SuperMimicRunner._sync_policy_norm）。"""
 
 
 @dataclass
@@ -49,7 +52,7 @@ class ImaginationCfg:
     observation_noise: bool = True
     compile: bool = True
     """torch.compile 想象单步（观测头 + 世界模型 + 解析 / 学习奖励），见 imagination.ImaginationStep。"""
-    compile_mode: str = "default"
+    compile_mode: str = "reduce-overhead"
     """同 WorldModelCfg.compile_mode。"""
 
 

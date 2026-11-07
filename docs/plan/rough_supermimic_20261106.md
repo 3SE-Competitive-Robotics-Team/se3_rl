@@ -102,6 +102,23 @@ GPU 满载，剩下三处：
 4.5–4.8 s/轮，指标与改动前吻合。此时每次更新的 GPU kernel 约 310 ms，其中 TF32 矩阵乘约 200 ms，
 即论文超参下的下限约 3.7 s/轮（9.7 × 0.31 + 采集）；再快要动世界模型宽度 / UTD / 想象批量，或换 bf16。
 
+### 第三轮：CUDA Graphs（2026-11-07）
+
+983976c 之后每次更新仍有约 2.7 万次 kernel launch。世界模型缩到 1024 宽只快约 10%（GPU 先算完，又回到等 CPU），
+说明瓶颈是 launch 而不是算力。`compile_mode="reduce-overhead"`（CUDA Graphs）后每张图回放只算一次 launch：
+
+| 4096 env | 学习段 / 轮 | 世界模型 / 次 | actor–critic / 次 | launch / 次更新 |
+|---|---|---|---|---|
+| default，2048 | 3.73 s | 180 ms | 206 ms | 约 2.7 万 |
+| reduce-overhead，2048 | 3.11 s | 161 ms | 160 ms | 约 3600 |
+| reduce-overhead，1024 | 2.34 s | 93 ms | 149 ms | 约 3600 |
+
+（剖析脚本数字；runner smoke 2048：每轮 3.65–3.94 s，采集约 1.3 s。）窗口损失与 default 相对差 7e-8，显存不变。
+
+踩坑：rsl_rl 的 EmpiricalNormalization.update 每步重新赋值 `_mean/_std`（新地址），CUDA Graphs 把模块缓冲区当作
+地址固定的静态输入，想象图每次更新整张重录（每轮 360 s）。runner 改为让想象中的策略读一份地址固定的副本，
+每次 actor–critic 更新前原地同步。凡是进编译图的模块张量都必须原地更新。
+
 ## 相对复现仓库的修正
 
 复现仓库在 episode 结束时把最后一个 transition 行也标成终止（`done = terminated`），该行状态被当作窗口中间目标时
