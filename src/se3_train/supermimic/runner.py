@@ -207,7 +207,7 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
         lr = self._set_lr(total_env_steps)
         for it in range(start_it, total_it):
             t_collect = t_learn = 0.0
-            agg: dict[str, float] = {}
+            agg: dict[str, torch.Tensor] = {}
             agg_n = 0
             for _ in range(steps_per_it):
                 t0 = time.perf_counter()
@@ -237,13 +237,14 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                     m_ac = self.ac_trainer.update(self.buffer)
                     self.num_updates += 1
                     for k, v in m_wm.items():
-                        agg[f"wm/{k}"] = agg.get(f"wm/{k}", 0.0) + v
+                        agg[f"wm/{k}"] = agg.get(f"wm/{k}", 0.0) + v.detach()
                     for k, v in m_ac.items():
-                        agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v
+                        agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v.detach()
                     agg_n += 1
                     t_learn += time.perf_counter() - t0
 
-            loss_dict = {k: v / agg_n for k, v in agg.items()} if agg_n else {}
+            # 各项在设备上累加，这里每轮只同步一次主机
+            loss_dict = {k: float(v) / agg_n for k, v in agg.items()} if agg_n else {}
             if agg_n and self.buffer.size > 2048:
                 err = self.wm_trainer.online_error(self.buffer)
                 loss_dict["wm/online_nse_1step"] = float(err[0])

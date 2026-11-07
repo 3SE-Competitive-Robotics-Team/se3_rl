@@ -23,6 +23,8 @@ class WorldModelCfg:
     grad_clip_norm: float = 1.0
     termination_loss_weight: float = 1.0
     reward_loss_weight: float = 1.0
+    compile: bool = True
+    """torch.compile 单步损失（不编译时每次更新慢约一个量级，见 WorldModel.enable_compile）。"""
 
 
 @dataclass
@@ -43,6 +45,8 @@ class ImaginationCfg:
     critic_epochs: int = 5
     critic_minibatches: int = 4
     observation_noise: bool = True
+    compile: bool = True
+    """torch.compile 想象单步（观测头 + 世界模型 + 解析 / 学习奖励），见 imagination.ImaginationStep。"""
 
 
 @dataclass

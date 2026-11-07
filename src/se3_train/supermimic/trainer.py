@@ -13,7 +13,7 @@ import torch.nn as nn
 
 from .config import ImaginationCfg, WorldModelCfg
 from .heads import ObservationHead, RewardHeads
-from .imagination import gae_targets, imagine, policy_objective
+from .imagination import ImaginationStep, gae_targets, imagine, policy_objective
 from .replay import ReplayBuffer
 from .state import FEAT_DIM, XI_DIM
 from .world_model import COMMAND_DIM, MLP, WorldModel
@@ -24,13 +24,15 @@ class WorldModelTrainer:
         self.wm = wm
         self.cfg = cfg
         self.learned_index = list(learned_index)
-        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.learning_rate)
+        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.learning_rate, **_fused(wm))
+        wm.enable_compile(cfg.compile)
 
     def set_lr(self, lr: float) -> None:
         for group in self.opt.param_groups:
             group["lr"] = lr
 
-    def update(self, buffer: ReplayBuffer) -> dict[str, float]:
+    def update(self, buffer: ReplayBuffer) -> dict[str, torch.Tensor]:
+        """返回设备上的标量张量（不在这里同步主机，由 runner 每轮汇总一次）。"""
         agg: dict[str, torch.Tensor] = {}
         for _ in range(self.cfg.batches_per_update):
             w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
@@ -49,14 +51,19 @@ class WorldModelTrainer:
             metrics["grad_norm"] = grad_norm.detach()
             for key, value in metrics.items():
                 agg[key] = agg.get(key, 0.0) + value
-        # 每次更新只同步一次主机
-        return {k: float(v) / self.cfg.batches_per_update for k, v in agg.items()}
+        return {k: v / self.cfg.batches_per_update for k, v in agg.items()}
 
     @torch.no_grad()
     def online_error(self, buffer: ReplayBuffer, n: int = 1024) -> torch.Tensor:
         """缓存窗口上的开环 k 步误差 (k,)。"""
         w = buffer.sample_windows(n, self.cfg.window)
         return self.wm.rollout_error(w.states, w.actions, w.xi)
+
+
+def _fused(module: nn.Module) -> dict:
+    """CUDA 上用 fused Adam（单 kernel 更新全部参数）。"""
+    p = next(module.parameters(), None)
+    return {"fused": True} if p is not None and p.is_cuda else {}
 
 
 class Critic(nn.Module):
@@ -84,9 +91,15 @@ class ActorCriticTrainer:
         self.wm, self.obs_head, self.reward_heads = wm, obs_head, reward_heads
         self.actor, self.policy_fn, self.critic, self.cfg = actor, policy_fn, critic, cfg
         self.actor_opt = torch.optim.Adam(
-            actor.parameters(), lr=cfg.actor_learning_rate, betas=tuple(cfg.actor_betas)
+            actor.parameters(),
+            lr=cfg.actor_learning_rate,
+            betas=tuple(cfg.actor_betas),
+            **_fused(actor),
         )
-        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_learning_rate)
+        self.critic_opt = torch.optim.Adam(
+            critic.parameters(), lr=cfg.critic_learning_rate, **_fused(critic)
+        )
+        self.step = ImaginationStep(wm, obs_head, reward_heads, compile=cfg.compile)
 
     def set_lr(self, actor_lr: float, critic_lr: float) -> None:
         for group in self.actor_opt.param_groups:
@@ -97,7 +110,8 @@ class ActorCriticTrainer:
     def _critic_inputs(self, states: torch.Tensor, commands: torch.Tensor):
         return self.wm.spec.canonical(states), self.wm.normalize_command(commands)
 
-    def update(self, buffer: ReplayBuffer) -> dict[str, float]:
+    def update(self, buffer: ReplayBuffer) -> dict[str, torch.Tensor]:
+        """返回设备上的标量张量（不在这里同步主机）。"""
         cfg = self.cfg
         start = buffer.sample_starts(cfg.batch_size, cfg.horizon)
 
@@ -106,9 +120,7 @@ class ActorCriticTrainer:
         self.critic.requires_grad_(False)
         try:
             ro = imagine(
-                self.wm,
-                self.obs_head,
-                self.reward_heads,
+                self.step,
                 self.policy_fn,
                 start,
                 cfg.horizon,
@@ -169,13 +181,11 @@ class ActorCriticTrainer:
         metrics["critic_loss"] = critic_loss
         metrics["critic_value_mean"] = values.mean()
         metrics["critic_target_mean"] = targets.mean()
-        out = {k: float(v) for k, v in metrics.items()}
-        for name, value in ro.analytic_means.items():
-            out[f"imag_r/{name}"] = value
-        for name, value in zip(
-            self.reward_heads.learned_names, ro.learned_means.tolist(), strict=True
-        ):
-            out[f"imag_r/{name}"] = value
+        out = dict(metrics)
+        for i, name in enumerate(self.step.analytic_names):
+            out[f"imag_r/{name}"] = ro.analytic_means[i]
+        for i, name in enumerate(self.reward_heads.learned_names):
+            out[f"imag_r/{name}"] = ro.learned_means[i]
         return out
 
 

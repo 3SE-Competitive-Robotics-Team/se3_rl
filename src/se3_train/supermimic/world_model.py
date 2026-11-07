@@ -85,6 +85,7 @@ class WorldModel(nn.Module):
         self.register_buffer("xi_ready", torch.zeros((), dtype=torch.bool))
         self.register_buffer("reward_scale", torch.ones(max(self.num_learned, 1)))
         self.register_buffer("command_scale", torch.tensor(_COMMAND_SCALE))
+        self._loss_step_fn = None
         self.to(device)
 
     # ------------------------------------------------------------------ 归一化
@@ -178,23 +179,25 @@ class WorldModel(nn.Module):
         state_loss = term_loss = reward_loss = 0.0
         acc = torch.zeros((), device=states.device)
         first = last = None
-        scale = self.reward_scale[: self.num_learned]
+        inv_scale = 1.0 / self.reward_scale[: self.num_learned]
+        step_fn = self._loss_step_fn or self._loss_step
         for j in range(k):
-            s_next = self.step(s, actions[j], xi_norm)
-            err = self.spec.error_vector(s_next, states[j + 1])
-            sq = err * err
-            state_loss = state_loss + sq.sum(-1).mean()
-            logits = self.termination_logits(s_next, xi_norm, cmd[j])
-            term_loss = term_loss + F.binary_cross_entropy_with_logits(logits, done[j])
-            if self.num_learned:
-                pred = self.learned_rewards_normalized(s, s_next, actions[j], xi_norm, cmd[j])
-                reward_loss = reward_loss + F.mse_loss(pred, learned_targets[j] / scale)
-            with torch.no_grad():
-                nse = sq.mean(-1).mean()
-                first = nse if first is None else first
-                last = nse
-                acc = acc + ((logits > 0).float() == done[j]).float().mean()
-            s = s_next
+            s, sl, tl, rl, nse, ok = step_fn(
+                s,
+                actions[j],
+                xi_norm,
+                states[j + 1],
+                done[j],
+                cmd[j],
+                learned_targets[j],
+                inv_scale,
+            )
+            state_loss = state_loss + sl
+            term_loss = term_loss + tl
+            reward_loss = reward_loss + rl
+            first = nse if first is None else first
+            last = nse
+            acc = acc + ok
         loss = (
             state_loss / k
             + self.cfg.termination_loss_weight * term_loss / k
@@ -203,12 +206,35 @@ class WorldModel(nn.Module):
         metrics = {
             "state_loss": (state_loss / k).detach(),
             "termination_bce": (term_loss / k).detach(),
-            "reward_mse": torch.as_tensor(reward_loss / k).detach(),
+            "reward_mse": (reward_loss / k).detach(),
             "nse_1step": first.detach(),
             "nse_kstep": last.detach(),
             "termination_acc": (acc / k).detach(),
         }
         return loss, metrics
+
+    def _loss_step(self, s, action, xi_norm, s_true, done, cmd, target, inv_scale):
+        """Eq. 1 的一步自回归：返回 (ŝ_{j+1}, 状态损失, 终止 BCE, 奖励 MSE, 归一化误差, 终止准确率)。"""
+        s_next = self.step(s, action, xi_norm)
+        sq = self.spec.error_vector(s_next, s_true).square()
+        logits = self.termination_logits(s_next, xi_norm, cmd)
+        bce = F.binary_cross_entropy_with_logits(logits, done)
+        if self.num_learned:
+            pred = self.learned_rewards_normalized(s, s_next, action, xi_norm, cmd)
+            mse = F.mse_loss(pred, target * inv_scale)
+        else:
+            mse = torch.zeros((), device=s.device)
+        nse = sq.detach().mean()
+        ok = ((logits.detach() > 0).float() == done).float().mean()
+        return s_next, sq.sum(-1).mean(), bce, mse, nse, ok
+
+    def enable_compile(self, enabled: bool) -> None:
+        """把单步损失编译成一个融合图（固定 batch 形状）。
+
+        不编译时每步是几百个逐元素小算子，2026-11-07 nulltask1 A800 剖析：一次更新 2.2 s 里矩阵乘只占 117 ms，
+        其余是 kernel launch 与 Python 开销。复现仓库同样编译了这一步。
+        """
+        self._loss_step_fn = torch.compile(self._loss_step, dynamic=False) if enabled else None
 
     @torch.no_grad()
     def rollout_error(

@@ -11,8 +11,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
-from functools import cached_property
+from dataclasses import dataclass, field
 
 import torch
 from mjlab.utils.noise import UniformNoiseCfg
@@ -63,26 +62,19 @@ class HeadContext:
     """(N, XI_DIM) 原始（未归一化）上下文。"""
     episode_step: torch.Tensor
     """(N,) 奖励计算时的 episode_length_buf（reset 后首步为 1）。"""
+    # 派生量在构造时一次算好（不用 cached_property：torch.compile 追踪它会断图）
+    projected_gravity: torch.Tensor = field(init=False)
+    lin_vel_b: torch.Tensor = field(init=False)
+    ang_vel_b: torch.Tensor = field(init=False)
+    leg_pos: torch.Tensor = field(init=False)
+    default_leg: torch.Tensor = field(init=False)
 
-    @cached_property
-    def projected_gravity(self) -> torch.Tensor:
-        return self.spec.projected_gravity(self.s)
-
-    @cached_property
-    def lin_vel_b(self) -> torch.Tensor:
-        return self.spec.lin_vel_b(self.s)
-
-    @property
-    def ang_vel_b(self) -> torch.Tensor:
-        return self.s[..., S_ANG]
-
-    @cached_property
-    def leg_pos(self) -> torch.Tensor:
-        return self.spec.policy_leg_pos(self.s)
-
-    @property
-    def default_leg(self) -> torch.Tensor:
-        return self.xi[..., XI_DEFAULT_LEG]
+    def __post_init__(self) -> None:
+        self.projected_gravity = self.spec.projected_gravity(self.s)
+        self.lin_vel_b = self.spec.lin_vel_b(self.s)
+        self.ang_vel_b = self.s[..., S_ANG]
+        self.leg_pos = self.spec.policy_leg_pos(self.s)
+        self.default_leg = self.xi[..., XI_DEFAULT_LEG]
 
 
 def _kwargs(func, params: dict | None) -> dict:
@@ -360,10 +352,10 @@ _CMD_IDS = tuple(COMMAND_FIELDS.index(name) for name in NO_ATTITUDE_COMMAND_OBS_
 
 
 def _obs_commands_vx_yaw_height(ctx: HeadContext) -> torch.Tensor:
-    scale = torch.tensor(
-        [_OBS_CFG.command_scale[i] for i in _CMD_IDS], device=ctx.s.device, dtype=ctx.s.dtype
+    # 逐列乘 Python 常数：每步新建缩放 / 索引张量会触发一次主机到设备拷贝
+    return torch.stack(
+        [ctx.command[:, i] * float(_OBS_CFG.command_scale[i]) for i in _CMD_IDS], dim=-1
     )
-    return ctx.command[:, list(_CMD_IDS)] * scale
 
 
 def _obs_leg_joint_pos(ctx: HeadContext) -> torch.Tensor:
