@@ -149,6 +149,19 @@ runner smoke（1024 + bf16，8 轮）：稳态每轮 2.52–2.75 s（采集约 1
 GPU 核对：抽到无效行 0、按行分布与纯随机一致）；编译与 CUDA Graphs 录制后 `gc.freeze()`（GC 开 / 关每次更新 172 / 161 ms）。
 smoke（1024 + bf16，12 轮）稳态每轮 2.50–2.72 s（采集约 1.1 s、学习 1.42 / 1.58 s，交替是 9 / 10 次更新）。
 
+### 第六轮：Rough env reset 抬机身（2026-11-07 用户定接受，9b79b35，所有 Rough / Flat 任务共用）
+
+`_lift_root_to_wheel_clearance` 每次 reset 对全部 world 做两次全量 forward。原点模式只需要轮 body 的 xpos，改为
+`mujoco_warp.kinematics`（forward 第一阶段同一 kernel）；写回根位姿后不再 forward（env.step 在 reset 后统一 forward，
+后续 reset 事件与指令重采样都不读 reset env 的派生量）。
+
+- 速度：4096 env、随机起始 episode 长度，env.step 43.1 / 43.3 → 39.2 / 37.9 ms；smoke SuperMimic 2.37–2.53 s/轮、
+  SuperMimic-PPO 0.97–1.00 s/轮（此前 1.07–1.09）；默认 Rough、Flat-MLP smoke 同样通过。
+- CPU 逐位核对（`.scratch/supermimic/check_reset_equiv.py`，Rough-SuperMimic-PPO 与完整 Rough，各 200 步）：qpos、qvel、
+  actor 观测、奖励、done 逐位相同。critic 的轮接触力、关节加速度、机身碰撞力三项不同，且差异步与「这一步有 env reset」
+  的步完全重合（62/62、59/59）：这三项是约束求解器输出，旧版只要有 env reset 就对全部 env 多跑两次 forward，求解初值不同；
+  新版每步都只在物理步后 forward 一次，口径一致。只影响 PPO critic 的特权输入，此后 run 与之前的在这三项上不逐位可比。
+
 ## 相对复现仓库的修正
 
 复现仓库在 episode 结束时把最后一个 transition 行也标成终止（`done = terminated`），该行状态被当作窗口中间目标时
