@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import gc
 import math
 import os
 import time
@@ -239,23 +240,19 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
         steps_per_it = int(sched.steps_per_iteration)
         total_env_steps = total_it * steps_per_it
         lr = self._set_lr(total_env_steps)
-        use_events = torch.cuda.is_available() and str(self.device).startswith("cuda")
+        use_cuda = torch.cuda.is_available() and str(self.device).startswith("cuda")
+        frozen = False
         for it in range(start_it, total_it):
-            # 计时口径：采集 / 学习都按 GPU 时间线计（各自一对 CUDA event，不额外同步）。不能用 perf_counter 包住
-            # env.step：更新（CUDA Graphs 回放）是异步排队的，下一个 env.step 第一次同步时才等它做完，这段等待
-            # 会被错算进采集（2026-11-07：日志采集 1.27 s，单测 env.step 0.72 s）。
+            # 计时口径：每批更新结束后同步一次 GPU，学习段 = 更新墙钟（含 GPU 做完），采集段 = env step 墙钟。
+            # 不同步时更新（CUDA Graphs 回放）异步排队，下一个 env.step 首次同步才等它做完，会被错算进采集
+            # （2026-11-07：日志采集 1.27 s，同步隔离测 env.step 0.72 s）；CUDA event 也不行，cudagraph 回放
+            # 不一定在当前 stream 上排队。AC 更新本身受 CPU 限制，入队完时 GPU 基本做完，这次同步几乎不花时间。
             t_iter0 = time.perf_counter()
-            learn_events: list[tuple] = []
-            collect_events: list[tuple] = []
-            t_collect_cpu = 0.0
-            t_learn_cpu = 0.0
+            t_collect = t_learn = 0.0
             agg: dict[str, torch.Tensor] = {}
             agg_n = 0
             for _ in range(steps_per_it):
                 t0 = time.perf_counter()
-                if use_events:
-                    cv0 = torch.cuda.Event(enable_timing=True)
-                    cv0.record()
                 with torch.no_grad():
                     actor.update_normalization(obs)
                     action = actor(obs)
@@ -268,22 +265,17 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                         dones.to(self.device),
                     )
                     self.logger.process_env_step(rewards, dones, extras, None)
-                if use_events:
-                    cv1 = torch.cuda.Event(enable_timing=True)
-                    cv1.record()
-                    collect_events.append((cv0, cv1))
-                t_collect_cpu += time.perf_counter() - t0
+                t_collect += time.perf_counter() - t0
                 self.env_steps += 1
 
                 if self.env_steps < sched.warmup_env_steps:
                     continue
                 self._utd_acc += sched.updates_per_env_step
+                if self._utd_acc < 1.0:
+                    continue
+                t0 = time.perf_counter()
                 while self._utd_acc >= 1.0:
                     self._utd_acc -= 1.0
-                    t0 = time.perf_counter()
-                    if use_events:
-                        ev0 = torch.cuda.Event(enable_timing=True)
-                        ev0.record()
                     lr = self._set_lr(total_env_steps)
                     m_wm = self.wm_trainer.update(self.buffer)
                     self._sync_policy_norm()
@@ -294,20 +286,19 @@ class SuperMimicRunner(Se3ProfiledOnPolicyRunner):
                     for k, v in m_ac.items():
                         agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v.detach()
                     agg_n += 1
-                    if use_events:
-                        ev1 = torch.cuda.Event(enable_timing=True)
-                        ev1.record()
-                        learn_events.append((ev0, ev1))
-                    t_learn_cpu += time.perf_counter() - t0
+                if use_cuda:
+                    torch.cuda.synchronize()
+                t_learn += time.perf_counter() - t0
+                if not frozen and self.num_updates >= 2:
+                    # 编译与 CUDA Graphs 录制做完后，把常驻对象（dynamo 缓存、env、模型…）移出 GC 扫描范围：
+                    # 之后每次更新新建大量临时 Python 对象，每轮 gen2 回收都要扫一遍整堆（2026-11-07 剖析：
+                    # GC 开 / 关每次更新 172 / 161 ms）。之后新建的对象照常回收。
+                    gc.collect()
+                    gc.freeze()
+                    frozen = True
 
             # 各项在设备上累加，这里每轮只同步一次主机
             loss_dict = {k: float(v) / agg_n for k, v in agg.items()} if agg_n else {}
-            if use_events:
-                torch.cuda.current_stream().synchronize()
-                t_learn = sum(a.elapsed_time(b) for a, b in learn_events) / 1000.0
-                t_collect = sum(a.elapsed_time(b) for a, b in collect_events) / 1000.0
-            else:
-                t_learn, t_collect = t_learn_cpu, t_collect_cpu
             loss_dict["sm/iteration_wall_s"] = time.perf_counter() - t_iter0
             if agg_n and self.buffer.size > 2048:
                 err = self.wm_trainer.online_error(self.buffer)
