@@ -20,12 +20,16 @@ from se3_shared import (
     COMMAND_FIELDS,
     NO_ATTITUDE_COMMAND_OBS_FIELDS,
     ObservationConfig,
-    periodic_policy_action_second_difference_torch,
     policy_default_from_height_torch,
     policy_leg_phase_active_obs_torch,
     policy_leg_position_error_torch,
 )
 from se3_shared import RobotConfig as SharedRobotConfig
+from se3_shared.action_history import (
+    FRONT_ACTION_INDICES,
+    _front_period_at,
+    _wrap_period_torch,
+)
 from se3_train.mdp import observations as obs_fns
 from se3_train.mdp import rewards as flat_rewards
 from se3_train.mdp.action_period import front_action_periods_from_env
@@ -246,7 +250,12 @@ class RewardHeads:
         self.spec = spec
         self.kin = kin
         self.step_dt = float(env.step_dt)
-        self.front_periods = front_action_periods_from_env(env)
+        # 前杆周期在构造时解析成 Python float：se3_shared 的解析走 numpy，放进编译图里每步断一次
+        periods = front_action_periods_from_env(env)
+        self.front_periods = tuple(
+            (index, _front_period_at(periods, order, index))
+            for order, index in enumerate(FRONT_ACTION_INDICES)
+        )
         self.left_wheel = kin.body_index(mj_model, "l_wheel_Link")
         self.right_wheel = kin.body_index(mj_model, "r_wheel_Link")
         manager = env.reward_manager
@@ -277,12 +286,17 @@ class RewardHeads:
 
     # ------------------------------------------------------------------ 逐项
 
+    def _periodic_delta(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """= se3_shared.periodic_policy_action_delta_torch：前杆差分折回最短等价差分。"""
+        delta = a - b
+        cols = list(delta.unbind(-1))
+        for index, period in self.front_periods:
+            cols[index] = _wrap_period_torch(cols[index], period)
+        return torch.stack(cols, dim=-1)
+
     def _smoothness(self, ctx: HeadContext, kw: dict) -> torch.Tensor:
-        acc = periodic_policy_action_second_difference_torch(
-            ctx.action,
-            ctx.prev_action,
-            ctx.prev_prev_action,
-            front_action_period=self.front_periods,
+        acc = self._periodic_delta(ctx.action, ctx.prev_action) - self._periodic_delta(
+            ctx.prev_action, ctx.prev_prev_action
         )
         penalty = float(kw["leg_scale"]) * (acc[:, :4] ** 2).sum(1) + float(kw["wheel_scale"]) * (
             acc[:, 4:6] ** 2
